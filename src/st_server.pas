@@ -13,7 +13,7 @@ unit st_server;
 interface
 
 uses
-  Classes, SysUtils, BaseUnix, Unix, Sockets,
+  Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
   st_config, st_layout, st_pty, st_screen, st_session;
 
 const
@@ -45,6 +45,8 @@ type
     LayoutNodes: string;
     Focused: integer;
     PaneCount: integer;
+    Name: string;      // nombre de la sesion (cola tolerante del payload)
+    Profile: string;   // perfil de origen ('' = ad-hoc)
     Panes: array[0..MAX_PANES - 1] of TSessionPaneSnapshot;
   end;
 
@@ -69,7 +71,8 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    function Connect(out Snapshot: TSessionSnapshot): boolean;
+    function Connect(const APath: string;
+      out Snapshot: TSessionSnapshot): boolean;
     function Poll(out Event: TSessionEvent): boolean;
     function SendInput(APane: integer; const S: RawByteString): boolean;
     function SendResize(APane, ACols, ARows: integer): boolean;
@@ -85,15 +88,40 @@ type
   TScreenArray = array of TScreen;
   TStrArray = array of string;
 
-function SessionSocketPath: string;
-function SessionSocketIsLive: boolean;
-function StartDetachedServer(ALay: TLayout;
+type
+  // sesion separada descubierta en disco (socket + sidecar de metadatos)
+  TSessionInfo = record
+    Name: string;
+    Profile: string;
+    PaneCount: integer;
+    Pid: integer;
+    Created: string;
+    SocketPath: string;
+    Legacy: boolean;   // socket unico antiguo ~/.superterm/session.sock
+  end;
+  TSessionInfoArray = array of TSessionInfo;
+
+function SessionSocketPath: string;      // ruta legada (un solo socket)
+function SessionSocketIsLive: boolean;   // sonda de la ruta legada
+function SessionsDir: string;            // ~/.superterm/sessions (0700)
+function SanitizeSessionName(const S: string): string;
+function SessionSocketPathFor(const AName: string): string;
+function SessionIsLive(const APath: string): boolean;
+// enumera sesiones vivas (sondea cada socket; purga huerfanos y sidecars;
+// incluye el socket legado como '(sin nombre)')
+function EnumerateSessions(out Infos: TSessionInfoArray): boolean;
+// nombre libre a partir de una base: base, base-2, base-3...
+function SuggestSessionName(const ABase: string): string;
+// cierre permanente de una sesion separada por su socket (FRAME_CLOSE)
+function CloseSessionAt(const APath: string): boolean;
+function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer): boolean;
 
 var
   AttachRequested: boolean = False;
+  AttachSocket: string = '';   // socket resuelto por la CLI ('' = selector)
 
 implementation
 
@@ -115,6 +143,9 @@ type
     FTitles: array[0..MAX_PANES - 1] of string;
     FTerms: array[0..MAX_PANES - 1] of string;
     FSocketPath: string;
+    FMetaPath: string;
+    FName: string;
+    FProfile: string;
     FListener: cint;
     FClient: cint;
     FStop: boolean;
@@ -131,10 +162,12 @@ type
     procedure HandlePaneOutput(APane: integer);
     procedure CloseClient(var AClient: cint);
     procedure SignalReady(AFd: cint; AOk: boolean);
+    procedure WriteSidecar;
   public
-    constructor Create(ALay: TLayout; const APanes: TPtyArray;
-      const AScreens: TScreenArray; const ATitles: TStrArray;
-      const ATerms: TStrArray; AFocused: integer);
+    constructor Create(const AName, AProfile: string; ALay: TLayout;
+      const APanes: TPtyArray; const AScreens: TScreenArray;
+      const ATitles: TStrArray; const ATerms: TStrArray;
+      AFocused: integer);
     destructor Destroy; override;
     procedure Run(AReadyFd: cint);
   end;
@@ -286,13 +319,13 @@ begin
   Result := True;
 end;
 
-function ConnectSocket: cint;
+function ConnectSocket(const APath: string): cint;
 var
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
 begin
   Result := -1;
-  if not SocketAddress(SessionSocketPath, Addr, AddrLen) then
+  if not SocketAddress(APath, Addr, AddrLen) then
     Exit;
   Result := fpSocket(AF_UNIX, SOCK_STREAM, 0);
   if Result < 0 then
@@ -309,14 +342,149 @@ begin
   Result := ConfigDir + '/session.sock';
 end;
 
-function SessionSocketIsLive: boolean;
+function SessionIsLive(const APath: string): boolean;
 var
   Fd: cint;
 begin
-  Fd := ConnectSocket;
+  Fd := ConnectSocket(APath);
   Result := Fd >= 0;
   if Fd >= 0 then
     FpClose(Fd);
+end;
+
+function SessionSocketIsLive: boolean;
+begin
+  Result := SessionIsLive(SessionSocketPath);
+end;
+
+function SessionsDir: string;
+begin
+  Result := ConfigDir + '/sessions';
+  if not DirectoryExists(Result) then
+    ForceDirectories(Result);
+  if DirectoryExists(Result) then
+    FpChmod(PAnsiChar(Result), &700);
+end;
+
+function SanitizeSessionName(const S: string): string;
+var
+  i: integer;
+  c: char;
+begin
+  Result := '';
+  for i := 1 to Length(S) do
+  begin
+    c := S[i];
+    if c in ['A'..'Z', 'a'..'z', '0'..'9', '.', '_', '-'] then
+      Result := Result + c
+    else
+      Result := Result + '-';
+  end;
+  while (Result <> '') and (Result[1] in ['.', '-']) do
+    Delete(Result, 1, 1);
+  if Length(Result) > 64 then
+    SetLength(Result, 64);
+  if Result = '' then
+    Result := 'sesion';
+end;
+
+function SessionSocketPathFor(const AName: string): string;
+begin
+  Result := SessionsDir + '/' + SanitizeSessionName(AName) + '.sock';
+end;
+
+function SessionMetaPathFor(const AName: string): string;
+begin
+  Result := SessionsDir + '/' + SanitizeSessionName(AName) + '.ini';
+end;
+
+function EnumerateSessions(out Infos: TSessionInfoArray): boolean;
+var
+  SR: TSearchRec;
+  Ini: TIniFile;
+  Info: TSessionInfo;
+  Dir, MetaPath: string;
+begin
+  Infos := nil;
+  Dir := SessionsDir;
+  if FindFirst(Dir + '/*.sock', faAnyFile, SR) = 0 then
+  begin
+    repeat
+      Info := Default(TSessionInfo);
+      Info.SocketPath := Dir + '/' + SR.Name;
+      Info.Name := ChangeFileExt(SR.Name, '');
+      MetaPath := Dir + '/' + Info.Name + '.ini';
+      if not SessionIsLive(Info.SocketPath) then
+      begin
+        // huerfana: purgar socket y sidecar
+        DeleteFile(Info.SocketPath);
+        if FileExists(MetaPath) then
+          DeleteFile(MetaPath);
+        continue;
+      end;
+      if FileExists(MetaPath) then
+      begin
+        Ini := TIniFile.Create(MetaPath);
+        try
+          Info.Name := Ini.ReadString('session', 'name', Info.Name);
+          Info.Profile := Ini.ReadString('session', 'profile', '');
+          Info.PaneCount := Ini.ReadInteger('session', 'panes', 0);
+          Info.Pid := Ini.ReadInteger('session', 'pid', 0);
+          Info.Created := Ini.ReadString('session', 'created', '');
+        finally
+          Ini.Free;
+        end;
+      end;
+      SetLength(Infos, Length(Infos) + 1);
+      Infos[High(Infos)] := Info;
+    until FindNext(SR) <> 0;
+    FindClose(SR);
+  end;
+  // transicion: el socket unico de una version anterior
+  if FileExists(SessionSocketPath) then
+  begin
+    if SessionIsLive(SessionSocketPath) then
+    begin
+      Info := Default(TSessionInfo);
+      Info.Name := '(sin nombre)';
+      Info.SocketPath := SessionSocketPath;
+      Info.Legacy := True;
+      SetLength(Infos, Length(Infos) + 1);
+      Infos[High(Infos)] := Info;
+    end
+    else
+      DeleteFile(SessionSocketPath);
+  end;
+  Result := Length(Infos) > 0;
+end;
+
+function CloseSessionAt(const APath: string): boolean;
+var
+  Fd: cint;
+  Data: TByteArray;
+begin
+  Result := False;
+  Fd := ConnectSocket(APath);
+  if Fd < 0 then
+    Exit;
+  Data := nil;
+  Result := WriteFrameTo(Fd, FRAME_CLOSE, -1, Data);
+  FpClose(Fd);
+end;
+
+function SuggestSessionName(const ABase: string): string;
+var
+  Base: string;
+  N: integer;
+begin
+  Base := SanitizeSessionName(ABase);
+  Result := Base;
+  N := 1;
+  while SessionIsLive(SessionSocketPathFor(Result)) do
+  begin
+    Inc(N);
+    Result := Base + '-' + IntToStr(N);
+  end;
 end;
 
 constructor TSessionClient.Create;
@@ -352,7 +520,8 @@ begin
   Result := FConnected and ReadFrameFrom(FSocket, AKind, APane, Data);
 end;
 
-function TSessionClient.Connect(out Snapshot: TSessionSnapshot): boolean;
+function TSessionClient.Connect(const APath: string;
+  out Snapshot: TSessionSnapshot): boolean;
 var
   Kind: byte;
   Pane: integer;
@@ -364,13 +533,15 @@ begin
   Snapshot.LayoutNodes := '';
   Snapshot.Focused := 0;
   Snapshot.PaneCount := 0;
+  Snapshot.Name := '';
+  Snapshot.Profile := '';
   for I := 0 to MAX_PANES - 1 do
   begin
     Snapshot.Panes[I].Title := '';
     Snapshot.Panes[I].Term := '';
     Snapshot.Panes[I].ScreenData := nil;
   end;
-  FSocket := ConnectSocket;
+  FSocket := ConnectSocket(APath);
   if FSocket < 0 then
     Exit;
   FConnected := True;
@@ -403,6 +574,13 @@ begin
       if not ReadString(Stream, Snapshot.Panes[I].Term) then
         Exit;
     end;
+    // cola tolerante: un daemon de una version anterior no la envia
+    if Stream.Position + SizeOf(Longint) <= Stream.Size then
+      if not ReadString(Stream, Snapshot.Name) then
+        Snapshot.Name := '';
+    if Stream.Position + SizeOf(Longint) <= Stream.Size then
+      if not ReadString(Stream, Snapshot.Profile) then
+        Snapshot.Profile := '';
   finally
     Stream.Free;
   end;
@@ -512,7 +690,8 @@ begin
   CloseSocket;
 end;
 
-constructor TDetachedSession.Create(ALay: TLayout;
+constructor TDetachedSession.Create(const AName, AProfile: string;
+  ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer);
@@ -534,7 +713,10 @@ begin
     if I <= High(ATitles) then FTitles[I] := ATitles[I];
     if I <= High(ATerms) then FTerms[I] := ATerms[I];
   end;
-  FSocketPath := SessionSocketPath;
+  FName := SanitizeSessionName(AName);
+  FProfile := AProfile;
+  FSocketPath := SessionSocketPathFor(FName);
+  FMetaPath := SessionMetaPathFor(FName);
   FListener := -1;
   FClient := -1;
   FStop := False;
@@ -549,6 +731,8 @@ begin
     FpClose(FListener);
   if FileExists(FSocketPath) then
     DeleteFile(FSocketPath);
+  if (FMetaPath <> '') and FileExists(FMetaPath) then
+    DeleteFile(FMetaPath);
   for I := 0 to FPaneCount - 1 do
   begin
     if FPanes[I] <> nil then
@@ -570,7 +754,7 @@ var
   AddrLen: TSockLen;
 begin
   Result := False;
-  if SessionSocketIsLive then
+  if SessionIsLive(FSocketPath) then
     Exit;
   if FileExists(FSocketPath) then
     DeleteFile(FSocketPath);
@@ -635,6 +819,9 @@ begin
       WriteString(Meta, FTitles[I]);
       WriteString(Meta, FTerms[I]);
     end;
+    // cola tolerante (los clientes antiguos la ignoran al no leerla)
+    WriteString(Meta, FName);
+    WriteString(Meta, FProfile);
     SetLength(Data, Meta.Size);
     if Meta.Size > 0 then
     begin
@@ -760,6 +947,27 @@ begin
   end;
 end;
 
+// sidecar de metadatos: permite al selector mostrar nombre/perfil/paneles
+// sin consumir el unico slot de cliente del socket
+procedure TDetachedSession.WriteSidecar;
+var
+  Ini: TIniFile;
+begin
+  Ini := TIniFile.Create(FMetaPath);
+  try
+    Ini.WriteString('session', 'name', FName);
+    Ini.WriteString('session', 'profile', FProfile);
+    Ini.WriteInteger('session', 'panes', FPaneCount);
+    Ini.WriteInteger('session', 'pid', fpGetPid);
+    Ini.WriteString('session', 'created',
+      FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+    Ini.UpdateFile;
+  finally
+    Ini.Free;
+  end;
+  FpChmod(PAnsiChar(FMetaPath), &600);
+end;
+
 procedure TDetachedSession.SignalReady(AFd: cint; AOk: boolean);
 var
   B: byte;
@@ -786,6 +994,7 @@ begin
     SignalReady(AReadyFd, False);
     Exit;
   end;
+  WriteSidecar;
   SignalReady(AReadyFd, True);
   while not FStop do
   begin
@@ -841,7 +1050,7 @@ begin
   end;
 end;
 
-function StartDetachedServer(ALay: TLayout;
+function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer): boolean;
@@ -852,7 +1061,8 @@ var
   Server: TDetachedSession;
 begin
   Result := False;
-  if (ALay = nil) or (Length(APanes) < 1) or SessionSocketIsLive then
+  if (ALay = nil) or (Length(APanes) < 1) or
+     SessionIsLive(SessionSocketPathFor(AName)) then
     Exit;
   ReadyPipe := Default(TFilDes);
   if FpPipe(ReadyPipe) <> 0 then
@@ -873,8 +1083,8 @@ begin
     FpClose(0);
     FpClose(1);
     FpClose(2);
-    Server := TDetachedSession.Create(ALay, APanes, AScreens, ATitles,
-      ATerms, AFocused);
+    Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
+      AScreens, ATitles, ATerms, AFocused);
     try
       Server.Run(ReadyPipe[1]);
     finally

@@ -14,7 +14,7 @@ interface
 
 uses
   Objects, Drivers, Views, Dialogs, MsgBox, App, SysUtils,
-  st_config, st_wclass, st_profiles;
+  st_config, st_wclass, st_profiles, st_server;
 
 // gestor de clases: lista + New/Edit/Duplicate/Delete/Close. Edita SOLO las
 // de origen usuario; las de sistema se muestran '(sistema)' y solo permiten
@@ -45,6 +45,18 @@ function RunProfileManager(var AProfiles: TProfileArray;
   AActive, ADefault: integer; out AAction: TProfileAction;
   out ATarget: integer): boolean;
 
+type
+  // resultado del selector de sesiones separadas
+  TSessionPickAction = (spCancel, spAttach, spStartNew);
+
+// selector de sesiones separadas. Enumera y re-enumera EL MISMO las
+// sesiones (st_server.EnumerateSessions) en cada pasada del bucle de
+// reconstruccion. AllowStartNew=True anade el boton 'Start new'/'Nueva
+// sesion' (arranque normal); con False ese boton es 'Cancel'/'Cancelar'.
+// spAttach -> ASocketPath = socket elegido.
+function RunSessionPicker(AllowStartNew: boolean;
+  out ASocketPath: string): TSessionPickAction;
+
 implementation
 
 const
@@ -59,6 +71,8 @@ const
   cmPrfRename   = 3312;
   cmPrfDefault  = 3313;
   cmPrfDelete   = 3314;
+  cmSesAttach   = 3320;
+  cmSesDelete   = 3321;
 
 type
   TNameArray = array of string;
@@ -330,8 +344,14 @@ begin
   with D^ do
   begin
     OtherNames := @Names;
-    NameLine := NewInputLine(22, 1, 25, 40, hcNoContext, nil);
-    NewLabel(2, 1, UiText('Name', 'Nombre'), NameLine);
+    // orden de insercion = orden inverso de foco inicial: en este fork el
+    // ultimo control seleccionable insertado recibe el foco al ejecutar
+    // (NUNCA llamar Select antes de ExecView: envenena la cadena de foco
+    // de la app si el dialogo corre durante el Init). Botones primero y
+    // el campo Nombre al final para que arranque enfocado.
+    NewButton(20, 15, 10, 2, 'OK', cmOK, hcNoContext, bfDefault);
+    NewButton(34, 15, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
     R.Assign(49, 1, 63, 2);
     EnabledBox := New(PCheckBoxes, Init(R,
       NewSItem(UiText('Enabled', 'Habilitada'), nil)));
@@ -368,9 +388,10 @@ begin
     NewLabel(2, 12, 'Scrollback', ScrollLine);
     R.Assign(33, 12, 53, 13);
     Insert(New(PStaticText, Init(R, Format('(0..%d)', [MAX_SCROLLBACK]))));
-    NewButton(20, 15, 10, 2, 'OK', cmOK, hcNoContext, bfDefault);
-    NewButton(34, 15, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
-      hcNoContext, bfNormal);
+    // Nombre el ultimo: foco inicial (las coordenadas son absolutas, el
+    // orden de insercion no cambia el layout)
+    NameLine := NewInputLine(22, 1, 25, 40, hcNoContext, nil);
+    NewLabel(2, 1, UiText('Name', 'Nombre'), NameLine);
 
     // valores iniciales
     SetLineText(NameLine, C.Name);
@@ -499,15 +520,8 @@ begin
     Insert(New(PStaticText, Init(R, Format('%-18s %-8s %-24s',
       [UiText('Name', 'Nombre'), UiText('Type', 'Tipo'),
        UiText('Target', 'Destino')]))));
-    R.Assign(66, 2, 67, 12);
-    SB := New(PScrollBar, Init(R));
-    Insert(SB);
-    R.Assign(3, 2, 66, 12);
-    LB := New(PListBox, Init(R, 1, SB));
-    Insert(LB);
-    LB^.NewList(Coll);
-    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
-      LB^.FocusItem(FocusRow);
+    // botones ANTES del listbox: el ultimo control seleccionable insertado
+    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
     NewButton(3, 14, 10, 2, UiText('New', 'Nuevo'), cmClsNew,
       hcNoContext, bfNormal);
     NewButton(14, 14, 10, 2, UiText('Edit', 'Editar'), cmClsEdit,
@@ -518,6 +532,15 @@ begin
       hcNoContext, bfNormal);
     NewButton(50, 14, 10, 2, UiText('Close', 'Cerrar'), cmCancel,
       hcNoContext, bfNormal);
+    R.Assign(66, 2, 67, 12);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(3, 2, 66, 12);
+    LB := New(PListBox, Init(R, 1, SB));
+    Insert(LB);
+    LB^.NewList(Coll);
+    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
+      LB^.FocusItem(FocusRow);
   end;
   Result := Desktop^.ExecView(D);
   if Coll^.Count > 0 then
@@ -650,6 +673,12 @@ begin
     UiText('Open class in new pane', 'Abrir clase en panel nuevo')));
   with D^ do
   begin
+    // botones ANTES del listbox: el ultimo control seleccionable insertado
+    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    NewButton(8, 10, 12, 2, UiText('Open', 'Abrir'), cmOK,
+      hcNoContext, bfDefault);
+    NewButton(24, 10, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
     R.Assign(42, 1, 43, 9);
     SB := New(PScrollBar, Init(R));
     Insert(SB);
@@ -657,10 +686,6 @@ begin
     LB := New(PListBox, Init(R, 1, SB));
     Insert(LB);
     LB^.NewList(Coll);
-    NewButton(8, 10, 12, 2, UiText('Open', 'Abrir'), cmOK,
-      hcNoContext, bfDefault);
-    NewButton(24, 10, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
-      hcNoContext, bfNormal);
   end;
 
   if Desktop^.ExecView(D) = cmOK then
@@ -758,15 +783,8 @@ begin
     CmdLo := cmPrfActivate;
     CmdHi := cmPrfDelete;
     SelectCmd := cmPrfActivate;   // doble click = activar
-    R.Assign(56, 1, 57, 8);
-    SB := New(PScrollBar, Init(R));
-    Insert(SB);
-    R.Assign(3, 1, 56, 8);
-    LB := New(PListBox, Init(R, 1, SB));
-    Insert(LB);
-    LB^.NewList(Coll);
-    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
-      LB^.FocusItem(FocusRow);
+    // botones ANTES del listbox: el ultimo control seleccionable insertado
+    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
     Btn[0] := NewButton(3, 9, 12, 2, UiText('Activate', 'Activar'),
       cmPrfActivate, hcNoContext, bfDefault);   // Enter = activar
     Btn[1] := NewButton(16, 9, 18, 2,
@@ -784,6 +802,15 @@ begin
       for i := 0 to High(Btn) do
         if Btn[i] <> nil then
           Btn[i]^.SetState(sfDisabled, True);
+    R.Assign(56, 1, 57, 8);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(3, 1, 56, 8);
+    LB := New(PListBox, Init(R, 1, SB));
+    Insert(LB);
+    LB^.NewList(Coll);
+    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
+      LB^.FocusItem(FocusRow);
   end;
   Result := Desktop^.ExecView(D);
   if Length(AProfiles) > 0 then
@@ -904,6 +931,129 @@ begin
       end;
   until (Cmd = cmCancel) or (Cmd = cmOK);
   // cerrado sin accion: Result queda True solo si hubo ediciones (paNone)
+end;
+
+{ ------------------ selector de sesiones separadas ------------------ }
+
+function SessionRow(const S: TSessionInfo): string;
+begin
+  // la fila legada ya trae Name='(sin nombre)' y perfil vacio del servidor
+  Result := Format('%-20s %-14s %5d  %s',
+    [Copy(S.Name, 1, 20), Copy(S.Profile, 1, 14), S.PaneCount, S.Created]);
+end;
+
+// construye y ejecuta una pasada del dialogo; devuelve el comando final.
+// FocusRow como en los gestores: entra fila a enfocar, sale fila enfocada.
+function ExecSessionPicker(const Infos: TSessionInfoArray;
+  AllowStartNew: boolean; var FocusRow: integer): word;
+var
+  D: PManagerDialog;
+  LB: PListBox;
+  SB: PScrollBar;
+  Coll: PStringCollection;
+  R: TRect;
+  i: integer;
+  ThirdCaption: string;
+begin
+  Coll := New(PStringCollection, Init(Length(Infos) + 1, 8));
+  for i := 0 to High(Infos) do
+    Coll^.AtInsert(Coll^.Count, Objects.NewStr(SessionRow(Infos[i])));
+
+  R := CenteredRect(66, 16);
+  D := New(PManagerDialog, Init(R,
+    UiText('Detached sessions', 'Sesiones separadas')));
+  with D^ do
+  begin
+    CmdLo := cmSesAttach;
+    CmdHi := cmSesDelete;
+    SelectCmd := cmSesAttach;   // doble click = conectar
+    R.Assign(3, 1, 63, 2);
+    Insert(New(PStaticText, Init(R, Format('%-20s %-14s %5s  %s',
+      [UiText('Name', 'Nombre'), UiText('Profile', 'Perfil'),
+       UiText('Panes', 'Paneles'), UiText('Created', 'Creada')]))));
+    if AllowStartNew then
+      ThirdCaption := UiText('Start new', 'Nueva sesion')
+    else
+      ThirdCaption := UiText('Cancel', 'Cancelar');
+    // botones ANTES del listbox: el ultimo control seleccionable insertado
+    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    NewButton(3, 12, 12, 2, UiText('Attach', 'Conectar'), cmSesAttach,
+      hcNoContext, bfDefault);   // Enter = conectar
+    NewButton(17, 12, 12, 2, UiText('Delete', 'Eliminar'), cmSesDelete,
+      hcNoContext, bfNormal);
+    // Esc entrega cmCancel: siempre equivale a este tercer boton
+    NewButton(31, 12, 16, 2, ThirdCaption, cmCancel, hcNoContext, bfNormal);
+    R.Assign(62, 2, 63, 10);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(3, 2, 62, 10);
+    LB := New(PListBox, Init(R, 1, SB));
+    Insert(LB);
+    LB^.NewList(Coll);
+    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
+      LB^.FocusItem(FocusRow);
+  end;
+  Result := Desktop^.ExecView(D);
+  if Coll^.Count > 0 then
+    FocusRow := LB^.Focused
+  else
+    FocusRow := -1;
+  Dispose(D, Done);
+  // la coleccion no es del listbox: liberarla tras destruir el dialogo
+  Dispose(Coll, Done);
+end;
+
+function RunSessionPicker(AllowStartNew: boolean;
+  out ASocketPath: string): TSessionPickAction;
+var
+  Infos: TSessionInfoArray;
+  Cmd: word;
+  Idx, FocusRow, i: integer;
+begin
+  ASocketPath := '';
+  if AllowStartNew then
+    Result := spStartNew
+  else
+    Result := spCancel;
+  Infos := Default(TSessionInfoArray);
+  FocusRow := 0;
+  repeat
+    // re-enumerar en cada pasada: purga huerfanas y refleja los cierres;
+    // sin sesiones no se muestra dialogo (accion del tercer boton)
+    if (not EnumerateSessions(Infos)) or (Length(Infos) = 0) then
+      Exit;
+    Cmd := ExecSessionPicker(Infos, AllowStartNew, FocusRow);
+    Idx := FocusRow;   // las filas van 1:1 con Infos
+    case Cmd of
+      cmSesAttach:
+        if (Idx >= 0) and (Idx <= High(Infos)) then
+        begin
+          ASocketPath := Infos[Idx].SocketPath;
+          Exit(spAttach);
+        end;
+      cmSesDelete:
+        if (Idx >= 0) and (Idx <= High(Infos)) then
+          if ConfirmYes(Format(UiText(
+            'Close session "%s"? Its programs will be terminated.',
+            'Cerrar la sesion "%s"? Sus programas terminaran.'),
+            [Infos[Idx].Name])) then
+          begin
+            CloseSessionAt(Infos[Idx].SocketPath);
+            // espera breve a que el servidor muera; la re-enumeracion de
+            // la siguiente pasada purga el socket y su sidecar
+            for i := 1 to 10 do
+            begin
+              if not SessionIsLive(Infos[Idx].SocketPath) then
+                Break;
+              Sleep(100);
+            end;
+            if FocusRow > 0 then
+              Dec(FocusRow);
+          end;
+    else
+      Exit;   // Esc o tercer boton (cmCancel): accion por defecto
+    end;
+  until False;
 end;
 
 end.

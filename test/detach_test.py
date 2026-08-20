@@ -14,12 +14,13 @@ import pyte
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
 HOME = '/tmp/opencode/stdetach-test'
-SOCKET = os.path.join(HOME, '.superterm', 'session.sock')
+SOCKET = os.path.join(HOME, '.superterm', 'sessions', 'session.sock')
+META = os.path.join(HOME, '.superterm', 'sessions', 'session.ini')
 PIDFILE = os.path.join(HOME, 'pane.pid')
 W, H = 110, 35
 
 os.makedirs(os.path.join(HOME, '.superterm'), exist_ok=True)
-for path in (SOCKET, PIDFILE):
+for path in (SOCKET, META, PIDFILE):
     try:
         os.unlink(path)
     except FileNotFoundError:
@@ -92,13 +93,15 @@ first.stream.feed(b'\033[10;20H')
 first.drain(1.5)
 check('detach menu is visible', 'Detach' in first.text())
 first.send(f'echo $$ > {PIDFILE}; sleep 1; echo DETACHED_OUTPUT\r'.encode(), 0.3)
-first.send(b'\x02d', 1.0)
+first.send(b'\x11d', 0.8)
+first.send(b'\r', 1.0)   # aceptar el nombre por defecto ('session')
 first_status = first.wait()
-check('client exits after Ctrl-B d', first_status is not None and
+check('client exits after Ctrl-Q d', first_status is not None and
       os.WIFEXITED(first_status) and os.WEXITSTATUS(first_status) == 0)
 check('cursor restored after detach',
       first.screen.cursor.x == 19 and first.screen.cursor.y == 9)
 check('server socket remains', os.path.exists(SOCKET))
+check('session sidecar written', os.path.exists(META))
 
 pane_pid = None
 for _ in range(30):
@@ -121,6 +124,7 @@ second_status = second.wait()
 check('permanent close exits client', second_status is not None and
       os.WIFEXITED(second_status) and os.WEXITSTATUS(second_status) == 0)
 check('server socket is removed', not os.path.exists(SOCKET))
+check('session sidecar removed', not os.path.exists(META))
 
 if pane_pid is not None:
     try:

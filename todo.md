@@ -43,3 +43,12 @@ below are remaining follow-up work, not currently failing regressions.
   draw-buffer limit, including normal/bright background fills and resize/restore.
 - Plain interactive `top`: manually passing in an isolated PTY; no `nice`
   wrapper was used.
+
+## Resolved Quirks
+
+- The RTL unix keyboard driver treated a lone ESC as an Alt prefix and
+  blocked forever waiting for the next key, so bare Esc never reached the
+  app and prefix chords written in a single PTY write could be swallowed.
+  Fixed by st_kbd.pas: a custom keyboard driver (SetKeyboardDriver) that
+  decodes stdin itself with a 50 ms ESC timeout and handles CSI/SS3 keys
+  plus X10/SGR mouse.

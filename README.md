@@ -25,7 +25,7 @@ panes in a normal GNU/Linux terminal window.
   definitions, and optional post-connect commands.
 - INI templates and one SQLite database per template.
 - Automatic session save and restore through `~/.superterm/session.ini`.
-- Tmux-style live detach with `Ctrl-B`, `d`, or `Session -> Detach`. Local and
+- Tmux-style live detach with `Ctrl-Q`, `d`, or `Sessions -> Detach`. Local and
   remote PTYs remain alive and can be continued with `superterm --attach`.
 - A session wizard for one to four panes. Each pane accepts a connection command
   and an optional command to feed to the connection after it starts.
@@ -208,7 +208,7 @@ Do not put passwords in command lines or debug logs.
 | `+` / `-` | Increase or decrease pane width |
 | `*` / `/` | Increase or decrease pane height |
 | `Ctrl-S` | Save the current session or template selection |
-| `Ctrl-B`, `d` | Detach the live session; reattach with `superterm --attach` |
+| `Ctrl-Q`, `d` | Detach the live session; reattach with `superterm --attach` |
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
 

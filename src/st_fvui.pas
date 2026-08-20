@@ -52,6 +52,7 @@ const
   cmWindowRestoreAll = 2502;
   cmWindowRestoreBase = 2520;  // + indice de panel (0..15)
   cmDetach        = 2550;
+  cmSessionPick   = 2551;   // selector/gestor de sesiones separadas
   cmSessionWizard = 2560;
   cmHelp        = 2600;
   cmLanguageBase = 2700;
@@ -103,8 +104,10 @@ type
     ActiveWindow: integer;
     ProfileMode: boolean;
     SkipSave: boolean;
+    AbortRun: boolean;
     RemoteMode: boolean;
     RemoteLost: boolean;
+    CurrentSessionName: string;
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
@@ -145,7 +148,10 @@ type
     procedure ReleaseRuntime;
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
-    function AttachRemoteSession: boolean;
+    function AttachRemoteSession(const APath: string): boolean;
+    function PickSessionSocketUI(AForAttach: boolean): string;
+    function PromptAttachOnStart: boolean;
+    procedure DoSessionPick;
     procedure RequestDetach;
     procedure DoSwitchProfile(AIndex: integer);
     procedure DoSwitchWindow(AIndex: integer);
@@ -310,15 +316,57 @@ begin
     $20AC: Result := 'E';
     $00B0: Result := 'o';
     $00B7: Result := '.';
+    $00A0: Result := ' ';
     $00AB, $00BB: Result := '"';
+    $00D7: Result := 'x';
+    $00F7: Result := '/';
     $2018, $2019, $201A: Result := '''';
     $201C, $201D: Result := '"';
-    $2013, $2014: Result := '-';
-    $2022: Result := '*';
-    $2500, $2501: Result := '-';
-    $2502, $2503: Result := '|';
-    $2514, $2518, $250C, $2510: Result := '+';
-    $251C, $2524, $252C, $2534, $253C: Result := '+';
+    $2010, $2011, $2012, $2013, $2014, $2212: Result := '-';
+    $2026: Result := '.';
+    // caja y bloques: bytes CP437, el driver los pinta como glifos reales
+    $2022: Result := #7;                       // punto gordo
+    $2500, $2501: Result := #196;              // linea horizontal
+    $2502, $2503: Result := #179;              // linea vertical
+    $250C, $250F, $256D: Result := #218;       // esquinas
+    $2510, $2513, $256E: Result := #191;
+    $2514, $2517, $2570: Result := #192;
+    $2518, $251B, $256F: Result := #217;
+    $251C, $2523: Result := #195;              // cruces en T
+    $2524, $252B: Result := #180;
+    $252C, $2533: Result := #194;
+    $2534, $253B: Result := #193;
+    $253C, $254B: Result := #197;              // cruz completa
+    $2550: Result := #205;                     // dobles
+    $2551: Result := #186;
+    $2554: Result := #201;
+    $2557: Result := #187;
+    $255A: Result := #200;
+    $255D: Result := #188;
+    $2564: Result := #209;
+    $2567: Result := #207;
+    $256A: Result := #206;
+    $2580: Result := #223;                     // medios bloques y sombras
+    $2584: Result := #220;
+    $2588: Result := #219;
+    $2591: Result := #176;
+    $2592: Result := #177;
+    $2593: Result := #178;
+    $25A0, $25AA, $25FC, $25FE: Result := #254;
+    $2190: Result := #27;                      // flechas
+    $2191: Result := #24;
+    $2192: Result := #26;
+    $2193: Result := #25;
+    $2194: Result := #29;
+    $2195: Result := #18;
+    $25B2, $25B4: Result := #30;
+    $25BA, $25B6: Result := #16;
+    $25BC, $25BE: Result := #31;
+    $25C4, $25C0: Result := #17;
+    $2713, $2714: Result := 'v';               // check
+    $2717, $2718: Result := 'x';
+    $E0B0, $E0B1: Result := '>';               // powerline
+    $E0B2, $E0B3: Result := '<';
   else
     Result := '?';
   end;
@@ -774,13 +822,33 @@ begin
   ActiveWindow := -1;
   ProfileMode := Length(Profiles) > 0;
   SkipSave := False;
+  AbortRun := False;
   RemoteMode := False;
   RemoteLost := False;
   DetachRequested := False;
   PrefixPending := False;
   Remote := nil;
 
-  if AttachRequested and AttachRemoteSession then
+  CurrentSessionName := '';
+  if AttachRequested then
+  begin
+    if AttachSocket = '' then
+    begin
+      AttachSocket := PickSessionSocketUI(True);
+      ResetVideoSurface;
+      ReDraw;
+    end;
+    if (AttachSocket <> '') and AttachRemoteSession(AttachSocket) then
+      Exit;
+    // seleccion cancelada o attach fallido: salir limpio sin guardar.
+    // Un cmQuit posteado aqui se perderia (TGroup.Execute pone EndState
+    // a 0 al entrar en Run), asi que se marca AbortRun y el programa
+    // principal se salta Run; no se construye ningun workspace
+    SkipSave := True;
+    AbortRun := True;
+    Exit;
+  end
+  else if PromptAttachOnStart then
     Exit;
 
   if ProfileMode then
@@ -1507,7 +1575,7 @@ begin
     Panes[i].WriteStr(S);
 end;
 
-function TSuperApp.AttachRemoteSession: boolean;
+function TSuperApp.AttachRemoteSession(const APath: string): boolean;
 var
   Snapshot: TSessionSnapshot;
   NewLay: TLayout;
@@ -1518,7 +1586,7 @@ var
 begin
   Result := False;
   Remote := TSessionClient.Create;
-  if not Remote.Connect(Snapshot) then
+  if not Remote.Connect(APath, Snapshot) then
   begin
     Remote.Free;
     Remote := nil;
@@ -1548,6 +1616,7 @@ begin
   ActiveProfile := -1;
   ActiveWindow := -1;
   RemoteMode := True;
+  CurrentSessionName := Snapshot.Name;
   Loaded := True;
   for I := 0 to N - 1 do
   begin
@@ -1594,17 +1663,68 @@ begin
   Result := True;
 end;
 
+// selector de sesiones para --attach (o arranque con sesiones vivas)
+function TSuperApp.PickSessionSocketUI(AForAttach: boolean): string;
+var
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Result := '';
+  Path := '';
+  Act := RunSessionPicker(not AForAttach, Path);
+  if Act = spAttach then
+    Result := Path;
+end;
+
+// arranque normal con sesiones vivas: ofrecer engancharse antes de crear
+// un workspace nuevo; Esc o "Nueva sesion" siguen el arranque normal
+function TSuperApp.PromptAttachOnStart: boolean;
+var
+  Infos: TSessionInfoArray;
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Result := False;
+  if not EnumerateSessions(Infos) then
+    Exit;
+  Path := '';
+  Act := RunSessionPicker(True, Path);
+  if (Act = spAttach) and (Path <> '') then
+    Result := AttachRemoteSession(Path);
+end;
+
+// gestor de sesiones dentro de la app: listar, purgar y cerrar; el cambio
+// de sesion en caliente llegara mas adelante (separar primero)
+procedure TSuperApp.DoSessionPick;
+var
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Path := '';
+  Act := RunSessionPicker(False, Path);
+  if Act = spAttach then
+    MessageBox(UiText(
+      'Detach first (' + PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d) and run superterm --attach to connect.',
+      'Separa primero (' + PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d) y usa superterm --attach para conectar.'),
+      nil, mfInformation or mfOKButton);
+end;
+
 procedure TSuperApp.RequestDetach;
 var
   N, I: integer;
   PtyRefs: TPtyArray;
   ScreenRefs: TScreenArray;
   Titles, Terms: TStrArray;
+  NameBuf: ShortString;
+  SessName, ProfName: string;
 begin
   if DetachRequested then
     Exit;
   if RemoteMode then
   begin
+    // cliente ya enganchado: el daemon conserva su nombre, sin prompt
     if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
     begin
       MessageBox(UiText('The session server is unavailable.',
@@ -1619,6 +1739,32 @@ begin
   N := Lay.PaneCount;
   if (N < 1) or (N > MAX_PANES) then
     Exit;
+  // nombre de la sesion: por defecto el perfil activo (o sesion-N libre);
+  // colision con una sesion viva -> sugerir nombre-2 y volver a preguntar
+  ProfName := '';
+  if ProfileMode and (ActiveProfile >= 0) and
+     (ActiveProfile < Length(Profiles)) then
+    ProfName := Profiles[ActiveProfile].Name;
+  if ProfName <> '' then
+    SessName := SuggestSessionName(ProfName)
+  else
+    SessName := SuggestSessionName(UiText('session', 'sesion'));
+  repeat
+    NameBuf := Copy(SessName, 1, 32);
+    if InputBox(UiText('Detach session', 'Separar sesion'),
+      UiText('Session name:', 'Nombre de la sesion:'), NameBuf, 32) <> cmOK then
+      Exit;
+    SessName := SanitizeSessionName(Trim(NameBuf));
+    if SessionIsLive(SessionSocketPathFor(SessName)) then
+    begin
+      MessageBox(UiText('A session with that name already exists.',
+        'Ya existe una sesion con ese nombre.'), nil,
+        mfError or mfOKButton);
+      SessName := SuggestSessionName(SessName);
+    end
+    else
+      Break;
+  until False;
   PtyRefs := nil;
   ScreenRefs := nil;
   Titles := nil;
@@ -1639,8 +1785,8 @@ begin
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
       Exit;
   end;
-  if not StartDetachedServer(Lay, PtyRefs, ScreenRefs, Titles, Terms,
-    Lay.Focused) then
+  if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
+    Titles, Terms, Lay.Focused) then
   begin
     MessageBox(UiText('Could not create the detached session server.',
       'No se pudo crear el servidor de la sesion separada.'), nil,
@@ -2012,14 +2158,20 @@ begin
     'F5 zoom; Alt-F9 minimize; Ctrl-F5 move/resize; Alt-F3 close pane',
     'F5 zoom; Alt-F9 minimiza; Ctrl-F5 mover/tamano; Alt-F3 cierra panel');
   Lines[2] := UiText(
-    'F8/F9 next/prev window; Ctrl-B 1..9 go to window N',
-    'F8/F9 ventana sig./ant.; Ctrl-B 1..9 ir a la ventana N');
+    'F8/F9 next/prev window; ' + PrefixKeyLabel(Cfg.PrefixKey) +
+    ' 1..9 go to window N',
+    'F8/F9 ventana sig./ant.; ' + PrefixKeyLabel(Cfg.PrefixKey) +
+    ' 1..9 ir a la ventana N');
   Lines[3] := UiText(
-    'Ctrl-B c open a class in a new pane; Ctrl-B arrows resize the pane',
-    'Ctrl-B c abre una clase en panel nuevo; Ctrl-B flechas dan tamano');
+    PrefixKeyLabel(Cfg.PrefixKey) + ' c open a class in a new pane; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' arrows resize the pane',
+    PrefixKeyLabel(Cfg.PrefixKey) + ' c abre una clase en panel nuevo; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' flechas dan tamano');
   Lines[4] := UiText(
-    'Ctrl-B d detach; superterm --attach returns; Ctrl-S save',
-    'Ctrl-B d separa; superterm --attach vuelve; Ctrl-S guarda');
+    PrefixKeyLabel(Cfg.PrefixKey) + ' d detach; superterm --attach ' +
+    'returns; Ctrl-S save',
+    PrefixKeyLabel(Cfg.PrefixKey) + ' d separa; superterm --attach ' +
+    'vuelve; Ctrl-S guarda');
   Lines[5] := UiText(
     'Profiles menu saves and restores named workspaces',
     'El menu Perfiles guarda y restaura areas de trabajo con nombre');
@@ -2278,6 +2430,12 @@ begin
         ClearEvent(Event);
         Exit;
       end;
+      if (PrefixByte = Ord('s')) or (PrefixByte = Ord('S')) then
+      begin
+        Message(@Self, evCommand, cmSessionPick, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
       if (PrefixByte = Ord('n')) or (PrefixByte = Ord('N')) then
       begin
         Message(@Self, evCommand, cmWindowNext, nil);
@@ -2389,6 +2547,7 @@ begin
         end;
       cmSessionWizard: RunSessionWizard;
       cmDetach: RequestDetach;
+      cmSessionPick: DoSessionPick;
       cmClassPick:
         begin
           if RunClassPicker(SysTerms, i) then
@@ -2512,6 +2671,11 @@ var
           begin
             RemoteLost := True;
             RemoteMode := False;
+            MessageBox(UiText('Connection to the session was lost.',
+              'Se perdio la conexion con la sesion.'), nil,
+              mfError or mfOKButton);
+            SkipSave := True;
+            Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
     end;
@@ -2629,13 +2793,13 @@ begin
 
   // ---- Paneles: operaciones de tile (split, foco, zoom, min, tamano) ----
   PaneItems := nil;
-  PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), 'Ctrl-B ' + #24,
+  PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #24,
     kbNoKey, cmShrinkH, hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('~T~aller', 'Mas a~l~to'), 'Ctrl-B ' + #25,
+  PaneItems := NewItem(UiText('~T~aller', 'Mas a~l~to'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #25,
     kbNoKey, cmGrowH, hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('Narrow~e~r', 'M~e~nos ancho'), 'Ctrl-B ' + #27,
+  PaneItems := NewItem(UiText('Narrow~e~r', 'M~e~nos ancho'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #27,
     kbNoKey, cmShrinkV, hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('~W~ider', 'Mas ~a~ncho'), 'Ctrl-B ' + #26,
+  PaneItems := NewItem(UiText('~W~ider', 'Mas ~a~ncho'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #26,
     kbNoKey, cmGrowV, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'), 'Ctrl-F5',
@@ -2686,7 +2850,7 @@ begin
       begin
         Chain := NewItem(ActiveMark(i = ActiveWindow) +
           Copy(Profiles[ActiveProfile].Windows[i].Name, 1, 22),
-          'Ctrl-B ' + IntToStr(i + 1), kbNoKey,
+          PrefixKeyLabel(Cfg.PrefixKey) + ' ' + IntToStr(i + 1), kbNoKey,
           cmWindowBase + i, hcNoContext, WindowItems);
         if Chain <> nil then
           WindowItems := Chain;
@@ -2732,7 +2896,7 @@ begin
   if Chain <> nil then
     Chain^.Next := NewLine(
       NewItem(UiText('~O~pen class in new pane...',
-        '~A~brir clase en panel nuevo...'), 'Ctrl-B c', kbNoKey, cmClassPick,
+        '~A~brir clase en panel nuevo...'), PrefixKeyLabel(Cfg.PrefixKey) + ' c', kbNoKey, cmClassPick,
         hcNoContext,
       NewItem(UiText('~M~anage classes...', '~G~estionar clases...'), '',
         kbNoKey, cmClassManage, hcNoContext, nil)));
@@ -2774,7 +2938,10 @@ begin
   SessItems := NewItem(UiText('Sa~v~e now', '~G~uardar ahora'), 'Ctrl-S',
     kbCtrlS, cmSaveSess, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
-  SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), 'Ctrl-B d',
+  SessItems := NewItem(UiText('~A~ttach / manage sessions...',
+    '~C~onectar / gestionar sesiones...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
+    cmSessionPick, hcNoContext, SessItems);
+  SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' d',
     kbNoKey, cmDetach, hcNoContext, SessItems);
   MSessMenu := NewMenu(SessItems);
 
@@ -2827,7 +2994,9 @@ begin
   // visibles: lo critico para un novato, cabiendo en 80 columnas
   Items := NewStatusKey(UiText('~Alt-X~ Exit', '~Alt-X~ Salir'), kbAltX,
     cmQuit, Items);
-  Items := NewStatusKey(UiText('~Ctrl-B d~ Detach', '~Ctrl-B d~ Separar'),
+  Items := NewStatusKey(UiText(
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Detach',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Separar'),
     kbNoKey, cmDetach, Items);
   Items := NewStatusKey(UiText('~F5~ Zoom', '~F5~ Zoom'), kbF5,
     cmZoom, Items);

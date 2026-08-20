@@ -141,6 +141,7 @@ begin
     178: Result := '▓';
     179: Result := '│';
     180: Result := '┤';
+    185: Result := '╣';
     186: Result := '║';
     187: Result := '╗';
     188: Result := '╝';
@@ -154,12 +155,16 @@ begin
     199: Result := '╟';
     200: Result := '╚';
     201: Result := '╔';
+    202: Result := '╩';
+    203: Result := '╦';
+    204: Result := '╠';
     205: Result := '═';
-    206: Result := '╪';
+    206: Result := '╬'; // CP437 canonico (0xCE es la cruz doble)
     207: Result := '╧';
     209: Result := '╤';
     217: Result := '┘';
     218: Result := '┌';
+    219: Result := '█';
     220: Result := '▄';
     223: Result := '▀';
     254: Result := '■';

@@ -1,0 +1,546 @@
+(*
+  Autor: Germán Luis Aracil Boned
+  Proyecto: superterm - terminal con autologin, splits y sesiones
+  Unidad: st_kbd - driver de teclado propio con timeout de ESC
+
+  El driver unix del RTL trata ESC como prefijo Alt: tras un ESC solitario
+  SysGetKeyEvent vuelve a llamar a ReadKey, que BLOQUEA en un select sin
+  timeout hasta la siguiente tecla y la entrega como Alt+tecla aunque pasen
+  segundos. Resultado: Esc a secas jamas llega a la aplicacion. Este driver
+  decodifica el flujo crudo de stdin con un timeout corto: si tras ESC no
+  llega nada en ESC_TIMEOUT_MS se entrega kbEsc de verdad. Tambien decodifica
+  CSI/SS3 (flechas, F1..F12, Inicio/Fin, etc.), Alt+tecla y los dos
+  protocolos de raton (X10 y SGR 1006) que el RTL manejaba, entregando los
+  eventos por las mismas colas (PutKeyEvent/PutMouseEvent) que consume el
+  FreeVision del vendor. Se instala con Keyboard.SetKeyboardDriver ANTES de
+  que la aplicacion llame a InitKeyboard.
+*)
+
+unit st_kbd;
+
+{$mode objfpc}{$H+}
+
+interface
+
+// instalar antes de crear la aplicacion (antes de Keyboard.InitKeyboard)
+procedure InstallSuperKeyboard;
+
+implementation
+
+uses
+  BaseUnix, termio, SysUtils, Keyboard, Mouse;
+
+const
+  ESC_TIMEOUT_MS = 50;   // ESC solitario: margen para distinguirlo de secuencias
+  SEQ_TIMEOUT_MS = 120;  // bytes intermedios de una secuencia ya empezada
+
+var
+  SavedTio: termios;
+  TioSaved: boolean = False;
+  RBuf: array[0..1023] of byte;
+  RHead: integer = 0;
+  RTail: integer = 0;
+  PendingEscape: boolean = False;
+  LastMouse: TMouseEvent;
+
+// espera hasta TimeoutMs (negativo = indefinido) a que haya bytes en el buffer
+function FillBuf(TimeoutMs: integer): boolean;
+type
+  TReadChunk = array[0..255] of byte;
+var
+  fds: TFDSet;
+  tmp: TReadChunk;
+  n: cint;
+  r: integer;
+  i: integer;
+begin
+  if RHead <> RTail then
+    Exit(True);
+  fpFD_ZERO(fds);
+  fpFD_SET(0, fds);
+  if TimeoutMs < 0 then
+    n := fpSelect(1, @fds, nil, nil, nil)
+  else
+    n := fpSelect(1, @fds, nil, nil, TimeoutMs);
+  if n <= 0 then
+    Exit(False);
+  tmp := Default(TReadChunk);
+  r := FileRead(0, tmp, SizeOf(tmp)); // FileRead reintenta EINTR
+  if r <= 0 then
+    Exit(False);
+  for i := 0 to r - 1 do
+  begin
+    RBuf[RHead] := tmp[i];
+    RHead := (RHead + 1) mod Length(RBuf);
+  end;
+  Result := RHead <> RTail;
+end;
+
+function NextByte(TimeoutMs: integer): integer;
+begin
+  if not FillBuf(TimeoutMs) then
+    Exit(-1);
+  Result := RBuf[RTail];
+  RTail := (RTail + 1) mod Length(RBuf);
+end;
+
+function PeekByte(TimeoutMs: integer): integer;
+begin
+  if not FillBuf(TimeoutMs) then
+    Exit(-1);
+  Result := RBuf[RTail];
+end;
+
+// scancode PC de un byte ASCII (misma tabla que el driver unix del RTL)
+function EvalScan(b: byte): byte;
+const
+  DScan: array[0..31] of byte = (
+    $39, $02, $28, $04, $05, $06, $08, $28,
+    $0A, $0B, $09, $0D, $33, $0C, $34, $35,
+    $0B, $02, $03, $04, $05, $06, $07, $08,
+    $09, $0A, $27, $27, $33, $0D, $34, $35);
+  LScan: array[0..31] of byte = (
+    $29, $1E, $30, $2E, $20, $12, $21, $22,
+    $23, $17, $24, $25, $26, $32, $31, $18,
+    $19, $10, $13, $1F, $14, $16, $2F, $11,
+    $2D, $15, $2C, $1A, $2B, $1B, $29, $0C);
+begin
+  if (b and $E0) = $20 then
+    Result := DScan[b and $1F]
+  else
+    case b of
+      $08: Result := $0E;
+      $09: Result := $0F;
+      $0D: Result := $1C;
+      $1B: Result := $01;
+      $40: Result := $03;
+      $5E: Result := $07;
+      $60: Result := $29;
+    else
+      Result := LScan[b and $1F];
+    end;
+end;
+
+function KEv(ch: AnsiChar; scan: byte; state: byte): TKeyEvent;
+begin
+  Result := $03000000 or TKeyEvent(Ord(ch)) or (TKeyEvent(scan) shl 8) or
+    (TKeyEvent(state) shl 16);
+end;
+
+// scancode de tecla de navegacion segun modificadores (tablas del RTL)
+function NavEvent(PlainScan, CtrlScan, AltScan: byte; Mods: integer): TKeyEvent;
+var
+  state: byte;
+begin
+  state := 0;
+  if (Mods and 1) <> 0 then
+    state := state or kbShift;
+  if (Mods and 4) <> 0 then
+    Result := KEv(#0, CtrlScan, state or kbCtrl)
+  else if (Mods and 2) <> 0 then
+    Result := KEv(#0, AltScan, state or kbAlt)
+  else
+    Result := KEv(#0, PlainScan, state);
+end;
+
+// F1..F12 con modificadores (mismos scancodes que keyscan.inc del RTL)
+function FKeyEvent(NumKey, Mods: integer): TKeyEvent;
+const
+  BASE: array[1..12] of byte = (
+    $3B, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $85, $86);
+var
+  scan: byte;
+  state: byte;
+begin
+  if (NumKey < 1) or (NumKey > 12) then
+    Exit(0);
+  scan := BASE[NumKey];
+  state := 0;
+  if (Mods and 4) <> 0 then
+  begin
+    state := kbCtrl;
+    if NumKey <= 10 then
+      scan := scan + $23   // kbCtrlF1 - kbF1
+    else
+      scan := scan + $04;  // kbCtrlF11 - kbF11
+  end
+  else if (Mods and 2) <> 0 then
+  begin
+    state := kbAlt;
+    if NumKey <= 10 then
+      scan := scan + $2D   // kbAltF1 - kbF1
+    else
+      scan := scan + $06;  // kbAltF11 - kbF11
+  end
+  else if (Mods and 1) <> 0 then
+  begin
+    state := kbShift;
+    if NumKey <= 10 then
+      scan := scan + $19   // kbShiftF1 - kbF1
+    else
+      scan := scan + $02;  // kbShiftF11 - kbF11
+  end;
+  Result := KEv(#0, scan, state);
+end;
+
+// raton X10: ESC [ M b x y (coordenadas byte-32-1); misma logica que el RTL
+procedure MouseX10;
+var
+  b, x, y: integer;
+  Ev: TMouseEvent;
+begin
+  b := NextByte(SEQ_TIMEOUT_MS);
+  x := NextByte(SEQ_TIMEOUT_MS);
+  y := NextByte(SEQ_TIMEOUT_MS);
+  if (b < 0) or (x < 0) or (y < 0) then
+    Exit;
+  Ev := Default(TMouseEvent);
+  case (b - 32) and 67 of
+    0: Ev.Buttons := 1;
+    1: Ev.Buttons := 2;
+    2: Ev.Buttons := 4;
+    3: Ev.Buttons := 0;
+    64: Ev.Buttons := 8;
+    65: Ev.Buttons := 16;
+  end;
+  Ev.X := x - 33;
+  Ev.Y := y - 33;
+  Ev.Action := MouseActionMove;
+  if (LastMouse.Buttons = 0) and (Ev.Buttons <> 0) then
+    Ev.Action := MouseActionDown;
+  if (LastMouse.Buttons <> 0) and (Ev.Buttons = 0) then
+    Ev.Action := MouseActionUp;
+  PutMouseEvent(Ev);
+  if (Ev.Buttons and (8 + 16)) <> 0 then
+  begin
+    // la rueda no manda evento de soltar en X10: fabricarlo
+    LastMouse := Ev;
+    Ev.Action := MouseActionUp;
+    Ev.Buttons := 0;
+    PutMouseEvent(Ev);
+  end;
+  LastMouse := Ev;
+end;
+
+// raton SGR 1006: ESC [ < btn ; x ; y M/m ('M' pulsa, 'm' suelta)
+procedure MouseSGR;
+var
+  nums: array[0..2] of integer;
+  idx, c: integer;
+  press: boolean;
+  Ev: TMouseEvent;
+  mask: word;
+begin
+  nums[0] := 0;
+  nums[1] := 0;
+  nums[2] := 0;
+  idx := 0;
+  repeat
+    c := NextByte(SEQ_TIMEOUT_MS);
+    if c < 0 then
+      Exit;
+    if (c >= Ord('0')) and (c <= Ord('9')) then
+      nums[idx] := nums[idx] * 10 + (c - Ord('0'))
+    else if c = Ord(';') then
+    begin
+      if idx >= 2 then
+        Exit;
+      Inc(idx);
+    end
+    else if (c = Ord('M')) or (c = Ord('m')) then
+      break
+    else
+      Exit;
+  until False;
+  press := c = Ord('M');
+  if (idx <> 2) or (nums[1] < 1) or (nums[2] < 1) or
+     (nums[1] > High(Ev.X) + 1) or (nums[2] > High(Ev.Y) + 1) then
+    Exit;
+  Ev := Default(TMouseEvent);
+  Ev.X := nums[1] - 1;
+  Ev.Y := nums[2] - 1;
+  mask := 0;
+  if (nums[0] and 32) <> 0 then
+  begin
+    Ev.Action := MouseActionMove;
+    Ev.Buttons := LastMouse.Buttons;
+  end
+  else
+  begin
+    case nums[0] and 67 of
+      0: mask := 1;
+      1: mask := 2;
+      2: mask := 4;
+      64: mask := 8;
+      65: mask := 16;
+    end;
+    if press then
+    begin
+      Ev.Action := MouseActionDown;
+      Ev.Buttons := LastMouse.Buttons or mask;
+    end
+    else
+    begin
+      Ev.Action := MouseActionUp;
+      Ev.Buttons := LastMouse.Buttons and not mask;
+    end;
+  end;
+  PutMouseEvent(Ev);
+  LastMouse := Ev;
+  if press and ((mask and (8 + 16)) <> 0) then
+  begin
+    // rueda: fabricar el soltar tambien en SGR para no dejar botones colgados
+    Ev.Action := MouseActionUp;
+    Ev.Buttons := LastMouse.Buttons and not mask;
+    PutMouseEvent(Ev);
+    LastMouse := Ev;
+  end;
+end;
+
+// ESC [ params final -- 0 si la secuencia se consume sin generar tecla;
+// ExtraMods se suma a los modificadores xterm (2 = Alt por meta-prefijo)
+function DecodeCSI(ExtraMods: integer): TKeyEvent;
+var
+  c, p1, p2, idx: integer;
+  nums: array[0..3] of integer;
+  seen: array[0..3] of boolean;
+  i: integer;
+begin
+  Result := 0;
+  for i := 0 to 3 do
+  begin
+    nums[i] := 0;
+    seen[i] := False;
+  end;
+  idx := 0;
+  c := NextByte(SEQ_TIMEOUT_MS);
+  if c < 0 then
+    Exit;
+  if c = Ord('<') then
+  begin
+    MouseSGR;
+    Exit;
+  end;
+  if c = Ord('M') then
+  begin
+    MouseX10;
+    Exit;
+  end;
+  while (c >= Ord('0')) and (c <= Ord('9')) or (c = Ord(';')) do
+  begin
+    if c = Ord(';') then
+    begin
+      if idx < High(nums) then
+        Inc(idx);
+    end
+    else
+    begin
+      nums[idx] := nums[idx] * 10 + (c - Ord('0'));
+      seen[idx] := True;
+    end;
+    c := NextByte(SEQ_TIMEOUT_MS);
+    if c < 0 then
+      Exit;
+  end;
+  if seen[0] then
+    p1 := nums[0]
+  else
+    p1 := 1;
+  if seen[1] then
+    p2 := nums[1]
+  else
+    p2 := 1;
+  Dec(p2); // bits de modificador xterm: 1=shift 2=alt 4=ctrl
+  p2 := p2 or ExtraMods;
+  case AnsiChar(c) of
+    'A': Result := NavEvent($48, $8D, $98, p2);
+    'B': Result := NavEvent($50, $91, $A0, p2);
+    'C': Result := NavEvent($4D, $74, $9D, p2);
+    'D': Result := NavEvent($4B, $73, $9B, p2);
+    'H': Result := NavEvent($47, $77, $97, p2);
+    'F': Result := NavEvent($4F, $75, $9F, p2);
+    'Z': Result := KEv(#0, $0F, kbShift);
+    'P'..'S': Result := FKeyEvent(Ord(AnsiChar(c)) - Ord('P') + 1, p2);
+    '~':
+      case p1 of
+        1, 7: Result := NavEvent($47, $77, $97, p2);
+        2: Result := NavEvent($52, $04, $A2, p2);
+        3: Result := NavEvent($53, $06, $A3, p2);
+        4, 8: Result := NavEvent($4F, $75, $9F, p2);
+        5: Result := NavEvent($49, $84, $99, p2);
+        6: Result := NavEvent($51, $76, $A1, p2);
+        11..15: Result := FKeyEvent(p1 - 10, p2);
+        17..21: Result := FKeyEvent(p1 - 11, p2);
+        23, 24: Result := FKeyEvent(p1 - 12, p2);
+      end;
+  end;
+  // secuencias no reconocidas se tragan enteras (final ya consumido)
+end;
+
+// ESC O x (modo aplicacion / F1..F4 de xterm)
+function DecodeSS3(ExtraMods: integer): TKeyEvent;
+var
+  c: integer;
+begin
+  Result := 0;
+  c := NextByte(SEQ_TIMEOUT_MS);
+  if c < 0 then
+    Exit;
+  case AnsiChar(c) of
+    'A': Result := NavEvent($48, $8D, $98, ExtraMods);
+    'B': Result := NavEvent($50, $91, $A0, ExtraMods);
+    'C': Result := NavEvent($4D, $74, $9D, ExtraMods);
+    'D': Result := NavEvent($4B, $73, $9B, ExtraMods);
+    'H': Result := NavEvent($47, $77, $97, ExtraMods);
+    'F': Result := NavEvent($4F, $75, $9F, ExtraMods);
+    'P'..'S': Result := FKeyEvent(Ord(AnsiChar(c)) - Ord('P') + 1, ExtraMods);
+  end;
+end;
+
+// tras un ESC ya leido: kbEsc solitario, secuencia, o Alt+tecla
+function DecodeEscape: TKeyEvent;
+var
+  n: integer;
+  scan: byte;
+begin
+  n := NextByte(ESC_TIMEOUT_MS);
+  if n < 0 then
+    Exit(KEv(#27, $01, 0)); // ESC de verdad: nadie llego detras
+  case n of
+    27:
+      begin
+        // meta-prefijo clasico: ESC ESC [ ... = Alt+secuencia; si tras el
+        // segundo ESC no viene secuencia, es Esc de verdad (y otro pendiente)
+        case PeekByte(ESC_TIMEOUT_MS) of
+          Ord('['):
+            begin
+              NextByte(0);
+              Result := DecodeCSI(2);
+            end;
+          Ord('O'):
+            begin
+              NextByte(0);
+              Result := DecodeSS3(2);
+            end;
+        else
+          PendingEscape := True;
+          Result := KEv(#27, $01, 0);
+        end;
+      end;
+    Ord('['): Result := DecodeCSI(0);
+    Ord('O'): Result := DecodeSS3(0);
+    8, 127: Result := KEv(#0, $08, kbAlt);   // kbAltBack
+    9: Result := KEv(#0, $A5, kbAlt);        // kbAltTab
+  else
+    if (n >= 32) and (n < 127) then
+    begin
+      scan := EvalScan(byte(n) or $20); // Alt-A y Alt-a: mismo scancode
+      if scan in [$02..$0D] then
+        Inc(scan, $76);                 // fila de digitos -> kbAlt1..
+      Result := KEv(#0, scan, kbAlt);
+    end
+    else
+      Result := KEv(#0, EvalScan(byte(n)), kbAlt);
+  end;
+end;
+
+// nucleo: decodifica el siguiente evento de tecla; 0 = nada disponible
+// (los eventos de raton se encolan aparte y devuelven 0 aqui)
+function DecodeEvent(Blocking: boolean): TKeyEvent;
+var
+  b: integer;
+begin
+  Result := 0;
+  repeat
+    if PendingEscape then
+    begin
+      PendingEscape := False;
+      Result := DecodeEscape;
+      if Result <> 0 then
+        Exit;
+      continue;
+    end;
+    if Blocking then
+      b := NextByte(-1)
+    else
+      b := NextByte(0);
+    if b < 0 then
+      Exit(0);
+    case b of
+      27: Result := DecodeEscape;
+      13: Result := KEv(#13, $1C, 0);
+      10: Result := KEv(#13, $1C, 0);  // NL en crudo: tratar como Enter
+      9: Result := KEv(#9, $0F, 0);
+      8, 127: Result := KEv(#8, $0E, 0);
+    else
+      if b < 32 then
+        Result := KEv(AnsiChar(b), EvalScan(byte(b)), 0)
+      else if b < 128 then
+        Result := KEv(AnsiChar(b), EvalScan(byte(b)), 0)
+      else
+        Result := KEv(AnsiChar(b), 0, 0); // bytes UTF-8: pasan tal cual
+    end;
+  until (Result <> 0) or not Blocking;
+end;
+
+procedure KInit;
+var
+  T: termios;
+begin
+  RHead := 0;
+  RTail := 0;
+  PendingEscape := False;
+  LastMouse := Default(TMouseEvent);
+  if TCGetAttr(0, SavedTio) = 0 then
+  begin
+    TioSaved := True;
+    T := SavedTio;
+    T.c_lflag := T.c_lflag and (not (ICANON or ECHO or ISIG or IEXTEN));
+    T.c_iflag := T.c_iflag and
+      (not (IXON or IXOFF or ICRNL or INLCR or IGNCR or ISTRIP or BRKINT));
+    T.c_cc[VMIN] := 1;
+    T.c_cc[VTIME] := 0;
+    TCSetAttr(0, TCSANOW, T);
+  end;
+end;
+
+procedure KDone;
+begin
+  if TioSaved then
+  begin
+    TCSetAttr(0, TCSANOW, SavedTio);
+    TioSaved := False;
+  end;
+end;
+
+function KGet: TKeyEvent;
+begin
+  Result := DecodeEvent(True);
+end;
+
+function KPoll: TKeyEvent;
+begin
+  Result := DecodeEvent(False);
+  if Result <> 0 then
+    PutKeyEvent(Result); // la capa generica lo entrega en el proximo Get
+end;
+
+function KShiftState: byte;
+begin
+  Result := 0; // un pty xterm no puede informar modificadores sueltos
+end;
+
+procedure InstallSuperKeyboard;
+var
+  Drv: TKeyboardDriver;
+begin
+  Drv := Default(TKeyboardDriver);
+  Drv.InitDriver := @KInit;
+  Drv.DoneDriver := @KDone;
+  Drv.GetKeyEvent := @KGet;
+  Drv.PollKeyEvent := @KPoll;
+  Drv.GetShiftState := @KShiftState;
+  SetKeyboardDriver(Drv);
+end;
+
+end.

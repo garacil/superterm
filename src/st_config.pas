@@ -20,7 +20,7 @@ type
     Shell: string;         // shell para autologin
     LoginShell: boolean;   // argv0 = -bash (lee .profile)
     User: string;          // usuario del autologin (informativo, ya logueado)
-    PrefixKey: integer;    // tecla prefijo (2 = Ctrl-B)
+    PrefixKey: integer;    // tecla prefijo (17 = Ctrl-Q; 1..26 = Ctrl-A..Z)
     AutoSave: boolean;     // guardar sesion al salir
     AutoRestore: boolean;  // restaurar sesion al arrancar
     DefaultProfile: string;  // perfil por defecto (nuevo modelo)
@@ -56,6 +56,13 @@ function UiText(const EnglishText, SpanishText: string): string;
 
 // marca uniforme de elemento activo en listas tipo radio: '(*) ' / '( ) '
 function ActiveMark(AActive: boolean): string;
+
+// tecla prefijo: parseo ('ctrl-q', 'q' o numero; el 2 numerico del default
+// antiguo migra a 17/Ctrl-Q para no chocar con el tmux remoto), codigo de
+// guardado y etiqueta para la interfaz
+function ParsePrefixKey(const S: string): integer;
+function PrefixKeyCode(AKey: integer): string;   // 'ctrl-q'
+function PrefixKeyLabel(AKey: integer): string;  // 'Ctrl-Q'
 
 implementation
 
@@ -116,6 +123,49 @@ begin
     Result := '( ) ';
 end;
 
+function ParsePrefixKey(const S: string): integer;
+var
+  T: string;
+  V, Code: integer;
+begin
+  Result := 17; // Ctrl-Q: no colisiona con el Ctrl-B del tmux remoto
+  T := LowerCase(Trim(S));
+  if T = '' then
+    Exit;
+  Code := 0;
+  V := 0;
+  Val(T, V, Code);
+  if Code = 0 then
+  begin
+    // numerico: el 2 era el default antiguo (Ctrl-B) y ningun usuario lo
+    // eligio a proposito; un valor explicito se respeta via 'ctrl-b'
+    if (V >= 1) and (V <= 26) and (V <> 2) then
+      Result := V;
+    Exit;
+  end;
+  if (Length(T) = 6) and (Copy(T, 1, 5) = 'ctrl-') and
+     (T[6] in ['a'..'z']) then
+    Result := Ord(T[6]) - Ord('a') + 1
+  else if (Length(T) = 1) and (T[1] in ['a'..'z']) then
+    Result := Ord(T[1]) - Ord('a') + 1;
+end;
+
+function PrefixKeyCode(AKey: integer): string;
+begin
+  if (AKey >= 1) and (AKey <= 26) then
+    Result := 'ctrl-' + Chr(Ord('a') + AKey - 1)
+  else
+    Result := 'ctrl-q';
+end;
+
+function PrefixKeyLabel(AKey: integer): string;
+begin
+  if (AKey >= 1) and (AKey <= 26) then
+    Result := 'Ctrl-' + Chr(Ord('A') + AKey - 1)
+  else
+    Result := 'Ctrl-Q';
+end;
+
 function ConfigFile: string;
 begin
   Result := ConfigDir + '/superterm.ini';
@@ -135,7 +185,7 @@ begin
   Cfg.Shell := Sh;
   Cfg.LoginShell := True;
   Cfg.User := GetEnvironmentVariable('USER');
-  Cfg.PrefixKey := 2; // Ctrl-B
+  Cfg.PrefixKey := 17; // Ctrl-Q (no colisiona con tmux/screen remotos)
   Cfg.AutoSave := True;
   Cfg.AutoRestore := True;
   Cfg.DefaultProfile := '';
@@ -157,7 +207,7 @@ begin
     Cfg.Shell := Ini.ReadString('autologin', 'shell', Cfg.Shell);
     Cfg.LoginShell := Ini.ReadBool('autologin', 'login', Cfg.LoginShell);
     Cfg.User := Ini.ReadString('autologin', 'user', Cfg.User);
-    Cfg.PrefixKey := Ini.ReadInteger('keymap', 'prefix', Cfg.PrefixKey);
+    Cfg.PrefixKey := ParsePrefixKey(Ini.ReadString('keymap', 'prefix', ''));
     Cfg.AutoSave := Ini.ReadBool('session', 'autosave', Cfg.AutoSave);
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
     Cfg.DefaultProfile := Ini.ReadString('session', 'default_profile',
@@ -184,7 +234,7 @@ begin
     Ini.WriteString('autologin', 'shell', Cfg.Shell);
     Ini.WriteBool('autologin', 'login', Cfg.LoginShell);
     Ini.WriteString('autologin', 'user', Cfg.User);
-    Ini.WriteInteger('keymap', 'prefix', Cfg.PrefixKey);
+    Ini.WriteString('keymap', 'prefix', PrefixKeyCode(Cfg.PrefixKey));
     Ini.WriteBool('session', 'autosave', Cfg.AutoSave);
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
     Ini.WriteString('session', 'default_profile', Cfg.DefaultProfile);
