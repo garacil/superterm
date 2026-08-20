@@ -252,7 +252,7 @@ begin
     Exit;
   end;
   // A PTY master must never survive an exec into a pane process.
-  FpFcntl(Mfd, 2, 1); // F_SETFD=2, FD_CLOEXEC=1 on Linux
+  FpFcntl(Mfd, 2, 1); // F_SETFD=2, FD_CLOEXEC=1 on GNU/Linux
   if grantpt(Mfd) <> 0 then
   begin
     FpClose(Mfd);

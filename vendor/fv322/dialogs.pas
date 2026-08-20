@@ -1111,7 +1111,7 @@ BEGIN
    Options := Options OR ofVersion20;                 { Version two dialog }
    GrowMode := 0;                                     { Clear grow mode }
    Flags := wfMove + wfClose;                         { Close/moveable flags }
-   Palette := dpGrayDialog;                           { Default gray colours }
+    Palette := dpBlueDialog;                           { Readable terminal dialog }
 END;
 
 {--TDialog------------------------------------------------------------------}
@@ -1121,7 +1121,7 @@ CONSTRUCTOR TDialog.Load (Var S: TStream);
 BEGIN
    Inherited Load(S);                                 { Call ancestor }
    If (Options AND ofVersion = ofVersion10) Then Begin
-     Palette := dpGrayDialog;                         { Set gray palette }
+      Palette := dpBlueDialog;                         { Set readable palette }
      Options := Options OR ofVersion20;               { Update version flag }
    End;
 END;
@@ -1927,8 +1927,8 @@ BEGIN
           WriteLine(Size.X-1, 0, 1, 1, Db);
         end;
       MoveChar(Db,' ',Bc,1);
-      if DownFlag then c:=' '
-       else c := #179;
+       if DownFlag then c:=' '
+        else c := #196;                                { Horizontal shadow }
       MoveChar(Db[1],c,Bc,Size.X-1);
       WriteLine(0, 1, Size.X, 1, Db);
     End;

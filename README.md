@@ -29,16 +29,17 @@ workspace without editing a configuration file.
 
 ## Platform Support
 
-The supported native platform is Linux. The current PTY and process code uses
-POSIX APIs, `/proc`, and the Linux terminal device model.
+The supported native platform is GNU/Linux: the GNU project's userland and
+tools running on the Linux kernel. The current PTY and process code uses POSIX
+APIs, `/proc`, and the terminal device model.
 
 Windows is not a native target yet. WSL is the practical way to run the current
-Linux build on Windows. A native Windows port would need a ConPTY backend plus
+GNU/Linux build on Windows. A native Windows port would need a ConPTY backend plus
 Windows-specific process, resize, signal, and configuration-path code.
 
 iOS is not a native target. A native iOS version would need a UIKit or SwiftUI
 frontend, sandbox-compatible SSH/session handling, and a redesigned local
-command model. Running the Linux binary under an environment such as iSH would
+command model. Running the GNU/Linux binary under an environment such as iSH would
 be experimental and would not be an App Store application.
 
 ## Technology Choice
@@ -58,7 +59,7 @@ A complete C rewrite would have to recreate the UI, PTY handling, VT parser,
 layout, session persistence, and tests without providing a concrete benefit for
 the current requirements. C would become a reasonable choice if the project
 needed a persistent multi-client server, C library integration, an external API,
-or a measured performance improvement. For the current Linux terminal
+or a measured performance improvement. For the current GNU/Linux terminal
 multiplexer, continuing in Pascal has a better benefit-to-risk ratio than
 rewriting it in C.
 
@@ -69,7 +70,7 @@ Build requirements:
 - Free Pascal Compiler 3.2.2 or a compatible Free Pascal 3.x release.
 - Free Pascal FV, FCL, and DB units.
 - GNU make.
-- Linux with `/proc` and POSIX PTY support.
+- GNU/Linux with `/proc` and POSIX PTY support.
 
 Test requirements:
 
@@ -401,7 +402,7 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- The native runtime is Linux-only.
+- The native runtime is GNU/Linux-only.
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.

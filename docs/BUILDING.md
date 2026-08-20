@@ -29,7 +29,7 @@ Required:
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
 - Free Pascal FV, FCL, and DB units.
 - GNU make.
-- Linux with `/proc` and POSIX PTY support.
+- GNU/Linux with `/proc` and POSIX PTY support.
 
 Required only for the regression suite:
 
@@ -180,14 +180,15 @@ template activation. Do not put passwords in debug logs or command lines.
 
 ## Platform support
 
-The current application is a Linux terminal program. It uses POSIX PTYs,
-`fork/exec`, `/proc`, `select`, and the bundled FreeVision text UI.
+The current application is a GNU/Linux terminal program, using the GNU
+userland and tools with the Linux kernel. It uses POSIX PTYs, `fork/exec`,
+`/proc`, `select`, and the bundled FreeVision text UI.
 
 Windows support would require a separate PTY backend based on ConPTY, plus
 Windows process, resize, signal, and configuration-path implementations. WSL
-is the practical way to run the current Linux build on Windows.
+is the practical way to run the current GNU/Linux build on Windows.
 
 iOS is not a native target for the current program. A native iOS version would
 need a UIKit or SwiftUI frontend, sandbox-compatible SSH/session handling, and
-a redesigned local-command model. Running the Linux binary under an emulator
+a redesigned local-command model. Running the GNU/Linux binary under an emulator
 such as iSH would be experimental and would not be an App Store application.
