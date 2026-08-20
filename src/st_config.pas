@@ -23,8 +23,9 @@ type
     PrefixKey: integer;    // tecla prefijo (2 = Ctrl-B)
     AutoSave: boolean;     // guardar sesion al salir
     AutoRestore: boolean;  // restaurar sesion al arrancar
-    DefaultTemplate: string;
-    DefaultSession: string;
+    DefaultProfile: string;  // perfil por defecto (nuevo modelo)
+    DefaultTemplate: string; // legado: para derivar DefaultProfile
+    DefaultSession: string;  // legado
     DefaultWindow: string;
     Language: TUiLanguage;
   end;
@@ -137,6 +138,7 @@ begin
   Cfg.PrefixKey := 2; // Ctrl-B
   Cfg.AutoSave := True;
   Cfg.AutoRestore := True;
+  Cfg.DefaultProfile := '';
   Cfg.DefaultTemplate := '';
   Cfg.DefaultSession := '';
   Cfg.DefaultWindow := '';
@@ -158,6 +160,8 @@ begin
     Cfg.PrefixKey := Ini.ReadInteger('keymap', 'prefix', Cfg.PrefixKey);
     Cfg.AutoSave := Ini.ReadBool('session', 'autosave', Cfg.AutoSave);
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
+    Cfg.DefaultProfile := Ini.ReadString('session', 'default_profile',
+      Cfg.DefaultProfile);
     Cfg.DefaultTemplate := Ini.ReadString('session', 'default_template',
       Cfg.DefaultTemplate);
     Cfg.DefaultSession := Ini.ReadString('session', 'default_session',
@@ -183,6 +187,7 @@ begin
     Ini.WriteInteger('keymap', 'prefix', Cfg.PrefixKey);
     Ini.WriteBool('session', 'autosave', Cfg.AutoSave);
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
+    Ini.WriteString('session', 'default_profile', Cfg.DefaultProfile);
     Ini.WriteString('session', 'default_template', Cfg.DefaultTemplate);
     Ini.WriteString('session', 'default_session', Cfg.DefaultSession);
     Ini.WriteString('session', 'default_window', Cfg.DefaultWindow);

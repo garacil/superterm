@@ -750,8 +750,9 @@ begin
     cmdline := ProcCmdLine(FPid);
     TitleCwd := ProcCwd(FPid);
   end;
-  // si el "comando" es la propia shell de login, guardar vacio
-  base := FirstWordOf(cmdline);
+  // si el "comando" es la propia shell de login, guardar vacio; comparar
+  // por basename: el cmdline puede traer la ruta completa (/bin/bash)
+  base := ExtractFileName(FirstWordOf(cmdline));
   if (base <> '') and (base[1] = '-') then
     Delete(base, 1, 1);
   if (base = '') or SameText(base, FShellBase) then

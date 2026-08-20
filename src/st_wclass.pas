@@ -100,6 +100,16 @@ begin
     (LowerCase(Copy(Sec, 1, Length('template.'))) <> 'template.');
 end;
 
+// TIniFile recorta un par de comillas exteriores al leer: envolver con
+// otra capa igual cuando el valor empieza y termina con la misma comilla
+function IniQuoteGuard(const S: string): string;
+begin
+  Result := S;
+  if (Length(S) >= 2) and (S[1] in ['''', '"']) and
+     (S[Length(S)] = S[1]) then
+    Result := S[1] + S + S[1];
+end;
+
 function DeriveKind(const C: TWindowClass): TWClassKind;
 begin
   if C.Connect <> '' then
@@ -248,9 +258,9 @@ begin
       if AClasses[i].Shell <> '' then
         Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
       if AClasses[i].Cmd <> '' then
-        Ini.WriteString(Sec, 'cmd', AClasses[i].Cmd);
+        Ini.WriteString(Sec, 'cmd', IniQuoteGuard(AClasses[i].Cmd));
       if AClasses[i].Cwd <> '' then
-        Ini.WriteString(Sec, 'cwd', AClasses[i].Cwd);
+        Ini.WriteString(Sec, 'cwd', IniQuoteGuard(AClasses[i].Cwd));
       if AClasses[i].Host <> '' then
         Ini.WriteString(Sec, 'host', AClasses[i].Host);
       if AClasses[i].User <> '' then
@@ -263,9 +273,10 @@ begin
         Ini.WriteString(Sec, 'password',
           EncodeStringBase64(AClasses[i].Password));
       if AClasses[i].Connect <> '' then
-        Ini.WriteString(Sec, 'connect', AClasses[i].Connect);
+        Ini.WriteString(Sec, 'connect', IniQuoteGuard(AClasses[i].Connect));
       if AClasses[i].PostConnect <> '' then
-        Ini.WriteString(Sec, 'postconnect', AClasses[i].PostConnect);
+        Ini.WriteString(Sec, 'postconnect',
+          IniQuoteGuard(AClasses[i].PostConnect));
       if (AClasses[i].ScrollBack > 0) and
          (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
         Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);

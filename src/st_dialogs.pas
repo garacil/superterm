@@ -14,7 +14,7 @@ interface
 
 uses
   Objects, Drivers, Views, Dialogs, MsgBox, App, SysUtils,
-  st_config, st_wclass;
+  st_config, st_wclass, st_profiles;
 
 // gestor de clases: lista + New/Edit/Duplicate/Delete/Close. Edita SOLO las
 // de origen usuario; las de sistema se muestran '(sistema)' y solo permiten
@@ -28,23 +28,49 @@ function RunClassManager(var AClasses: TWindowClassArray): boolean;
 function RunClassPicker(const AClasses: TWindowClassArray;
   out AIndex: integer): boolean;
 
+type
+  // accion que el gestor de perfiles devuelve al llamador; el dialogo no
+  // toca el runtime: activar, capturar el area de trabajo o fijar el
+  // perfil por defecto las ejecuta quien llama
+  TProfileAction = (paNone, paActivate, paSaveCurrent, paSetDefault);
+
+// gestor de perfiles: lista + Activate/Save current/Rename/Set default/
+// Delete/Close. Rename y Delete solo sobre perfiles de usuario y persisten
+// con SaveProfiles(ConfigFile, AProfiles) dentro; Activate/Save current/
+// Set default devuelven True inmediatamente con AAction/ATarget para que
+// el llamador actue. AActive = fila con marca de activo (-1 ninguna),
+// ADefault = perfil por defecto (-1 ninguno). False = cerrado sin cambios
+// ni accion; True con AAction=paNone = solo hubo ediciones persistidas.
+function RunProfileManager(var AProfiles: TProfileArray;
+  AActive, ADefault: integer; out AAction: TProfileAction;
+  out ATarget: integer): boolean;
+
 implementation
 
 const
-  // comandos locales de los botones del gestor (>255: siempre habilitados)
+  // comandos locales de los botones de los gestores (>255: siempre
+  // habilitados); cada gestor usa un rango contiguo propio
   cmClsNew  = 3300;
   cmClsEdit = 3301;
   cmClsDup  = 3302;
   cmClsDel  = 3303;
+  cmPrfActivate = 3310;
+  cmPrfSave     = 3311;
+  cmPrfRename   = 3312;
+  cmPrfDefault  = 3313;
+  cmPrfDelete   = 3314;
 
 type
   TNameArray = array of string;
   PNameArray = ^TNameArray;
 
-  // gestor: los botones de accion terminan el dialogo con su comando y el
-  // bucle de RunClassManager decide; doble click en la lista equivale a Edit
+  // gestor generico: los botones de accion terminan el dialogo con su
+  // comando (rango CmdLo..CmdHi) y el bucle del llamador decide; doble
+  // click o espacio en la lista equivale al comando SelectCmd
   PManagerDialog = ^TManagerDialog;
   TManagerDialog = object(TDialog)
+    CmdLo, CmdHi: word;
+    SelectCmd: word;
     procedure HandleEvent(var Event: TEvent); virtual;
   end;
 
@@ -416,17 +442,15 @@ begin
   inherited HandleEvent(Event);
   case Event.What of
     evCommand:
-      case Event.Command of
-        cmClsNew, cmClsEdit, cmClsDup, cmClsDel:
-          begin
-            EndModal(Event.Command);
-            ClearEvent(Event);
-          end;
+      if (Event.Command >= CmdLo) and (Event.Command <= CmdHi) then
+      begin
+        EndModal(Event.Command);
+        ClearEvent(Event);
       end;
     evBroadcast:
       if Event.Command = cmListItemSelected then
       begin
-        EndModal(cmClsEdit);   // doble click / espacio = editar
+        EndModal(SelectCmd);   // doble click / espacio
         ClearEvent(Event);
       end;
   end;
@@ -468,6 +492,9 @@ begin
     UiText('Window classes', 'Clases de ventana')));
   with D^ do
   begin
+    CmdLo := cmClsNew;
+    CmdHi := cmClsDel;
+    SelectCmd := cmClsEdit;   // doble click = editar
     R.Assign(3, 1, 67, 2);
     Insert(New(PStaticText, Init(R, Format('%-18s %-8s %-24s',
       [UiText('Name', 'Nombre'), UiText('Type', 'Tipo'),
@@ -663,6 +690,220 @@ begin
   end;
   Dispose(D, Done);
   Dispose(Coll, Done);
+end;
+
+{ -------------------------- gestor de perfiles -------------------------- }
+
+procedure InfoProfileReadOnly;
+begin
+  MessageBox(UiText('System profiles are read-only.',
+    'Los perfiles de sistema son de solo lectura.'), nil,
+    mfInformation or mfOKButton);
+end;
+
+function ProfileNameExists(const A: TProfileArray; const AName: string;
+  SkipIndex: integer): boolean;
+var
+  i: integer;
+begin
+  Result := False;
+  for i := 0 to High(A) do
+    if (i <> SkipIndex) and SameText(A[i].Name, AName) then
+      Exit(True);
+end;
+
+// fila del gestor: marca de activo + nombre + numero de ventanas +
+// etiqueta del perfil por defecto
+function ProfileRow(const P: TProfileSpec;
+  IsActive, IsDefault: boolean): string;
+var
+  Tag: string;
+begin
+  if IsDefault then
+    Tag := UiText(' (default)', ' (defecto)')
+  else
+    Tag := '';
+  Result := ActiveMark(IsActive) + Format('%-24s %8d   %s',
+    [Copy(P.Name, 1, 24), Length(P.Windows), Tag]);
+end;
+
+// construye y ejecuta el dialogo del gestor de perfiles; devuelve el
+// comando final. Con la lista vacia muestra una fila informativa y
+// deshabilita todos los botones salvo Cerrar (crear perfiles corresponde
+// al menu 'Guardar como perfil', no a este dialogo). FocusRow como en
+// ExecClassManager: entra fila a enfocar, sale fila enfocada (-1 si vacia).
+function ExecProfileManager(const AProfiles: TProfileArray;
+  AActive, ADefault: integer; var FocusRow: integer): word;
+var
+  D: PManagerDialog;
+  LB: PListBox;
+  SB: PScrollBar;
+  Coll: PStringCollection;
+  R: TRect;
+  i: integer;
+  Btn: array[0..4] of PButton;
+begin
+  Coll := New(PStringCollection, Init(Length(AProfiles) + 1, 8));
+  for i := 0 to High(AProfiles) do
+    Coll^.AtInsert(Coll^.Count,
+      NewStr(ProfileRow(AProfiles[i], i = AActive, i = ADefault)));
+  if Coll^.Count = 0 then
+    Coll^.AtInsert(0, NewStr(UiText('(no profiles yet)',
+      '(aun no hay perfiles)')));
+
+  R := CenteredRect(60, 16);
+  D := New(PManagerDialog, Init(R, UiText('Profiles', 'Perfiles')));
+  with D^ do
+  begin
+    CmdLo := cmPrfActivate;
+    CmdHi := cmPrfDelete;
+    SelectCmd := cmPrfActivate;   // doble click = activar
+    R.Assign(56, 1, 57, 8);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(3, 1, 56, 8);
+    LB := New(PListBox, Init(R, 1, SB));
+    Insert(LB);
+    LB^.NewList(Coll);
+    if (FocusRow > 0) and (FocusRow < Coll^.Count) then
+      LB^.FocusItem(FocusRow);
+    Btn[0] := NewButton(3, 9, 12, 2, UiText('Activate', 'Activar'),
+      cmPrfActivate, hcNoContext, bfDefault);   // Enter = activar
+    Btn[1] := NewButton(16, 9, 18, 2,
+      UiText('Save current', 'Guardar actual'), cmPrfSave,
+      hcNoContext, bfNormal);
+    Btn[2] := NewButton(35, 9, 13, 2, UiText('Rename', 'Renombrar'),
+      cmPrfRename, hcNoContext, bfNormal);
+    Btn[3] := NewButton(3, 11, 15, 2, UiText('Set default', 'Por defecto'),
+      cmPrfDefault, hcNoContext, bfNormal);
+    Btn[4] := NewButton(19, 11, 12, 2, UiText('Delete', 'Eliminar'),
+      cmPrfDelete, hcNoContext, bfNormal);
+    NewButton(32, 11, 10, 2, UiText('Close', 'Cerrar'), cmCancel,
+      hcNoContext, bfNormal);
+    if Length(AProfiles) = 0 then
+      for i := 0 to High(Btn) do
+        if Btn[i] <> nil then
+          Btn[i]^.SetState(sfDisabled, True);
+  end;
+  Result := Desktop^.ExecView(D);
+  if Length(AProfiles) > 0 then
+    FocusRow := LB^.Focused
+  else
+    FocusRow := -1;
+  Dispose(D, Done);
+  // misma propiedad que en el gestor de clases: la coleccion no es del
+  // listbox, liberarla tras destruir el dialogo
+  Dispose(Coll, Done);
+end;
+
+// renombrar con InputBox prellenado; valida no-vacio y unicidad sin
+// distinguir mayusculas; persiste al aceptar. False = cancelado o sin
+// cambio efectivo.
+function RenameProfile(var AProfiles: TProfileArray; Idx: integer): boolean;
+var
+  Buf: ShortString;   // InputBox exige var ShortString (unidad msgbox)
+  N: string;
+begin
+  Result := False;
+  Buf := Copy(AProfiles[Idx].Name, 1, 40);
+  repeat
+    if InputBox(UiText('Rename profile', 'Renombrar perfil'),
+      UiText('Name', 'Nombre'), Buf, 40) <> cmOK then
+      Exit;
+    N := Trim(Buf);
+    if N = '' then
+      ErrorBox(UiText('The name cannot be empty.',
+        'El nombre no puede estar vacio.'))
+    else if ProfileNameExists(AProfiles, N, Idx) then
+    begin
+      ErrorBox(Format(UiText('A profile named "%s" already exists.',
+        'Ya existe un perfil llamado "%s".'), [N]));
+      N := '';
+    end;
+  until N <> '';
+  if N = AProfiles[Idx].Name then
+    Exit;   // sin cambio: no persistir ni contar como edicion
+  AProfiles[Idx].Name := N;
+  SaveProfiles(ConfigFile, AProfiles);
+  Result := True;
+end;
+
+function RunProfileManager(var AProfiles: TProfileArray;
+  AActive, ADefault: integer; out AAction: TProfileAction;
+  out ATarget: integer): boolean;
+var
+  Cmd: word;
+  Idx, FocusRow: integer;
+begin
+  AAction := paNone;
+  ATarget := -1;
+  Result := False;
+  FocusRow := 0;
+  if (AActive >= 0) and (AActive <= High(AProfiles)) then
+    FocusRow := AActive;   // arrancar sobre el perfil activo
+  repeat
+    Cmd := ExecProfileManager(AProfiles, AActive, ADefault, FocusRow);
+    Idx := FocusRow;   // las filas van 1:1 con AProfiles
+    if (Idx >= 0) and (Idx <= High(AProfiles)) then
+      case Cmd of
+        cmPrfActivate:
+          begin
+            // la activacion la ejecuta el llamador
+            AAction := paActivate;
+            ATarget := Idx;
+            Exit(True);
+          end;
+        cmPrfSave:
+          if ConfirmYes(Format(UiText(
+            'Overwrite profile "%s" with the current workspace?',
+            'Sobrescribir el perfil "%s" con el area de trabajo actual?'),
+            [AProfiles[Idx].Name])) then
+          begin
+            // la captura y el guardado los ejecuta el llamador
+            AAction := paSaveCurrent;
+            ATarget := Idx;
+            Exit(True);
+          end;
+        cmPrfDefault:
+          begin
+            // el por-defecto vive en la config, no en el array: lo
+            // actualiza el llamador (Cfg.DefaultProfile + SaveConfig)
+            AAction := paSetDefault;
+            ATarget := Idx;
+            Exit(True);
+          end;
+        cmPrfRename:
+          if AProfiles[Idx].Origin = coSystem then
+            InfoProfileReadOnly
+          else if RenameProfile(AProfiles, Idx) then
+            Result := True;
+        cmPrfDelete:
+          if AProfiles[Idx].Origin = coSystem then
+            InfoProfileReadOnly
+          else if ConfirmYes(Format(UiText('Delete profile "%s"?',
+            'Eliminar el perfil "%s"?'), [AProfiles[Idx].Name])) then
+          begin
+            Delete(AProfiles, Idx, 1);
+            SaveProfiles(ConfigFile, AProfiles);
+            Result := True;
+            // reajustar las marcas de activo/por-defecto para las
+            // siguientes pasadas del dialogo (solo efecto visual)
+            if AActive = Idx then
+              AActive := -1
+            else if AActive > Idx then
+              Dec(AActive);
+            if ADefault = Idx then
+              ADefault := -1
+            else if ADefault > Idx then
+              Dec(ADefault);
+            if FocusRow > High(AProfiles) then
+              FocusRow := High(AProfiles);
+            if FocusRow < 0 then
+              FocusRow := 0;
+          end;
+      end;
+  until (Cmd = cmCancel) or (Cmd = cmOK);
+  // cerrado sin accion: Result queda True solo si hubo ediciones (paNone)
 end;
 
 end.
