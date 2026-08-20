@@ -1,0 +1,142 @@
+#!/bin/sh
+set -eu
+
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+PREFIX=/usr/local
+BINDIR=
+SYSCONFDIR=/etc
+FPC=${FPC:-}
+PYTHON=${PYTHON:-}
+INSTALL_DEPS=0
+
+usage() {
+  cat <<EOF
+Usage: ./configure [options]
+
+Options:
+  --prefix=PATH           installation prefix (default: /usr/local)
+  --bindir=PATH           binary directory (default: PREFIX/bin)
+  --sysconfdir=PATH       system configuration directory (default: /etc)
+  --with-fpc=PATH         Free Pascal compiler to use
+  --with-python=PATH      Python 3 interpreter to use for tests
+  --install-deps          install Debian/Ubuntu build dependencies first
+  -h, --help              show this help
+
+Examples:
+  ./configure
+  ./configure --prefix="$HOME/.local" --sysconfdir="$HOME/.config/superterm"
+  ./configure --install-deps
+EOF
+}
+
+fail() {
+  printf '%s\n' "configure: error: $*" >&2
+  exit 1
+}
+
+warn() {
+  printf '%s\n' "configure: warning: $*" >&2
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --prefix=*) PREFIX=${arg#*=} ;;
+    --bindir=*) BINDIR=${arg#*=} ;;
+    --sysconfdir=*) SYSCONFDIR=${arg#*=} ;;
+    --with-fpc=*) FPC=${arg#*=} ;;
+    --with-python=*) PYTHON=${arg#*=} ;;
+    --install-deps) INSTALL_DEPS=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown option: $arg" ;;
+  esac
+done
+
+if [ -z "$BINDIR" ]; then
+  BINDIR="$PREFIX/bin"
+fi
+
+if [ "$INSTALL_DEPS" -eq 1 ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+      APT=""
+    elif command -v sudo >/dev/null 2>&1; then
+      APT="sudo"
+    else
+      fail "apt-get is available but sudo is not; run as root or install dependencies manually"
+    fi
+    $APT apt-get update
+    $APT apt-get install -y \
+      fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
+      python3 python3-pyte openssh-client sshpass
+  else
+    fail "--install-deps currently supports Debian/Ubuntu only; install Free Pascal, FV/FCL/DB units, make, Python 3 + pyte, and openssh-client manually"
+  fi
+fi
+
+if [ -z "$FPC" ]; then
+  FPC=$(command -v fpc || true)
+fi
+[ -n "$FPC" ] || fail "Free Pascal Compiler not found; install fp-compiler or use --with-fpc=PATH"
+[ -x "$FPC" ] || fail "Free Pascal compiler is not executable: $FPC"
+
+MAKE=$(command -v make || true)
+[ -n "$MAKE" ] || fail "make not found"
+
+if [ -z "$PYTHON" ]; then
+  PYTHON=$(command -v python3 || true)
+fi
+if [ -n "$PYTHON" ]; then
+  if ! "$PYTHON" -c 'import pyte' >/dev/null 2>&1; then
+    warn "Python pyte is not installed; make test will not work until it is installed"
+  fi
+else
+  warn "Python 3 not found; make test will not work"
+fi
+
+SSH=$(command -v ssh || true)
+[ -n "$SSH" ] || warn "openssh-client not found; SSH terminal definitions will not work"
+
+INSTALL=$(command -v install || true)
+[ -n "$INSTALL" ] || fail "install command not found"
+
+mkdir -p "$PROJECT_DIR/build"
+
+escape_sed() {
+  printf '%s' "$1" | sed 's/[&|]/\\&/g'
+}
+
+PROJECT_ESC=$(escape_sed "$PROJECT_DIR")
+FPC_ESC=$(escape_sed "$FPC")
+PYTHON_ESC=$(escape_sed "$PYTHON")
+PREFIX_ESC=$(escape_sed "$PREFIX")
+BINDIR_ESC=$(escape_sed "$BINDIR")
+SYSCONFDIR_ESC=$(escape_sed "$SYSCONFDIR")
+DOCDIR_ESC=$(escape_sed "$PREFIX/share/doc/superterm")
+
+sed \
+  -e "s|@PROJECT_DIR@|$PROJECT_ESC|g" \
+  -e "s|@FPC@|$FPC_ESC|g" \
+  -e "s|@PYTHON@|$PYTHON_ESC|g" \
+  -e "s|@PREFIX@|$PREFIX_ESC|g" \
+  -e "s|@BINDIR@|$BINDIR_ESC|g" \
+  -e "s|@SYSCONFDIR@|$SYSCONFDIR_ESC|g" \
+  -e "s|@DOCDIR@|$DOCDIR_ESC|g" \
+  "$PROJECT_DIR/Makefile.in" > "$PROJECT_DIR/Makefile"
+
+cat > "$PROJECT_DIR/config.status" <<EOF
+project_dir=$PROJECT_DIR
+fpc=$FPC
+fpc_version=$($FPC -iV 2>/dev/null || printf unknown)
+make=$MAKE
+python=$PYTHON
+prefix=$PREFIX
+bindir=$BINDIR
+sysconfdir=$SYSCONFDIR
+EOF
+
+printf 'Configuration complete.\n'
+printf '  FPC:       %s (%s)\n' "$FPC" "$($FPC -iV 2>/dev/null || printf unknown)"
+printf '  Prefix:    %s\n' "$PREFIX"
+printf '  Config:    %s\n' "$SYSCONFDIR/superterm"
+printf '  Tests:     %s\n' "${PYTHON:-unavailable}"
+printf '\nRun: make release\n'

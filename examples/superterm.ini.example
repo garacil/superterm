@@ -1,0 +1,67 @@
+; Copy this file to ~/.superterm/superterm.ini or /etc/superterm/superterm.ini.
+; Use an SSH key or agent whenever possible.
+
+[autologin]
+shell=/bin/bash
+login=1
+
+[session]
+autosave=1
+autorestore=0
+default_template=daily
+default_session=remote
+default_window=production
+
+[ui]
+; en is the default; use es for the Spanish interface.
+language=en
+
+[t-production]
+name=production
+enabled=1
+type=ssh
+host=prod.example.com
+user=alice
+port=22
+key=~/.ssh/id_ed25519
+
+[t-staging]
+name=staging
+enabled=1
+type=ssh
+host=staging.example.com
+user=alice
+key=~/.ssh/id_ed25519
+
+[template.daily]
+name=daily
+enabled=1
+default_session=remote
+sessions=remote
+
+[template.daily.session.remote]
+enabled=1
+focused_window=0
+windows=production,staging
+
+[template.daily.session.remote.window.production]
+enabled=1
+layout=L
+focused_pane=0
+panes=prod
+
+[template.daily.session.remote.window.production.pane.prod]
+enabled=1
+terminal=production
+postconnect=tmux new-session -A -s production
+
+[template.daily.session.remote.window.staging]
+enabled=1
+layout=L
+focused_pane=0
+panes=stage
+
+[template.daily.session.remote.window.staging.pane.stage]
+enabled=1
+terminal=staging
+postconnect=tmux new-session -A -s staging

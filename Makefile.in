@@ -1,0 +1,111 @@
+SHELL := /bin/sh
+
+PROJECT_DIR := @PROJECT_DIR@
+FPC := @FPC@
+PYTHON := @PYTHON@
+PREFIX := @PREFIX@
+BINDIR := @BINDIR@
+SYSCONFDIR := @SYSCONFDIR@
+DOCDIR := @DOCDIR@
+
+MODE ?= release
+TARGET ?= $(PROJECT_DIR)/bin/superterm
+UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
+FPCFLAGS_EXTRA ?=
+
+BASE_FLAGS := -Mobjfpc -Sh -vew \
+  -Fu$(PROJECT_DIR)/vendor/fv322 \
+  -FU$(UNITDIR) \
+  -FE$(PROJECT_DIR)/bin
+
+ifeq ($(MODE),debug)
+MODE_FLAGS := -O1 -g -gl -dDEBUG
+else ifeq ($(MODE),release)
+MODE_FLAGS := -O4
+else
+$(error MODE must be release or debug)
+endif
+
+SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
+  $(wildcard $(PROJECT_DIR)/src/*.lpr) \
+  $(wildcard $(PROJECT_DIR)/vendor/fv322/*.pas) \
+  $(wildcard $(PROJECT_DIR)/vendor/fv322/*.inc)
+
+TESTS := drive_test.py large_screen_test.py mouse_test.py \
+  mouse_focus_test.py restore_test.py sysconfig_test.py \
+  template_test.py sqlite_test.py wizard_test.py language_test.py \
+  window_test.py
+
+.PHONY: all release debug test install uninstall install-deps clean distclean info
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCES) $(PROJECT_DIR)/config.status
+	@mkdir -p "$(UNITDIR)" "$(PROJECT_DIR)/bin"
+	$(FPC) $(BASE_FLAGS) $(MODE_FLAGS) $(FPCFLAGS_EXTRA) \
+		-o$(TARGET) $(PROJECT_DIR)/src/superterm.lpr
+
+release:
+	$(MAKE) MODE=release TARGET=$(PROJECT_DIR)/bin/superterm all
+
+debug:
+	$(MAKE) MODE=debug TARGET=$(PROJECT_DIR)/bin/superterm-debug all
+
+test: release
+	@if [ -z "$(PYTHON)" ]; then \
+		printf '%s\n' 'Python 3 is required for tests'; exit 1; \
+	fi
+	@$(PYTHON) -c 'import pyte' 2>/dev/null || \
+		(printf '%s\n' 'Python module pyte is required; install python3-pyte or run pip install pyte'; exit 1)
+	@set -e; for test in $(TESTS); do \
+		printf '\n==> test/%s\n' "$$test"; \
+		$(PYTHON) "$(PROJECT_DIR)/test/$$test"; \
+	done
+
+install: release
+	@mkdir -p "$(BINDIR)" "$(DOCDIR)" "$(SYSCONFDIR)/superterm"
+	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(BINDIR)/superterm"
+	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DOCDIR)/README.md"
+	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
+		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
+	done
+	@if [ ! -f "$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
+		install -m 0644 "$(PROJECT_DIR)/examples/superterm.ini.example" \
+			"$(SYSCONFDIR)/superterm/superterm.ini.example"; \
+	else \
+		printf '%s\n' "Keeping existing $(SYSCONFDIR)/superterm/superterm.ini"; \
+	fi
+
+uninstall:
+	rm -f "$(BINDIR)/superterm"
+	rm -f "$(DOCDIR)/README.md" "$(DOCDIR)/BUILDING.md" \
+		"$(DOCDIR)/CONFIGURATION.md" "$(DOCDIR)/WIZARD.md"
+	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
+
+install-deps:
+	@if command -v apt-get >/dev/null 2>&1; then \
+		if [ "$$(id -u)" -eq 0 ]; then SUDO=; \
+		elif command -v sudo >/dev/null 2>&1; then SUDO=sudo; \
+		else printf '%s\n' 'sudo is required'; exit 1; fi; \
+		$$SUDO apt-get update && $$SUDO apt-get install -y \
+			fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
+			python3 python3-pyte openssh-client sshpass; \
+	else \
+		printf '%s\n' 'Automatic dependency installation is only implemented for Debian/Ubuntu.'; \
+		exit 1; \
+	fi
+
+clean:
+	rm -rf "$(PROJECT_DIR)/build"
+	rm -f "$(PROJECT_DIR)"/bin/*
+
+distclean: clean
+	rm -f "$(PROJECT_DIR)/Makefile" "$(PROJECT_DIR)/config.status"
+
+info:
+	@printf 'FPC:       %s\n' "$(FPC)"
+	@printf 'Mode:      %s\n' "$(MODE)"
+	@printf 'Target:    %s\n' "$(TARGET)"
+	@printf 'Prefix:    %s\n' "$(PREFIX)"
+	@printf 'Config:    %s\n' "$(SYSCONFDIR)/superterm"
+	@printf 'Docs:      %s\n' "$(DOCDIR)"

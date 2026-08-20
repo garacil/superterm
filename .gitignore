@@ -1,0 +1,5 @@
+/bin/*
+!/bin/.gitkeep
+/build/
+/Makefile
+/config.status
