@@ -9,12 +9,14 @@ procedure InstallWideVideoOutput;
 implementation
 
 uses
-  BaseUnix, SysUtils, Video;
+  BaseUnix, SysUtils, Video, termio;
 
 var
   SavedDriver: TVideoDriver;
   DriverInstalled: Boolean;
   OutputFailed: Boolean;
+  SavedCursorX, SavedCursorY: Word;
+  SavedCursorValid: Boolean;
 
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
 var
@@ -170,6 +172,72 @@ begin
   Result := #27'[' + IntToStr(AY + 1) + ';' + IntToStr(AX + 1) + 'H';
 end;
 
+function CaptureTerminalCursor(out AX, AY: Word): Boolean;
+var
+  Original, Raw: Termios;
+  Buf: array[0..31] of byte;
+  N, I, State, Row, Col, Value: integer;
+begin
+  Result := False;
+  AX := 0;
+  AY := 0;
+  if IsATTY(StdInputHandle) <> 1 then
+    Exit;
+  if TCGetAttr(StdInputHandle, Original) <> 0 then
+    Exit;
+  Raw := Original;
+  CFMakeRaw(Raw);
+  Raw.c_cc[VMIN] := 0;
+  Raw.c_cc[VTIME] := 1;
+  if TCSetAttr(StdInputHandle, TCSANOW, Raw) <> 0 then
+    Exit;
+  try
+    WriteRaw(#27'[6n');
+    N := FpRead(StdInputHandle, Buf[0], SizeOf(Buf));
+  finally
+    TCSetAttr(StdInputHandle, TCSANOW, Original);
+  end;
+  if N <= 0 then
+    Exit;
+
+  State := 0;
+  Row := 0;
+  Col := 0;
+  for I := 0 to N - 1 do
+  begin
+    case State of
+      0:
+        if Buf[I] = 27 then State := 1;
+      1:
+        if Buf[I] = Ord('[') then State := 2 else State := 0;
+      2:
+        if (Buf[I] >= Ord('0')) and (Buf[I] <= Ord('9')) then
+        begin
+          Value := Row * 10 + Buf[I] - Ord('0');
+          Row := Value;
+        end
+        else if Buf[I] = Ord(';') then
+          State := 3
+        else
+          State := 0;
+      3:
+        if (Buf[I] >= Ord('0')) and (Buf[I] <= Ord('9')) then
+        begin
+          Value := Col * 10 + Buf[I] - Ord('0');
+          Col := Value;
+        end
+        else if (Buf[I] = Ord('R')) and (Row > 0) and (Col > 0) then
+        begin
+          AX := Col - 1;
+          AY := Row - 1;
+          Exit(True);
+        end
+        else
+          State := 0;
+    end;
+  end;
+end;
+
 procedure WriteCells(AStart, AStop: LongInt);
 var
   I: LongInt;
@@ -252,13 +320,17 @@ begin
     SavedDriver.DoneDriver;
   { FreeVision homes the cursor while tearing down the alternate screen.
     Restore the shell's cursor after that teardown, not before it. }
-  WriteRaw(#27'[u'#27'8');
+  if SavedCursorValid then
+    WriteRaw(CursorPosition(SavedCursorX, SavedCursorY))
+  else
+    WriteRaw(#27'[u'#27'8');
 end;
 
 procedure WideInitVideo;
 begin
   { Keep the cursor position from the shell even on terminals that do not
     restore it reliably for private alternate-screen mode 1049. }
+  SavedCursorValid := CaptureTerminalCursor(SavedCursorX, SavedCursorY);
   WriteRaw(#27'7'#27'[s');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
