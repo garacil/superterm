@@ -97,7 +97,7 @@ try:
 
     after = frame_right()
     check('mouse resize changes frame width', 0 < after < before)
-    check('mouse resize keeps statusline', 'V-split' in ''.join(s.screen.display[-1]))
+    check('mouse resize keeps statusline', 'F2 Split' in ''.join(s.screen.display[-1]))
 finally:
     try:
         os.write(s.fd, b'\x1bq')

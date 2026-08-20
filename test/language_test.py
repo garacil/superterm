@@ -84,24 +84,27 @@ s = Session()
 try:
     s.drain(1.2)
     check('Spanish config selects Spanish UI',
-          'Paneles' in s.text() and 'Idioma' in s.text())
+          'Paneles' in s.text() and 'Opciones' in s.text())
 
-    s.send(b'\x1be\r')  # Sesion -> Asistente nueva sesion
+    s.send(b'\x1bs', 0.5)  # Sesiones
+    s.send(b'a')  # -> Asistente de sesion rapida
     check('Spanish input dialog is localized',
           'Aceptar' in s.text() and 'Cancelar' in s.text())
     s.send(b'\t\t\r')
 
-    s.send(b'\x1bi')  # Idioma
+    s.send(b'\x1bo', 0.5)  # Opciones
+    s.send(b'i', 0.5)  # Idioma
     check('Spanish language menu offers English', 'English' in s.text())
     s.send(b'e')
     check('English switch updates the UI',
-          'Panels' in s.text() and 'Language' in s.text())
+          'Panes' in s.text() and 'Options' in s.text())
     check('English switch persists', 'language=en' in open(CONFIG).read())
 
-    s.send(b'\x1bl')  # Language
+    s.send(b'\x1bo', 0.5)  # Options
+    s.send(b'l', 0.5)  # Language
     s.send(b's')
     check('Spanish switch updates the UI',
-          'Paneles' in s.text() and 'Idioma' in s.text())
+          'Paneles' in s.text() and 'Opciones' in s.text())
     s.send(b'\x1ba\r')  # Ayuda -> Ayuda y atajos
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
 finally:

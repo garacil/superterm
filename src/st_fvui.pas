@@ -37,6 +37,7 @@ const
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
   cmQuitNoSave = 2110;
+  cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
   cmTemplateBase = 2200;   // + indice de plantilla (0..39)
   cmOpenTerm   = 2320;     // + indice en SysTerms (0..29)
   cmSessionBase  = 2260;   // + indice de sesion de plantilla (0..39)
@@ -2216,7 +2217,7 @@ end;
 
 procedure TSuperApp.HandleEvent(var Event: TEvent);
 var
-  i, Num, EnabledIndex: integer;
+  i: integer;
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
@@ -2231,9 +2232,60 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
+      // chords del prefijo (estilo tmux): d=detach, n/p=ventana +-,
+      // 1..9=ventana N, flechas=tamano del panel, prefijo doble=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('n')) or (PrefixByte = Ord('N')) then
+      begin
+        Message(@Self, evCommand, cmWindowNext, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('p')) or (PrefixByte = Ord('P')) then
+      begin
+        Message(@Self, evCommand, cmWindowPrev, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte >= Ord('1')) and (PrefixByte <= Ord('9')) then
+      begin
+        Message(@Self, evCommand, cmWindowBase + PrefixByte - Ord('1'), nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbRight then
+      begin
+        Message(@Self, evCommand, cmGrowV, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbLeft then
+      begin
+        Message(@Self, evCommand, cmShrinkV, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbDown then
+      begin
+        Message(@Self, evCommand, cmGrowH, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbUp then
+      begin
+        Message(@Self, evCommand, cmShrinkH, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if PrefixByte = byte(Cfg.PrefixKey) then
+      begin
+        // prefijo doble: enviar UN prefijo literal al panel (como tmux)
+        WritePaneInput(Lay.Focused, AnsiChar(Chr(Cfg.PrefixKey)));
         ClearEvent(Event);
         Exit;
       end;
@@ -2251,25 +2303,8 @@ begin
       Exit;
     end;
   end;
-  // TProgram consumes Alt-1..Alt-9 for window-number selection before menu
-  // commands reach us. Handle the documented terminal shortcuts first.
-  if Event.What = evKeyDown then
-    for Num := 1 to 9 do
-      if Event.KeyCode = kbAlt1 + (Num - 1) then
-      begin
-        EnabledIndex := 0;
-        for i := 0 to Length(SysTerms) - 1 do
-          if SysTerms[i].Enabled then
-          begin
-            Inc(EnabledIndex);
-            if EnabledIndex = Num then
-            begin
-              DoOpenSysTerm(i);
-              ClearEvent(Event);
-              Exit;
-            end;
-          end;
-      end;
+  // Alt-1..9 ya NO se intercepta: cae al TProgram nativo, que selecciona
+  // el panel N (cmSelectWindowNum); abrir clases vive en el menu Clases
   // sincronizar foco del layout con la ventana seleccionada
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
@@ -2512,196 +2547,213 @@ var
   end;
 end;
 
+// fila informativa de menu: siempre en gris, nunca despachable (los sets
+// de comandos de TV solo cubren 0..255, asi que se marca el item directo)
+function NewInfoItem(const AText, AParam: string; ANext: PMenuItem): PMenuItem;
+begin
+  Result := NewItem(AText, AParam, kbNoKey, cmInfoRow, hcNoContext, ANext);
+  if Result <> nil then
+    Result^.Disabled := True;
+end;
+
 procedure TSuperApp.InitMenuBar;
 var
   R: Objects.TRect;
-  MPanes, MSize, MSess, MTemplates, MSessions, MWindows, MTerms, MHelp,
-    MLanguage: PMenu;
-  MItems, Chain: PMenuItem;
-  TemplateItems, SessionItems, WindowItems, LanguageItems: PMenuItem;
-  i, Num, Key: integer;
-  Mark, TitleS: string;
-  HasMinimized: boolean;
+  MPanes, MWindows, MClasses, MProfiles, MSessMenu, MOptions, MHelp: PMenu;
+  Chain: PMenuItem;
+  PaneItems, WindowItems, ClassItems, ProfileItems, SessItems,
+    LanguageItems: PMenuItem;
+  i, Num: integer;
+  TitleS: string;
+  HasProfiles, HasWindows: boolean;
 begin
   R := Default(Objects.TRect);
   GetExtent(R);
   R.B.Y := R.A.Y + 1;
-  MPanes := NewMenu(
-    NewItem(UiText('~V~ertical (F2)', '~V~ertical (F2)'), '', kbF2,
-      cmSplitV, hcNoContext,
-    NewItem(UiText('~H~orizontal (F3)', '~H~orizontal (F3)'), '', kbF3,
-      cmSplitH, hcNoContext,
-    NewItem(UiText('~C~lose (Alt-F3)', '~C~errar (Alt-F3)'), '', kbAltF3,
-      cmPaneClose, hcNoContext,
-    NewItem(UiText('~N~ext (F6)', 'Siguiente (~F6~)'), '', kbF6,
-      cmPaneNext, hcNoContext,
-    NewItem(UiText('~P~revious (F7)', 'Anterior (~F7~)'), '', kbF7,
-      cmPanePrev, hcNoContext,
-     nil))))));
-  MSize := NewMenu(
-    NewItem(UiText('More ~width~ (+)', 'Mas ~ancho~ (+)'), '', kbGrayPlus,
-      cmGrowV, hcNoContext,
-    NewItem(UiText('Less ~width~ (-)', 'Menos an~c~ho (-)'), '', kbGrayMinus,
-      cmShrinkV, hcNoContext,
-    NewItem(UiText('More ~height~ (*)', 'Mas ~alto~ (*)'), '', kbNoKey,
-      cmGrowH, hcNoContext,
-    NewItem(UiText('Less ~height~ (/)', 'Menos al~t~o (/)'), '', kbNoKey,
-      cmShrinkH, hcNoContext,
-     nil)))));
-  MSess := NewMenu(
-    NewItem(UiText('~N~ew session wizard', '~A~sistente nueva sesion'), '',
-      kbNoKey, cmSessionWizard, hcNoContext,
-    NewItem(UiText('~D~etach (Ctrl-B D)', '~S~eparar (Ctrl-B D)'), '',
-      kbNoKey, cmDetach, hcNoContext,
-    NewItem(UiText('~S~ave (Ctrl-S)', '~G~uardar (Ctrl-S)'), '', kbCtrlS,
-      cmSaveSess, hcNoContext,
-    NewItem(UiText('S~a~ve and exit (Alt-X)', '~S~alir guardando (Alt-X)'),
-      '', kbAltX, cmQuit, hcNoContext,
-     NewItem(UiText('Exit ~without~ saving (Alt-Q)',
-       'Salir ~sin~ guardar (Alt-Q)'), '', kbAltQ, cmQuitNoSave, hcNoContext,
-       nil))))));
 
-  TemplateItems := nil;
-  for i := Length(Templates) - 1 downto 0 do
-    if Templates[i].Enabled then
+  // ---- Paneles: operaciones de tile (split, foco, zoom, min, tamano) ----
+  PaneItems := nil;
+  PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), 'Ctrl-B ' + #24,
+    kbNoKey, cmShrinkH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~T~aller', 'Mas a~l~to'), 'Ctrl-B ' + #25,
+    kbNoKey, cmGrowH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Narrow~e~r', 'M~e~nos ancho'), 'Ctrl-B ' + #27,
+    kbNoKey, cmShrinkV, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~W~ider', 'Mas ~a~ncho'), 'Ctrl-B ' + #26,
+    kbNoKey, cmGrowV, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'), 'Ctrl-F5',
+    kbCtrlF5, cmResize, hcNoContext, PaneItems);
+  for i := MAX_PANES - 1 downto 0 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
-      if i = ActiveTemplate then Mark := '*' else Mark := ' ';
-      Chain := NewItem(Format('%s %s', [
-        Mark,
-        Copy(Templates[i].Name, 1, 24)]), '', kbNoKey,
-        cmTemplateBase + i, hcNoContext, TemplateItems);
+      TitleS := Trim(Win[i]^.GetTitle(24));
+      if TitleS = '' then
+        TitleS := UiText('pane ', 'panel ') + IntToStr(i + 1);
+      Chain := NewItem(Format(UiText('Restore %d %s', 'Restaurar %d %s'),
+        [i + 1, Copy(TitleS, 1, 20)]), '', kbNoKey,
+        cmWindowRestoreBase + i, hcNoContext, PaneItems);
       if Chain <> nil then
-        TemplateItems := Chain;
+        PaneItems := Chain;
     end;
-  MTemplates := NewMenu(TemplateItems);
+  PaneItems := NewItem(UiText('~R~estore all', '~R~estaurar todos'), '',
+    kbNoKey, cmWindowRestoreAll, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Minimize ~a~ll', 'Minimizar to~d~os'), '',
+    kbNoKey, cmWindowMinimizeAll, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
+    kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Ma~x~imize/restore', 'Ma~x~imizar/restaurar'),
+    'F5', kbF5, cmZoom, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewInfoItem(UiText('Go to pane 1-9', 'Ir al panel 1-9'),
+    'Alt-1..9', PaneItems);
+  PaneItems := NewItem(UiText('~P~revious pane', 'Panel an~t~erior'), 'F7',
+    kbF7, cmPanePrev, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~N~ext pane', 'Siguie~n~te panel'), 'F6',
+    kbF6, cmPaneNext, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'), 'Alt-F3',
+    kbAltF3, cmPaneClose, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Split ~h~orizontal', 'Dividir ~h~orizontal'),
+    'F3', kbF3, cmSplitH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Split ~v~ertical', 'Dividir ~v~ertical'),
+    'F2', kbF2, cmSplitV, hcNoContext, PaneItems);
+  MPanes := NewMenu(PaneItems);
 
-  SessionItems := nil;
-  if (ActiveTemplate >= 0) and (ActiveTemplate < Length(Templates)) then
-    for i := Length(Templates[ActiveTemplate].Sessions) - 1 downto 0 do
-      if Templates[ActiveTemplate].Sessions[i].Enabled then
-      begin
-        if i = ActiveSession then Mark := '*' else Mark := ' ';
-        Chain := NewItem(Format('%s %s', [
-          Mark,
-          Copy(Templates[ActiveTemplate].Sessions[i].Name, 1, 24)]),
-          '', kbNoKey, cmSessionBase + i, hcNoContext, SessionItems);
-        if Chain <> nil then
-          SessionItems := Chain;
-      end;
-  MSessions := NewMenu(SessionItems);
-
+  // ---- Ventanas: solo navegacion de workspaces del perfil activo ----
   WindowItems := nil;
-  if TemplateMode then
-  begin
-    WindowItems := NewItem(UiText('Next window (F8)', 'Siguiente ventana (F8)'), '', kbF8,
-      cmWindowNext, hcNoContext,
-      NewItem(UiText('Previous window (F9)', 'Ventana anterior (F9)'), '', kbF9, cmWindowPrev,
-      hcNoContext, nil));
-  end;
   if TemplateMode and (ActiveTemplate >= 0) and
-     (ActiveTemplate < Length(Templates)) and
-     (ActiveSession >= 0) and
+     (ActiveTemplate < Length(Templates)) and (ActiveSession >= 0) and
      (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) then
+  begin
     for i := Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) - 1
       downto 0 do
       if Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Enabled then
       begin
-        Chain := NewItem(Format('%d %s', [i + 1,
+        Chain := NewItem(ActiveMark(i = ActiveWindow) +
           Copy(Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Name,
-          1, 22)]), '', kbNoKey, cmWindowBase + i, hcNoContext,
-         WindowItems);
-         if Chain <> nil then
-           WindowItems := Chain;
-       end;
-  HasMinimized := False;
-  for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and Win[i]^.Minimized then
-      HasMinimized := True;
-  if HasMinimized then
-  begin
-    if WindowItems <> nil then
-      WindowItems := NewLine(WindowItems);
-    for i := MAX_PANES - 1 downto 0 do
-      if (Win[i] <> nil) and Win[i]^.Minimized then
-      begin
-        TitleS := Trim(Win[i]^.GetTitle(24));
-        if TitleS = '' then
-          TitleS := UiText('pane ', 'panel ') + IntToStr(i + 1);
-        Chain := NewItem(Format(UiText('Restore %d %s', 'Restaurar %d %s'), [i + 1,
-          Copy(TitleS, 1, 20)]), '', kbNoKey,
-          cmWindowRestoreBase + i, hcNoContext, WindowItems);
+          1, 22), 'Ctrl-B ' + IntToStr(i + 1), kbNoKey,
+          cmWindowBase + i, hcNoContext, WindowItems);
         if Chain <> nil then
           WindowItems := Chain;
       end;
-  end;
-  if WindowItems <> nil then
-    WindowItems := NewLine(WindowItems);
-  // Native TWindow commands provide move, resize, close, and zoom. The
-  // application-specific commands handle hidden windows and pane focus.
-  WindowItems := NewItem(UiText('Previous pane (F7)', 'Anterior panel (F7)'), '', kbF7, cmPanePrev,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Next pane (F6)', 'Siguiente panel (F6)'), '', kbF6, cmPaneNext,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Close window (Alt-F4)', 'Cerrar ventana (Alt-F4)'), '', kbAltF4, cmClose,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Move/resize (Ctrl-F5)', 'Mover/tamano (Ctrl-F5)'), '', kbCtrlF5, cmResize,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~R~estore all', '~R~estaurar todas'), '', kbNoKey,
-    cmWindowRestoreAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~M~inimize all', '~M~inimizar todas'), '', kbNoKey,
-    cmWindowMinimizeAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Minimize (Alt-F9)', 'Minimizar (Alt-F9)'), '', kbAltF9,
-    cmWindowMinimize, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Maximize/restore (F5)', 'Maximizar/restaurar (F5)'), '', kbF5, cmZoom,
-    hcNoContext, WindowItems);
+    if WindowItems <> nil then
+      WindowItems := NewLine(WindowItems);
+    WindowItems := NewItem(UiText('~P~revious window', 'Ventana an~t~erior'),
+      'F9', kbF9, cmWindowPrev, hcNoContext, WindowItems);
+    WindowItems := NewItem(UiText('~N~ext window', 'Siguie~n~te ventana'),
+      'F8', kbF8, cmWindowNext, hcNoContext, WindowItems);
+  end
+  else
+    WindowItems := NewInfoItem(UiText('(no profile active)',
+      '(sin perfil activo)'), '', nil);
   MWindows := NewMenu(WindowItems);
 
-  // Terminal definitions from /etc/superterm/superterm.ini
-  MItems := nil;
+  // ---- Clases: abre un panel nuevo de cada clase configurada ----
+  ClassItems := nil;
   Num := 0;
+  for i := 0 to Length(SysTerms) - 1 do
+    if SysTerms[i].Enabled then
+      Inc(Num);
   for i := Length(SysTerms) - 1 downto 0 do
   begin
     if not SysTerms[i].Enabled then
       continue;
-    Inc(Num);
-    if Num > 9 then
-      Break;
-    Key := kbAlt1 + (Num - 1);
-    Chain := NewItem(Format('~%d~ %s', [Num, Copy(SysTerms[i].Name, 1, 20)]), '',
-      Key, cmOpenTerm + i, hcNoContext, MItems);
+    if Num <= 8 then
+      TitleS := Format('~%d~ %s', [Num + 1, Copy(SysTerms[i].Name, 1, 20)])
+    else
+      TitleS := '  ' + Copy(SysTerms[i].Name, 1, 20);
+    Dec(Num);
+    Chain := NewItem(TitleS, '', kbNoKey, cmOpenTerm + i, hcNoContext,
+      ClassItems);
     if Chain <> nil then
-      MItems := Chain;
+      ClassItems := Chain;
   end;
-  if MItems <> nil then
+  ClassItems := NewItem(UiText('~1~ Local shell', '~1~ Shell local'), '',
+    kbNoKey, cmSplitV, hcNoContext, ClassItems);
+  MClasses := NewMenu(ClassItems);
+
+  // ---- Perfiles: activar uno (gestion llega en fases posteriores) ----
+  ProfileItems := nil;
+  HasProfiles := False;
+  for i := Length(Templates) - 1 downto 0 do
+    if Templates[i].Enabled then
+    begin
+      HasProfiles := True;
+      Chain := NewItem(ActiveMark(TemplateMode and (i = ActiveTemplate)) +
+        Copy(Templates[i].Name, 1, 24), '', kbNoKey,
+        cmTemplateBase + i, hcNoContext, ProfileItems);
+      if Chain <> nil then
+        ProfileItems := Chain;
+    end;
+  if not HasProfiles then
+    ProfileItems := NewInfoItem(UiText('(no profiles yet)',
+      '(aun no hay perfiles)'), '', nil);
+  // sesiones del perfil activo (plantillas multi-sesion legadas)
+  if TemplateMode and (ActiveTemplate >= 0) and
+     (ActiveTemplate < Length(Templates)) and
+     (Length(Templates[ActiveTemplate].Sessions) > 1) then
   begin
-    Chain := NewItem(UiText('New local ~t~erminal', 'Nueva ~t~erminal local'), '', kbNoKey, cmSplitV,
-      hcNoContext, MItems);
-    if Chain <> nil then
-      MItems := Chain;
+    ProfileItems := NewLine(ProfileItems);
+    HasWindows := False;
+    for i := Length(Templates[ActiveTemplate].Sessions) - 1 downto 0 do
+      if Templates[ActiveTemplate].Sessions[i].Enabled then
+      begin
+        HasWindows := True;
+        Chain := NewItem('  ' + ActiveMark(i = ActiveSession) +
+          Copy(Templates[ActiveTemplate].Sessions[i].Name, 1, 22), '',
+          kbNoKey, cmSessionBase + i, hcNoContext, ProfileItems);
+        if Chain <> nil then
+          ProfileItems := Chain;
+      end;
+    if HasWindows then
+      ProfileItems := NewInfoItem(UiText('Variants:', 'Variantes:'), '',
+        ProfileItems);
   end;
-  MTerms := NewMenu(MItems);
+  MProfiles := NewMenu(ProfileItems);
+
+  // ---- Sesiones: detach y ciclo de vida de la aplicacion ----
+  SessItems := nil;
+  SessItems := NewItem(UiText('~Q~uit without saving', 'Salir si~n~ guardar'),
+    'Alt-Q', kbAltQ, cmQuitNoSave, hcNoContext, SessItems);
+  SessItems := NewItem(UiText('Save and e~x~it', 'Guardar y sa~l~ir'),
+    'Alt-X', kbAltX, cmQuit, hcNoContext, SessItems);
+  SessItems := NewLine(SessItems);
+  SessItems := NewItem(UiText('Quick session ~w~izard...',
+    '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,
+    hcNoContext, SessItems);
+  SessItems := NewItem(UiText('Sa~v~e now', '~G~uardar ahora'), 'Ctrl-S',
+    kbCtrlS, cmSaveSess, hcNoContext, SessItems);
+  SessItems := NewLine(SessItems);
+  SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), 'Ctrl-B d',
+    kbNoKey, cmDetach, hcNoContext, SessItems);
+  MSessMenu := NewMenu(SessItems);
+
+  // ---- Opciones: idioma en orden fijo, nombres sin traducir ----
   LanguageItems := nil;
-  if CurrentLanguage = ulEnglish then Mark := '*' else Mark := ' ';
-  LanguageItems := NewItem(Format('%s ~E~nglish', [Mark]), '', kbNoKey,
-    cmLanguageBase + Ord(ulEnglish), hcNoContext, LanguageItems);
-  if CurrentLanguage = ulSpanish then Mark := '*' else Mark := ' ';
-  LanguageItems := NewItem(Format('%s E~s~panol', [Mark]), '', kbNoKey,
-    cmLanguageBase + Ord(ulSpanish), hcNoContext, LanguageItems);
-  MLanguage := NewMenu(LanguageItems);
+  LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulSpanish) +
+    'E~s~panol', '', kbNoKey, cmLanguageBase + Ord(ulSpanish), hcNoContext,
+    LanguageItems);
+  LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulEnglish) +
+    '~E~nglish', '', kbNoKey, cmLanguageBase + Ord(ulEnglish), hcNoContext,
+    LanguageItems);
+  MOptions := NewMenu(
+    NewSubMenu(UiText('~L~anguage', '~I~dioma'), hcNoContext,
+      NewMenu(LanguageItems), nil));
+
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
       cmHelp, hcNoContext, nil));
+
   MenuBar := New(PMenuBar, Init(R, NewMenu(
-    NewSubMenu(UiText('~P~anels', '~P~aneles'), 0, MPanes,
-    NewSubMenu(UiText('Si~z~e', 'Ta~m~ano'), 0, MSize,
-    NewSubMenu(UiText('~T~emplates', 'P~l~antillas'), 0, MTemplates,
+    NewSubMenu(UiText('~P~anes', '~P~aneles'), 0, MPanes,
     NewSubMenu(UiText('~W~indows', '~V~entanas'), 0, MWindows,
-    NewSubMenu(UiText('Sess~i~ons', '~S~esiones'), 0, MSessions,
-    NewSubMenu(UiText('T~e~rminals', '~T~erminales'), 0, MTerms,
-    NewSubMenu(UiText('~S~ession', 'S~e~sion'), 0, MSess,
+    NewSubMenu(UiText('~C~lasses', '~C~lases'), 0, MClasses,
+    NewSubMenu(UiText('P~r~ofiles', 'Pe~r~files'), 0, MProfiles,
+    NewSubMenu(UiText('~S~essions', '~S~esiones'), 0, MSessMenu,
+    NewSubMenu(UiText('~O~ptions', '~O~pciones'), 0, MOptions,
     NewSubMenu(UiText('~H~elp', '~A~yuda'), 0, MHelp,
-    NewSubMenu(UiText('~L~anguage', '~I~dioma'), 0, MLanguage,
-    nil))))))))))));
+    nil))))))))));
 end;
 
 procedure TSuperApp.InitStatusLine;
@@ -2713,31 +2765,28 @@ begin
   GetExtent(R);
   R.A.Y := R.B.Y - 1;
   Items := nil;
+  // teclas invisibles: despachan sin ocupar sitio en la linea de estado
+  Items := NewStatusKey('', kbAltQ, cmQuitNoSave, Items);
+  Items := NewStatusKey('', kbCtrlS, cmSaveSess, Items);
+  Items := NewStatusKey('', kbCtrlF5, cmResize, Items);
+  Items := NewStatusKey('', kbAltF9, cmWindowMinimize, Items);
+  Items := NewStatusKey('', kbAltF4, cmClose, Items);
+  Items := NewStatusKey('', kbAltF3, cmPaneClose, Items);
+  Items := NewStatusKey('', kbF9, cmWindowPrev, Items);
+  Items := NewStatusKey('', kbF7, cmPanePrev, Items);
+  Items := NewStatusKey('', kbF3, cmSplitH, Items);
+  // visibles: lo critico para un novato, cabiendo en 80 columnas
   Items := NewStatusKey(UiText('~Alt-X~ Exit', '~Alt-X~ Salir'), kbAltX,
     cmQuit, Items);
-  Items := NewStatusKey(UiText('~Alt-Q~ Exit without saving',
-    '~Alt-Q~ Sin guardar'), kbAltQ, cmQuitNoSave, Items);
-  Items := NewStatusKey(UiText('~Alt-F4~ Close', '~Alt-F4~ Cerrar'), kbAltF4,
-    cmClose, Items);
-  Items := NewStatusKey(UiText('~Alt-F3~ Close', '~Alt-F3~ Cerrar'), kbAltF3,
-    cmPaneClose, Items);
-  Items := NewStatusKey(UiText('~Ctrl-S~ Save', '~Ctrl-S~ Guardar'), kbCtrlS,
-    cmSaveSess, Items);
-  Items := NewStatusKey(UiText('Detach: Ctrl-B D', 'Separar: Ctrl-B D'),
+  Items := NewStatusKey(UiText('~Ctrl-B d~ Detach', '~Ctrl-B d~ Separar'),
     kbNoKey, cmDetach, Items);
-  Items := NewStatusKey(UiText('~Alt-F9~ Min.', '~Alt-F9~ Min.'), kbAltF9,
-    cmWindowMinimize, Items);
-  Items := NewStatusKey(UiText('~Ctrl-F5~ Move', '~Ctrl-F5~ Mover'), kbCtrlF5,
-    cmResize, Items);
-  Items := NewStatusKey(UiText('~F5~ Max/restore', '~F5~ Max/rest.'), kbF5,
+  Items := NewStatusKey(UiText('~F5~ Zoom', '~F5~ Zoom'), kbF5,
     cmZoom, Items);
-  Items := NewStatusKey(UiText('~F7~ Prev.', '~F7~ Ant.'), kbF7,
-    cmPanePrev, Items);
-  Items := NewStatusKey(UiText('~F6~ Next', '~F6~ Sig.'), kbF6,
+  Items := NewStatusKey(UiText('~F8~ Window', '~F8~ Ventana'), kbF8,
+    cmWindowNext, Items);
+  Items := NewStatusKey(UiText('~F6~ Pane', '~F6~ Panel'), kbF6,
     cmPaneNext, Items);
-  Items := NewStatusKey(UiText('~F3~ H-split', '~F3~ H-split'), kbF3,
-    cmSplitH, Items);
-  Items := NewStatusKey(UiText('~F2~ V-split', '~F2~ V-split'), kbF2,
+  Items := NewStatusKey(UiText('~F2~ Split', '~F2~ Dividir'), kbF2,
     cmSplitV, Items);
   StatusLine := New(PStatusLine, Init(R,
     NewStatusDef(0, $FFFF, Items, nil)));

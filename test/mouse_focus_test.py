@@ -79,7 +79,7 @@ try:
     s.drain(1.5)
     s.mouse(5, 1)
     check('mouse opens Panels menu',
-          any('Vertical (F2)' in ''.join(row) for row in s.screen.display))
+          any('Split vertical' in ''.join(row) for row in s.screen.display))
 
     # Paneles > Vertical, using global 1-based SGR coordinates.
     s.mouse(5, 3)

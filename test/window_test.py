@@ -81,7 +81,7 @@ s = Session()
 try:
     s.drain(1.5)
     check('window shortcuts visible',
-          'Max/restore' in s.text() and 'Min.' in s.text())
+          'F5 Zoom' in s.text() and 'F8 Window' in s.text())
 
     s.send(b'\x1bOQ')                  # F2: vertical split
     s.send(b'echo WINDOW_TWO_VISIBLE\r')
@@ -97,7 +97,7 @@ try:
     s.send(b'\x1b\x1b[20~')            # Alt-F9: minimize focused window
     check('window minimized', 'WINDOW_TWO_VISIBLE' not in s.text())
 
-    s.send(b'\x1bw')                  # Alt-W: Windows
+    s.send(b'\x1bp')                  # Alt-P: Panes (restaurar vive aqui)
     menu = s.text()
     check('restore entries listed',
           'Restore all' in menu and 'Restore 2' in menu)

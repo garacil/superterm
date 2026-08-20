@@ -120,9 +120,9 @@ try:
     s.drain(1.5)
     text = s.text()
     check('template starts two panes', 'one' in text and 'two' in text)
-    os.write(s.fd, b'\x1bt')
+    os.write(s.fd, b'\x1br')
     s.drain(0.4)
-    check('template menu opens', 'Templates' in s.text())
+    check('template menu opens', 'Profiles' in s.text())
     check('template menu lists alpha', 'alpha' in s.text())
     os.write(s.fd, b'\x1b')
     s.drain(0.2)
@@ -133,7 +133,7 @@ try:
     check('window switch works', 'two' in s.text())
 
     # Return to the template menu and select the second template.
-    os.write(s.fd, b'\x1bt')
+    os.write(s.fd, b'\x1br')
     s.drain(0.2)
     os.write(s.fd, b'\x1b[B\r')
     s.drain(1.0)

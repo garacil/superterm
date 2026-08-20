@@ -66,8 +66,8 @@ if os.path.exists(SESS):
 s = Session()
 s.drain(2.0)
 scr = s.text()
-check("menubar Panels", "Panels" in scr)
-check("statusline F2", "V-split" in scr)
+check("menubar Panels", "Panes" in scr)
+check("statusline F2", "F2 Split" in scr)
 check("window frame 1 shell", scr.count("╔") >= 1)
 check("OSC prompt hidden", "3008;start=" not in scr)
 
