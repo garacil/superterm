@@ -58,7 +58,7 @@
 {  1.32    04 Nov 99  LdB    Delphi 5 definitions added    }
 {  1.33    16 Oct 00  LdB    WIN32/WIN16 defines added     }
 {  1.34    02 May 02  MvdV   FreeBSD, NetBSD, OS_UNIX      }
-{  1.35    28 Nov 10  PM     64 bit OS Linux, Win64, FreeBSD }
+{  1.35    28 Nov 10  PM     64 bit OS GNU/Linux, Win64, FreeBSD }
 {  1.36    22 Mar 15  PM     64 bit OS DragonFly           }
 {**********************************************************}
 
@@ -68,7 +68,7 @@
    the compiler/platform/target in a consequent way.
 
     OS_XXXX         The operating system used (XXXX may be one of:
-                       DOS, OS2, Linux, Windows, Go32)
+                       DOS, OS2, GNU/Linux, Windows, Go32)
     PPC_XXXX        The compiler used: BP, FPK, Virtual, Speed
     BIT_XX          The number of bits of the target platform: 16 or 32
     PROC_XXXX       The mode of the target processor (Real or Protected)
@@ -199,8 +199,8 @@ FOR FPC THESE ARE THE TRANSLATIONS
 {$ENDIF}
 
 {---------------------------------------------------------------------------}
-{  FPC LINUX COMPILER changes operating system - Updated 27Aug98 LdB        }
-{  Note: Other linux compilers would need to change other details           }
+{  FPC GNU/Linux COMPILER changes operating system - Updated 27Aug98 LdB    }
+{  Note: Other GNU/Linux compilers would need to change other details        }
 {---------------------------------------------------------------------------}
 {$IFDEF LINUX}
   {$UNDEF OS_DOS}
@@ -534,5 +534,4 @@ FOR FPC THESE ARE THE TRANSLATIONS
     {$endif}
   {$endif}
 {$endif}
-
 
