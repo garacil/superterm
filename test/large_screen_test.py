@@ -111,9 +111,15 @@ try:
     check_layout(s, '4096x35 startup')
 
     s.send(b"printf '\\033[44m\\033[2J\\033[H'\r", 1.2)
-    background_cells = [s.screen.buffer[10][x].bg for x in range(2, s.width - 2)]
+    background_cells = [s.screen.buffer[10][x].bg for x in range(2, s.width - 3)]
     check('4096x35 background fills',
           background_cells and all(color == 'blue' for color in background_cells))
+    s.send(b"printf '\\033[107m\\033[2J\\033[H'\r", 1.2)
+    bright_background_cells = [s.screen.buffer[10][x].bg
+                               for x in range(2, s.width - 3)]
+    check('4096x35 bright background fills',
+          bright_background_cells and
+          all(color == 'brightwhite' for color in bright_background_cells))
 
     s.set_size(8192, 35)
     s.drain(1.8)
