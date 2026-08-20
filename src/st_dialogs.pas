@@ -485,7 +485,7 @@ begin
   // del array (Insert ordenaria alfabeticamente y descartaria duplicados)
   Coll := New(PStringCollection, Init(Length(AClasses) + 1, 8));
   for i := 0 to High(AClasses) do
-    Coll^.AtInsert(Coll^.Count, NewStr(ManagerRow(AClasses[i])));
+    Coll^.AtInsert(Coll^.Count, Objects.NewStr(ManagerRow(AClasses[i])));
 
   R := CenteredRect(70, 18);
   D := New(PManagerDialog, Init(R,
@@ -633,7 +633,7 @@ begin
   AIndex := -1;
   Result := False;
   Coll := New(PStringCollection, Init(Length(AClasses) + 1, 8));
-  Coll^.AtInsert(0, NewStr('1 ' + UiText('Local shell', 'Shell local')));
+  Coll^.AtInsert(0, Objects.NewStr('1 ' + UiText('Local shell', 'Shell local')));
   for i := 0 to High(AClasses) do
     if AClasses[i].Enabled then
     begin
@@ -642,7 +642,7 @@ begin
         Prefix := IntToStr(n) + ' '
       else
         Prefix := '  ';
-      Coll^.AtInsert(Coll^.Count, NewStr(Prefix + Copy(AClasses[i].Name, 1, 36)));
+      Coll^.AtInsert(Coll^.Count, Objects.NewStr(Prefix + Copy(AClasses[i].Name, 1, 36)));
     end;
 
   R := CenteredRect(46, 14);
@@ -746,9 +746,9 @@ begin
   Coll := New(PStringCollection, Init(Length(AProfiles) + 1, 8));
   for i := 0 to High(AProfiles) do
     Coll^.AtInsert(Coll^.Count,
-      NewStr(ProfileRow(AProfiles[i], i = AActive, i = ADefault)));
+      Objects.NewStr(ProfileRow(AProfiles[i], i = AActive, i = ADefault)));
   if Coll^.Count = 0 then
-    Coll^.AtInsert(0, NewStr(UiText('(no profiles yet)',
+    Coll^.AtInsert(0, Objects.NewStr(UiText('(no profiles yet)',
       '(aun no hay perfiles)')));
 
   R := CenteredRect(60, 16);

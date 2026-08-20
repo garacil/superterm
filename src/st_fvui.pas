@@ -11,7 +11,7 @@ unit st_fvui;
 interface
 
 uses
-  Objects, Drivers, Views, Menus, App, FVConsts, MsgBox,
+  Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video;
@@ -87,13 +87,6 @@ type
     procedure Minimize;
     procedure Restore;
     procedure SetTitle(const S: string);
-  end;
-
-  PHelpDialog = ^THelpDialog;
-  THelpDialog = object(TWindow)
-    constructor Init(var Bounds: Objects.TRect; const ATitle: string);
-    procedure Draw; virtual;
-    procedure HandleEvent(var Event: TEvent); virtual;
   end;
 
   TSuperApp = object(TApplication)
@@ -728,94 +721,6 @@ begin
   Title := Objects.NewStr(S);
   if Frame <> nil then
     Frame^.DrawView;
-end;
-
-constructor THelpDialog.Init(var Bounds: Objects.TRect; const ATitle: string);
-begin
-  inherited Init(Bounds, Copy(ATitle, 1, 80), wnNoNumber);
-  Flags := wfClose;
-  State := State and (not sfShadow);
-end;
-
-procedure THelpDialog.Draw;
-const
-  EnglishLines: array[0..4] of string = (
-    'F2/F3 split; F6/F7 change pane; F5 maximize',
-    'Alt-F3/Alt-F4 close; Alt-F9 minimize/restore',
-    'Ctrl-S save; Alt-X save and exit; Alt-Q exit without saving',
-    'Ctrl-B D detaches the session; use superterm --attach to return.',
-    'Session > New session wizard creates 1-4 panes with commands.');
-  SpanishLines: array[0..4] of string = (
-    'F2/F3 divide; F6/F7 cambia de panel; F5 maximiza',
-    'Alt-F3/Alt-F4 cierran; Alt-F9 minimiza/restaura',
-    'Ctrl-S guarda; Alt-X guarda y sale; Alt-Q sale sin guardar',
-    'Ctrl-B D separa la sesion; luego superterm --attach para volver.',
-    'Sesion > Asistente crea 1-4 paneles con comandos.');
-var
-  B: TDrawBuffer;
-  Color: byte;
-  I, J, InnerWidth, ButtonX: integer;
-  Line, ButtonText: string;
-begin
-  B := Default(TDrawBuffer);
-  if Frame <> nil then
-    Frame^.DrawView;
-  InnerWidth := Size.X - 2;
-  if InnerWidth < 1 then
-    Exit;
-  Color := byte(GetColor(1));
-  for I := 1 to Size.Y - 2 do
-  begin
-    MoveChar(B, ' ', Color, InnerWidth);
-    Line := '';
-    if I <= Length(EnglishLines) then
-      if CurrentLanguage = ulSpanish then
-        Line := SpanishLines[I - 1]
-      else
-        Line := EnglishLines[I - 1];
-    if I = Size.Y - 2 then
-    begin
-      if CurrentLanguage = ulSpanish then
-        ButtonText := 'Aceptar'
-      else
-        ButtonText := 'OK';
-      Line := '[' + ButtonText + ']';
-      ButtonX := (InnerWidth - Length(Line)) div 2;
-      if ButtonX > 0 then
-        for J := 1 to ButtonX do
-          B[J - 1] := (B[J - 1] and $FF00) or word(' ');
-      for J := 1 to Length(Line) do
-        B[ButtonX + J - 1] := (B[ButtonX + J - 1] and $FF00) or word(Line[J]);
-      WriteLine(1, I, InnerWidth, 1, B);
-      Continue;
-    end;
-    if Length(Line) > InnerWidth then
-      Line := Copy(Line, 1, InnerWidth);
-    for J := 1 to Length(Line) do
-      B[J - 1] := (B[J - 1] and $FF00) or word(Line[J]);
-    WriteLine(1, I, InnerWidth, 1, B);
-  end;
-end;
-
-procedure THelpDialog.HandleEvent(var Event: TEvent);
-begin
-  if (Event.What = evKeyDown) and
-     ((Event.KeyCode = kbEsc) or (Event.KeyCode = kbEnter) or
-      (Event.KeyCode = kbCtrlF4)) then
-  begin
-    EndModal(cmOK);
-    ClearEvent(Event);
-    Exit;
-  end;
-  if (Event.What = evCommand) and
-     ((Event.Command = cmOK) or (Event.Command = cmCancel) or
-      (Event.Command = cmClose)) then
-  begin
-    EndModal(cmOK);
-    ClearEvent(Event);
-    Exit;
-  end;
-  inherited HandleEvent(Event);
 end;
 
 { ---------------- TSuperApp ---------------- }
@@ -2093,21 +1998,46 @@ end;
 
 procedure TSuperApp.ShowHelp;
 var
-  R, DesktopRect: Objects.TRect;
-  Dialog: PHelpDialog;
+  R: Objects.TRect;
+  D: PDialog;
+  Lines: array[0..6] of string;
+  I: integer;
 begin
-  DesktopRect := Default(Objects.TRect);
-  Desktop^.GetExtent(DesktopRect);
-  R.Assign(0, 0, 84, 9);
-  if R.B.X > DesktopRect.B.X then
-    R.B.X := DesktopRect.B.X;
-  if R.B.Y > DesktopRect.B.Y then
-    R.B.Y := DesktopRect.B.Y;
-  R.Move((DesktopRect.B.X - R.B.X) div 2,
-    (DesktopRect.B.Y - R.B.Y) div 2);
-  Dialog := New(PHelpDialog, Init(R, UiText('Help', 'Ayuda')));
-  Desktop^.ExecView(Dialog);
-  Dispose(Dialog, Done);
+  // dialogo estandar: paleta de dialogo con contraste correcto (el antiguo
+  // THelpDialog pintaba con GetColor(1), el color del marco pasivo)
+  Lines[0] := UiText(
+    'F2/F3 split panes; F6/F7 next/prev pane; Alt-1..9 go to pane N',
+    'F2/F3 dividen paneles; F6/F7 panel sig./ant.; Alt-1..9 ir al panel N');
+  Lines[1] := UiText(
+    'F5 zoom; Alt-F9 minimize; Ctrl-F5 move/resize; Alt-F3 close pane',
+    'F5 zoom; Alt-F9 minimiza; Ctrl-F5 mover/tamano; Alt-F3 cierra panel');
+  Lines[2] := UiText(
+    'F8/F9 next/prev window; Ctrl-B 1..9 go to window N',
+    'F8/F9 ventana sig./ant.; Ctrl-B 1..9 ir a la ventana N');
+  Lines[3] := UiText(
+    'Ctrl-B c open a class in a new pane; Ctrl-B arrows resize the pane',
+    'Ctrl-B c abre una clase en panel nuevo; Ctrl-B flechas dan tamano');
+  Lines[4] := UiText(
+    'Ctrl-B d detach; superterm --attach returns; Ctrl-S save',
+    'Ctrl-B d separa; superterm --attach vuelve; Ctrl-S guarda');
+  Lines[5] := UiText(
+    'Profiles menu saves and restores named workspaces',
+    'El menu Perfiles guarda y restaura areas de trabajo con nombre');
+  Lines[6] := UiText(
+    'Alt-X save and exit; Alt-Q quit without saving',
+    'Alt-X guarda y sale; Alt-Q sale sin guardar');
+  R.Assign(0, 0, 74, 13);
+  D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
+  D^.Options := D^.Options or ofCentered;
+  for I := 0 to High(Lines) do
+  begin
+    R.Assign(3, 2 + I, 71, 3 + I);
+    D^.Insert(New(PStaticText, Init(R, Lines[I])));
+  end;
+  D^.NewButton(31, 10, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+    hcNoContext, bfDefault);
+  Desktop^.ExecView(D);
+  Dispose(D, Done);
 end;
 
 procedure TSuperApp.RebuildMenu;
