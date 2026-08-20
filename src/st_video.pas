@@ -49,7 +49,7 @@ begin
       end;
       Inc(Offset, LongInt(Written));
     end
-    else if fpGetErrno = ESysEINTR then
+    else if (Written < 0) and (fpGetErrno = ESysEINTR) then
       Continue
     else
     begin

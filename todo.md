@@ -39,7 +39,7 @@ below are remaining follow-up work, not currently failing regressions.
 ## Verification
 
 - `make test`: passing.
-- `test/large_screen_test.py`: passing at 4096 columns, including colored
-  background fill and resize/restore.
+- `test/large_screen_test.py`: passing at 4096 columns and the 8192-column
+  draw-buffer limit, including normal/bright background fills and resize/restore.
 - Plain interactive `top`: manually passing in an isolated PTY; no `nice`
   wrapper was used.
