@@ -9,6 +9,11 @@ at once. Sessions can be restored automatically, named templates can describe
 repeatable workspaces, and the session wizard can launch a small ad-hoc
 workspace without editing a configuration file.
 
+![superterm four-pane workspace](screenshots/four-pane.png)
+
+The screenshot shows the English interface with four independent PTY-backed
+panes in a normal GNU/Linux terminal window.
+
 ## Features
 
 - Vertical and horizontal pane splits, focus navigation, mouse focus, resize,

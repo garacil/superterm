@@ -8,13 +8,17 @@ Session -> New session wizard
 
 In Spanish mode the same entry is `Sesion -> Asistente nueva sesion`.
 
+![Session menu with New session wizard selected](../screenshots/session-menu.png)
+
 It creates a fresh runtime session with one to four windows. For each window,
 enter:
 
 1. A connection command, for example `ssh -tt alice@prod.example.com`,
    `tmux attach -t remote`, `mosh alice@host`, or a local command.
 2. An optional command to send after the connection command starts, for
-   example `tmux attach -t someone` or `cd /srv/app && ./run.sh`.
+    example `tmux attach -t someone` or `cd /srv/app && ./run.sh`.
+
+![Session wizard connection command](../screenshots/wizard.png)
 
 The wizard tiles the resulting windows and focuses the first one. It does not
 overwrite the INI or SQLite template files. Use the regular template
