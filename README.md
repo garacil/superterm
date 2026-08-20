@@ -173,17 +173,25 @@ python3 test/detach_test.py
 ./bin/superterm
 ```
 
-To return to a live session after detaching:
+Detaching prompts for a session name (default: the active profile). To
+return to a live session:
 
 ```sh
-./bin/superterm --attach
+./bin/superterm --attach            # one session: direct; several: picker
+./bin/superterm --attach dev        # attach by name
+./bin/superterm --list-sessions     # table of live sessions (purges orphans)
 ```
 
-Detach starts a per-user session server at `~/.superterm/session.sock`. The
-server owns the PTY masters, process groups, terminal parsers, and scrollback,
-so leaving the FreeVision client does not close local shells or remote SSH
-connections. `Alt-X` and `Alt-Q` remain permanent exits: they close the live
-session instead of creating a detachable one.
+Plain `superterm` also offers the session picker at startup when detached
+sessions exist. Each detach starts a per-user session server at
+`~/.superterm/sessions/<name>.sock` with a `<name>.ini` metadata sidecar
+(the pre-existing single `~/.superterm/session.sock` from older builds is
+still recognized). The server owns the PTY masters, process groups,
+terminal parsers, and scrollback, so leaving the FreeVision client does not
+close local shells or remote SSH connections. `Alt-X` and `Alt-Q` remain
+permanent exits: they close the live session instead of creating a
+detachable one. Inside the app, `Ctrl-Q s` opens the session picker to
+attach to or permanently close other sessions.
 
 Optional diagnostics:
 

@@ -30,7 +30,7 @@ def _purge_sessions():
             s.settimeout(1.0)
             s.connect(sock)
             # FRAME_CLOSE (kind=5, longitud 0) al daemon zombi
-            s.sendall(_struct.pack('<II', 5, 0))
+            s.sendall(_struct.pack('<BBhI', 5, 0, -1, 0))
             s.close()
         except OSError:
             pass

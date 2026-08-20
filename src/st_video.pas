@@ -167,6 +167,7 @@ begin
     219: Result := '█';
     220: Result := '▄';
     223: Result := '▀';
+    250: Result := '·';
     254: Result := '■';
   else
     Result := '?';

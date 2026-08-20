@@ -137,6 +137,9 @@ type
     procedure MinimizeAllWindows;
     procedure RestoreAllWindows;
     procedure SaveSessionNow;
+    procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
+      out ADeskW, ADeskH: integer);
+    procedure SyncRemoteLayout;
     function FindSysTerm(const AName: string): integer;
     function FindProfile(const AName: string): integer;
     function ActivateProfile(AProfile, AWindow: integer): boolean;
@@ -326,6 +329,7 @@ begin
     $2026: Result := '.';
     // caja y bloques: bytes CP437, el driver los pinta como glifos reales
     $2022: Result := #7;                       // punto gordo
+    $2800..$28FF: Result := #250;              // braille (spinners CLI)
     $2500, $2501: Result := #196;              // linea horizontal
     $2502, $2503: Result := #179;              // linea vertical
     $250C, $250F, $256D: Result := #218;       // esquinas
@@ -343,9 +347,13 @@ begin
     $2557: Result := #187;
     $255A: Result := #200;
     $255D: Result := #188;
+    $2560: Result := #204;                     // uniones dobles
+    $2563: Result := #185;
+    $2566: Result := #203;
+    $2569: Result := #202;
+    $256C, $256A, $256B: Result := #206;
     $2564: Result := #209;
     $2567: Result := #207;
-    $256A: Result := #206;
     $2580: Result := #223;                     // medios bloques y sombras
     $2584: Result := #220;
     $2588: Result := #219;
@@ -1025,7 +1033,10 @@ begin
       SaveConfig(Cfg);
     end;
   end
-  else if Cfg.AutoSave then
+  // SkipSave tambien protege este ramal: tras un attach abortado o una
+  // conexion remota perdida, Lay puede ser el layout remoto (con Panes=nil)
+  // y guardarlo machacaria el session.ini local con paneles vacios
+  else if Cfg.AutoSave and (not SkipSave) then
     SaveSessionNow;
   finally
   if not DetachRequested and not RemoteMode then
@@ -1578,11 +1589,15 @@ end;
 function TSuperApp.AttachRemoteSession(const APath: string): boolean;
 var
   Snapshot: TSessionSnapshot;
-  NewLay: TLayout;
+  NewLay, OldLay: TLayout;
   Stream: TMemoryStream;
   I, N, SysIdx: integer;
+  OldActiveProfile, OldActiveWindow: integer;
+  OldProfileMode: boolean;
+  OldSessionName: string;
   TitleS: string;
   Loaded: boolean;
+  GR: Objects.TRect;
 begin
   Result := False;
   Remote := TSessionClient.Create;
@@ -1606,8 +1621,13 @@ begin
     Remote := nil;
     Exit;
   end;
-  if Lay <> nil then
-    Lay.Free;
+  // guardar el estado previo: la carga por panel aun puede fallar (blob de
+  // pantalla corrupto o ventana no creada) y hay que poder restaurarlo
+  OldLay := Lay;
+  OldProfileMode := ProfileMode;
+  OldActiveProfile := ActiveProfile;
+  OldActiveWindow := ActiveWindow;
+  OldSessionName := CurrentSessionName;
   Lay := NewLay;
   Lay.Focused := Snapshot.Focused;
   if (Lay.Focused < 0) or (Lay.Focused >= N) then
@@ -1649,13 +1669,50 @@ begin
   end;
   if not Loaded then
   begin
+    // deshacer toda la mutacion: el arranque debe continuar como si el
+    // attach nunca se hubiera intentado (perfil incluido)
     RemoteMode := False;
     ReleaseRuntime;
+    Lay := OldLay;
+    ProfileMode := OldProfileMode;
+    ActiveProfile := OldActiveProfile;
+    ActiveWindow := OldActiveWindow;
+    CurrentSessionName := OldSessionName;
+    NewLay.Free;
     Remote.Free;
     Remote := nil;
     Exit;
   end;
+  OldLay.Free;
   RelayoutAll;
+  // geometria de ventanas que el daemon conserva (movidas, maximizadas,
+  // minimizadas); solo aplicable si el escritorio mide igual que al guardar
+  if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
+  begin
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    if (Snapshot.DeskW = GR.B.X - GR.A.X) and
+       (Snapshot.DeskH = GR.B.Y - GR.A.Y) then
+    begin
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) then
+        begin
+          if (Snapshot.Geom[I].BW > 0) and (Snapshot.Geom[I].BH > 0) then
+          begin
+            GR.Assign(Snapshot.Geom[I].BX, Snapshot.Geom[I].BY,
+              Snapshot.Geom[I].BX + Snapshot.Geom[I].BW,
+              Snapshot.Geom[I].BY + Snapshot.Geom[I].BH);
+            Win[I]^.Locate(GR);
+          end;
+          if Snapshot.Geom[I].Zoomed and (not Win[I]^.Zoomed) then
+            Win[I]^.Zoom;
+        end;
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) and
+           Snapshot.Geom[I].Minimized then
+          MinimizeWindow(I);
+    end;
+  end;
   ResetVideoSurface;
   ReDraw;
   FocusPane(Lay.Focused);
@@ -1717,6 +1774,8 @@ var
   PtyRefs: TPtyArray;
   ScreenRefs: TScreenArray;
   Titles, Terms: TStrArray;
+  DGeom: TPaneGeomArray;
+  DW, DH: integer;
   NameBuf: ShortString;
   SessName, ProfName: string;
 begin
@@ -1724,7 +1783,9 @@ begin
     Exit;
   if RemoteMode then
   begin
-    // cliente ya enganchado: el daemon conserva su nombre, sin prompt
+    // cliente ya enganchado: el daemon conserva su nombre, sin prompt;
+    // empujar antes el layout para que el proximo attach lo restaure
+    SyncRemoteLayout;
     if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
     begin
       MessageBox(UiText('The session server is unavailable.',
@@ -1783,10 +1844,20 @@ begin
       if PaneTerm[I] < Length(SysTerms) then
         Terms[I] := SysTerms[PaneTerm[I]].Name;
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
+    begin
+      // avisar en vez de abortar en silencio: el usuario ya confirmo un
+      // nombre y debe saber que la sesion NO se ha separado
+      MessageBox(UiText(
+        'Cannot detach: a pane has no live terminal.',
+        'No se puede separar: un panel no tiene terminal vivo.'), nil,
+        mfError or mfOKButton);
       Exit;
+    end;
   end;
+  // el daemon nace conociendo la geometria actual de las ventanas
+  CollectPaneGeom(DGeom, DW, DH);
   if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
-    Titles, Terms, Lay.Focused) then
+    Titles, Terms, Lay.Focused, DGeom, DW, DH) then
   begin
     MessageBox(UiText('Could not create the detached session server.',
       'No se pudo crear el servidor de la sesion separada.'), nil,
@@ -2315,6 +2386,10 @@ begin
     Exit;
   end;
   OldFocused := Lay.Focused;
+  // en remoto el panel vive en el daemon: matarlo alli y compactar en
+  // espejo (mismos indices); en local KillPane hace el trabajo
+  if RemoteMode and (Remote <> nil) and Remote.Connected then
+    Remote.SendKillPane(i);
   Lay.ClosePane(i);
   KillPane(i);
   for j := i to MAX_PANES - 2 do
@@ -2346,6 +2421,71 @@ begin
     Lay.Focused := FirstVisiblePane;
   RelayoutAll;
   FocusPane(Lay.Focused);
+  SyncRemoteLayout; // el arbol cambio: reflejarlo en el daemon
+end;
+
+// geometria actual de todas las ventanas (mismas reglas que el guardado
+// local: una maximizada aporta su ZoomRect, una minimizada sus bounds)
+procedure TSuperApp.CollectPaneGeom(out AGeom: TPaneGeomArray;
+  out ADeskW, ADeskH: integer);
+var
+  n, i: integer;
+  WR, RD: Objects.TRect;
+begin
+  AGeom := Default(TPaneGeomArray);
+  ADeskW := 0;
+  ADeskH := 0;
+  n := Lay.PaneCount;
+  if (n < 1) or (Desktop = nil) then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  ADeskW := RD.B.X - RD.A.X;
+  ADeskH := RD.B.Y - RD.A.Y;
+  SetLength(AGeom, n);
+  for i := 0 to n - 1 do
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      if Win[i]^.Zoomed then
+        WR := Win[i]^.ZoomRect
+      else
+      begin
+        WR := Default(Objects.TRect);
+        Win[i]^.GetBounds(WR);
+      end;
+      AGeom[i].BX := WR.A.X;
+      AGeom[i].BY := WR.A.Y;
+      AGeom[i].BW := WR.B.X - WR.A.X;
+      AGeom[i].BH := WR.B.Y - WR.A.Y;
+      AGeom[i].Zoomed := Win[i]^.Zoomed;
+      AGeom[i].Minimized := Win[i]^.Minimized;
+    end;
+end;
+
+// estando enganchado, empuja el estado del cliente al daemon para que el
+// proximo attach restaure exactamente lo que se ve ahora
+procedure TSuperApp.SyncRemoteLayout;
+var
+  Geom: TPaneGeomArray;
+  Titles: TStrArray;
+  DeskW, DeskH: integer;
+  n, i: integer;
+begin
+  if (not RemoteMode) or (Remote = nil) or (not Remote.Connected) then
+    Exit;
+  n := Lay.PaneCount;
+  if n < 1 then
+    Exit;
+  CollectPaneGeom(Geom, DeskW, DeskH);
+  if Length(Geom) <> n then
+    Exit;
+  Titles := Default(TStrArray);
+  SetLength(Titles, n);
+  for i := 0 to n - 1 do
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+      Titles[i] := Win[i]^.GetTitle(80);
+  Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
+    DeskW, DeskH);
 end;
 
 procedure TSuperApp.SaveSessionNow;
@@ -2537,6 +2677,13 @@ begin
               'Seleccion del perfil guardada.'), nil,
               mfInformation or mfOKButton);
           end
+          else if RemoteMode then
+          begin
+            SyncRemoteLayout;
+            MessageBox(UiText('Layout synced to the detached session.',
+              'Layout sincronizado con la sesion separada.'), nil,
+              mfInformation or mfOKButton);
+          end
           else
           begin
             SaveSessionNow;
@@ -2671,10 +2818,12 @@ var
           begin
             RemoteLost := True;
             RemoteMode := False;
+            // marcar antes del MessageBox: nada de esta instancia debe
+            // guardarse (el layout es el de la sesion remota perdida)
+            SkipSave := True;
             MessageBox(UiText('Connection to the session was lost.',
               'Se perdio la conexion con la sesion.'), nil,
               mfError or mfOKButton);
-            SkipSave := True;
             Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
@@ -2943,6 +3092,13 @@ begin
     cmSessionPick, hcNoContext, SessItems);
   SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' d',
     kbNoKey, cmDetach, hcNoContext, SessItems);
+  // enganchado a una sesion con nombre: mostrarlo como fila informativa
+  if RemoteMode and (CurrentSessionName <> '') then
+  begin
+    SessItems := NewLine(SessItems);
+    SessItems := NewInfoItem(UiText('Session: ', 'Sesion: ') +
+      Copy(CurrentSessionName, 1, 24), '', SessItems);
+  end;
   MSessMenu := NewMenu(SessItems);
 
   // ---- Opciones: idioma en orden fijo, nombres sin traducir ----

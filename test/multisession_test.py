@@ -131,6 +131,13 @@ check("two session pairs", all(os.path.exists(p) for p in
 res = run_cli('--list-sessions')
 check("list exit 0", res.returncode == 0)
 check("list shows alfa+beta", ('alfa' in res.stdout) and ('beta' in res.stdout))
+lines = [l for l in res.stdout.splitlines() if l.strip()]
+check("list header columns", len(lines) >= 3 and all(
+    col in lines[0] for col in ('NAME', 'PROFILE', 'PANES', 'CREATED')))
+rows = {l.split()[0]: l for l in lines[1:]}
+check("list row panes numeric", all(
+    any(tok.isdigit() for tok in rows[n].split()[1:]) for n in ('alfa', 'beta')
+    if n in rows) and 'alfa' in rows and 'beta' in rows)
 
 # ---- 4: --attach beta por nombre; re-separar sin prompt ----
 c = Client(['--attach', 'beta'])
@@ -179,6 +186,9 @@ check("sessions dir empty", leftover == [])
 open(spath('zombi'), 'w').close()
 with open(mpath('zombi'), 'w') as f:
     f.write('[session]\nname=zombi\n')
+# la purga respeta sockets recientes (<5s, ventana bind->listen): envejecerlo
+_old = time.time() - 30
+os.utime(spath('zombi'), (_old, _old))
 res = run_cli('--list-sessions')
 check("stale list exit 0", res.returncode == 0)
 check("zombi not listed", 'zombi' not in res.stdout)

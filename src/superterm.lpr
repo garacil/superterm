@@ -64,10 +64,21 @@ begin
     end;
     if AttachName <> '' then
     begin
+      // los nombres de sesion distinguen mayusculas: primero coincidencia
+      // exacta; solo si no hay, segunda pasada con el nombre saneado
       for i := 0 to High(Infos) do
-        if SameText(Infos[i].Name, AttachName) or
-           SameText(Infos[i].Name, SanitizeSessionName(AttachName)) then
+        if Infos[i].Name = AttachName then
+        begin
           AttachSocket := Infos[i].SocketPath;
+          break;
+        end;
+      if AttachSocket = '' then
+        for i := 0 to High(Infos) do
+          if Infos[i].Name = SanitizeSessionName(AttachName) then
+          begin
+            AttachSocket := Infos[i].SocketPath;
+            break;
+          end;
       if AttachSocket = '' then
       begin
         WriteLn(StdErr, 'superterm: no session named "', AttachName, '"');
@@ -84,7 +95,10 @@ begin
   CaptureConsoleCursor;
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
-  STApp^.Run;
+  // attach cancelado o fallido durante Init: no arrancar el bucle de
+  // eventos (un cmQuit posteado en Init se perderia al entrar en Run)
+  if not STApp^.AbortRun then
+    STApp^.Run;
   Dispose(STApp, Done);
   // dejar el cursor donde estaba al lanzar el programa (cierre o detach)
   RestoreConsoleCursor;
