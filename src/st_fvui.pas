@@ -991,6 +991,8 @@ var
 begin
   if (ACols < 1) or (ARows < 1) then
     Exit;
+  if ACols > MaxViewWidth then
+    ACols := MaxViewWidth;
   NeedVideo := (ScreenWidth <> ACols) or (ScreenHeight <> ARows);
   NeedBounds := (Size.X <> ACols) or (Size.Y <> ARows);
   if (not NeedVideo) and (not NeedBounds) then

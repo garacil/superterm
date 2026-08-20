@@ -115,6 +115,10 @@ try:
     check('4096x35 background fills',
           background_cells and all(color == 'blue' for color in background_cells))
 
+    s.set_size(8192, 35)
+    s.drain(1.8)
+    check_layout(s, '8192x35 maximum')
+
     s.set_size(300, 80)
     s.drain(1.2)
     check_layout(s, '300x80 resize')

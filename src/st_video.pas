@@ -14,11 +14,49 @@ uses
 var
   SavedDriver: TVideoDriver;
   DriverInstalled: Boolean;
+  OutputFailed: Boolean;
+
+function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
+var
+  Cell: PVideoCell;
+begin
+  { VideoBuf is dynamically allocated even though PVideoBuf has a legacy
+    fixed upper bound in the RTL declaration. Use cell-sized pointer math so
+    wide screens do not depend on that declaration. }
+  Cell := PVideoCell(ABuffer);
+  Inc(Cell, AIndex);
+  Result := Cell^;
+end;
 
 procedure WriteRaw(const S: AnsiString);
+var
+  Offset, Remaining: LongInt;
+  Written: Int64;
 begin
-  if Length(S) > 0 then
-    fpWrite(StdOutputHandle, S[1], Length(S));
+  if OutputFailed or (Length(S) = 0) then
+    Exit;
+  Offset := 1;
+  while Offset <= Length(S) do
+  begin
+    Remaining := Length(S) - Offset + 1;
+    Written := fpWrite(StdOutputHandle, S[Offset], Remaining);
+    if Written > 0 then
+    begin
+      if Written > Remaining then
+      begin
+        OutputFailed := True;
+        Exit;
+      end;
+      Inc(Offset, LongInt(Written));
+    end
+    else if fpGetErrno = ESysEINTR then
+      Continue
+    else
+    begin
+      OutputFailed := True;
+      Exit;
+    end;
+  end;
 end;
 
 function VgaColorToAnsi(AColor: Byte; AForeground: Boolean): Integer;
@@ -64,13 +102,37 @@ begin
     Exit(AnsiChar(AChar));
   case AChar of
     0: Result := ' ';
+    1: Result := '☺';
+    2: Result := '☻';
+    3: Result := '♥';
+    4: Result := '♦';
+    5: Result := '♣';
+    6: Result := '♠';
+    7: Result := '•';
+    8: Result := '█';
+    9: Result := '○';
+    10: Result := '◙';
+    11: Result := '♂';
+    12: Result := '♀';
+    13: Result := '♪';
+    14: Result := '♫';
+    15: Result := '☼';
     16: Result := '►';
     17: Result := '◄';
     18: Result := '↕';
-    24: Result := '↔';
-    25: Result := '↑';
-    26: Result := '↓';
+    19: Result := '‼';
+    20: Result := '¶';
+    21: Result := '§';
+    22: Result := '▬';
+    23: Result := '↨';
+    24: Result := '↑';
+    25: Result := '↓';
+    26: Result := '→';
     27: Result := '←';
+    28: Result := '∟';
+    29: Result := '↔';
+    30: Result := '▲';
+    31: Result := '▼';
     176: Result := '░';
     177: Result := '▒';
     178: Result := '▓';
@@ -86,9 +148,13 @@ begin
     195: Result := '├';
     196: Result := '─';
     197: Result := '┼';
+    199: Result := '╟';
     200: Result := '╚';
     201: Result := '╔';
     205: Result := '═';
+    206: Result := '╪';
+    207: Result := '╧';
+    209: Result := '╤';
     217: Result := '┘';
     218: Result := '┌';
     220: Result := '▄';
@@ -112,7 +178,7 @@ begin
   Text := '';
   for I := AStart to AStop - 1 do
   begin
-    Text := Text + VgaChar(Byte(VideoBuf^[I]));
+    Text := Text + VgaChar(Byte(VideoCellAt(VideoBuf, I)));
     if Length(Text) >= 512 then
     begin
       WriteRaw(Text);
@@ -126,6 +192,7 @@ procedure WideUpdateScreen(Force: Boolean);
 var
   X, Y, Index, RunStart, RunStop: LongInt;
   Attr: Byte;
+  OutCursorX, OutCursorY: Word;
 begin
   if (VideoBuf = nil) or (OldVideoBuf = nil) or
      (ScreenWidth = 0) or (ScreenHeight = 0) then
@@ -138,21 +205,23 @@ begin
     while X < ScreenWidth do
     begin
       Index := Y * ScreenWidth + X;
-      if (not Force) and (VideoBuf^[Index] = OldVideoBuf^[Index]) then
+      if (not Force) and
+         (VideoCellAt(VideoBuf, Index) = VideoCellAt(OldVideoBuf, Index)) then
       begin
         Inc(X);
         Continue;
       end;
 
       RunStart := X;
-      Attr := Byte(VideoBuf^[Index] shr 8);
+      Attr := Byte(VideoCellAt(VideoBuf, Index) shr 8);
       Inc(X);
       while X < ScreenWidth do
       begin
         Index := Y * ScreenWidth + X;
-        if (not Force) and (VideoBuf^[Index] = OldVideoBuf^[Index]) then
+        if (not Force) and
+           (VideoCellAt(VideoBuf, Index) = VideoCellAt(OldVideoBuf, Index)) then
           Break;
-        if Byte(VideoBuf^[Index] shr 8) <> Attr then
+        if Byte(VideoCellAt(VideoBuf, Index) shr 8) <> Attr then
           Break;
         Inc(X);
       end;
@@ -164,7 +233,15 @@ begin
     end;
   end;
 
-  WriteRaw(CursorPosition(CursorX, CursorY));
+  if CursorX >= ScreenWidth then
+    OutCursorX := ScreenWidth - 1
+  else
+    OutCursorX := CursorX;
+  if CursorY >= ScreenHeight then
+    OutCursorY := ScreenHeight - 1
+  else
+    OutCursorY := CursorY;
+  WriteRaw(CursorPosition(OutCursorX, OutCursorY));
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
 end;
 
