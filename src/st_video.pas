@@ -252,14 +252,14 @@ begin
     SavedDriver.DoneDriver;
   { FreeVision homes the cursor while tearing down the alternate screen.
     Restore the shell's cursor after that teardown, not before it. }
-  WriteRaw(#27'8');
+  WriteRaw(#27'[u'#27'8');
 end;
 
 procedure WideInitVideo;
 begin
   { Keep the cursor position from the shell even on terminals that do not
     restore it reliably for private alternate-screen mode 1049. }
-  WriteRaw(#27'7');
+  WriteRaw(#27'7'#27'[s');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
 end;
