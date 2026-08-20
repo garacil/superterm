@@ -73,6 +73,16 @@ function TerminalEnvPass(const T: TTerminalDef): string;    // compatibilidad: s
 procedure LoadConfig(out Cfg: TConfig);
 procedure SaveConfig(const Cfg: TConfig);
 
+var
+  // idioma efectivo de la interfaz, compartido por todas las unidades de UI
+  CurrentLanguage: TUiLanguage = ulEnglish;
+
+// devuelve el texto del idioma activo (todas las cadenas de UI van en pares)
+function UiText(const EnglishText, SpanishText: string): string;
+
+// marca uniforme de elemento activo en listas tipo radio: '(*) ' / '( ) '
+function ActiveMark(AActive: boolean): string;
+
 implementation
 
 uses
@@ -119,6 +129,22 @@ begin
     Result := 'es'
   else
     Result := 'en';
+end;
+
+function UiText(const EnglishText, SpanishText: string): string;
+begin
+  if CurrentLanguage = ulSpanish then
+    Result := SpanishText
+  else
+    Result := EnglishText;
+end;
+
+function ActiveMark(AActive: boolean): string;
+begin
+  if AActive then
+    Result := '(*) '
+  else
+    Result := '( ) ';
 end;
 
 function ConfigFile: string;

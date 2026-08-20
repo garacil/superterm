@@ -17,6 +17,15 @@ uses
   st_debug, st_server, st_video;
 
 const
+  // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenTerm,
+  // cmTemplateBase, cmSessionBase, cmWindowBase, cmWindowRestoreBase,
+  // cmLanguageBase) posee un rango reservado y NINGUN case directo puede
+  // caer dentro de un rango dinamico. Antes cmOpenTerm=2111 chocaba con
+  // cmSessionWizard=2112 y cmDetach=2113: pulsar el 2o terminal del menu
+  // lanzaba el asistente y el 3o hacia detach.
+  // Rangos: 2100-2199 paneles/app · 2200-2259 plantillas · 2300-2349
+  // terminales (cmOpenTerm+i) · 2400-2439 ventanas · 2500-2539 minimizados
+  // · 2550-2569 sesion (detach/asistente) · 2600 ayuda · 2700 idioma.
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -28,20 +37,20 @@ const
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
   cmQuitNoSave = 2110;
-  cmOpenTerm   = 2111;   // + indice en SysTerms
-  cmSessionWizard = 2112;
-  cmDetach      = 2113;
-  cmHelp        = 2600;
-  cmLanguageBase = 2700;
-  cmTemplateBase = 2200;
-  cmSessionBase  = 2300;
+  cmTemplateBase = 2200;   // + indice de plantilla (0..39)
+  cmOpenTerm   = 2320;     // + indice en SysTerms (0..29)
+  cmSessionBase  = 2260;   // + indice de sesion de plantilla (0..39)
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
-  cmWindowBase   = 2410;
+  cmWindowBase   = 2410;   // + indice de ventana (0..15)
   cmWindowMinimize = 2500;
   cmWindowMinimizeAll = 2501;
   cmWindowRestoreAll = 2502;
-  cmWindowRestoreBase = 2520;
+  cmWindowRestoreBase = 2520;  // + indice de panel (0..15)
+  cmDetach        = 2550;
+  cmSessionWizard = 2560;
+  cmHelp        = 2600;
+  cmLanguageBase = 2700;
 
 type
   PSuperApp = ^TSuperApp;
@@ -158,15 +167,6 @@ uses
 
 var
   CursorPhase: boolean = False;
-  CurrentLanguage: TUiLanguage = ulEnglish;
-
-function UiText(const EnglishText, SpanishText: string): string;
-begin
-  if CurrentLanguage = ulSpanish then
-    Result := SpanishText
-  else
-    Result := EnglishText;
-end;
 
 function FirstWord(const S: string): string;
 var
@@ -799,6 +799,8 @@ var
   i, n, k, SysIdx: integer;
   Ok: boolean;
   Dir: TSplitDir;
+  DeskW, DeskH: integer;
+  RD, WR: Objects.TRect;
 begin
   InstallWideVideoOutput;
   inherited Init;
@@ -902,8 +904,10 @@ begin
   end;
   Pin := nil;
   Ok := False;
+  DeskW := 0;
+  DeskH := 0;
   if Cfg.AutoRestore then
-    Ok := LoadSession(SessionFile, Lay, Pin);
+    Ok := LoadSession(SessionFile, Lay, Pin, DeskW, DeskH);
   if not Ok then
   begin
     Lay.Free;
@@ -967,6 +971,33 @@ begin
   if Lay.Focused >= n then
     Lay.Focused := 0;
   RelayoutAll;
+  // reaplicar geometria/estado manuales de las ventanas (movidas o
+  // redimensionadas con Ctrl-F5, maximizadas, minimizadas) guardados en
+  // session.ini; solo si el escritorio mide lo mismo que al guardar,
+  // porque los bounds son absolutos
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  if Ok and (DeskW = RD.B.X - RD.A.X) and (DeskH = RD.B.Y - RD.A.Y) then
+  begin
+    for i := 0 to n - 1 do
+      if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) then
+      begin
+        if (Pin[i].BW > 0) and (Pin[i].BH > 0) then
+        begin
+          WR := Default(Objects.TRect);
+          WR.Assign(Pin[i].BX, Pin[i].BY,
+            Pin[i].BX + Pin[i].BW, Pin[i].BY + Pin[i].BH);
+          Win[i]^.Locate(WR);
+        end;
+        if Pin[i].Zoomed and (not Win[i]^.Zoomed) then
+          Win[i]^.Zoom;
+      end;
+    // los minimizados al final: MinimizeWindow gestiona el foco
+    for i := 0 to n - 1 do
+      if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) and
+         Pin[i].Minimized then
+        MinimizeWindow(i);
+  end;
   ResetVideoSurface;
   ReDraw;
   FocusPane(Lay.Focused);
@@ -2136,6 +2167,7 @@ procedure TSuperApp.SaveSessionNow;
 var
   Pin: TPaneArray;
   n, i: integer;
+  RD, WR: Objects.TRect;
 begin
   n := Lay.PaneCount;
   if n < 1 then
@@ -2158,8 +2190,28 @@ begin
         Pin[i].Args := Panes[i].TitleArgs;
       end;
     end;
+    // geometria y estado de la ventana: para una maximizada el rect real
+    // es ZoomRect (el de restauracion); Minimize solo oculta, conserva bounds
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      if Win[i]^.Zoomed then
+        WR := Win[i]^.ZoomRect
+      else
+      begin
+        WR := Default(Objects.TRect);
+        Win[i]^.GetBounds(WR);
+      end;
+      Pin[i].BX := WR.A.X;
+      Pin[i].BY := WR.A.Y;
+      Pin[i].BW := WR.B.X - WR.A.X;
+      Pin[i].BH := WR.B.Y - WR.A.Y;
+      Pin[i].Minimized := Win[i]^.Minimized;
+      Pin[i].Zoomed := Win[i]^.Zoomed;
+    end;
   end;
-  SaveSession(SessionFile, Lay, Pin);
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  SaveSession(SessionFile, Lay, Pin, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
 end;
 
 procedure TSuperApp.HandleEvent(var Event: TEvent);

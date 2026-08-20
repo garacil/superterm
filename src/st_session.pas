@@ -19,12 +19,20 @@ type
     Cwd: string;
     Term: string;   // nombre del terminal de /etc/superterm ('' = ad-hoc)
     Args: TStringArray; // argumentos observados, para restauracion segura
+    // geometria/estado de la ventana del panel (BW<=0 = sin datos, tiling):
+    // las ventanas movidas o redimensionadas a mano con Ctrl-F5 deben
+    // volver exactamente donde estaban al restaurar la sesion
+    BX, BY, BW, BH: integer;
+    Minimized: boolean;
+    Zoomed: boolean;
   end;
 
   TPaneArray = array of TPaneInfo;
 
-procedure SaveSession(const FileName: string; Lay: TLayout; const Panes: array of TPaneInfo);
-function LoadSession(const FileName: string; var Lay: TLayout; out Panes: TPaneArray): boolean;
+procedure SaveSession(const FileName: string; Lay: TLayout;
+  const Panes: array of TPaneInfo; ADeskW: integer = 0; ADeskH: integer = 0);
+function LoadSession(const FileName: string; var Lay: TLayout;
+  out Panes: TPaneArray; out ADeskW, ADeskH: integer): boolean;
 function SaveLayoutString(Lay: TLayout): string;
 function LoadLayoutString(const Nodes: string; out Lay: TLayout): boolean;
 
@@ -91,12 +99,13 @@ begin
   Result := nil;
 end;
 
-procedure SaveSession(const FileName: string; Lay: TLayout; const Panes: array of TPaneInfo);
+procedure SaveSession(const FileName: string; Lay: TLayout;
+  const Panes: array of TPaneInfo; ADeskW: integer; ADeskH: integer);
 var
   Ini: TIniFile;
   SL: TStringList;
   i, j: integer;
-  TempName: string;
+  TempName, Sec: string;
 begin
   TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
   if FileExists(TempName) then
@@ -110,15 +119,33 @@ begin
     Ini.WriteString('layout', 'nodes', SL.DelimitedText);
     Ini.WriteInteger('layout', 'count', Length(Panes));
     Ini.WriteInteger('layout', 'focused', Lay.Focused);
+    // tamano del escritorio al guardar: los bounds absolutos solo se
+    // reaplican al restaurar si el escritorio mide lo mismo
+    if (ADeskW > 0) and (ADeskH > 0) then
+    begin
+      Ini.WriteInteger('layout', 'deskw', ADeskW);
+      Ini.WriteInteger('layout', 'deskh', ADeskH);
+    end;
     for i := 0 to High(Panes) do
     begin
-      Ini.WriteString('pane' + IntToStr(i), 'cmd', Panes[i].Cmd);
-      Ini.WriteString('pane' + IntToStr(i), 'cwd', Panes[i].Cwd);
-      Ini.WriteString('pane' + IntToStr(i), 'term', Panes[i].Term);
-      Ini.WriteInteger('pane' + IntToStr(i), 'argc', Length(Panes[i].Args));
+      Sec := 'pane' + IntToStr(i);
+      Ini.WriteString(Sec, 'cmd', Panes[i].Cmd);
+      Ini.WriteString(Sec, 'cwd', Panes[i].Cwd);
+      Ini.WriteString(Sec, 'term', Panes[i].Term);
+      if (Panes[i].BW > 0) and (Panes[i].BH > 0) then
+      begin
+        Ini.WriteInteger(Sec, 'bx', Panes[i].BX);
+        Ini.WriteInteger(Sec, 'by', Panes[i].BY);
+        Ini.WriteInteger(Sec, 'bw', Panes[i].BW);
+        Ini.WriteInteger(Sec, 'bh', Panes[i].BH);
+      end;
+      if Panes[i].Minimized then
+        Ini.WriteInteger(Sec, 'min', 1);
+      if Panes[i].Zoomed then
+        Ini.WriteInteger(Sec, 'zoom', 1);
+      Ini.WriteInteger(Sec, 'argc', Length(Panes[i].Args));
       for j := 0 to High(Panes[i].Args) do
-        Ini.WriteString('pane' + IntToStr(i), 'arg' + IntToStr(j),
-          Panes[i].Args[j]);
+        Ini.WriteString(Sec, 'arg' + IntToStr(j), Panes[i].Args[j]);
     end;
     Ini.UpdateFile;
     // Session data may contain commands, paths, and terminal identities.
@@ -131,18 +158,22 @@ begin
     DeleteFile(TempName);
 end;
 
-function LoadSession(const FileName: string; var Lay: TLayout; out Panes: TPaneArray): boolean;
+function LoadSession(const FileName: string; var Lay: TLayout;
+  out Panes: TPaneArray; out ADeskW, ADeskH: integer): boolean;
 var
   Ini: TIniFile;
   SL: TStringList;
   Idx, i, j, n, ArgCount: integer;
   Root: TNode;
+  Sec: string;
 begin
   Result := False;
   if Lay <> nil then
     Lay.Free;
   Lay := nil;
   Panes := nil;
+  ADeskW := 0;
+  ADeskH := 0;
   if not FileExists(FileName) then
     Exit;
   Ini := TIniFile.Create(FileName);
@@ -178,19 +209,27 @@ begin
     Lay.Focused := Ini.ReadInteger('layout', 'focused', 0);
     if (Lay.Focused < 0) or (Lay.Focused >= n) then
       Lay.Focused := 0;
+    ADeskW := Ini.ReadInteger('layout', 'deskw', 0);
+    ADeskH := Ini.ReadInteger('layout', 'deskh', 0);
     SetLength(Panes, n);
     for i := 0 to n - 1 do
     begin
-      Panes[i].Cmd := Ini.ReadString('pane' + IntToStr(i), 'cmd', '');
-      Panes[i].Cwd := Ini.ReadString('pane' + IntToStr(i), 'cwd', '');
-      Panes[i].Term := Ini.ReadString('pane' + IntToStr(i), 'term', '');
-      ArgCount := Ini.ReadInteger('pane' + IntToStr(i), 'argc', 0);
+      Sec := 'pane' + IntToStr(i);
+      Panes[i].Cmd := Ini.ReadString(Sec, 'cmd', '');
+      Panes[i].Cwd := Ini.ReadString(Sec, 'cwd', '');
+      Panes[i].Term := Ini.ReadString(Sec, 'term', '');
+      Panes[i].BX := Ini.ReadInteger(Sec, 'bx', 0);
+      Panes[i].BY := Ini.ReadInteger(Sec, 'by', 0);
+      Panes[i].BW := Ini.ReadInteger(Sec, 'bw', 0);
+      Panes[i].BH := Ini.ReadInteger(Sec, 'bh', 0);
+      Panes[i].Minimized := Ini.ReadInteger(Sec, 'min', 0) <> 0;
+      Panes[i].Zoomed := Ini.ReadInteger(Sec, 'zoom', 0) <> 0;
+      ArgCount := Ini.ReadInteger(Sec, 'argc', 0);
       if ArgCount < 0 then ArgCount := 0;
       if ArgCount > 128 then ArgCount := 128;
       SetLength(Panes[i].Args, ArgCount);
       for j := 0 to ArgCount - 1 do
-        Panes[i].Args[j] := Ini.ReadString('pane' + IntToStr(i),
-          'arg' + IntToStr(j), '');
+        Panes[i].Args[j] := Ini.ReadString(Sec, 'arg' + IntToStr(j), '');
     end;
     Result := True;
   finally

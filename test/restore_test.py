@@ -125,4 +125,44 @@ check("C: lower-left returns to shell", 'RESTORED_SHELL' in c.text())
 c.send(b'\x1bq', 0.8)
 c.close()
 
+# --- run D: manually moved/resized windows must restore at their saved
+# geometry, not at the computed tile (deskh = H - menubar - statusline)
+DESKW, DESKH = W, H - 2
+BX, BY, BW_, BH_ = 30, 5, 50, 15
+with open(SESS, 'w') as f:
+    f.write(f"""[layout]
+nodes=V:500;L;L
+count=2
+focused=1
+deskw={DESKW}
+deskh={DESKH}
+
+[pane0]
+cmd=
+cwd=/tmp/opencode/sthome
+term=
+argc=0
+
+[pane1]
+cmd=
+cwd=/tmp/opencode/sthome
+term=
+argc=0
+bx={BX}
+by={BY}
+bw={BW_}
+bh={BH_}
+""")
+d = Session()
+d.drain(2.5)
+corner = d.screen.buffer[1 + BY][BX].data
+check("D: moved window at saved pos", corner == '╔')
+d.send(b'\x13', 1.0)  # Ctrl-S: guardar sesion
+d.send(b'\r', 0.5)    # cerrar el aviso "Session saved."
+d.close()
+time.sleep(0.4)
+txt = open(SESS).read()
+check("D: bounds round-trip", f'bx={BX}' in txt and f'bw={BW_}' in txt)
+check("D: desk size saved", f'deskw={DESKW}' in txt)
+
 sys.exit(1 if fails else 0)
