@@ -9,7 +9,7 @@ program superterm;
 {$mode objfpc}{$H+}
 
 uses
-  Objects, Drivers, App, st_fvui, st_server;
+  Objects, Drivers, App, st_fvui, st_server, st_video;
 
 var
   STApp: PSuperApp;
@@ -23,8 +23,12 @@ begin
     WriteLn(StdErr, 'superterm: no detached session is available');
     Halt(1);
   end;
+  // guardar la posicion real del cursor antes de tocar video/teclado
+  CaptureConsoleCursor;
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
   STApp^.Run;
   Dispose(STApp, Done);
+  // dejar el cursor donde estaba al lanzar el programa (cierre o detach)
+  RestoreConsoleCursor;
 end.
