@@ -211,7 +211,7 @@ begin
   ARows := 0;
   for Fd := 0 to 2 do
   begin
-    FillChar(WS, SizeOf(WS), 0);
+    WS := Default(TWinSize);
     if (FpIOCtl(Fd, TIOCGWINSZ, @WS) = 0) and
        (WS.ws_col > 0) and (WS.ws_row > 0) then
     begin
@@ -356,6 +356,7 @@ var
     Result := (word(LocalBg) shl 12) or (word(LocalFg) shl 8);
   end;
 begin
+  B := Default(TDrawBuffer);
   App := PSuperApp(Application);
   w := Size.X;
   if w > MaxViewWidth then
@@ -535,6 +536,7 @@ var
   B: TDrawBuffer;
   Color: byte;
 begin
+  B := Default(TDrawBuffer);
   inherited Draw;
   // FreeVision has close and zoom buttons but no minimize button. Keep the
   // minimize control in the same title-bar language as the native controls.
@@ -559,6 +561,7 @@ begin
     App := PSuperApp(Application);
     if (App <> nil) and (Owner <> nil) then
       App^.FocusPane(PTermWindow(Owner)^.PaneIdx);
+    Mouse := Default(Objects.TPoint);
     MakeLocal(Event.Where, Mouse);
     if (State and sfActive <> 0) and (Mouse.Y = 0) and
        (Size.X >= 14) and (Mouse.X >= Size.X - 10) and
@@ -596,6 +599,7 @@ procedure TTermWindow.InitFrame;
 var
   R: Objects.TRect;
 begin
+  R := Default(Objects.TRect);
   GetExtent(R);
   Frame := New(PTermFrame, Init(R));
 end;
@@ -713,6 +717,7 @@ var
   I, J, InnerWidth, ButtonX: integer;
   Line, ButtonText: string;
 begin
+  B := Default(TDrawBuffer);
   if Frame <> nil then
     Frame^.DrawView;
   InnerWidth := Size.X - 2;
@@ -1219,6 +1224,7 @@ var
   i: integer;
   R: Objects.TRect;
 begin
+  R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
   Lay.ComputeRects(R.B.X - R.A.X, R.B.Y - R.A.Y, Rects);
   for i := 0 to MAX_PANES - 1 do
@@ -1624,9 +1630,9 @@ end;
 procedure TSuperApp.RequestDetach;
 var
   N, I: integer;
-  PtyRefs: array of TPty;
-  ScreenRefs: array of TScreen;
-  Titles, Terms: array of string;
+  PtyRefs: TPtyArray;
+  ScreenRefs: TScreenArray;
+  Titles, Terms: TStrArray;
 begin
   if DetachRequested then
     Exit;
@@ -1646,6 +1652,10 @@ begin
   N := Lay.PaneCount;
   if (N < 1) or (N > MAX_PANES) then
     Exit;
+  PtyRefs := nil;
+  ScreenRefs := nil;
+  Titles := nil;
+  Terms := nil;
   SetLength(PtyRefs, N);
   SetLength(ScreenRefs, N);
   SetLength(Titles, N);
@@ -1894,6 +1904,7 @@ var
   R, DesktopRect: Objects.TRect;
   Dialog: PHelpDialog;
 begin
+  DesktopRect := Default(Objects.TRect);
   Desktop^.GetExtent(DesktopRect);
   R.Assign(0, 0, 84, 9);
   if R.B.X > DesktopRect.B.X then
@@ -2111,6 +2122,7 @@ begin
   n := Lay.PaneCount;
   if n < 1 then
     Exit;
+  Pin := Default(TPaneArray);
   SetLength(Pin, n);
   for i := 0 to n - 1 do
   begin
@@ -2387,6 +2399,7 @@ var
   else
     Sleep(8);
   // hijos muertos
+  st2 := Default(cint);
   repeat
     p := fpWaitPid(-1, st2, WNOHANG);
     if p > 0 then
@@ -2440,6 +2453,7 @@ var
   Mark, TitleS: string;
   HasMinimized: boolean;
 begin
+  R := Default(Objects.TRect);
   GetExtent(R);
   R.B.Y := R.A.Y + 1;
   MPanes := NewMenu(
@@ -2625,6 +2639,7 @@ var
   R: Objects.TRect;
   Items: PStatusItem;
 begin
+  R := Default(Objects.TRect);
   GetExtent(R);
   R.A.Y := R.B.Y - 1;
   Items := nil;

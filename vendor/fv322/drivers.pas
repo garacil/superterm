@@ -104,7 +104,7 @@ USES
 
    video,
    SysMsg,
-   FVCommon, Objects;                                 { GFV standard units }
+   Objects;                                           { GFV standard units }
 
 {***************************************************************************}
 {                              PUBLIC CONSTANTS                             }
@@ -640,13 +640,17 @@ VAR
   Keyboard,Mouse,SysUtils;
 
 {***************************************************************************}
-{                        PRIVATE INTERNAL CONSTANTS                         }
+{                        PRIVATE INTERNAL ROUTINES                          }
 {***************************************************************************}
 
 {---------------------------------------------------------------------------}
-{                 DOS/DPMI MOUSE INTERRUPT EVENT QUEUE SIZE                 }
+{  Unused -> Marks a parameter of a fixed API as intentionally unused       }
 {---------------------------------------------------------------------------}
-CONST EventQSize = 16;                                { Default int bufsize }
+PROCEDURE Unused (CONST A); BEGIN IF @A = NIL THEN; END;
+
+{***************************************************************************}
+{                        PRIVATE INTERNAL CONSTANTS                         }
+{***************************************************************************}
 
 {---------------------------------------------------------------------------}
 {                DOS/DPMI/WIN/NT/OS2 NEW EVENT QUEUE MAX SIZE               }
@@ -695,7 +699,6 @@ CONST AltCodes: Array [0..127] Of Byte = (
 {                           NEW CONTROL VARIABLES                           }
 {---------------------------------------------------------------------------}
 CONST
-   HideCount : Sw_Integer = 0;                           { Cursor hide count }
    QueueCount: Sw_Word = 0;                              { Queued message count }
    QueueHead : Sw_Word = 0;                              { Queue head pointer }
    QueueTail : Sw_Word = 0;                              { Queue tail pointer }
@@ -708,23 +711,12 @@ CONST
 {                     UNINITIALIZED DOS/DPMI/API VARIABLES                      }
 {---------------------------------------------------------------------------}
 VAR
-   LastDouble : Boolean;                              { Last double buttons }
    LastButtons: Byte;                                 { Last button state }
    DownButtons: Byte;                                 { Last down buttons }
-   EventCount : Sw_Word;                                 { Events in queue }
    AutoDelay  : Sw_Word;                                 { Delay time count }
    DownTicks  : Sw_Word;                                 { Down key tick count }
    AutoTicks  : Sw_Word;                                 { Held key tick count }
-   LastWhereX : Sw_Word;                                 { Last x position }
-   LastWhereY : Sw_Word;                                 { Last y position }
-   DownWhereX : Sw_Word;                                 { Last x position }
-   DownWhereY : Sw_Word;                                 { Last y position }
    LastWhere  : TPoint;                               { Last mouse position }
-   DownWhere  : TPoint;                               { Last down position }
-   EventQHead : Pointer;                              { Head of queue }
-   EventQTail : Pointer;                              { Tail of queue }
-   EventQueue : Array [0..EventQSize - 1] Of TEvent;  { Event queue }
-   EventQLast : RECORD END;                           { Simple end marker }
    StartupScreenMode : TVideoMode;
    TmuxMouseEnabled : Boolean;
    {$ifdef OS_AMIGA}
@@ -897,6 +889,7 @@ VAR
 begin
   { Video.InitVideo; Incompatible with BP
     and forces a screen clear which is often a bad thing PM }
+  CurrMode := Default(TVideoMode);
   GetVideoMode(CurrMode);
   ScreenMode:=CurrMode;
 end;
@@ -1211,6 +1204,7 @@ procedure GetMouseEvent (Var Event: TEvent);
 var
   e : Mouse.TMouseEvent;
 begin
+  e := Default(Mouse.TMouseEvent);
   if Mouse.PollMouseEvent(e) then
    begin
      Mouse.GetMouseEvent(e);
@@ -1227,8 +1221,6 @@ begin
               (GetDosTicks-DownTicks<=DoubleDelay) then
              Event.Double:=true;
            DownButtons:=e.Buttons;
-           DownWhere.X:=MouseWhere.x;
-           DownWhere.Y:=MouseWhere.y;
            DownTicks:=GetDosTicks;
            AutoTicks:=GetDosTicks;
            if AutoTicks=0 then
@@ -1271,6 +1263,7 @@ procedure GetSystemEvent (Var Event: TEvent);
 var
   SysEvent : TsystemEvent;
 begin
+  SysEvent := Default(TsystemEvent);
   if PollSystemEvent(SysEvent) then
     begin
       SysMsg.GetSystemEvent(SysEvent);
@@ -1329,9 +1322,7 @@ BEGIN
      MouseWhere.X:=Mouse.GetMouseX;
      MouseWhere.Y:=Mouse.GetMouseY;                   { Get mouse position }
      LastWhere.x:=MouseWhere.x;
-     LastWhereX:=MouseWhere.x;
      LastWhere.y:=MouseWhere.y;
-     LastWhereY:=MouseWhere.y;
      MouseEvents := True;                             { Set initialized flag }
     end;
   InitSystemMsg;
@@ -1446,6 +1437,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE SetVideoMode (Mode: Sw_Word);
 BEGIN
+   Unused(Mode);                                      { Compatibility only }
 END;
 
 {+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++}
@@ -1473,6 +1465,8 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION SystemError (ErrorCode: Sw_Integer; Drive: Byte): Sw_Integer;
 BEGIN
+   Unused(ErrorCode);                                 { Compatibility only }
+   Unused(Drive);                                     { Compatibility only }
    SystemError := 0;                                    { Return ignored error }
    If (FailSysErrors = False) Then Begin              { Check error ignore }
 
@@ -1496,6 +1490,7 @@ END;
 {---------------------------------------------------------------------------}
 procedure FormatStr (Var Result: String; CONST Format: String; Var Params);
 TYPE TLongArray = Array[0..0] Of PtrInt;
+     TPtrArray = Array[0..0] Of Pointer;
 VAR W, ResultLength : integer;
     FormatIndex, Justify, Wth: Byte;
     Fill: Char; S: String;
@@ -1568,7 +1563,7 @@ VAR W, ResultLength : integer;
            'c': S := Char(TLongArray(Params)[I]);  { Character parameter }
              'd': S := LongToStr(TLongArray(Params)[I],
                10);                                   { Decimal parameter }
-             's': S := PString(TLongArray(Params)[I])^;{ String parameter }
+             's': S := PString(TPtrArray(Params)[I])^;{ String parameter }
              'x': S := LongToStr(TLongArray(Params)[I],
                16);                                   { Hex parameter }
            end;

@@ -678,7 +678,7 @@ TYPE
     procedure SetField (InputLine : PInputLine); virtual;
     function  StartColumn : Integer; virtual;
       PRIVATE
-    procedure EditField (var Event : TEvent);
+    procedure EditField;
   end;  { of TEditListBox }
 
 
@@ -1057,6 +1057,14 @@ resourcestring  slCancel='Cancel';
 
 USES App,HistList;                               { Standard GFV unit }
 
+{---------------------------------------------------------------------------}
+{  Unused -> Marks a fixed-signature parameter as intentionally unused      }
+{---------------------------------------------------------------------------}
+PROCEDURE Unused (CONST A);
+BEGIN
+   If @A = Nil Then;                                  { Reference parameter }
+END;
+
 {***************************************************************************}
 {                         PRIVATE DEFINED CONSTANTS                         }
 {***************************************************************************}
@@ -1335,6 +1343,8 @@ CONSTRUCTOR TInputLine.Load (Var S: TStream);
 VAR B: Byte;
     W: Word;
 BEGIN
+   B := Default(Byte);                                { Preset byte holder }
+   W := Default(Word);                                { Preset word holder }
    Inherited Load(S);                                 { Call ancestor }
    S.Read(W, sizeof(w)); MaxLen:=W;                   { Read max length }
    S.Read(W, sizeof(w)); CurPos:=w;                   { Read cursor position }
@@ -1422,6 +1432,7 @@ PROCEDURE TInputLine.Draw;
 VAR Color: Byte; L, R: Sw_Integer;
   B : TDrawBuffer;
 BEGIN
+  B := Default(TDrawBuffer);                          { Preset draw buffer }
   if Options and ofSelectable = 0 then
     Color := GetColor(5)
   else
@@ -1554,6 +1565,7 @@ Delta, Anchor, OldCurPos, OldFirstPos, OldSelStart, OldSelEnd: Sw_Integer;
    FUNCTION MouseDelta: Sw_Integer;
    VAR Mouse : TPOint;
    BEGIN
+      Mouse := Default(TPoint);                       { Preset mouse point }
       MakeLocal(Event.Where, Mouse);
       if Mouse.X <= 0 then
         MouseDelta := -1
@@ -1567,6 +1579,7 @@ Delta, Anchor, OldCurPos, OldFirstPos, OldSelStart, OldSelEnd: Sw_Integer;
    VAR Pos: Sw_Integer;
        Mouse : TPoint;
    BEGIN
+     Mouse := Default(TPoint);                        { Preset mouse point }
      MakeLocal(Event.Where, Mouse);
      if Mouse.X < 1 then Mouse.X := 1;
      Pos := Mouse.X + FirstPos - 1;
@@ -1877,6 +1890,7 @@ VAR I, J, Pos: Sw_Integer;
     Bc: Word; Db: TDrawBuffer;
     C : char;
 BEGIN
+   Db := Default(TDrawBuffer);                        { Preset draw buffer }
    If (State AND sfDisabled <> 0) Then                { Button disabled }
      Bc := GetColor($0404) Else Begin                 { Disabled colour }
        Bc := GetColor($0501);                         { Set normal colour }
@@ -1989,6 +2003,7 @@ PROCEDURE TButton.HandleEvent (Var Event: TEvent);
 VAR Down: Boolean; C: Char; ButRect: TRect;
     Mouse : TPoint;
 BEGIN
+   Mouse := Default(TPoint);                          { Preset mouse point }
    ButRect.A.X := 0;                            { Get origin point }
    ButRect.A.Y := 0;                            { Get origin point }
    ButRect.B.X := Size.X + 2;            { Calc right side }
@@ -2061,8 +2076,6 @@ END;
 {+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++}
 {                           TCluster OBJECT METHODS                         }
 {+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++}
-
-CONST TvClusterClassName = 'TVCLUSTER';
 
 {--TCluster-----------------------------------------------------------------}
 {  Init -> Platforms DOS/DPMI/WIN/NT/OS2 - Updated 28May98 LdB              }
@@ -2158,6 +2171,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TCluster.Mark (Item: Sw_Integer): Boolean;
 BEGIN
+   Unused(Item);                                      { Fixed virtual method }
    Mark := False;                                     { Default false }
 END;
 
@@ -2191,6 +2205,7 @@ END;
 PROCEDURE TCluster.Press (Item: Sw_Integer);
 VAR P: PView;
 BEGIN
+   Unused(Item);                                      { Fixed virtual method }
    P := TopView;
    If (Id <> 0) AND (P <> Nil) Then NewMessage(P,
      evCommand, cmIdCommunicate, Id, Value, @Self);   { Send new message }
@@ -2201,6 +2216,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TCluster.MovedTo (Item: Sw_Integer);
 BEGIN                                                 { Abstract method }
+   Unused(Item);                                      { Fixed virtual method }
 END;
 
 {--TCluster-----------------------------------------------------------------}
@@ -2220,6 +2236,7 @@ END;
 PROCEDURE TCluster.DrawMultiBox (Const Icon, Marker: String);
 VAR I, J, Cur, Col: Sw_Integer; CNorm, CSel, CDis, Color: Word; B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset draw buffer }
    CNorm := GetColor($0301);                          { Normal colour }
    CSel := GetColor($0402);                           { Selected colour }
    CDis := GetColor($0505);                           { Disabled colour }
@@ -2342,6 +2359,7 @@ VAR C: Char; I, S, Vh: Sw_Integer; Key: Word; Mouse: TPoint; Ts: PString;
    END;
 
 BEGIN
+   Mouse := Default(TPoint);                          { Preset mouse point }
    Inherited HandleEvent(Event);                      { Call ancestor }
    If ((Options AND ofSelectable) = 0) Then Exit;     { Check selectable }
    If (Event.What = evMouseDown) Then Begin           { MOUSE EVENT }
@@ -2434,6 +2452,7 @@ END;
 FUNCTION TCluster.FindSel (P: TPoint): Sw_Integer;
 VAR I, S, Vh: Sw_Integer; R: TRect;
 BEGIN
+   R := Default(TRect);                               { Preset extent rect }
    GetExtent(R);                                      { Get view extents }
    If R.Contains(P) Then Begin                        { Point in view }
      Vh := Size.Y;                            { View height }
@@ -2714,6 +2733,7 @@ END;
 FUNCTION TListBox.GetText (Item: Sw_Integer; MaxLen: Sw_Integer): String;
 VAR P: PString;
 BEGIN
+   Unused(MaxLen);                                    { Fixed virtual method }
    GetText := '';                                     { Preset return }
    If (List <> Nil) Then Begin                        { A list exists }
      P := PString(List^.At(Item));                    { Get string ptr }
@@ -2897,6 +2917,8 @@ VAR Just: Byte; I, J, P, Y, L: Sw_Integer; S: String;
   B : TDrawBuffer;
   Color : Byte;
 BEGIN
+   S := Default(String);                              { Preset text holder }
+   B := Default(TDrawBuffer);                         { Preset draw buffer }
    GetText(S);                                        { Fetch text to write }
    Color := GetColor(1);
    P := 1;                                            { X start position }
@@ -2980,6 +3002,7 @@ END;
 CONSTRUCTOR TParamText.Load (Var S: TStream);
 VAR w: Word;
 BEGIN
+   w := Default(Word);                                { Preset word holder }
    Inherited Load(S);                                 { Call ancestor }
    S.Read(w, SizeOf(w)); ParamCount:=w;               { Read parameter count }
 END;
@@ -3067,6 +3090,7 @@ END;
 PROCEDURE TLabel.Draw;
 VAR SCOff: Byte; Color: Word; B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset draw buffer }
    If Light Then Begin                                { Light colour select }
      Color := GetColor($0402);                        { Choose light colour }
      SCOff := 0;                                      { Zero offset }
@@ -3176,6 +3200,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION THistoryViewer.GetText (Item: Sw_Integer; MaxLen: Sw_Integer): String;
 BEGIN
+   Unused(MaxLen);                                    { Fixed virtual method }
    GetText := HistoryStr(HistoryId, Item);            { Return history string }
 END;
 
@@ -3237,6 +3262,7 @@ END;
 PROCEDURE THistoryWindow.InitViewer(HistoryId: Word);
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Preset extent rect }
    GetExtent(R);                                      { Get extents }
    R.Grow(-1,-1);                                     { Grow inside }
    Viewer := New(PHistoryViewer, Init(R,
@@ -3297,6 +3323,7 @@ END;
 PROCEDURE THistory.Draw;
 VAR B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset draw buffer }
    MoveCStr(B,#222'~v~'#221, GetColor($0102));   { Set buffer data }
    WriteLine(0, 0, Size.X, Size.Y, B);                { Write buffer }
 END;
@@ -3325,6 +3352,8 @@ END;
 PROCEDURE THistory.HandleEvent (Var Event: TEvent);
 VAR C: Word; Rslt: String; R, P: TRect; HistoryWindow: PHistoryWindow;
 BEGIN
+   R := Default(TRect);                               { Preset bounds rect }
+   P := Default(TRect);                               { Preset extent rect }
    Inherited HandleEvent(Event);                      { Call ancestor }
    If (Link = Nil) Then Exit;                         { No link view exits }
    If (Event.What = evMouseDown) OR                   { Mouse down event }
@@ -3742,7 +3771,7 @@ end;
 {****************************************************************************}
 { TEditListBox.EditField                                                     }
 {****************************************************************************}
-procedure TEditListBox.EditField (var Event : TEvent);
+procedure TEditListBox.EditField;
 var R : TRect;
     InputLine : PModalInputLine;
 begin
@@ -3810,7 +3839,7 @@ procedure TEditListBox.HandleEvent (var Event : TEvent);
 begin
   if (Event.What = evKeyboard) and (Event.KeyCode = kbAltE)
      then begin  { edit field }
-            EditField(Event);
+            EditField;
             DrawView;
             ClearEvent(Event);
           end;
@@ -3861,6 +3890,7 @@ var
   HasScrollBar: Boolean;
   HasItems: Boolean;
 begin
+  Bounds := Default(TRect);  { preset bounds rect }
   if AListBox = nil then
     Fail
   else
@@ -4087,6 +4117,7 @@ end;
 function TModalInputLine.Execute : Word;
 var Event : TEvent;
 begin
+  Event := Default(TEvent);  { preset event record }
   repeat
     EndState := 0;
     repeat

@@ -78,11 +78,18 @@ type
     property Connected: boolean read FConnected;
   end;
 
+type
+  // arrays tipados: los open arrays const disparan un hint espurio de
+  // "assigned but never used" cuando -Cr (checks de rango) esta activo
+  TPtyArray = array of TPty;
+  TScreenArray = array of TScreen;
+  TStrArray = array of string;
+
 function SessionSocketPath: string;
 function SessionSocketIsLive: boolean;
 function StartDetachedServer(ALay: TLayout;
-  const APanes: array of TPty; const AScreens: array of TScreen;
-  const ATitles: array of string; const ATerms: array of string;
+  const APanes: TPtyArray; const AScreens: TScreenArray;
+  const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer): boolean;
 
 var
@@ -125,9 +132,9 @@ type
     procedure CloseClient(var AClient: cint);
     procedure SignalReady(AFd: cint; AOk: boolean);
   public
-    constructor Create(ALay: TLayout; const APanes: array of TPty;
-      const AScreens: array of TScreen; const ATitles: array of string;
-      const ATerms: array of string; AFocused: integer);
+    constructor Create(ALay: TLayout; const APanes: TPtyArray;
+      const AScreens: TScreenArray; const ATitles: TStrArray;
+      const ATerms: TStrArray; AFocused: integer);
     destructor Destroy; override;
     procedure Run(AReadyFd: cint);
   end;
@@ -146,14 +153,13 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
-    N := FpWrite(AFd, P^, Left);
-    if N > 0 then
-    begin
-      Inc(P, N);
-      Dec(Left, N);
-    end
-    else if fpgeterrno <> ESysEINTR then
+    // FileWrite already retries EINTR internally, so any non-positive
+    // result here is a definitive error.
+    N := FileWrite(AFd, P^, Left);
+    if N <= 0 then
       Exit;
+    Inc(P, N);
+    Dec(Left, N);
   end;
   Result := True;
 end;
@@ -172,14 +178,13 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
-    N := FpRead(AFd, P^, Left);
-    if N > 0 then
-    begin
-      Inc(P, N);
-      Dec(Left, N);
-    end
-    else if (N = 0) or (fpgeterrno <> ESysEINTR) then
+    // FileRead retries EINTR internally; 0 means end of stream and a
+    // negative result is a definitive error.
+    N := FileRead(AFd, P^, Left);
+    if N <= 0 then
       Exit;
+    Inc(P, N);
+    Dec(Left, N);
   end;
   Result := True;
 end;
@@ -200,6 +205,7 @@ var
 begin
   Result := False;
   S := '';
+  L := Default(Longint);
   Stream.ReadBuffer(L, SizeOf(L));
   if (L < 0) or (L > 1024 * 1024) then
     Exit;
@@ -216,7 +222,7 @@ var
 begin
   if Length(Data) > MAX_FRAME_SIZE then
     Exit(False);
-  FillChar(H, SizeOf(H), 0);
+  H := Default(TFrameHeader);
   H.Kind := AKind;
   H.Pane := APane;
   H.Size := Length(Data);
@@ -232,7 +238,7 @@ var
 begin
   if (ASize < 0) or (ASize > MAX_FRAME_SIZE) then
     Exit(False);
-  FillChar(H, SizeOf(H), 0);
+  H := Default(TFrameHeader);
   H.Kind := AKind;
   H.Pane := APane;
   H.Size := ASize;
@@ -250,6 +256,7 @@ begin
   AKind := 0;
   APane := -1;
   Data := nil;
+  H := Default(TFrameHeader);
   if not ReadFull(AFd, H, SizeOf(H)) then
     Exit;
   if H.Size > MAX_FRAME_SIZE then
@@ -269,7 +276,7 @@ function SocketAddress(const Path: string; out Addr: TUnixSockAddr;
   out AddrLen: TSockLen): boolean;
 begin
   Result := False;
-  FillChar(Addr, SizeOf(Addr), 0);
+  Addr := Default(TUnixSockAddr);
   if (Path = '') or (Length(Path) >= Length(Addr.path)) then
     Exit;
   Addr.family := AF_UNIX;
@@ -469,6 +476,7 @@ function TSessionClient.SendInput(APane: integer; const S: RawByteString): boole
 var
   Data: TByteArray;
 begin
+  Data := Default(TByteArray);
   SetLength(Data, Length(S));
   if Length(Data) > 0 then
     Move(S[1], Data[0], Length(Data));
@@ -479,6 +487,7 @@ function TSessionClient.SendResize(APane, ACols, ARows: integer): boolean;
 var
   Data: TByteArray;
 begin
+  Data := Default(TByteArray);
   SetLength(Data, SizeOf(ACols) + SizeOf(ARows));
   Move(ACols, Data[0], SizeOf(ACols));
   Move(ARows, Data[SizeOf(ACols)], SizeOf(ARows));
@@ -504,8 +513,8 @@ begin
 end;
 
 constructor TDetachedSession.Create(ALay: TLayout;
-  const APanes: array of TPty; const AScreens: array of TScreen;
-  const ATitles: array of string; const ATerms: array of string;
+  const APanes: TPtyArray; const AScreens: TScreenArray;
+  const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer);
 var
   I: integer;
@@ -614,6 +623,7 @@ var
   Nodes: string;
 begin
   Result := False;
+  Data := Default(TByteArray);
   Meta := TMemoryStream.Create;
   try
     Nodes := SaveLayoutString(FLayout);
@@ -702,6 +712,8 @@ begin
     FRAME_RESIZE:
       if (Pane >= 0) and (Pane < FPaneCount) and (Length(Data) = 8) then
       begin
+        Cols := Default(integer);
+        Rows := Default(integer);
         Move(Data[0], Cols, SizeOf(Cols));
         Move(Data[4], Rows, SizeOf(Rows));
         if (Cols > 0) and (Rows > 0) then
@@ -803,7 +815,7 @@ begin
     end;
     if fpFD_ISSET(FListener, ReadSet) <> 0 then
     begin
-      FillChar(Addr, SizeOf(Addr), 0);
+      Addr := Default(TUnixSockAddr);
       AddrLen := SizeOf(Addr);
       NewClient := fpAccept(FListener, @Addr, @AddrLen);
       if NewClient >= 0 then
@@ -830,11 +842,11 @@ begin
 end;
 
 function StartDetachedServer(ALay: TLayout;
-  const APanes: array of TPty; const AScreens: array of TScreen;
-  const ATitles: array of string; const ATerms: array of string;
+  const APanes: TPtyArray; const AScreens: TScreenArray;
+  const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer): boolean;
 var
-  ReadyPipe: array[0..1] of cint;
+  ReadyPipe: TFilDes;
   Pid: TPid;
   B: byte;
   Server: TDetachedSession;
@@ -842,6 +854,7 @@ begin
   Result := False;
   if (ALay = nil) or (Length(APanes) < 1) or SessionSocketIsLive then
     Exit;
+  ReadyPipe := Default(TFilDes);
   if FpPipe(ReadyPipe) <> 0 then
     Exit;
   Pid := FpFork;
@@ -876,7 +889,7 @@ begin
     Exit;
   end;
   B := 0;
-  if (FpRead(ReadyPipe[0], B, SizeOf(B)) = SizeOf(B)) and (B <> 0) then
+  if (FileRead(ReadyPipe[0], B, SizeOf(B)) = SizeOf(B)) and (B <> 0) then
     Result := True;
   FpClose(ReadyPipe[0]);
 end;

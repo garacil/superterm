@@ -75,7 +75,7 @@ UNIT HistList;
 {$V-} { Turn off strict VAR strings }
 {====================================================================}
 
-USES FVCommon, Objects;                                 { Standard GFV units }
+USES Objects;                                           { Standard GFV units }
 
 {***************************************************************************}
 {                            INTERFACE ROUTINES                             }
@@ -392,6 +392,7 @@ end;
 PROCEDURE LoadHistory (Var S: TStream);
 VAR Size: sw_integer;
 BEGIN
+   Size := Default(sw_integer);                       { Preset size }
    S.Read(Size, sizeof(Size));                        { Read history size }
    If (HistoryBlock <> Nil) Then Begin                { History initialized }
      If (Size <= HistorySize) Then Begin

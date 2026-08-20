@@ -807,13 +807,10 @@ TYPE
 {---------------------------------------------------------------------------}
 CONST
    TheTopView  : PView = Nil;                         { Top focused view }
-   LimitsLocked: PView = Nil;                         { View locking limits }
    OwnerGroup  : PGroup = Nil;                        { Used for loading }
    FixupList   : PFixupList = Nil;                    { Used for loading }
    CurCommandSet: TCommandSet = ([0..255] -
      [cmZoom, cmClose, cmResize, cmNext, cmPrev]);    { All active but these }
-
-  vdInSetCursor  = $80;                               { AVOID RECURSION IN SetCursor }
 
   { Flags for TFrame }
   fmCloseClicked = $01;
@@ -855,14 +852,34 @@ var
         PosIdx:=j;
       end;
 
+{ Marks a fixed-signature parameter as intentionally unused }
+PROCEDURE Unused (CONST A);
+BEGIN
+   If @A = Nil Then;                                  { Reference parameter }
+END;
 
-{$ifdef UNIX}
-const
-  MouseUsesVideoBuf = true;
-{$else not UNIX}
-const
-  MouseUsesVideoBuf = false;
-{$endif not UNIX}
+TYPE
+   { Matches the RTL Objects unit PointerMethodLocal shape }
+   TPointerMethodLocalFV = FUNCTION (Frame: Pointer; Param1: Pointer): Pointer;
+   { As above but for the Boolean-returning FirstThat test functions }
+   TBooleanMethodLocalFV = FUNCTION (Frame: Pointer; Param1: Pointer): Boolean;
+
+{ Calls a procedure local to a method; equivalent of the RTL Objects unit }
+{ CallPointerMethodLocal without the unused Obj parameter.                }
+FUNCTION CallPointerMethodFV (Func: CodePointer; Frame: Pointer;
+  Param1: Pointer): Pointer;
+BEGIN
+   CallPointerMethodFV :=
+     TPointerMethodLocalFV(Func)(Frame, Param1);      { Call local function }
+END;
+
+{ Calls a Boolean test function local to a method, as used by FirstThat }
+FUNCTION CallBooleanMethodFV (Func: CodePointer; Frame: Pointer;
+  Param1: Pointer): Boolean;
+BEGIN
+   CallBooleanMethodFV :=
+     TBooleanMethodLocalFV(Func)(Frame, Param1);      { Call local function }
+END;
 
 procedure DrawScreenBuf(force:boolean);
 begin
@@ -966,6 +983,7 @@ CONSTRUCTOR TView.Load (Var S: TStream);
 VAR i: Integer;
 BEGIN
    Inherited Init;                                    { Call ancestor }
+   i := Default(Integer);                             { Preset read buffer }
    S.Read(i, SizeOf(i)); Origin.X:=i;                 { Read origin x value }
    S.Read(i, SizeOf(i)); Origin.Y:=i;                 { Read origin y value }
    S.Read(i, SizeOf(i)); Size.X:=i;                   { Read view x size }
@@ -1094,6 +1112,7 @@ END;
 FUNCTION TView.EventAvail: Boolean;
 VAR Event: TEvent;
 BEGIN
+   Event := Default(TEvent);                          { Preset empty event }
    GetEvent(Event);                                   { Get next event }
    If (Event.What <> evNothing) Then PutEvent(Event); { Put it back }
    EventAvail := (Event.What <> evNothing);           { Return result }
@@ -1186,6 +1205,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TView.Valid (Command: Word): Boolean;
 BEGIN
+   Unused(Command);                                   { Fixed signature }
    Valid := True;                                     { Simply return true }
 END;
 
@@ -1285,6 +1305,7 @@ END;
 PROCEDURE TView.Draw;
 VAR B : TDrawBuffer;
 BEGIN
+  B := Default(TDrawBuffer);                          { Preset empty buffer }
   MoveChar(B, ' ', GetColor(1), Size.X);
   WriteLine(0, 0, Size.X, Size.Y, B);
 END;
@@ -1422,6 +1443,7 @@ procedure TView.DrawUnderView(DoShadow: Boolean; LastView: PView);
 var
   R: TRect;
 begin
+  R := Default(TRect);                                { Preset empty rect }
   GetBounds(R);
   if DoShadow then
    begin
@@ -1669,6 +1691,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TView.GetData (Var Rec);
 BEGIN                                                 { Abstract method }
+   Unused(Rec);                                       { Fixed signature }
 END;
 
 {--TView--------------------------------------------------------------------}
@@ -1676,6 +1699,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TView.SetData (Var Rec);
 BEGIN                                                 { Abstract method }
+   Unused(Rec);                                       { Fixed signature }
 END;
 
 {--TView--------------------------------------------------------------------}
@@ -1718,6 +1742,9 @@ VAR
    END;
 
 BEGIN
+   Min := Default(TPoint);                            { Preset min point }
+   Max := Default(TPoint);                            { Preset max point }
+   R := Default(TRect);                               { Preset empty rect }
    SizeLimits(Min, Max);                              { Get size limits }
    Bounds.B.X := Bounds.A.X + Range(Bounds.B.X -
      Bounds.A.X, Min.X, Max.X);                       { X bound limit }
@@ -1911,6 +1938,8 @@ VAR S, D: Sw_Integer; Min, Max: TPoint;
    END;
 
 BEGIN
+   Min := Default(TPoint);                            { Preset min point }
+   Max := Default(TPoint);                            { Preset max point }
    GetBounds(Bounds);                                 { Get bounds }
    If (GrowMode = 0) Then Exit;                       { No grow flags exits }
    S := Owner^.Size.X;                                { Set initial size }
@@ -1989,6 +2018,7 @@ BEGIN
    End;
    OwnerGroup := OwnerSave;                           { Reload current group }
    FixupList := FixupSave;                            { Reload current list }
+   V := Nil;                                          { Preset before load }
    GetSubViewPtr(S, V);                               { Load any subviews }
    SetCurrent(V, NormalSelect);                       { Select current view }
    If (OwnerGroup = Nil) Then Awaken;                 { If topview activate }
@@ -2031,6 +2061,7 @@ END;
 FUNCTION TGroup.Execute: Word;
 VAR Event: TEvent;
 BEGIN
+   Event := Default(TEvent);                          { Preset empty event }
    Repeat
      EndState := 0;                                   { Clear end state }
      Repeat
@@ -2080,6 +2111,7 @@ FUNCTION TGroup.ExecView (P: PView): Word;
 VAR SaveOptions: Word; SaveTopView, SaveCurrent: PView; SaveOwner: PGroup;
     SaveCommands: TCommandSet;
 BEGIN
+   SaveCommands := Default(TCommandSet);              { Preset command set }
    If (P<>Nil) Then Begin
      SaveOptions := P^.Options;                       { Hold options }
      SaveOwner := P^.Owner;                           { Hold owner }
@@ -2119,7 +2151,7 @@ BEGIN
      Tp := Last;                                      { Set temporary ptr }
      Repeat
        Tp := Tp^.Next;                                { Get next view }
-        IF Byte(PtrUInt(CallPointerMethodLocal(P,
+        IF CallBooleanMethodFV(P,
          { On most systems, locals are accessed relative to base pointer,
            but for MIPS cpu, they are accessed relative to stack pointer.
            This needs adaptation for so low level routines,
@@ -2129,7 +2161,7 @@ BEGIN
 {$else}
          get_frame
 {$endif}
-          ,@self,Tp)))<>0 THEN
+          ,Tp) THEN
         Begin       { Test each view }
           FirstThat := Tp;                             { View returned true }
           Exit;                                        { Now exit }
@@ -2254,21 +2286,25 @@ end;
 
 procedure TGroup.BeforeInsert(P: PView);
 begin
+  Unused(P);                                          { Fixed signature }
   { abstract }
 end;
 
 procedure TGroup.AfterInsert(P: PView);
 begin
+  Unused(P);                                          { Fixed signature }
   { abstract }
 end;
 
 procedure TGroup.BeforeDelete(P: PView);
 begin
+  Unused(P);                                          { Fixed signature }
   { abstract }
 end;
 
 procedure TGroup.AfterDelete(P: PView);
 begin
+  Unused(P);                                          { Fixed signature }
   { abstract }
 end;
 
@@ -2324,7 +2360,7 @@ BEGIN
        if tp=nil then
         exit;
        Hp:=Tp^.Next;                        { Get next view }
-       CallPointerMethodLocal(P,
+       CallPointerMethodFV(P,
          { On most systems, locals are accessed relative to base pointer,
            but for MIPS cpu, they are accessed relative to stack pointer.
            This needs adaptation for so low level routines,
@@ -2334,7 +2370,7 @@ BEGIN
 {$else}
          get_frame
 {$endif}
-         ,@self,Tp);
+         ,Tp);
      Until (Tp=L0);                                   { Until last }
    End;
 END;
@@ -2532,6 +2568,7 @@ VAR D: TPoint;
    PROCEDURE DoCalcChange (P: PView);
    VAR R: TRect;
    BEGIN
+     R := Default(TRect);                             { Preset empty rect }
      P^.CalcBounds(R, D);                             { Calc view bounds }
      P^.ChangeBounds(R);                              { Change view bounds }
    END;
@@ -2822,6 +2859,9 @@ var
   Title: TTitleStr;
   Min, Max: TPoint;
 begin
+  B := Default(TDrawBuffer);                          { Preset empty buffer }
+  Min := Default(TPoint);                             { Preset min point }
+  Max := Default(TPoint);                             { Preset max point }
   if State and sfDragging <> 0 then
    begin
      CFrame := $0505;
@@ -2922,6 +2962,9 @@ var
     Limits: TRect;
     Min, Max: TPoint;
   begin
+    Limits := Default(TRect);                         { Preset empty rect }
+    Min := Default(TPoint);                           { Preset min point }
+    Max := Default(TPoint);                           { Preset max point }
     Owner^.Owner^.GetExtent(Limits);
     Owner^.SizeLimits(Min, Max);
     Owner^.DragView(Event, Owner^.DragMode or Mode, Limits, Min, Max);
@@ -2929,6 +2972,7 @@ var
   end;
 
 begin
+  Mouse := Default(TPoint);                           { Preset mouse point }
   TView.HandleEvent(Event);
   if Event.What = evMouseDown then
   begin
@@ -3039,6 +3083,7 @@ CONSTRUCTOR TScrollBar.Load (Var S: TStream);
 VAR i: Integer;
 BEGIN
    Inherited Load(S);                                 { Call ancestor }
+   i := Default(Integer);                             { Preset read buffer }
    S.Read(i, SizeOf(i)); Value:=i;                    { Read current value }
    S.Read(i, SizeOf(i)); Min:=i;                      { Read min value }
    S.Read(i, SizeOf(i));  Max:=i;                     { Read max value }
@@ -3188,6 +3233,7 @@ VAR Tracking: Boolean; I, P, S, ClickPart, Iv: Sw_Integer;
    END;
 
 BEGIN
+   Mouse := Default(TPoint);                          { Preset mouse point }
    Inherited HandleEvent(Event);                      { Call ancestor }
    Case Event.What Of
      evNothing: Exit;                                 { Speed up exit }
@@ -3259,14 +3305,14 @@ BEGIN
                If (I > S) Then I := S;                { Check overflow }
              End Else I := GetPos;                    { Get position }
              If (I <> P) Then Begin
-               SetValue(LongInt((LongInt(I)*(Max-Min))
-                 +(S SHR 1)) DIV S + Min);            { Set new value }
+               SetValue(LongInt((Int64(I)*(Max-Min)
+                 +(S SHR 1)) DIV S) + Min);           { Set new value }
                P := I;                                { Hold new position }
              End;
            Until NOT MouseEvent(Event, evMouseMove);  { Until not moving }
            If Tracking AND (S > 0) Then               { Tracking mouse }
-             SetValue(LongInt((LongInt(P)*(Max-Min))+
-               (S SHR 1)) DIV S + Min);               { Set new value }
+             SetValue(LongInt((Int64(P)*(Max-Min)+
+               (S SHR 1)) DIV S) + Min);              { Set new value }
            If (Iv <> Value) Then Clicked;             { Scroll has moved }
          End;
          ClearEvent(Event);                           { Clear the event }
@@ -3286,8 +3332,8 @@ VAR R: Sw_Integer;
 BEGIN
    R := Max - Min;                                    { Get full range }
    If (R = 0) Then GetPos := 1 Else                   { Return zero }
-     GetPos := LongInt((LongInt(Value-Min) * (GetSize -3))
-       + (R SHR 1)) DIV R + 1;                        { Calc position }
+     GetPos := LongInt(((Int64(Value)-Min) * (GetSize -3)
+       + (R SHR 1)) DIV R) + 1;                       { Calc position }
 END;
 
 {--TScrollBar---------------------------------------------------------------}
@@ -3319,6 +3365,7 @@ var
   S: Sw_Integer;
   B: TDrawBuffer;
 begin
+  B := Default(TDrawBuffer);                          { Preset empty buffer }
   S := GetSize - 1;
   MoveChar(B[0], Chars[0], GetColor(2), 1);
   if Max = Min then
@@ -3361,6 +3408,7 @@ BEGIN
    Inherited Load(S);                                 { Call ancestor }
    GetPeerViewPtr(S, HScrollBar);                     { Load horz scrollbar }
    GetPeerViewPtr(S, VScrollBar);                     { Load vert scrollbar }
+   i := Default(Integer);                             { Preset read buffer }
    S.Read(i, SizeOf(i)); Delta.X:=i;                  { Read delta x value }
    S.Read(i, SizeOf(i)); Delta.Y:=i;                  { Read delta y value }
    S.Read(i, SizeOf(i)); Limit.X:=i;                  { Read limit x value }
@@ -3455,8 +3503,6 @@ END;
 {                        TListViewer OBJECT METHODS                         }
 {+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++}
 
-CONST TvListViewerName = 'LISTBOX';                   { Native name }
-
 {--TListViewer--------------------------------------------------------------}
 {  Init -> Platforms DOS/DPMI/WIN/NT/OS2 - Updated 28May98 LdB              }
 {---------------------------------------------------------------------------}
@@ -3493,6 +3539,7 @@ BEGIN
    Inherited Load(S);                                 { Call ancestor }
    GetPeerViewPtr(S, HScrollBar);                     { Get horz scrollbar }
    GetPeerViewPtr(S, VScrollBar);                     { Get vert scrollbar }
+   w := Default(Word);                                { Preset read buffer }
    S.Read(w, SizeOf(w)); NumCols:=w;                  { Read column number }
    S.Read(w, SizeOf(w)); TopItem:=w;                  { Read top most item }
    S.Read(w, SizeOf(w)); Focused:=w;                  { Read focused item }
@@ -3522,6 +3569,8 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TListViewer.GetText (Item: Sw_Integer; MaxLen: Sw_Integer): String;
 BEGIN                                                 { Abstract method }
+   Unused(Item);                                      { Fixed signature }
+   Unused(MaxLen);                                    { Fixed signature }
    GetText := '';                                     { Return empty }
 END;
 
@@ -3533,6 +3582,7 @@ VAR  I, J, ColWidth, Item, Indent, CurCol: Sw_Integer;
      Color: Word; SCOff: Byte;
      Text: String; B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset empty buffer }
    ColWidth := Size.X DIV NumCols + 1;                { Calc column width }
    If (HScrollBar = Nil) Then Indent := 0 Else        { Set indent to zero }
      Indent := HScrollBar^.Value;                     { Fetch any indent }
@@ -3617,6 +3667,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TListViewer.SelectItem (Item: Sw_Integer);
 BEGIN
+   Unused(Item);                                      { Fixed signature }
    Message(Owner, evBroadcast, cmListItemSelected,
      @Self);                                          { Send message }
 END;
@@ -3672,6 +3723,7 @@ VAR Oi, Ni: Sw_Integer; Ct, Cw: Word; Mouse: TPoint;
    END;
 
 BEGIN
+   Mouse := Default(TPoint);                          { Preset mouse point }
    Inherited HandleEvent(Event);                      { Call ancestor }
    Case Event.What Of
      evNothing: Exit;                                 { Speed up exit }
@@ -3819,6 +3871,7 @@ VAR I: Integer;
 BEGIN
    Inherited Load(S);                                 { Call ancestor }
    S.Read(Flags, SizeOf(Flags));                      { Read window flags }
+   i := Default(Integer);                             { Preset read buffer }
    S.Read(i, SizeOf(i)); Number:=i;                                { Read window number }
    S.Read(i, SizeOf(i)); Palette:=i;                               { Read window palette }
    S.Read(i, SizeOf(i)); ZoomRect.A.X:=i;                          { Read zoom area x1 }
@@ -3869,6 +3922,7 @@ END;
 FUNCTION TWindow.StandardScrollBar (AOptions: Word): PScrollBar;
 VAR R: TRect; S: PScrollBar;
 BEGIN
+   R := Default(TRect);                               { Preset empty rect }
    GetExtent(R);                                      { View extents }
    If (AOptions AND sbVertical = 0) Then
      R.Assign(R.A.X+2, R.B.Y-1, R.B.X-2, R.B.Y)       { Horizontal scrollbar }
@@ -3886,6 +3940,8 @@ END;
 PROCEDURE TWindow.Zoom;
 VAR R: TRect; Max, Min: TPoint;
 BEGIN
+   Min := Default(TPoint);                            { Preset min point }
+   Max := Default(TPoint);                            { Preset max point }
    SizeLimits(Min, Max);                              { Return size limits }
    If ((Size.X <> Max.X) OR (Size.Y <> Max.Y))        { Larger size possible }
    Then Begin
@@ -3912,6 +3968,7 @@ PROCEDURE TWindow.InitFrame;
 VAR
   R: TRect;
 BEGIN
+  R := Default(TRect);                                { Preset empty rect }
   GetExtent(R);
   Frame := New(PFrame, Init(R));
 END;
@@ -3971,6 +4028,9 @@ VAR
    PROCEDURE DragWindow (Mode: Byte);
    VAR Limits: TRect; Min, Max: TPoint;
    BEGIN
+     Limits := Default(TRect);                        { Preset empty rect }
+     Min := Default(TPoint);                          { Preset min point }
+     Max := Default(TPoint);                          { Preset max point }
      Owner^.GetExtent(Limits);                        { Get owner extents }
      SizeLimits(Min, Max);                            { Restrict size }
      DragView(Event, DragMode OR Mode, Limits, Min,
@@ -3979,6 +4039,9 @@ VAR
    END;
 
 BEGIN
+   Limits := Default(TRect);                          { Preset empty rect }
+   Min := Default(TPoint);                            { Preset min point }
+   Max := Default(TPoint);                            { Preset max point }
    Inherited HandleEvent(Event);                      { Call ancestor }
    Case Event.What Of
      evNothing: Exit;                                 { Speeds up exit }
@@ -4376,6 +4439,7 @@ begin
    begin
      if Count>maxViewWidth then
       Count:=maxViewWidth;
+     B:=Default(TDrawBuffer);
      for i:=0 to Count-1 do
       B[i]:=myChar;
      do_writeView(X,X+Count,Y,B);
@@ -4496,6 +4560,7 @@ begin
     end;
   end else
   begin
+    SaveBounds := Default(TRect);                     { Preset empty rect }
     GetBounds(SaveBounds);
     repeat
       P := Origin;

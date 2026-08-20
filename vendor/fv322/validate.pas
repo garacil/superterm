@@ -73,7 +73,7 @@ UNIT Validate;
 {$V-} { Turn off strict VAR strings }
 {====================================================================}
 
-USES FVCommon, Objects, fvconsts;                      { GFV standard units }
+USES Objects, fvconsts;                                { GFV standard units }
 
 {***************************************************************************}
 {                              PUBLIC CONSTANTS                             }
@@ -307,6 +307,14 @@ USES MsgBox;                                          { GFV standard unit }
 {***************************************************************************}
 
 {---------------------------------------------------------------------------}
+{  Unused -> Marks fixed-signature parameters as intentionally unused       }
+{---------------------------------------------------------------------------}
+PROCEDURE Unused (CONST A);
+BEGIN
+   If @A = Nil Then;                                  { Touch the parameter }
+END;
+
+{---------------------------------------------------------------------------}
 {  IsLetter -> Platforms DOS/DPMI/WIN/NT/OS2 - Updated 18May98 LdB          }
 {---------------------------------------------------------------------------}
 FUNCTION IsLetter (Chr: Char): Boolean;
@@ -389,6 +397,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TValidator.IsValid (Const S: String): Boolean;
 BEGIN
+   Unused(S);                                         { Parameter for descendants }
    IsValid := True;                                   { Default return valid }
 END;
 
@@ -397,6 +406,8 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TValidator.IsValidInput (Var S: String; SuppressFill: Boolean): Boolean;
 BEGIN
+   Unused(S);                                         { Parameter for descendants }
+   Unused(SuppressFill);                              { Parameter for descendants }
    IsValidInput := True;                              { Default return true }
 END;
 
@@ -406,6 +417,9 @@ END;
 FUNCTION TValidator.Transfer (Var S: String; Buffer: Pointer;
   Flag: TVTransfer): Word;
 BEGIN
+   Unused(S);                                         { Parameter for descendants }
+   Unused(Buffer);                                    { Parameter for descendants }
+   Unused(Flag);                                      { Parameter for descendants }
    Transfer := 0;                                     { Default return zero }
 END;
 
@@ -838,6 +852,7 @@ END;
 FUNCTION TFilterValidator.IsValidInput (Var S: String; SuppressFill: Boolean): Boolean;
 VAR I: Integer;
 BEGIN
+   Unused(SuppressFill);                              { Fill has no meaning here }
    I := 1;                                            { Start at position 1 }
    While S[I] In ValidChars Do Inc(I);                { Check each char }
    If (I > Length(S)) Then IsValidInput := True       { All characters valid }
@@ -913,6 +928,7 @@ BEGIN
      Case Flag Of
        vtGetData: Begin
          Val(S, Value, Code);                         { Convert s to number }
+         If (Code <> 0) Then Value := 0;              { Invalid input gives 0 }
          LongInt(Buffer^) := Value;                   { Transfer result }
        End;
        vtSetData: Str(LongInt(Buffer^), S);           { Convert to string s }
@@ -960,6 +976,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TLookupValidator.Lookup (Const S: String): Boolean;
 BEGIN
+   Unused(S);                                         { Parameter for descendants }
    Lookup := True;                                    { Default return true }
 END;
 
@@ -1001,6 +1018,7 @@ FUNCTION TStringLookUpValidator.Lookup (Const S: String): Boolean;
 {$IFDEF PPC_VIRTUAL} VAR Index: LongInt; {$ELSE} VAR Index: sw_Integer; {$ENDIF}
 BEGIN
    Lookup := False;                                   { Preset false return }
+   Index := 0;                                        { Preset search index }
    If (Strings <> Nil) Then
      Lookup := Strings^.Search(@S, Index);            { Search for string }
 END;

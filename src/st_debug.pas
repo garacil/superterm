@@ -41,6 +41,9 @@ begin
 end;
 
 initialization
+  // preajuste reconocido por el analisis de flujo; InitCriticalSection
+  // rellena la estructura de todos modos
+  Lock := Default(TRTLCriticalSection);
   InitCriticalSection(Lock);
 
 finalization

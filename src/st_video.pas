@@ -11,7 +11,7 @@ procedure RestoreConsoleCursor;
 implementation
 
 uses
-  BaseUnix, SysUtils, termio, Video;
+  SysUtils, termio, Video;
 
 var
   SavedDriver: TVideoDriver;
@@ -42,7 +42,9 @@ begin
   while Offset <= Length(S) do
   begin
     Remaining := Length(S) - Offset + 1;
-    Written := fpWrite(StdOutputHandle, S[Offset], Remaining);
+    { FileWrite retries EINTR internally, so any non-positive result here
+      is a real failure. }
+    Written := FileWrite(StdOutputHandle, S[Offset], Remaining);
     if Written > 0 then
     begin
       if Written > Remaining then
@@ -52,8 +54,6 @@ begin
       end;
       Inc(Offset, LongInt(Written));
     end
-    else if (Written < 0) and (fpGetErrno = ESysEINTR) then
-      Continue
     else
     begin
       OutputFailed := True;
@@ -299,7 +299,7 @@ var
 begin
   ConsoleRow := 0;
   ConsoleCol := 0;
-  FillChar(OldTio, SizeOf(OldTio), 0);
+  OldTio := Default(TermIOS);
   ch := #0;
   if IsATTY(StdInputHandle) <> 1 then
     Exit;
@@ -314,7 +314,7 @@ begin
   WriteRaw(#27'[6n');
   Resp := '';
   repeat
-    n := fpRead(StdInputHandle, ch, 1);
+    n := FileRead(StdInputHandle, ch, 1);
     if n <> 1 then
       Break;
     Resp := Resp + ch;

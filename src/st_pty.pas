@@ -173,7 +173,7 @@ var
 begin
   B := 1;
   if Fd >= 0 then
-    FpWrite(Fd, B, 1);
+    FileWrite(Fd, B, 1);
   FpExit(127);
 end;
 
@@ -372,7 +372,7 @@ begin
 
   // A byte means setup/exec failed; EOF means the close-on-exec handshake
   // succeeded and the new process owns the slave terminal.
-  N := FpRead(ExecPipe[0], B, 1);
+  N := FileRead(ExecPipe[0], B, 1);
   FpClose(ExecPipe[0]);
   if N > 0 then
   begin
@@ -404,6 +404,7 @@ var
   Args: TStringArray;
 begin
   Base := ExtractFileName(AShell);
+  Args := Default(TStringArray);
   if ACommand = '' then
   begin
     if (not ALoginShell) then
@@ -454,7 +455,7 @@ var
   Lower, Tail: string;
   Keep, Start: integer;
 begin
-  Result := FpRead(FMaster, Buf[0], Length(Buf));
+  Result := FileRead(FMaster, Buf[0], Length(Buf));
   if (Result > 0) and (FPendingSecret <> '') then
   begin
     SetString(S, PAnsiChar(@Buf[0]), Result);
@@ -531,6 +532,7 @@ begin
   end;
   if FPid > 0 then
   begin
+    st := Default(cint);
     ChildPid := FPid;
     // Spawned children are session leaders and therefore process-group
     // leaders. Signal the whole group so ssh/shell descendants do not leak.
@@ -644,15 +646,18 @@ begin
 end;
 
 function ProcArgs(Pid: TPid): TStringArray;
+type
+  TCmdBuf = array[0..4095] of byte;
 var
   f: file of byte;
-  buf: array[0..4095] of byte;
+  buf: TCmdBuf;
   n, i, Start: integer;
   sl: RawByteString;
 begin
   Result := nil;
   if Pid <= 0 then
     Exit;
+  buf := Default(TCmdBuf);
   AssignFile(f, '/proc/' + IntToStr(Pid) + '/cmdline');
   {$push}{$I-}
   Reset(f);
@@ -697,16 +702,18 @@ begin
 end;
 
 function ProcCwd(Pid: TPid): string;
+type
+  TLinkBuf = array[0..1023] of char;
 var
   link: string;
-  buf: array[0..1023] of char;
+  buf: TLinkBuf;
   n: longint;
 begin
   Result := '';
   if Pid <= 0 then
     Exit;
   link := '/proc/' + IntToStr(Pid) + '/cwd';
-  FillChar(buf, SizeOf(buf), 0);
+  buf := Default(TLinkBuf);
   n := fpReadLink(PAnsiChar(link), buf, SizeOf(buf) - 1);
   if n > 0 then
   begin

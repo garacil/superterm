@@ -65,7 +65,7 @@ USES
    {$ENDIF}
    Dos,
    Video,
-   FVCommon, {Memory,}                                { GFV standard units }
+   {FVCommon, Memory,}                                { GFV standard units }
    Objects, Drivers, Views, Menus, HistList, Dialogs,
    msgbox, fvconsts;
 
@@ -359,7 +359,7 @@ CONST
                                 IMPLEMENTATION
 {<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>}
 
-uses    Mouse{,Resource};
+uses    Mouse, Keyboard{,Resource};
 
 resourcestring  sVideoFailed='Video initialization failed.';
                 sTypeExitOnReturn='Type EXIT to return...';
@@ -377,6 +377,48 @@ resourcestring  sVideoFailed='Video initialization failed.';
 {                      INITIALIZED PRIVATE VARIABLES                        }
 {---------------------------------------------------------------------------}
 VAR Pending: TEvent;                                   { Pending event }
+    AppKeyboardActive: Boolean = False;                { Keyboard is active }
+
+{---------------------------------------------------------------------------}
+{  Unused -> Marks a fixed-signature parameter as intentionally unused      }
+{---------------------------------------------------------------------------}
+PROCEDURE Unused (CONST A);
+BEGIN
+   IF @A = NIL THEN;                                   { Touch parameter }
+END;
+
+{---------------------------------------------------------------------------}
+{  AppInitKeyboard -> Local replica of the RTL Keyboard.InitKeyboard        }
+{  wrapper. The RTL declares InitKeyboard/DoneKeyboard inline without       }
+{  exposing their bodies, so calls to them can never actually be inlined.   }
+{  This replica performs the identical guarded driver dispatch through the  }
+{  public GetKeyboardDriver API, including double-init protection.          }
+{---------------------------------------------------------------------------}
+PROCEDURE AppInitKeyboard;
+VAR Drv: TKeyboardDriver;
+BEGIN
+   If NOT AppKeyboardActive Then Begin
+     Drv := Default(TKeyboardDriver);                  { Clear driver record }
+     GetKeyboardDriver(Drv);                           { Fetch active driver }
+     If Assigned(Drv.InitDriver) Then Drv.InitDriver();{ Start driver up }
+     AppKeyboardActive := True;                        { Flag keyboard live }
+   End;
+END;
+
+{---------------------------------------------------------------------------}
+{  AppDoneKeyboard -> Local replica of the RTL Keyboard.DoneKeyboard        }
+{  wrapper (see AppInitKeyboard above), with double-done protection.        }
+{---------------------------------------------------------------------------}
+PROCEDURE AppDoneKeyboard;
+VAR Drv: TKeyboardDriver;
+BEGIN
+   If AppKeyboardActive Then Begin
+     Drv := Default(TKeyboardDriver);                  { Clear driver record }
+     GetKeyboardDriver(Drv);                           { Fetch active driver }
+     If Assigned(Drv.DoneDriver) Then Drv.DoneDriver();{ Shut driver down }
+     AppKeyboardActive := False;                       { Flag keyboard off }
+   End;
+END;
 
 {---------------------------------------------------------------------------}
 {  Tileable -> Platforms DOS/DPMI/WIN/NT/OS2 - Updated 22Oct99 LdB          }
@@ -457,6 +499,7 @@ END;
 PROCEDURE TBackground.Draw;
 VAR B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Clear draw buffer }
    MoveChar(B, Pattern, GetColor($01), Size.X);       { Fill draw buffer }
    WriteLine(0, 0, Size.X, Size.Y, B);                { Draw to area }
 END;
@@ -509,6 +552,7 @@ PROCEDURE TDesktop.InitBackground;
 CONST Ch: Char = ' ';
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetExtent(R);                                      { Get desktop extents }
    BackGround := New(PBackground, Init(R, Ch));       { Insert a background }
 END;
@@ -521,7 +565,7 @@ VAR NumCols, NumRows, NumTileable, LeftOver, TileNum: Integer;
 
    FUNCTION DividerLoc (Lo, Hi, Num, Pos: Integer): Integer;
    BEGIN
-     DividerLoc := LongInt( LongInt(Hi - Lo) * Pos)
+     DividerLoc := (Int64(Hi) - Lo) * Pos
        DIV Num + Lo;                                  { Calc position }
    END;
 
@@ -558,6 +602,7 @@ VAR NumCols, NumRows, NumTileable, LeftOver, TileNum: Integer;
    VAR PState: Word; R: TRect;
    BEGIN
      If Tileable(P) Then Begin
+       R := Default(TRect);                           { Clear rect area }
        CalcTileRect(TileNum, R);                      { Calc tileable area }
        PState := P^.State;                            { Hold view state }
        P^.State := P^.State AND NOT sfVisible;        { Temp not visible }
@@ -571,6 +616,8 @@ BEGIN
    NumTileable := 0;                                  { Zero tileable count }
    ForEach(@DoCountTileable);                         { Count tileable views }
    If (NumTileable>0) Then Begin
+     NumCols := Default(Integer);                     { Clear column count }
+     NumRows := Default(Integer);                     { Clear row count }
      MostEqualDivisors(NumTileable, NumCols, NumRows,
      NOT TileColumnsFirst);                           { Do pre calcs }
      If ((R.B.X - R.A.X) DIV NumCols = 0) OR
@@ -627,6 +674,8 @@ BEGIN
    CascadeNum := 0;                                   { Zero cascade count }
    ForEach(@DoCount);                                 { Count cascadable }
    If (CascadeNum>0) Then Begin
+     Min := Default(TPoint);                          { Clear min limits }
+     Max := Default(TPoint);                          { Clear max limits }
      LastView^.SizeLimits(Min, Max);                  { Check size limits }
      If (Min.X > R.B.X - R.A.X - CascadeNum) OR
      (Min.Y > R.B.Y - R.A.Y - CascadeNum) Then
@@ -847,6 +896,7 @@ end;}
 PROCEDURE TProgram.InitDesktop;
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetExtent(R);                                      { Get view extent }
    If (MenuBar <> Nil) Then Inc(R.A.Y);               { Adjust top down }
    If (StatusLine <> Nil) Then Dec(R.B.Y);            { Adjust bottom up }
@@ -866,6 +916,7 @@ END;
 PROCEDURE TProgram.InitMenuBar;
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetExtent(R);                                      { Get view extents }
    R.B.Y := R.A.Y + 1;                                { One line high  }
    MenuBar := New(PMenuBar, Init(R, Nil));            { Create menu bar }
@@ -877,6 +928,7 @@ END;
 PROCEDURE TProgram.InitStatusLine;
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetExtent(R);                                      { Get view extents }
    R.A.Y := R.B.Y - 1;                                { One line high }
    New(StatusLine, Init(R,
@@ -892,6 +944,7 @@ PROCEDURE TProgram.SetScreenMode (Mode: Word);
 var
   R: TRect;
 begin
+  Unused(Mode); { Signature fixed by Turbo Vision API; FPC video modes are set via SetScreenVideoMode }
   HideMouse;
 {  DoneMemory;}
 {  InitMemory;}
@@ -949,7 +1002,7 @@ BEGIN
      End Else Begin
        NextQueuedEvent(Event);                        { Next queued event }
        If (Event.What = evNothing) Then Begin
-         GetKeyEvent(Event);                          { Fetch key event }
+         Drivers.GetKeyEvent(Event);                  { Fetch key event }
          If (Event.What = evKeyDown) then
            Begin
              if Event.keyCode = kbAltF12 then
@@ -979,14 +1032,16 @@ END;
 {  HandleEvent -> Platforms DOS/DPMI/WIN/NT/OS2 - Updated 12Sep97 LdB       }
 {---------------------------------------------------------------------------}
 PROCEDURE TProgram.HandleEvent (Var Event: TEvent);
-VAR C: Char;
+VAR C: Char; WinNr: PtrUInt; WinPtr: Pointer ABSOLUTE WinNr;
 BEGIN
    If (Event.What = evKeyDown) Then Begin             { Key press event }
      C := GetAltChar(Event.KeyCode);                  { Get alt char code }
-     If (C >= '1') AND (C <= '9') Then
+     If (C >= '1') AND (C <= '9') Then Begin
+       WinNr := Byte(C) - $30;                        { Window number 1..9 }
        If (Message(Desktop, evBroadCast, cmSelectWindowNum,
-         Pointer(Byte(C) - $30)) <> Nil)              { Select window }
+         WinPtr) <> Nil)                              { Select window }
          Then ClearEvent(Event);                      { Clear event }
+     End;
    End;
    Inherited HandleEvent(Event);                      { Call ancestor }
    If (Event.What = evCommand) AND                    { Command event }
@@ -1012,10 +1067,10 @@ BEGIN
        writeln('Fatal: Can''t init resources');
        halt(1);
      end;}
-   initkeyboard;
+   AppInitKeyboard;
    if not Drivers.InitVideo then                              { Start video up }
      begin
-       donekeyboard;
+       AppDoneKeyboard;
        writeln(sVideoFailed);
        halt(1);
      end;
@@ -1040,7 +1095,7 @@ BEGIN
    Drivers.DoneEvents;                                        { Close event drive }
    drivers.donevideo;
 {   DoneMemory;}                                       { Close memory }
-   donekeyboard;
+   AppDoneKeyboard;
 {   DoneResource;}
 END;
 
@@ -1050,6 +1105,7 @@ END;
 PROCEDURE TApplication.Tile;
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetTileRect(R);                                    { Tileable area }
    If (Desktop <> Nil) Then Desktop^.Tile(R);         { Tile desktop }
 END;
@@ -1060,6 +1116,7 @@ END;
 PROCEDURE TApplication.Cascade;
 VAR R: TRect;
 BEGIN
+   R := Default(TRect);                               { Clear rect area }
    GetTileRect(R);                                    { Cascade area }
    If (Desktop <> Nil) Then Desktop^.Cascade(R);      { Cascade desktop }
 END;
@@ -1077,7 +1134,7 @@ BEGIN                                                 { Compatability only }
   DoneSysError;
   DoneEvents;
   drivers.donevideo;
-  drivers.donekeyboard;
+  AppDoneKeyboard;
 {  DoneDosMem;}
   WriteShellMsg;
 {$ifdef Unix}
@@ -1091,7 +1148,7 @@ BEGIN                                                 { Compatability only }
   SwapVectors;
 {$endif}
 {  InitDosMem;}
-  drivers.initkeyboard;
+  AppInitKeyboard;
   drivers.initvideo;
   Video.SetCursorType(crHidden);
   InitScreen;

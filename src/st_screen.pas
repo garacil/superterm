@@ -33,6 +33,7 @@ type
   TRow = array of TCell;
   TGridArray = array of TRow;
   TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
+  TCharBuf = array[0..7] of AnsiChar; // buffer de un codepoint UTF-8
 
   TScreen = class
   private
@@ -62,7 +63,7 @@ type
       NewWidth, NewHeight: integer);
     procedure CopyGrid(const Source: TGridArray; out Target: TGridArray);
     procedure BlankRow(y: integer; AAttr: word);
-    procedure PutRawChar(const b: array of AnsiChar; alen: byte; AAttr: word);
+    procedure PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
     procedure ScrollUp(n: integer);
     procedure ScrollDown(n: integer);
     procedure LineFeed;
@@ -146,6 +147,7 @@ var
 begin
   if AGrid = nil then
     Exit;
+  NewGrid := Default(TGridArray);
   SetLength(NewGrid, NewHeight);
   for y := 0 to NewHeight - 1 do
   begin
@@ -165,6 +167,7 @@ procedure TScreen.CopyGrid(const Source: TGridArray; out Target: TGridArray);
 var
   y: integer;
 begin
+  Target := Default(TGridArray);
   SetLength(Target, Length(Source));
   for y := 0 to High(Source) do
     Target[y] := Copy(Source[y], 0, Length(Source[y]));
@@ -197,6 +200,7 @@ begin
     Exit;
   OldWidth := Width;
   OldHeight := Height;
+  NewGrid := Default(TGridArray);
   SetLength(NewGrid, ch);
   for y := 0 to ch - 1 do
   begin
@@ -294,6 +298,7 @@ var
 begin
   Result := False;
   S := '';
+  L := Default(Longint);
   Stream.ReadBuffer(L, SizeOf(L));
   if (L < 0) or (L > 1024 * 1024) then
     Exit;
@@ -324,6 +329,8 @@ var
 begin
   Result := False;
   G := nil;
+  Rows := Default(Longint);
+  Cols := Default(Longint);
   Stream.ReadBuffer(Rows, SizeOf(Rows));
   if (Rows < 0) or (Rows > 4096) then
     Exit;
@@ -396,6 +403,12 @@ var
   Row: TRow;
 begin
   Result := False;
+  B := Default(byte);
+  N := Default(Longint);
+  Cols := Default(Longint);
+  MaxSB := Default(Longint);
+  StateValue := Default(Longint);
+  Row := Default(TRow);
   try
     Stream.ReadBuffer(Width, SizeOf(Width));
     Stream.ReadBuffer(Height, SizeOf(Height));
@@ -597,7 +610,7 @@ begin
   Dirty := True;
 end;
 
-procedure TScreen.PutRawChar(const b: array of AnsiChar; alen: byte; AAttr: word);
+procedure TScreen.PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
 var
   S: RawByteString;
   i: integer;
@@ -608,6 +621,7 @@ begin
     CursorX := 0;
     LineFeed;
   end;
+  S := Default(RawByteString);
   SetLength(S, alen);
   for i := 0 to alen - 1 do
     S[i + 1] := b[i];
@@ -642,10 +656,10 @@ end;
 
 procedure TScreen.PutCharByte(b: byte);
 var
-  arr: array[0..7] of AnsiChar;
+  arr: TCharBuf;
   i: integer;
 begin
-  FillChar(arr, SizeOf(arr), 0);
+  arr := Default(TCharBuf);
   if FUtfLen = 0 then
   begin
     if b < $80 then

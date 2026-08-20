@@ -413,6 +413,14 @@ CONST
   SubMenuChar : array[boolean] of char = ('>',#16);
   { SubMenuChar is the character displayed at right of submenu }
 
+{---------------------------------------------------------------------------}
+{  Unused -> Marks a fixed-signature parameter as intentionally unused      }
+{---------------------------------------------------------------------------}
+PROCEDURE Unused (Const A);
+BEGIN
+   If (@A = Nil) Then;                                { Touch the parameter }
+END;
+
 {***************************************************************************}
 {                               OBJECT METHODS                              }
 {***************************************************************************}
@@ -441,6 +449,7 @@ CONSTRUCTOR TMenuView.Load (Var S: TStream);
      New(HMenu);                                       { Create new menu }
      Last := @HMenu^.Items;                            { Start on first item }
      Item := Nil;                                     { Clear pointer }
+     Tok := Default(Byte);                            { Preset token }
      S.Read(Tok, SizeOf(Tok));                        { Read token }
      While (Tok <> 0) Do Begin
        New(Item);                                     { Create new item }
@@ -486,6 +495,7 @@ VAR AutoSelect: Boolean; Action: MenuAction; Ch: Char; Res: Word; R: TRect;
    PROCEDURE TrackMouse;
    VAR Mouse: TPoint; R: TRect;
    BEGIN
+     R := Default(TRect);                             { Preset rectangle }
      Mouse.X := E.Where.X - Origin.X;              { Local x position }
      Mouse.Y := E.Where.Y - oRigin.Y;              { Local y position }
      Current := Menu^.Items;                          { Start with current }
@@ -527,6 +537,7 @@ VAR AutoSelect: Boolean; Action: MenuAction; Ch: Char; Res: Word; R: TRect;
    VAR Mouse: TPoint; R: TRect;
    BEGIN
      MouseInOwner := False;                           { Preset false }
+     R := Default(TRect);                             { Preset rectangle }
      If (ParentMenu <> Nil) AND (ParentMenu^.Size.Y = 1)
      Then Begin                                       { Valid parent menu }
        Mouse.X := E.Where.X - ParentMenu^.Origin.X;{ Local x position }
@@ -557,6 +568,8 @@ VAR AutoSelect: Boolean; Action: MenuAction; Ch: Char; Res: Word; R: TRect;
 BEGIN
    AutoSelect := False;                               { Clear select flag }
    MouseActive := False;                              { Clear mouse flag }
+   E := Default(TEvent);                              { Preset event }
+   R := Default(TRect);                               { Preset rectangle }
    Res := 0;                                          { Clear result }
    ItemShown := Nil;                                  { Clear item pointer }
    If (Menu <> Nil) Then Current := Menu^.Default     { Set current item }
@@ -877,6 +890,8 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TMenuView.GetItemRectX (Item: PMenuItem; Var R: TRect);
 BEGIN                                                 { Abstract method }
+   Unused(Item);                                      { Parameter not used }
+   Unused(R);                                         { Parameter not used }
 END;
 
 {--TMenuView----------------------------------------------------------------}
@@ -918,6 +933,7 @@ PROCEDURE TMenuBar.Draw;
 VAR I, J, CNormal, CSelect, CNormDisabled, CSelDisabled, Color: Word;
     P: PMenuItem; B: TDrawBuffer;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset buffer }
    CNormal := GetColor($0301);                        { Normal colour }
    CSelect := GetColor($0604);                        { Select colour }
    CNormDisabled := GetColor($0202);                  { Disabled colour }
@@ -1038,6 +1054,7 @@ BEGIN
    CDisabled := GetColor($0202);                      { Disabled colour }
    CSelectDisabled := GetColor($0505);                { Selected, but disabled }
    Color := CNormal;                              { Normal colour }
+   B := Default(TDrawBuffer);                     { Preset draw buffer }
    CreateBorder(UpperLine);
    WriteBuf(0, 0, Size.X, 1, B);                  { Write the line }
    Y := 1;
@@ -1175,6 +1192,7 @@ CONSTRUCTOR TStatusLine.Load (Var S: TStream);
    BEGIN
      Cur := Nil;                                      { Preset nil }
      Last := @First;                                  { Start on first item }
+     Count := Default(Integer);                       { Preset count }
      S.Read(Count, SizeOf(Count));                    { Read count }
      While (Count > 0) Do Begin
        New(Cur);                                      { New status item }
@@ -1195,6 +1213,7 @@ CONSTRUCTOR TStatusLine.Load (Var S: TStream);
    VAR Count: Integer; Cur, First: PStatusDef; Last: ^PStatusDef;
    BEGIN
      Last := @First;                                  { Start on first }
+     Count := Default(Integer);                       { Preset count }
      S.Read(Count, SizeOf(Count));                    { Read item count }
      While (Count > 0) Do Begin
        New(Cur);                                      { New status def }
@@ -1263,6 +1282,7 @@ END;
 {---------------------------------------------------------------------------}
 FUNCTION TStatusLine.Hint (AHelpCtx: Word): String;
 BEGIN
+   Unused(AHelpCtx);                                  { Parameter not used }
    Hint := '';                                        { Return nothing }
 END;
 
@@ -1434,6 +1454,7 @@ PROCEDURE TStatusLine.DrawSelect (Selected: PStatusItem);
 VAR I, L: Integer; Color, CSelect, CNormal, CSelDisabled, CNormDisabled: Word;
     HintBuf: String; B: TDrawBuffer; T: PStatusItem;
 BEGIN
+   B := Default(TDrawBuffer);                         { Preset buffer }
    CNormal := GetColor($0301);                        { Normal colour }
    CSelect := GetColor($0604);                        { Select colour }
    CNormDisabled := GetColor($0202);                  { Disabled colour }

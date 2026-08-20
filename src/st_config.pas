@@ -78,6 +78,8 @@ implementation
 uses
   base64, StrUtils;
 
+procedure Unused(const A); begin if @A = nil then; end;
+
 function ConfigDir: string;
 begin
   Result := GetEnvironmentVariable('HOME') + '/.superterm';
@@ -370,6 +372,7 @@ end;
 
 function TerminalEnvPass(const T: TTerminalDef): string;
 begin
+  Unused(T);
   // Passwords are now sent through a private pipe to sshpass -d 3.
   Result := '';
 end;

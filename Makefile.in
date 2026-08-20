@@ -13,13 +13,15 @@ TARGET ?= $(PROJECT_DIR)/bin/superterm
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 
-BASE_FLAGS := -Mobjfpc -Sh -vew \
+BASE_FLAGS := -Mobjfpc -Sh -vewnh \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
 
 ifeq ($(MODE),debug)
-MODE_FLAGS := -O1 -g -gl -dDEBUG
+# -Crtoi explicito: /etc/fpc.cfg lo activa via su rama "#IFDEF DEBUG", pero
+# el build no debe depender del config global para sus checks de runtime
+MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
 else ifeq ($(MODE),release)
 MODE_FLAGS := -O4
 else

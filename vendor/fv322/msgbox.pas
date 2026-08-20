@@ -209,6 +209,7 @@ FUNCTION MessageBoxRectDlg (Dlg: PDialog; Var R: TRect; Const Msg: String;
 VAR I, X, ButtonCount: Integer; S: String; Control: PView;
     ButtonList: Array[0..4] Of PView;
 BEGIN
+   S := Default(String);                              { Preset string }
    With Dlg^ Do Begin
      FormatStr(S, Msg, Params^);                      { Format the message }
      Control := New(PStaticText, Init(R, S));         { Create static text }
