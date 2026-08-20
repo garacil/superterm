@@ -7,5 +7,14 @@ so `views.pas` and `drivers.pas` use an 8192-column draw buffer and word-sized
 screen dimensions. The remaining units are rebuilt with them because their
 interfaces depend on the Free Vision view and driver units.
 
+`drivers.pas` also carries a small `{$IFDEF DARWIN}` change: on macOS the FPC
+RTL mouse unit compiles as a `NOMOUSE` stub (Darwin is a BSD), so it never
+enables xterm mouse reporting and `DetectMouse` returns 0. The `{$IFDEF DARWIN}`
+blocks in `DetectMouse`/`EnableTmuxMouse` (and the `IsXtermClass` helper) enable
+xterm SGR mouse reporting for xterm-class terminals so clicks and drag work in
+Terminal.app/iTerm2. Linux/other platforms are unaffected (the branch is
+compiled out). The incoming SGR sequences are decoded by the RTL keyboard unit,
+which is not stubbed.
+
 `compile.sh` adds this directory before the installed Free Vision unit path;
 the system package is not modified.

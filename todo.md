@@ -6,17 +6,15 @@ below are remaining follow-up work, not currently failing regressions.
 ## macOS (native port)
 
 superterm builds and runs natively on macOS from the same source tree (see
-`docs/MACOS.md`). `make test` passes except the two mouse-drag-resize checks.
+`docs/MACOS.md`); the full `make test` suite passes on macOS (103 checks).
 Remaining macOS follow-ups:
 
-- Mouse-drag window resize is not delivered under the pyte harness and needs
-  verification in a real Terminal.app / iTerm2 session. Mouse clicks (menus,
-  pane focus, split) work. If on-device testing shows mouse events are missing,
-  enable xterm SGR mouse reporting for macOS in `vendor/fv322/drivers.pas`
-  (`EnableTmuxMouse`/`DetectMouse`, guarded with `{$IFDEF DARWIN}`).
-- `DarwinProcArgv` captures pane command lines via `sysctl KERN_PROCARGS2`;
-  verify/extend `DarwinProcCwd` (`libproc PROC_PIDVNODEPATHINFO`) so pane cwd
-  capture matches the Linux `/proc` behavior across pane types.
+- `DarwinProcArgv` captures pane command lines via `sysctl KERN_PROCARGS2` and
+  `DarwinProcCwd` reads `libproc PROC_PIDVNODEPATHINFO`; keep verifying parity
+  with the Linux `/proc` behavior as new pane/command cases appear.
+- Mouse works via self-enabled xterm SGR reporting (`{$IFDEF DARWIN}` in
+  `vendor/fv322/drivers.pas`, since the FPC RTL mouse unit is a NOMOUSE stub on
+  Darwin). Revisit if a future FPC ships a working Darwin mouse unit.
 
 ## Compiler Diagnostics
 

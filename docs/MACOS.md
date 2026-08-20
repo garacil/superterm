@@ -41,9 +41,10 @@ Recommended terminal profile settings:
 - **Use Option as Meta key** (Terminal.app: *Profiles → Keyboard*; iTerm2:
   *Profiles → Keys → Left/Right Option key → Esc+*) so Alt/Meta shortcuts and
   the `Ctrl-B` prefix behave as on Linux.
-- **Mouse reporting**: menu/pane mouse clicks work. Mouse-drag window resizing may
-  be limited by the runtime mouse driver on macOS — use the keyboard size controls
-  (`Size` menu) as the reliable path.
+- **Mouse**: works out of the box — clicks (menus, pane focus, split) and
+  drag-to-resize. superterm enables xterm SGR mouse reporting itself on macOS
+  because the FPC RTL mouse driver is a `NOMOUSE` stub on Darwin (see the
+  `{$IFDEF DARWIN}` block in `vendor/fv322/drivers.pas`). Nothing to configure.
 
 ## Platform notes (how macOS differs internally)
 

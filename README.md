@@ -434,8 +434,6 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 Current limitations:
 
 - Native runtimes are GNU/Linux and macOS; Windows is not yet a native target.
-- On macOS, mouse clicks work in Terminal.app/iTerm2; mouse-drag window resizing
-  may be limited by the runtime mouse driver — use the keyboard size controls.
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.
@@ -445,8 +443,7 @@ Current limitations:
   wizard feeds its optional command through the connection input stream.
 
 Planned platform and runtime work includes a native Windows ConPTY backend,
-better connection readiness/retry state, and richer macOS process-title parity
-(full `libproc` argv/cwd for every pane and mouse-drag resize).
+better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author
 

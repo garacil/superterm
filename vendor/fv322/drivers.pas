@@ -904,9 +904,33 @@ begin
   IsTmuxTerminal := Copy(Term, 1, 4) = 'tmux';
 end;
 
-procedure EnableTmuxMouse;
+{$IFDEF DARWIN}
+{ On macOS the FPC RTL mouse unit is a NOMOUSE stub (darwin is a BSD): it never
+  enables xterm mouse reporting and Mouse.DetectMouse returns 0, so a real
+  Terminal.app/iTerm2 is never told to send mouse events. Those terminals do
+  support xterm SGR mouse, and the keyboard unit already decodes the incoming
+  sequences (including motion), so we enable reporting ourselves for any
+  xterm-class terminal. }
+function IsXtermClass: Boolean;
+var
+  Term: string;
 begin
-  if IsTmuxTerminal and (not TmuxMouseEnabled) then
+  Term := GetEnvironmentVariable('TERM');
+  IsXtermClass := (Copy(Term, 1, 5) = 'xterm') or
+                  (Copy(Term, 1, 6) = 'screen') or
+                  (Copy(Term, 1, 4) = 'tmux');
+end;
+{$ENDIF}
+
+procedure EnableTmuxMouse;
+var
+  WantMouse: Boolean;
+begin
+  WantMouse := IsTmuxTerminal;
+{$IFDEF DARWIN}
+  WantMouse := WantMouse or IsXtermClass;
+{$ENDIF}
+  if WantMouse and (not TmuxMouseEnabled) then
   begin
     Write(#27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h');
     Flush(Output);
@@ -931,6 +955,12 @@ begin
    Detected := Mouse.DetectMouse;
    if (Detected = 0) and IsTmuxTerminal then
      Detected := 2;
+{$IFDEF DARWIN}
+   { RTL mouse is stubbed on darwin; advertise buttons for xterm-class terminals
+     so InitEvents initializes mouse tracking and calls EnableTmuxMouse. }
+   if (Detected = 0) and IsXtermClass then
+     Detected := 2;
+{$ENDIF}
    DetectMouse := Detected;
 end;
 
