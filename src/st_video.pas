@@ -250,6 +250,18 @@ begin
   WriteRaw(#27'[?7h');
   if Assigned(SavedDriver.DoneDriver) then
     SavedDriver.DoneDriver;
+  { FreeVision homes the cursor while tearing down the alternate screen.
+    Restore the shell's cursor after that teardown, not before it. }
+  WriteRaw(#27'8');
+end;
+
+procedure WideInitVideo;
+begin
+  { Keep the cursor position from the shell even on terminals that do not
+    restore it reliably for private alternate-screen mode 1049. }
+  WriteRaw(#27'7');
+  if Assigned(SavedDriver.InitDriver) then
+    SavedDriver.InitDriver;
 end;
 
 procedure InstallWideVideoOutput;
@@ -260,6 +272,7 @@ begin
     Exit;
   GetVideoDriver(SavedDriver);
   Driver := SavedDriver;
+  Driver.InitDriver := @WideInitVideo;
   Driver.UpdateScreen := @WideUpdateScreen;
   Driver.DoneDriver := @WideDoneVideo;
   if SetVideoDriver(Driver) then
