@@ -86,4 +86,43 @@ check("B: command restarted", ps != '')
 b.send(b'\x1bx', 0.8)
 b.close()
 
+# A restored command must leave an interactive shell after it exits normally.
+with open(SESS, 'w') as f:
+    f.write("""[layout]
+nodes=V:500;H:500;L;L;H:500;L;L
+count=4
+focused=1
+
+[pane0]
+cmd=
+cwd=/tmp/opencode/sthome
+term=
+argc=0
+
+[pane1]
+cmd=/usr/bin/true
+cwd=/tmp/opencode/sthome
+term=
+argc=1
+arg0=/usr/bin/true
+
+[pane2]
+cmd=
+cwd=/tmp/opencode/sthome
+term=
+argc=0
+
+[pane3]
+cmd=
+cwd=/tmp/opencode/sthome
+term=
+argc=0
+""")
+c = Session()
+c.drain(2.0)
+c.send(b'echo RESTORED_SHELL\r', 1.0)
+check("C: lower-left returns to shell", 'RESTORED_SHELL' in c.text())
+c.send(b'\x1bq', 0.8)
+c.close()
+
 sys.exit(1 if fails else 0)

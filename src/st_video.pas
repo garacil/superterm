@@ -254,7 +254,10 @@ begin
   if Assigned(SavedDriver.DoneDriver) then
     SavedDriver.DoneDriver;
   { FreeVision homes the cursor while tearing down the alternate screen.
-    Restore the shell's cursor after that teardown, not before it. }
+    Restore the shell's cursor after that teardown, not before it. This is
+    only the fallback: the RTL keyboard teardown still emits ESC[H after
+    this point, so the authoritative repositioning happens at program exit
+    via RestoreConsoleCursor (DSR-based), immune to that late homing. }
   WriteRaw(#27'[u'#27'8');
 end;
 

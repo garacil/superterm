@@ -191,6 +191,19 @@ begin
   end;
 end;
 
+function CommandWithInteractiveShell(const Command, Shell: string;
+  LoginShell: boolean): string;
+begin
+  Result := Trim(Command);
+  if Result = '' then
+    Exit;
+  Result := Result + '; exec ' + ShellQuote(Shell);
+  if LoginShell then
+    Result := Result + ' -l'
+  else
+    Result := Result + ' -i';
+end;
+
 function WizardCommand(const AConnect, APostConnect: string): string;
 begin
   Result := Trim(AConnect);
@@ -940,9 +953,14 @@ begin
       StartPaneEx(i, '', '', SysIdx, '', '', SysTerms[SysIdx].Name,
         SysTerms[SysIdx].ScrollBack)
     else if (i <= High(Pin)) and (Length(Pin[i].Args) > 0) then
-      StartPane(i, Pin[i].Cwd, ArgsAsShell(Pin[i].Args))
+      StartPane(i, Pin[i].Cwd,
+        CommandWithInteractiveShell(ArgsAsShell(Pin[i].Args), Cfg.Shell,
+          Cfg.LoginShell))
+    else if (i <= High(Pin)) and (Pin[i].Cmd <> '') then
+      StartPane(i, Pin[i].Cwd,
+        CommandWithInteractiveShell(Pin[i].Cmd, Cfg.Shell, Cfg.LoginShell))
     else if i <= High(Pin) then
-      StartPane(i, Pin[i].Cwd, Pin[i].Cmd)
+      StartPane(i, Pin[i].Cwd, '')
     else
       StartPane(i, '', '');
   end;
