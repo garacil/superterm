@@ -1071,7 +1071,11 @@ begin
         FPState := psOsc;
         Exit;
       end;
-    '(', ')', '*', '+': FPState := psCharset;
+    '(', ')', '*', '+':
+      begin
+        FPState := psCharset;
+        Exit;
+      end;
     '7':
       begin
         FSaveX := CursorX;
