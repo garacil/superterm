@@ -54,6 +54,11 @@ type
 // reconstruccion. AllowStartNew=True anade el boton 'Start new'/'Nueva
 // sesion' (arranque normal); con False ese boton es 'Cancel'/'Cancelar'.
 // spAttach -> ASocketPath = socket elegido.
+// lista de paneles Alt+0 (como el Window|List del IDE clasico): devuelve
+// True y el indice elegido; el llamante enfoca o restaura
+function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
+  out ASelected: integer): boolean;
+
 function RunSessionPicker(AllowStartNew: boolean;
   out ASocketPath: string): TSessionPickAction;
 
@@ -1001,6 +1006,74 @@ begin
   Dispose(D, Done);
   // la coleccion no es del listbox: liberarla tras destruir el dialogo
   Dispose(Coll, Done);
+end;
+
+type
+  // Enter/espacio/doble clic sobre la lista de paneles equivalen a 'Ir a'
+  PPaneListDialog = ^TPaneListDialog;
+  TPaneListDialog = object(TDialog)
+    procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
+procedure TPaneListDialog.HandleEvent(var Event: TEvent);
+begin
+  inherited HandleEvent(Event);
+  if (Event.What = evBroadcast) and
+     (Event.Command = cmListItemSelected) then
+  begin
+    EndModal(cmOK);
+    ClearEvent(Event);
+  end;
+end;
+
+// lista de paneles Alt+0: seleccion simple sobre titulos ya formateados
+function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
+  out ASelected: integer): boolean;
+var
+  D: PPaneListDialog;
+  R: Objects.TRect;
+  LB: PListBox;
+  SB: PScrollBar;
+  Col: PStringCollection;
+  I, C: integer;
+begin
+  Result := False;
+  ASelected := -1;
+  if Length(ATitles) < 1 then
+    Exit;
+  R.Assign(0, 0, 46, 8 + Length(ATitles));
+  if R.B.Y > 20 then
+    R.B.Y := 20;
+  D := New(PPaneListDialog, Init(R, UiText('Pane list', 'Lista de paneles')));
+  D^.Options := D^.Options or ofCentered;
+  with D^ do
+  begin
+    // botones primero: el ultimo control insertado (la lista) recibe foco
+    NewButton(8, Size.Y - 3, 12, 2, UiText('~G~o to', '~I~r a'), cmOK,
+      hcNoContext, bfDefault);
+    NewButton(26, Size.Y - 3, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
+    R.Assign(Size.X - 3, 2, Size.X - 2, Size.Y - 4);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(2, 2, Size.X - 3, Size.Y - 4);
+    LB := New(PListBox, Init(R, 1, SB));
+    Col := New(PStringCollection, Init(Length(ATitles), 4));
+    for I := 0 to High(ATitles) do
+      Col^.AtInsert(I, Objects.NewStr(ATitles[I]));
+    LB^.NewList(Col);
+    if (ACurrent >= 0) and (ACurrent < Length(ATitles)) then
+      LB^.FocusItem(ACurrent);
+    Insert(LB);
+  end;
+  C := Desktop^.ExecView(D);
+  if C = cmOK then
+  begin
+    ASelected := LB^.Focused;
+    Result := (ASelected >= 0) and (ASelected < Length(ATitles));
+  end;
+  LB^.NewList(nil); // NewList(nil) libera la coleccion anterior
+  Dispose(D, Done);
 end;
 
 function RunSessionPicker(AllowStartNew: boolean;

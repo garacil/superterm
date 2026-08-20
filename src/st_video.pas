@@ -136,6 +136,15 @@ begin
     29: Result := '↔';
     30: Result := '▲';
     31: Result := '▼';
+    129: Result := 'ü';
+    130: Result := 'é';
+    144: Result := 'É';
+    160: Result := 'á';
+    161: Result := 'í';
+    162: Result := 'ó';
+    163: Result := 'ú';
+    164: Result := 'ñ';
+    165: Result := 'Ñ';
     176: Result := '░';
     177: Result := '▒';
     178: Result := '▓';

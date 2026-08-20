@@ -28,6 +28,7 @@ type
     DefaultSession: string;  // legado
     DefaultWindow: string;
     Language: TUiLanguage;
+    Palette: string;       // 'color' (TP clasico) | 'bw' | 'mono'
   end;
 
 function ConfigDir: string;
@@ -193,6 +194,7 @@ begin
   Cfg.DefaultSession := '';
   Cfg.DefaultWindow := '';
   Cfg.Language := ulEnglish;
+  Cfg.Palette := 'color';
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -220,6 +222,10 @@ begin
       Cfg.DefaultWindow);
     Cfg.Language := ParseUiLanguage(Ini.ReadString('ui', 'language',
       UiLanguageCode(Cfg.Language)));
+    Cfg.Palette := LowerCase(Trim(Ini.ReadString('ui', 'palette',
+      Cfg.Palette)));
+    if (Cfg.Palette <> 'bw') and (Cfg.Palette <> 'mono') then
+      Cfg.Palette := 'color';
   finally
     Ini.Free;
   end;
@@ -242,6 +248,7 @@ begin
     Ini.WriteString('session', 'default_session', Cfg.DefaultSession);
     Ini.WriteString('session', 'default_window', Cfg.DefaultWindow);
     Ini.WriteString('ui', 'language', UiLanguageCode(Cfg.Language));
+    Ini.WriteString('ui', 'palette', Cfg.Palette);
     Ini.UpdateFile;
   finally
     Ini.Free;

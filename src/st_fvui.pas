@@ -37,6 +37,11 @@ const
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
   cmQuitNoSave = 2110;
+  cmPaneTile    = 2111;    // recolocar en mosaico (Window|Tile clasico)
+  cmPaneCascade = 2112;
+  cmPaneList    = 2113;    // lista de paneles (Alt+0)
+  cmRedrawAll   = 2114;    // refrescar pantalla
+  cmPaneOrganize = 2115;   // rejilla NxM del vendor (TDeskTop.Tile)
   cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
   cmTemplateBase = 2200;   // + indice de perfil (0..39)
   cmProfileSaveAs = 2250;  // guardar el area de trabajo como perfil
@@ -55,7 +60,11 @@ const
   cmSessionPick   = 2551;   // selector/gestor de sesiones separadas
   cmSessionWizard = 2560;
   cmHelp        = 2600;
+  cmAbout       = 2601;
   cmLanguageBase = 2700;
+  cmPaletteBase  = 2750;   // +apColor/apBlackWhite/apMonochrome
+  cmToggleAutoSave    = 2760;
+  cmToggleAutoRestore = 2761;
 
 type
   PSuperApp = ^TSuperApp;
@@ -80,8 +89,11 @@ type
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
+    SavedRect: Objects.TRect;  // bounds previos al icono de minimizado
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
     procedure InitFrame; virtual;
+    procedure HandleEvent(var Event: TEvent); virtual;
+    procedure SizeLimits(var Min, Max: Objects.TPoint); virtual;
     procedure ChangeBounds(var Bounds: Objects.TRect); virtual;
     procedure Zoom; virtual;
     procedure Close; virtual;
@@ -137,6 +149,13 @@ type
     procedure MinimizeAllWindows;
     procedure RestoreAllWindows;
     procedure SaveSessionNow;
+    procedure ShowAbout;
+    procedure ArrangeIcons;
+    procedure DoTilePanes;
+    procedure DoCascadePanes;
+    procedure DoOrganizePanes;
+    procedure DoPaneList;
+    procedure ApplyPalette(AKind: integer);
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
@@ -624,8 +643,38 @@ procedure TTermFrame.Draw;
 var
   B: TDrawBuffer;
   Color: byte;
+  W, i, xo: integer;
+  T: string;
 begin
   B := Default(TDrawBuffer);
+  // icono de minimizada: marco y titulo en negro (el gris pasivo no se
+  // lee sobre el azul claro); dibujo propio de las dos filas
+  if (Owner <> nil) and PTermWindow(Owner)^.Minimized then
+  begin
+    W := Size.X;
+    if W > MaxViewWidth then
+      W := MaxViewWidth;
+    if (W < 4) or (Size.Y < 2) then
+      Exit;
+    T := '';
+    if PTermWindow(Owner)^.Title <> nil then
+      T := PTermWindow(Owner)^.Title^;
+    if Length(T) > W - 6 then
+      T := Copy(T, 1, W - 6);
+    T := ' ' + T + ' ';
+    MoveChar(B, #196, $10, W);
+    B[0] := (B[0] and $FF00) or word(byte(#218));
+    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#191));
+    xo := (W - Length(T)) div 2;
+    for i := 1 to Length(T) do
+      B[xo + i - 1] := (B[xo + i - 1] and $FF00) or word(byte(T[i]));
+    WriteLine(0, 0, W, 1, B);
+    MoveChar(B, #196, $10, W);
+    B[0] := (B[0] and $FF00) or word(byte(#192));
+    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#217));
+    WriteLine(0, 1, W, 1, B);
+    Exit;
+  end;
   inherited Draw;
   // FreeVision has close and zoom buttons but no minimize button. Keep the
   // minimize control in the same title-bar language as the native controls.
@@ -648,6 +697,13 @@ begin
   if Event.What = evMouseDown then
   begin
     App := PSuperApp(Application);
+    if (App <> nil) and (Owner <> nil) and
+       PTermWindow(Owner)^.Minimized then
+    begin
+      App^.RestoreWindow(PTermWindow(Owner)^.PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
     if (App <> nil) and (Owner <> nil) then
       App^.FocusPane(PTermWindow(Owner)^.PaneIdx);
     Mouse := Default(Objects.TPoint);
@@ -684,6 +740,36 @@ begin
   Insert(Term);
 end;
 
+procedure TTermWindow.HandleEvent(var Event: TEvent);
+var
+  App: PSuperApp;
+begin
+  // un clic sobre el icono minimizado lo restaura, antes de que la
+  // seleccion de ventana del vendor se trague el evento
+  if Minimized and (Event.What = evMouseDown) then
+  begin
+    App := PSuperApp(Application);
+    if App <> nil then
+    begin
+      App^.RestoreWindow(PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
+  end;
+  inherited HandleEvent(Event);
+end;
+
+procedure TTermWindow.SizeLimits(var Min, Max: Objects.TPoint);
+begin
+  inherited SizeLimits(Min, Max);
+  if Minimized then
+  begin
+    // el icono de minimizada es una barrita de 2 filas
+    Min.X := 10;
+    Min.Y := 2;
+  end;
+end;
+
 procedure TTermWindow.InitFrame;
 var
   R: Objects.TRect;
@@ -707,7 +793,7 @@ begin
       Term^.Locate(R);
   end;
   App := PSuperApp(Application);
-  if (App <> nil) and (App^.Scr[PaneIdx] <> nil) then
+  if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
     ph := Size.Y - 2;
@@ -756,8 +842,13 @@ procedure TTermWindow.Minimize;
 begin
   if not Minimized then
   begin
+    // icono estilo Turbo Vision: la ventana queda visible como barrita;
+    // la aplicacion la coloca abajo con ArrangeIcons
+    GetBounds(SavedRect);
     Minimized := True;
-    Hide;
+    Options := Options and (not ofTileable); // fuera del Tile del vendor
+    if Term <> nil then
+      Term^.Hide; // el icono es solo marco y titulo
   end;
 end;
 
@@ -765,8 +856,10 @@ procedure TTermWindow.Restore;
 begin
   if Minimized then
   begin
-    Minimized := False;
-    Show;
+    Minimized := False; // el llamante recoloca con RelayoutAll
+    Options := Options or ofTileable;
+    if Term <> nil then
+      Term^.Show;
   end;
 end;
 
@@ -794,6 +887,12 @@ begin
   InstallWideVideoOutput;
   inherited Init;
   LoadConfig(Cfg);
+  if Cfg.Palette = 'bw' then
+    AppPalette := apBlackWhite
+  else if Cfg.Palette = 'mono' then
+    AppPalette := apMonochrome
+  else
+    AppPalette := apColor;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
   // clases de ventana: fichero de usuario + fichero de sistema (gana user);
@@ -1283,14 +1382,23 @@ procedure TSuperApp.RelayoutAll;
 var
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
   LR, TileR: Objects.TRect;
-  i: integer;
+  i, TileH: integer;
   R: Objects.TRect;
+  HasIcons: boolean;
 begin
   R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
-  Lay.ComputeRects(R.B.X - R.A.X, R.B.Y - R.A.Y, Rects);
+  // con minimizadas, el mosaico reserva la franja inferior de iconos
+  HasIcons := False;
   for i := 0 to MAX_PANES - 1 do
-    if Win[i] <> nil then
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      HasIcons := True;
+  TileH := R.B.Y - R.A.Y;
+  if HasIcons then
+    Dec(TileH, 2);
+  Lay.ComputeRects(R.B.X - R.A.X, TileH, Rects);
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
       Rects[i].W := Rects[i].W - 2;  // hueco entre marcos
       Rects[i].H := Rects[i].H - 1;
@@ -1362,6 +1470,36 @@ begin
   end;
 end;
 
+// agrupa los iconos de minimizadas en filas al pie del escritorio
+procedure TSuperApp.ArrangeIcons;
+const
+  ICON_W = 26;
+  ICON_H = 2;
+var
+  RD, R: Objects.TRect;
+  i, k, PerRow, DeskW: integer;
+begin
+  if Desktop = nil then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  DeskW := RD.B.X - RD.A.X;
+  PerRow := DeskW div (ICON_W + 1);
+  if PerRow < 1 then
+    PerRow := 1;
+  k := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
+      R.Assign((k mod PerRow) * (ICON_W + 1),
+        RD.B.Y - RD.A.Y - ICON_H * (1 + k div PerRow),
+        (k mod PerRow) * (ICON_W + 1) + ICON_W,
+        RD.B.Y - RD.A.Y - ICON_H * (k div PerRow));
+      Win[i]^.Locate(R);
+      Inc(k);
+    end;
+end;
+
 procedure TSuperApp.MinimizeWindow(i: integer);
 var
   NextPane: integer;
@@ -1373,6 +1511,8 @@ begin
   if NextPane = i then
     NextPane := -1;
   Win[i]^.Minimize;
+  RelayoutAll;
+  ArrangeIcons;
   if Lay.Focused = i then
   begin
     if NextPane >= 0 then
@@ -1393,8 +1533,9 @@ begin
     Exit;
   Win[i]^.Restore;
   Lay.Focused := i;
-  FocusPane(i);
   RelayoutAll;
+  ArrangeIcons;
+  FocusPane(i);
   RebuildMenu;
 end;
 
@@ -2263,6 +2404,36 @@ begin
   Dispose(D, Done);
 end;
 
+procedure TSuperApp.ShowAbout;
+var
+  R: Objects.TRect;
+  D: PDialog;
+begin
+  R.Assign(0, 0, 52, 12);
+  D := New(PDialog, Init(R, UiText('About', 'Acerca de')));
+  D^.Options := D^.Options or ofCentered;
+  R.Assign(2, 2, 50, 3);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'superterm')));
+  R.Assign(2, 3, 50, 4);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('The productive terminal manager',
+      'El gestor de terminales productivo'))));
+  R.Assign(2, 5, 50, 6);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'Germ'#160'n Luis Aracil Boned')));
+  R.Assign(2, 6, 50, 7);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('August 2026', 'Agosto 2026'))));
+  R.Assign(2, 8, 50, 9);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('License: GNU GPL v3', 'Licencia: GNU GPL v3'))));
+  D^.NewButton(20, 9, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+    hcNoContext, bfDefault);
+  Desktop^.ExecView(D);
+  Dispose(D, Done);
+end;
+
 procedure TSuperApp.RebuildMenu;
 begin
   if MenuBar <> nil then
@@ -2448,6 +2619,8 @@ begin
     begin
       if Win[i]^.Zoomed then
         WR := Win[i]^.ZoomRect
+      else if Win[i]^.Minimized then
+        WR := Win[i]^.SavedRect
       else
       begin
         WR := Default(Objects.TRect);
@@ -2488,6 +2661,133 @@ begin
     DeskW, DeskH);
 end;
 
+// Window|Tile clasico: recalcular el mosaico y descartar geometria manual
+procedure TSuperApp.DoTilePanes;
+var
+  i: integer;
+begin
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      RestoreWindow(i);
+  RelayoutAll;
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// Window|Cascade clasico: ventanas escalonadas de 2/3 del escritorio
+procedure TSuperApp.DoCascadePanes;
+var
+  RD, R: Objects.TRect;
+  i, k, w, h, maxoff: integer;
+begin
+  if Desktop = nil then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  w := (RD.B.X - RD.A.X) * 2 div 3;
+  h := (RD.B.Y - RD.A.Y) * 2 div 3;
+  if w < 20 then w := 20;
+  if h < 6 then h := 6;
+  maxoff := RD.B.Y - RD.A.Y - h - 1;
+  if maxoff < 1 then maxoff := 1;
+  k := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and (not Win[i]^.Minimized) then
+    begin
+      R.Assign(RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w),
+        RD.A.Y + k mod maxoff,
+        RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w) + w,
+        RD.A.Y + k mod maxoff + h);
+      Win[i]^.Locate(R);
+      Inc(k);
+    end;
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// rejilla del vendor: reparte todas las visibles en filas y columnas
+// que quepan en pantalla (TDeskTop.Tile sobre las vistas ofTileable)
+procedure TSuperApp.DoOrganizePanes;
+var
+  R: Objects.TRect;
+  i: integer;
+  HasIcons: boolean;
+begin
+  if Desktop = nil then
+    Exit;
+  R := Default(Objects.TRect);
+  Desktop^.GetExtent(R);
+  HasIcons := False;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      HasIcons := True;
+  if HasIcons then
+    Dec(R.B.Y, 2); // respetar la franja de iconos
+  Desktop^.Tile(R);
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// Window|List clasico (Alt+0): elegir panel, restaurando si esta minimizado
+procedure TSuperApp.DoPaneList;
+var
+  Titles: TStrArray;
+  n, i, Sel: integer;
+  T: string;
+begin
+  n := Lay.PaneCount;
+  if n < 1 then
+    Exit;
+  Titles := Default(TStrArray);
+  SetLength(Titles, n);
+  for i := 0 to n - 1 do
+  begin
+    T := '';
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      T := Win[i]^.GetTitle(60);
+      if Win[i]^.Minimized then
+        T := T + UiText(' (minimized)', ' (minimizada)');
+      if Win[i]^.Zoomed then
+        T := T + UiText(' (zoom)', ' (zoom)');
+    end;
+    Titles[i] := Format('%d  %s', [i + 1, T]);
+  end;
+  Sel := -1;
+  if RunPaneList(Titles, Lay.Focused, Sel) then
+    if (Sel >= 0) and (Sel < MAX_PANES) and (Win[Sel] <> nil) then
+    begin
+      if Win[Sel]^.Minimized then
+        RestoreWindow(Sel);
+      FocusPane(Sel);
+    end;
+end;
+
+// cambio de paleta en vivo + persistencia en superterm.ini
+procedure TSuperApp.ApplyPalette(AKind: integer);
+begin
+  if (AKind < apColor) or (AKind > apMonochrome) then
+    Exit;
+  AppPalette := AKind;
+  case AKind of
+    apBlackWhite: Cfg.Palette := 'bw';
+    apMonochrome: Cfg.Palette := 'mono';
+  else
+    Cfg.Palette := 'color';
+  end;
+  SaveConfig(Cfg);
+  RebuildMenu;
+  RebuildStatusLine;
+  ResetVideoSurface;
+  ReDraw;
+end;
+
 procedure TSuperApp.SaveSessionNow;
 var
   Pin: TPaneArray;
@@ -2521,6 +2821,8 @@ begin
     begin
       if Win[i]^.Zoomed then
         WR := Win[i]^.ZoomRect
+      else if Win[i]^.Minimized then
+        WR := Win[i]^.SavedRect
       else
       begin
         WR := Default(Objects.TRect);
@@ -2664,6 +2966,28 @@ begin
       cmPaneNext: CyclePane(1);
       cmPanePrev: CyclePane(-1);
       cmWindowMinimize: MinimizeWindow(Lay.Focused);
+      cmAbout: ShowAbout;
+      cmPaneTile: DoTilePanes;
+      cmPaneCascade: DoCascadePanes;
+      cmPaneOrganize: DoOrganizePanes;
+      cmPaneList: DoPaneList;
+      cmRedrawAll:
+        begin
+          ResetVideoSurface;
+          ReDraw;
+        end;
+      cmToggleAutoSave:
+        begin
+          Cfg.AutoSave := not Cfg.AutoSave;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
+      cmToggleAutoRestore:
+        begin
+          Cfg.AutoRestore := not Cfg.AutoRestore;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
       cmWindowMinimizeAll: MinimizeAllWindows;
       cmWindowRestoreAll: RestoreAllWindows;
       cmSaveSess:
@@ -2758,6 +3082,9 @@ begin
        else if (Event.Command >= cmWindowRestoreBase) and
           (Event.Command < cmWindowRestoreBase + MAX_PANES) then
          RestoreWindow(Event.Command - cmWindowRestoreBase)
+       else if (Event.Command >= cmPaletteBase) and
+          (Event.Command <= cmPaletteBase + apMonochrome) then
+         ApplyPalette(Event.Command - cmPaletteBase)
        else if (Event.Command >= cmOpenTerm) and
          (Event.Command < cmOpenTerm + Length(SysTerms)) then
         DoOpenSysTerm(Event.Command - cmOpenTerm)
@@ -2935,6 +3262,7 @@ var
   i, Num: integer;
   TitleS: string;
   HasProfiles: boolean;
+  PaletteItems: PMenuItem;
 begin
   R := Default(Objects.TRect);
   GetExtent(R);
@@ -3014,6 +3342,18 @@ begin
   else
     WindowItems := NewInfoItem(UiText('(no profile active)',
       '(sin perfil activo)'), '', nil);
+  // organizacion de ventanas en pantalla (como Window del IDE clasico)
+  WindowItems := NewLine(WindowItems);
+  WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
+    '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'), 'Alt-0', kbAlt0,
+    cmPaneList, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('Cascad~e~', 'Cascad~a~'), '', kbNoKey,
+    cmPaneCascade, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~O~rganize', '~O~rganizar'), '', kbNoKey,
+    cmPaneOrganize, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~T~ile', '~M~osaico'), '', kbNoKey,
+    cmPaneTile, hcNoContext, WindowItems);
   MWindows := NewMenu(WindowItems);
 
   // ---- Clases: abre un panel nuevo de cada clase configurada ----
@@ -3104,18 +3444,41 @@ begin
   // ---- Opciones: idioma en orden fijo, nombres sin traducir ----
   LanguageItems := nil;
   LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulSpanish) +
-    'E~s~panol', '', kbNoKey, cmLanguageBase + Ord(ulSpanish), hcNoContext,
-    LanguageItems);
+    'E~s~pa'#164'ol', '', kbNoKey, cmLanguageBase + Ord(ulSpanish),
+    hcNoContext, LanguageItems);
   LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulEnglish) +
     '~E~nglish', '', kbNoKey, cmLanguageBase + Ord(ulEnglish), hcNoContext,
     LanguageItems);
+  PaletteItems := nil;
+  PaletteItems := NewItem(ActiveMark(AppPalette = apMonochrome) +
+    UiText('~M~onochrome', '~M~onocromo'), '', kbNoKey,
+    cmPaletteBase + apMonochrome, hcNoContext, PaletteItems);
+  PaletteItems := NewItem(ActiveMark(AppPalette = apBlackWhite) +
+    UiText('~B~lack and white', '~B~lanco y negro'), '', kbNoKey,
+    cmPaletteBase + apBlackWhite, hcNoContext, PaletteItems);
+  PaletteItems := NewItem(ActiveMark(AppPalette = apColor) +
+    UiText('~C~olor (classic Turbo Pascal)',
+      '~C~olor (Turbo Pascal clasico)'), '', kbNoKey,
+    cmPaletteBase + apColor, hcNoContext, PaletteItems);
   MOptions := NewMenu(
     NewSubMenu(UiText('~L~anguage', '~I~dioma'), hcNoContext,
-      NewMenu(LanguageItems), nil));
+      NewMenu(LanguageItems),
+    NewSubMenu(UiText('Color ~p~alette', '~P~aleta de colores'), hcNoContext,
+      NewMenu(PaletteItems),
+    NewLine(
+    NewItem(ActiveMark(Cfg.AutoSave) +
+      UiText('Auto~s~ave on exit', 'Auto~g~uardar al salir'), '', kbNoKey,
+      cmToggleAutoSave, hcNoContext,
+    NewItem(ActiveMark(Cfg.AutoRestore) +
+      UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
+      kbNoKey, cmToggleAutoRestore, hcNoContext, nil))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
-      cmHelp, hcNoContext, nil));
+      cmHelp, hcNoContext,
+    NewLine(
+    NewItem(UiText('A~b~out...', 'A~c~erca de...'), '', kbNoKey,
+      cmAbout, hcNoContext, nil))));
 
   MenuBar := New(PMenuBar, Init(R, NewMenu(
     NewSubMenu(UiText('~P~anes', '~P~aneles'), 0, MPanes,

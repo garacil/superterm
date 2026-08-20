@@ -5,63 +5,87 @@
 shell=/bin/bash
 login=1
 
-[session]
-autosave=1
-autorestore=0
-default_template=daily
-default_session=remote
-default_window=production
+[keymap]
+; Prefix key for chords (detach, session picker, window 1..9, resize...).
+; Accepts ctrl-a..ctrl-z, a single letter, or a number 1..26.
+; ctrl-q is the default. The old numeric default 2 (Ctrl-B) is migrated
+; to ctrl-q; write ctrl-b explicitly to really use Ctrl-B.
+prefix=ctrl-q
 
 [ui]
 ; en is the default; use es for the Spanish interface.
 language=en
+; Interface palette: color (classic Turbo Pascal, default), bw, or mono.
+palette=color
 
-[t-production]
+[session]
+autosave=1
+autorestore=1
+; Profile activated at startup (see [profile.daily] below).
+default_profile=daily
+
+; ---------------------------------------------------------------------------
+; Window classes: reusable, named pane definitions.
+; The type is derived from the fields: connect -> free command class,
+; host -> structured SSH class, otherwise -> local class.
+; ---------------------------------------------------------------------------
+
+; Structured SSH class: superterm builds the ssh command itself.
+; postconnect is passed as the remote command, so a persistent tmux
+; console is natural. password= (base64) also exists but needs sshpass;
+; prefer a key or an agent.
+[class.production]
 name=production
 enabled=1
-type=ssh
 host=prod.example.com
 user=alice
 port=22
 key=~/.ssh/id_ed25519
+postconnect=tmux new -A -s main
+scrollback=20000
 
-[t-staging]
-name=staging
+; Local class: runs a command in a local PTY.
+[class.monitor]
+name=monitor
 enabled=1
-type=ssh
-host=staging.example.com
-user=alice
-key=~/.ssh/id_ed25519
+cmd=htop
 
-[template.daily]
+; ---------------------------------------------------------------------------
+; Profile: a named workspace of windows; each window has a pane layout and
+; its panes reference the classes above. Switch windows with Ctrl-Q 1..9
+; or F8/F9. Pane fields (cmd, cwd, connect, postconnect, scrollback)
+; override the referenced class.
+; ---------------------------------------------------------------------------
+
+[profile.daily]
 name=daily
 enabled=1
-default_session=remote
-sessions=remote
-
-[template.daily.session.remote]
-enabled=1
 focused_window=0
-windows=production,staging
+windows=servers,logs
 
-[template.daily.session.remote.window.production]
+[profile.daily.window.servers]
+enabled=1
+; Two panes side by side: V:ratio (0..1000), L = one pane.
+layout=V:500;L;L
+focused_pane=0
+panes=prod,mon
+
+[profile.daily.window.servers.pane.prod]
+enabled=1
+class=production
+
+[profile.daily.window.servers.pane.mon]
+enabled=1
+class=monitor
+
+[profile.daily.window.logs]
 enabled=1
 layout=L
 focused_pane=0
-panes=prod
+panes=logs
 
-[template.daily.session.remote.window.production.pane.prod]
+[profile.daily.window.logs.pane.logs]
 enabled=1
-terminal=production
-postconnect=tmux new-session -A -s production
-
-[template.daily.session.remote.window.staging]
-enabled=1
-layout=L
-focused_pane=0
-panes=stage
-
-[template.daily.session.remote.window.staging.pane.stage]
-enabled=1
-terminal=staging
-postconnect=tmux new-session -A -s staging
+class=production
+; Override: this pane opens a different tmux session on the same host.
+postconnect=tmux new -A -s logs

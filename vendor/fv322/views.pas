@@ -3714,7 +3714,7 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE TListViewer.HandleEvent (Var Event: TEvent);
 CONST MouseAutosToSkip = 4;
-VAR Oi, Ni: Sw_Integer; Ct, Cw: Word; Mouse: TPoint;
+VAR Oi, Ni: Sw_Integer; Ct, Cw: Word; Mouse: TPoint; Dbl: Boolean;
 
    PROCEDURE MoveFocus (Req: Sw_Integer);
    BEGIN
@@ -3764,7 +3764,8 @@ BEGIN
          End;
      End;
      evMouseDown: Begin                               { Mouse down event }
-       Cw := Size.X DIV NumCols + 1;                  { Column width }
+       Dbl := Event.Double;                           { Held: the drag loop }
+       Cw := Size.X DIV NumCols + 1;                  { below replaces Event }
        Oi := Focused;                                 { Hold focused item }
        MakeLocal(Event.Where, Mouse);                 { Localize mouse }
        If MouseInView(Event.Where) Then Ni := Mouse.Y
@@ -3802,7 +3803,7 @@ BEGIN
        Until NOT MouseEvent(Event, evMouseMove +
          evMouseAuto);                                { Mouse stopped }
        If (Oi <> Ni) Then MoveFocus(Ni);              { Focus moved again }
-       If (Event.Double AND (Range > Focused)) Then
+       If (Dbl AND (Range > Focused)) Then
          SelectItem(Focused);                         { Select the item }
        ClearEvent(Event);                             { Event was handled }
      End;
