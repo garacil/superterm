@@ -107,8 +107,15 @@ for _ in range(30):
         break
     except (FileNotFoundError, ValueError):
         time.sleep(0.1)
-check('pane process survives detach', pane_pid is not None and
-      os.path.exists(f'/proc/{pane_pid}'))
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+check('pane process survives detach', pane_pid is not None and _pid_alive(pane_pid))
 time.sleep(1.0)
 
 second = Client(['--attach'])

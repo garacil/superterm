@@ -30,7 +30,7 @@ Required:
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
 - Free Pascal FV, FCL, and DB units.
 - GNU make.
-- GNU/Linux with `/proc` and POSIX PTY support.
+- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
 
 Required only for the regression suite:
 
@@ -43,7 +43,8 @@ Needed for remote features:
 - `sshpass` only when password authentication is explicitly configured. SSH keys
   or an SSH agent are safer and preferred.
 
-On Debian or Ubuntu, the project can install the common packages explicitly:
+On Debian or Ubuntu (apt) or macOS (Homebrew), the project can install the
+common packages explicitly:
 
 ```sh
 ./configure --install-deps
@@ -183,15 +184,18 @@ template activation. Do not put passwords in debug logs or command lines.
 
 ## Platform support
 
-The current application is a GNU/Linux terminal program, using the GNU
-userland and tools with the Linux kernel. It uses POSIX PTYs, `fork/exec`,
-`/proc`, `select`, and the bundled FreeVision text UI.
+superterm is a single cross-platform codebase that builds and runs natively on
+GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `select`, POSIX
+PTYs, and the bundled FreeVision text UI. The only conditionally compiled unit
+is `src/st_pty.pas`, which selects the PTY/process backend with `{$IFDEF DARWIN}`:
 
-Windows support would require a separate PTY backend based on ConPTY, plus
-Windows process, resize, signal, and configuration-path implementations. WSL
-is the practical way to run the current GNU/Linux build on Windows.
+- Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
+- macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
+  Pascal auto-defines `DARWIN`, so the compile line, `configure`, and `make` are
+  identical to Linux. Run in Terminal.app or iTerm2. See
+  [`MACOS.md`](MACOS.md) for terminal setup and platform notes.
 
-iOS is not a native target for the current program. A native iOS version would
-need a UIKit or SwiftUI frontend, sandbox-compatible SSH/session handling, and
-a redesigned local-command model. Running the GNU/Linux binary under an emulator
-such as iSH would be experimental and would not be an App Store application.
+No other unit is platform-conditional, so a change merged on one OS applies to
+both. Windows support would require a separate PTY backend based on ConPTY, plus
+Windows process, resize, signal, and configuration-path implementations; WSL is
+the practical way to run superterm on Windows today.

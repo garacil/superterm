@@ -85,7 +85,15 @@ uninstall:
 	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
 
 install-deps:
-	@if command -v apt-get >/dev/null 2>&1; then \
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		if ! command -v brew >/dev/null 2>&1; then \
+			printf '%s\n' 'Homebrew is required for automatic setup on macOS (https://brew.sh).'; exit 1; fi; \
+		command -v fpc >/dev/null 2>&1 || brew install fpc; \
+		printf '%s\n' 'libsqlite3 ships with macOS; no package needed.'; \
+		python3 -m pip install --user pyte >/dev/null 2>&1 || \
+			printf '%s\n' 'Optional: "pip3 install pyte" enables "make test".'; \
+		printf '%s\n' 'Optional: "brew install sshpass" only for password-auth SSH panes.'; \
+	elif command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=; \
 		elif command -v sudo >/dev/null 2>&1; then SUDO=sudo; \
 		else printf '%s\n' 'sudo is required'; exit 1; fi; \
@@ -93,7 +101,7 @@ install-deps:
 			fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
 			python3 python3-pyte openssh-client sshpass; \
 	else \
-		printf '%s\n' 'Automatic dependency installation is only implemented for Debian/Ubuntu.'; \
+		printf '%s\n' 'Automatic dependency installation is only implemented for Debian/Ubuntu and macOS (Homebrew).'; \
 		exit 1; \
 	fi
 

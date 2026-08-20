@@ -3,6 +3,21 @@
 The current release build and the complete `make test` suite pass. The items
 below are remaining follow-up work, not currently failing regressions.
 
+## macOS (native port)
+
+superterm builds and runs natively on macOS from the same source tree (see
+`docs/MACOS.md`). `make test` passes except the two mouse-drag-resize checks.
+Remaining macOS follow-ups:
+
+- Mouse-drag window resize is not delivered under the pyte harness and needs
+  verification in a real Terminal.app / iTerm2 session. Mouse clicks (menus,
+  pane focus, split) work. If on-device testing shows mouse events are missing,
+  enable xterm SGR mouse reporting for macOS in `vendor/fv322/drivers.pas`
+  (`EnableTmuxMouse`/`DetectMouse`, guarded with `{$IFDEF DARWIN}`).
+- `DarwinProcArgv` captures pane command lines via `sysctl KERN_PROCARGS2`;
+  verify/extend `DarwinProcCwd` (`libproc PROC_PIDVNODEPATHINFO`) so pane cwd
+  capture matches the Linux `/proc` behavior across pane types.
+
 ## Compiler Diagnostics
 
 - A clean Free Pascal build still emits 28 `Note` diagnostics. They are not

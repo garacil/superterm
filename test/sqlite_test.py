@@ -55,7 +55,7 @@ conn.close()
 
 with open(SYSINI, 'w') as f:
     f.write('[storage]\nbackend=sqlite\ndirectory=templates\n\n')
-    f.write('[t1]\nname=db-shell\nenabled=1\ntype=local\ncmd=/usr/bin/bash -i\n')
+    f.write('[t1]\nname=db-shell\nenabled=1\ntype=local\ncmd=/bin/bash -i\n')
 
 
 class Session:
@@ -64,7 +64,7 @@ class Session:
         self.stream = pyte.ByteStream(self.screen)
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.environ.update(TERM='xterm', SHELL='/usr/bin/bash', HOME=HOME,
+            os.environ.update(TERM='xterm', SHELL='/bin/bash', HOME=HOME,
                               SUPERTERM_INI=SYSINI)
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ,

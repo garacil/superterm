@@ -12,7 +12,7 @@ workspace without editing a configuration file.
 ![superterm four-pane workspace](screenshots/four-pane.png)
 
 The screenshot shows the English interface with four independent PTY-backed
-panes in a normal GNU/Linux terminal window.
+panes in a normal GNU/Linux or macOS terminal window.
 
 ## Features
 
@@ -36,18 +36,24 @@ panes in a normal GNU/Linux terminal window.
 
 ## Platform Support
 
-The supported native platform is GNU/Linux: the GNU project's userland and
-tools running on the Linux kernel. The current PTY and process code uses POSIX
-APIs, `/proc`, and the terminal device model.
+`superterm` is a single cross-platform codebase that builds and runs natively on
+**GNU/Linux and macOS** (Apple Silicon and Intel). Both are POSIX systems, so the
+UI, VT engine, layout, configuration, and detach/attach server are shared without
+change. The only platform-specific code is the PTY/process layer, selected at
+compile time with `{$IFDEF DARWIN}`:
 
-Windows is not a native target yet. WSL is the practical way to run the current
-GNU/Linux build on Windows. A native Windows port would need a ConPTY backend plus
-Windows-specific process, resize, signal, and configuration-path code.
+- **Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
+  and reads process titles from `/proc`.
+- **macOS** allocates it with BSD `openpty` + `login_tty` and reads process
+  titles with `libproc`/`sysctl`. Free Pascal auto-defines `DARWIN`, so no build
+  flag is required — run superterm in Terminal.app or iTerm2 exactly as on Linux.
 
-iOS is not a native target. A native iOS version would need a UIKit or SwiftUI
-frontend, sandbox-compatible SSH/session handling, and a redesigned local
-command model. Running the GNU/Linux binary under an environment such as iSH would
-be experimental and would not be an App Store application.
+See [`docs/MACOS.md`](docs/MACOS.md) for the macOS build, terminal setup, and
+platform notes.
+
+Windows is not a native target. WSL is the practical way to run superterm on
+Windows; a native port would need a ConPTY backend plus Windows-specific process,
+resize, signal, and configuration-path code.
 
 ## Technology Choice
 
@@ -66,7 +72,7 @@ A complete C rewrite would have to recreate the UI, PTY handling, VT parser,
 layout, session persistence, and tests without providing a concrete benefit for
 the current requirements. C would become a reasonable choice if the project
 needed a persistent multi-client server, C library integration, an external API,
-or a measured performance improvement. For the current GNU/Linux terminal
+or a measured performance improvement. For the current cross-platform terminal
 multiplexer, continuing in Pascal has a better benefit-to-risk ratio than
 rewriting it in C.
 
@@ -77,7 +83,7 @@ Build requirements:
 - Free Pascal Compiler 3.2.2 or a compatible Free Pascal 3.x release.
 - Free Pascal FV, FCL, and DB units.
 - GNU make.
-- GNU/Linux with `/proc` and POSIX PTY support.
+- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
 
 Test requirements:
 
@@ -124,6 +130,10 @@ On Debian or Ubuntu, dependencies can be installed explicitly:
 ```sh
 ./configure --install-deps
 ```
+
+On macOS, install Free Pascal with Homebrew (`brew install fpc`); `libsqlite3`
+ships with the system and the build commands above are identical. `make
+install-deps` detects macOS and uses Homebrew automatically.
 
 The compatibility wrapper remains available:
 
@@ -423,7 +433,9 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- The native runtime is GNU/Linux-only.
+- Native runtimes are GNU/Linux and macOS; Windows is not yet a native target.
+- On macOS, mouse clicks work in Terminal.app/iTerm2; mouse-drag window resizing
+  may be limited by the runtime mouse driver — use the keyboard size controls.
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.
@@ -433,8 +445,8 @@ Current limitations:
   wizard feeds its optional command through the connection input stream.
 
 Planned platform and runtime work includes a native Windows ConPTY backend,
-better connection readiness/retry state, independent PTY detach/attach, and a
-native iOS client with a separate UI and sandbox-safe session architecture.
+better connection readiness/retry state, and richer macOS process-title parity
+(full `libproc` argv/cwd for every pane and mouse-drag resize).
 
 ## License and Author
 

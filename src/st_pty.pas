@@ -52,10 +52,20 @@ type
     procedure QueryState;
   end;
 
+{$IFDEF DARWIN}
+{ Darwin/BSD PTY: a single openpty() hands back both master and slave, and
+  login_tty() wires the slave as the child's controlling terminal. The SysV
+  posix_openpt/grantpt/unlockpt/ptsname sequence used on Linux fails to spawn
+  on macOS, so it is compiled out here. Both live in libc (util.h). }
+function openpty(amaster, aslave: pcint; name: PAnsiChar;
+  termp, winp: pointer): cint; cdecl; external 'c' name 'openpty';
+function login_tty(fd: cint): cint; cdecl; external 'c' name 'login_tty';
+{$ELSE}
 function posix_openpt(flags: cint): cint; cdecl; external 'c' name 'posix_openpt';
 function grantpt(fd: cint): cint; cdecl; external 'c' name 'grantpt';
 function unlockpt(fd: cint): cint; cdecl; external 'c' name 'unlockpt';
 function ptsname(fd: cint): PAnsiChar; cdecl; external 'c' name 'ptsname';
+{$ENDIF}
 
 function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
 function ProcArgs(Pid: TPid): TStringArray;
@@ -208,7 +218,11 @@ function TPty.SpawnInternal(const AProgram: string; const AArgs: array of string
   const AExtraEnv, ASecret: string): boolean;
 var
   Mfd: cint;
+{$IFDEF DARWIN}
+  Sfd: cint;
+{$ELSE}
   SlaveName: string;
+{$ENDIF}
   NewPid: TPid;
   ws: TWinSize;
   Argv, Envp: PPAnsiChar;
@@ -242,6 +256,27 @@ begin
     Exit;
   end;
 
+  ws.ws_col := ACols;
+  ws.ws_row := ARows;
+  ws.ws_xpixel := 0;
+  ws.ws_ypixel := 0;
+{$IFDEF DARWIN}
+  // Darwin/BSD: one openpty() call returns both fds and applies the window
+  // size. Replaces the SysV posix_openpt/grantpt/unlockpt/ptsname path, which
+  // fails to spawn on macOS.
+  Mfd := -1;
+  Sfd := -1;
+  if openpty(@Mfd, @Sfd, nil, nil, @ws) <> 0 then
+  begin
+    FpClose(ExecPipe[0]);
+    FpClose(ExecPipe[1]);
+    if PassPipe[0] >= 0 then FpClose(PassPipe[0]);
+    if PassPipe[1] >= 0 then FpClose(PassPipe[1]);
+    Exit;
+  end;
+  // A PTY master must never survive an exec into a pane process.
+  FpFcntl(Mfd, 2, 1); // F_SETFD=2, FD_CLOEXEC=1
+{$ELSE}
   Mfd := posix_openpt(O_RDWR or O_NOCTTY);
   if Mfd < 0 then
   begin
@@ -281,11 +316,6 @@ begin
     if PassPipe[1] >= 0 then FpClose(PassPipe[1]);
     Exit;
   end;
-
-  ws.ws_col := ACols;
-  ws.ws_row := ARows;
-  ws.ws_xpixel := 0;
-  ws.ws_ypixel := 0;
   if FpIOCtl(Mfd, TIOCSWINSZ, @ws) <> 0 then
   begin
     FpClose(Mfd);
@@ -295,6 +325,7 @@ begin
     if PassPipe[1] >= 0 then FpClose(PassPipe[1]);
     Exit;
   end;
+{$ENDIF}
 
   // The parent waits for this descriptor to close on successful exec.
   FpFcntl(ExecPipe[1], 2, 1);
@@ -306,8 +337,13 @@ begin
     FpClose(ExecPipe[0]);
     if PassPipe[1] >= 0 then
       FpClose(PassPipe[1]);
-    // Do not inherit the master in the child before opening the slave.
+    // Do not inherit the master in the child before setting up the slave.
     FpClose(Mfd);
+{$IFDEF DARWIN}
+    // login_tty(slave) = setsid + TIOCSCTTY + dup2 slave->0/1/2 (+close slave).
+    if login_tty(Sfd) <> 0 then
+      ChildFail(ExecPipe[1]);
+{$ELSE}
     if FpSetsid < 0 then
       ChildFail(ExecPipe[1]);
     Mfd := FpOpen(SlaveName, O_RDWR, 0);
@@ -320,6 +356,7 @@ begin
       ChildFail(ExecPipe[1]);
     if Mfd > 2 then
       FpClose(Mfd);
+{$ENDIF}
     if PassPipe[0] >= 0 then
     begin
       if FpDup2(PassPipe[0], 3) < 0 then
@@ -340,6 +377,9 @@ begin
 
   if NewPid < 0 then
   begin
+{$IFDEF DARWIN}
+    FpClose(Sfd);
+{$ENDIF}
     FpClose(Mfd);
     FpClose(ExecPipe[0]);
     FpClose(ExecPipe[1]);
@@ -348,6 +388,9 @@ begin
     Exit;
   end;
 
+{$IFDEF DARWIN}
+  FpClose(Sfd);   // parent keeps only the master
+{$ENDIF}
   FpClose(ExecPipe[1]);
   if PassPipe[0] >= 0 then
     FpClose(PassPipe[0]);
@@ -722,7 +765,146 @@ begin
   end;
 end;
 
+{$IFDEF DARWIN}
+{ Darwin has no /proc. Pane titles and session-restore command capture are
+  fed by libproc (child enumeration, cwd) + sysctl KERN_PROCARGS2 (argv). }
+const
+  CTL_KERN_                = 1;
+  KERN_ARGMAX_             = 8;
+  KERN_PROCARGS2_          = 49;
+  PROC_PIDVNODEPATHINFO_   = 9;
+  VNODE_INFO_PATH_OFFSET_  = 152;   { offsetof(struct vnode_info_path, vip_path) }
+  PROC_VNODEPATHINFO_SIZE_ = 2352;  { sizeof(struct proc_vnodepathinfo) }
+
+function proc_listchildpids(ppid: cint; buffer: pointer; buffersize: cint): cint;
+  cdecl; external 'c' name 'proc_listchildpids';
+function proc_pidinfo(pid, flavor: cint; arg: qword; buffer: pointer;
+  buffersize: cint): cint; cdecl; external 'c' name 'proc_pidinfo';
+function c_sysctl(name: pcint; namelen: cuint; oldp: pointer; oldlenp: pcsize_t;
+  newp: pointer; newlen: csize_t): cint; cdecl; external 'c' name 'sysctl';
+
+function DarwinDeepestChild(ppid: TPid): TPid;
+var
+  pids: array[0..1023] of cint;
+  ret, cnt, i: integer;
+begin
+  Result := 0;
+  { proc_listchildpids already divides by sizeof(pid_t) internally, so the
+    return value is the child count, not a byte length. }
+  ret := proc_listchildpids(ppid, @pids[0], SizeOf(pids));
+  if ret <= 0 then
+    Exit;
+  cnt := ret;
+  if cnt > Length(pids) then
+    cnt := Length(pids);
+  for i := 0 to cnt - 1 do
+    if pids[i] > Result then
+      Result := pids[i];
+end;
+
+function DarwinProcArgv(Pid: TPid): TStringArray;
+var
+  mib: array[0..2] of cint;
+  argmax: cint;
+  sz: csize_t;
+  buf: array of byte;
+  argc, taken, p, lim, st: integer;
+begin
+  Result := nil;
+  if Pid <= 0 then
+    Exit;
+  mib[0] := CTL_KERN_;
+  mib[1] := KERN_ARGMAX_;
+  argmax := 0;
+  sz := SizeOf(argmax);
+  if c_sysctl(@mib[0], 2, @argmax, @sz, nil, 0) <> 0 then
+    Exit;
+  if (argmax <= 0) or (argmax > 4 * 1024 * 1024) then
+    Exit;
+  SetLength(buf, argmax);
+  mib[0] := CTL_KERN_;
+  mib[1] := KERN_PROCARGS2_;
+  mib[2] := Pid;
+  sz := argmax;
+  if c_sysctl(@mib[0], 3, @buf[0], @sz, nil, 0) <> 0 then
+    Exit;
+  if sz < SizeOf(cint) then
+    Exit;
+  Move(buf[0], argc, SizeOf(cint));
+  if argc <= 0 then
+    Exit;
+  lim := sz;
+  p := SizeOf(cint);
+  { skip exec_path }
+  while (p < lim) and (buf[p] <> 0) do Inc(p);
+  { skip NUL padding before argv[0] }
+  while (p < lim) and (buf[p] = 0) do Inc(p);
+  taken := 0;
+  while (taken < argc) and (p < lim) do
+  begin
+    st := p;
+    while (p < lim) and (buf[p] <> 0) do Inc(p);
+    SetLength(Result, taken + 1);
+    SetString(Result[taken], PAnsiChar(@buf[st]), p - st);
+    Inc(taken);
+    while (p < lim) and (buf[p] = 0) do Inc(p);
+  end;
+end;
+
+function DarwinProcCwd(Pid: TPid): string;
+var
+  buf: array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
+  ret: cint;
+begin
+  Result := '';
+  if Pid <= 0 then
+    Exit;
+  FillChar(buf, SizeOf(buf), 0);
+  ret := proc_pidinfo(Pid, PROC_PIDVNODEPATHINFO_, 0, @buf[0], SizeOf(buf));
+  if ret <= VNODE_INFO_PATH_OFFSET_ then
+    Exit;
+  if buf[VNODE_INFO_PATH_OFFSET_] = Ord('/') then
+    Result := StrPas(PAnsiChar(@buf[VNODE_INFO_PATH_OFFSET_]));
+end;
+{$ENDIF}
+
 procedure TPty.QueryState;
+{$IFDEF DARWIN}
+var
+  best: TPid;
+  Args: TStringArray;
+  cmdline, base: string;
+  i: integer;
+begin
+  if (not FAlive) or (FPid <= 0) then
+    Exit;
+  best := DarwinDeepestChild(FPid);
+  if best <= 0 then
+    best := FPid;
+  Args := DarwinProcArgv(best);
+  TitleCwd := DarwinProcCwd(best);
+  cmdline := '';
+  for i := 0 to High(Args) do
+  begin
+    if i > 0 then
+      cmdline := cmdline + ' ';
+    cmdline := cmdline + Args[i];
+  end;
+  base := FirstWordOf(cmdline);
+  if (base <> '') and (base[1] = '-') then
+    Delete(base, 1, 1);
+  if (base = '') or SameText(base, FShellBase) then
+  begin
+    TitleCmd := '';
+    TitleArgs := nil;
+  end
+  else
+  begin
+    TitleCmd := cmdline;
+    TitleArgs := Args;
+  end;
+end;
+{$ELSE}
 var
   Kids: array[0..15] of TPid;
   n, i: integer;
@@ -765,5 +947,6 @@ begin
     TitleArgs := Args;
   end;
 end;
+{$ENDIF}
 
 end.

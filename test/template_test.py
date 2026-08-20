@@ -27,11 +27,11 @@ for path in (HOME + '/.superterm/session.ini', HOME + '/.superterm/superterm.ini
 
 CONFIG = '\n'.join([
     '[t1]', 'name=one', 'enabled=1', 'type=local',
-    'cmd=/usr/bin/bash -i',
+    'cmd=/bin/bash -i',
     '', '[t2]', 'name=two', 'enabled=1', 'type=local',
-    'cmd=/usr/bin/bash -i',
+    'cmd=/bin/bash -i',
     '', '[t3]', 'name=beta', 'enabled=1', 'type=local',
-    'cmd=/usr/bin/bash -i',
+    'cmd=/bin/bash -i',
     '', '[template.alpha]', 'name=alpha', 'enabled=1',
     'default_session=main', 'sessions=main',
     '', '[template.alpha.session.main]', 'enabled=1',
@@ -66,7 +66,7 @@ class Session:
         if self.pid == 0:
             os.environ.update({
                 'TERM': 'xterm',
-                'SHELL': '/usr/bin/bash',
+                'SHELL': '/bin/bash',
                 'HOME': HOME,
                 'SUPERTERM_INI': SYSINI,
             })
