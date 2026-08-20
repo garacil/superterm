@@ -13,8 +13,8 @@ interface
 uses
   Objects, Drivers, Views, Menus, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
-  st_config, st_pty, st_screen, st_layout, st_session, st_templates,
-  st_debug, st_server, st_video;
+  st_config, st_wclass, st_dialogs, st_pty, st_screen, st_layout,
+  st_session, st_templates, st_debug, st_server, st_video;
 
 const
   // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenTerm,
@@ -44,6 +44,8 @@ const
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
   cmWindowBase   = 2410;   // + indice de ventana (0..15)
+  cmClassPick    = 2340;   // selector de clase para panel nuevo
+  cmClassManage  = 2341;   // gestor de clases
   cmWindowMinimize = 2500;
   cmWindowMinimizeAll = 2501;
   cmWindowRestoreAll = 2502;
@@ -100,7 +102,7 @@ type
     Scr: array[0..MAX_PANES - 1] of TScreen;
     Win: array[0..MAX_PANES - 1] of PTermWindow;
     PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en SysTerms o -1
-    SysTerms: TTerminalArray;
+    SysTerms: TWindowClassArray;
     Templates: TTemplateArray;
     ActiveTemplate: integer;
     ActiveSession: integer;
@@ -192,28 +194,8 @@ begin
   end;
 end;
 
-function CommandWithInteractiveShell(const Command, Shell: string;
-  LoginShell: boolean): string;
-begin
-  Result := Trim(Command);
-  if Result = '' then
-    Exit;
-  Result := Result + '; exec ' + ShellQuote(Shell);
-  if LoginShell then
-    Result := Result + ' -l'
-  else
-    Result := Result + ' -i';
-end;
-
-function WizardCommand(const AConnect, APostConnect: string): string;
-begin
-  Result := Trim(AConnect);
-  if Trim(APostConnect) <> '' then
-    // Feed the follow-up command to the connection's stdin. This works for
-    // ssh -tt and keeps the command out of the remote command arguments.
-    Result := 'printf ''%s\n'' ' + ShellQuote(Trim(APostConnect)) +
-      ' | (' + Result + ')';
-end;
+// CommandWithInteractiveShell y WizardCommand viven ahora en st_wclass,
+// compartidos con la composicion de comandos de las clases de ventana.
 
 function ReadTerminalSize(out ACols, ARows: integer): boolean;
 var
@@ -802,13 +784,18 @@ var
   Dir: TSplitDir;
   DeskW, DeskH: integer;
   RD, WR: Objects.TRect;
+  SysClassesTmp: TWindowClassArray;
 begin
   InstallWideVideoOutput;
   inherited Init;
   LoadConfig(Cfg);
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
-  LoadSystemTerminals(SystemConfigFile, SysTerms);
+  // clases de ventana: fichero de usuario + fichero de sistema (gana user);
+  // si SUPERTERM_INI apunta al fichero de usuario, la mezcla deduplica
+  LoadWindowClasses(ConfigFile, coUser, SysTerms);
+  LoadWindowClasses(SystemConfigFile, coSystem, SysClassesTmp);
+  MergeWindowClasses(SysTerms, SysClassesTmp);
   LoadTemplates(SystemConfigFile, Templates);
   DebugLog(Format('init: sysini=%s shell=%s terms=%d templates=%d',
     [SystemConfigFile, Cfg.Shell, Length(SysTerms), Length(Templates)]));
@@ -1120,23 +1107,24 @@ begin
   if ph < 2 then ph := 2;
   if ASysIdx >= 0 then
   begin
-    CmdS := TerminalCommand(SysTerms[ASysIdx]);
-    if SysTerms[ASysIdx].Kind = tkLocal then
+    if SysTerms[ASysIdx].Shell <> '' then
+      ShellS := SysTerms[ASysIdx].Shell
+    else
+      ShellS := Cfg.Shell;
+    // wcLocal/wcCommand: comando compuesto con la semantica unificada
+    // (para wcSSH el camino es el argv estructurado de mas abajo)
+    CmdS := ComposePaneCommand(SysTerms[ASysIdx], ACmd, '', '', ShellS,
+      Cfg.LoginShell);
+    if SysTerms[ASysIdx].Kind <> wcSSH then
       CwdS := SysTerms[ASysIdx].Cwd
     else
       CwdS := '';
     if ACwd <> '' then
       CwdS := ACwd;
-    if SysTerms[ASysIdx].Shell <> '' then
-      ShellS := SysTerms[ASysIdx].Shell
-    else
-      ShellS := Cfg.Shell;
-    ExtraS := TerminalEnvPass(SysTerms[ASysIdx]);
+    ExtraS := '';
     TitleS := SysTerms[ASysIdx].Name;
     if AMaxSB <= 0 then
       AMaxSB := SysTerms[ASysIdx].ScrollBack;
-    if ACmd <> '' then
-      CmdS := ACmd;
   end
   else
   begin
@@ -1165,10 +1153,10 @@ begin
   try
     ExecProgram := '';
     ExecSecret := '';
-    if (ASysIdx >= 0) and (SysTerms[ASysIdx].Kind = tkSSH) then
+    if (ASysIdx >= 0) and (SysTerms[ASysIdx].Kind = wcSSH) then
     begin
-      BuildTerminalExec(SysTerms[ASysIdx], ExecProgram, ExecArgs, ExecSecret,
-        ACommandOverride);
+      BuildWindowClassExec(SysTerms[ASysIdx], ExecProgram, ExecArgs,
+        ExecSecret, ACommandOverride);
       SpawnOK := Panes[i].SpawnArgv(ExecProgram, ExecArgs.ToStringArray,
         CwdS, pw, ph, ExtraS, ExecSecret);
     end
@@ -2240,6 +2228,12 @@ begin
         ClearEvent(Event);
         Exit;
       end;
+      if (PrefixByte = Ord('c')) or (PrefixByte = Ord('C')) then
+      begin
+        Message(@Self, evCommand, cmClassPick, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
       if (PrefixByte = Ord('n')) or (PrefixByte = Ord('N')) then
       begin
         Message(@Self, evCommand, cmWindowNext, nil);
@@ -2344,6 +2338,21 @@ begin
         end;
       cmSessionWizard: RunSessionWizard;
       cmDetach: RequestDetach;
+      cmClassPick:
+        begin
+          if RunClassPicker(SysTerms, i) then
+          begin
+            if i < 0 then
+              DoSplit(sdV, -1)
+            else
+              DoOpenSysTerm(i);
+          end;
+        end;
+      cmClassManage:
+        begin
+          if RunClassManager(SysTerms) then
+            RebuildMenu;
+        end;
       cmHelp: ShowHelp;
       cmQuitNoSave:
         begin
@@ -2514,7 +2523,7 @@ var
           Panes[i].MarkExited;
           if (PaneTerm[i] >= 0) and
              (PaneTerm[i] < Length(SysTerms)) and
-             (SysTerms[PaneTerm[i]].Kind = tkSSH) then
+             (SysTerms[PaneTerm[i]].Kind = wcSSH) then
             FallbackPane(i)
           else if Win[i] <> nil then
             Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
@@ -2671,6 +2680,17 @@ begin
   end;
   ClassItems := NewItem(UiText('~1~ Local shell', '~1~ Shell local'), '',
     kbNoKey, cmSplitV, hcNoContext, ClassItems);
+  // gestion al final del menu, separada de la lista de apertura
+  Chain := ClassItems;
+  while (Chain <> nil) and (Chain^.Next <> nil) do
+    Chain := Chain^.Next;
+  if Chain <> nil then
+    Chain^.Next := NewLine(
+      NewItem(UiText('~O~pen class in new pane...',
+        '~A~brir clase en panel nuevo...'), 'Ctrl-B c', kbNoKey, cmClassPick,
+        hcNoContext,
+      NewItem(UiText('~M~anage classes...', '~G~estionar clases...'), '',
+        kbNoKey, cmClassManage, hcNoContext, nil)));
   MClasses := NewMenu(ClassItems);
 
   // ---- Perfiles: activar uno (gestion llega en fases posteriores) ----
