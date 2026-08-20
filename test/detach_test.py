@@ -54,6 +54,8 @@ class Client:
                 return
             if not data:
                 return
+            if b'\033[6n' in data:
+                os.write(self.fd, b'\033[10;20R')
             try:
                 self.stream.feed(data)
             except Exception:
