@@ -12,6 +12,7 @@
 - `src/st_session.pas` persists the fallback session layout.
 - `src/st_layout.pas` calculates pane split trees.
 - `src/st_screen.pas` interprets terminal output for each pane.
+- `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol.
 
 `vendor/fv322/` is the local FreeVision source used by the build. It is not a
 copy of application code. It provides the `Objects`, `Drivers`, `Views`,
@@ -132,7 +133,9 @@ make test
 ```
 
 The tests launch isolated PTYs. They do not attach to, restart, or modify a
-user's tmux server. The mouse tests cover both normal xterm `TERM` values and
+user's tmux server. The detach test starts superterm's own per-user server,
+checks that a pane survives the client exit, reattaches it, and then closes it
+permanently. The mouse tests cover both normal xterm `TERM` values and
 `tmux-256color`.
 
 ## Install

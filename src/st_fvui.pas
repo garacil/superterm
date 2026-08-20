@@ -14,7 +14,7 @@ uses
   Objects, Drivers, Views, Menus, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_pty, st_screen, st_layout, st_session, st_templates,
-  st_debug;
+  st_debug, st_server, st_video;
 
 const
   cmSplitV     = 2100;
@@ -30,6 +30,7 @@ const
   cmQuitNoSave = 2110;
   cmOpenTerm   = 2111;   // + indice en SysTerms
   cmSessionWizard = 2112;
+  cmDetach      = 2113;
   cmHelp        = 2600;
   cmLanguageBase = 2700;
   cmTemplateBase = 2200;
@@ -75,6 +76,13 @@ type
     procedure SetTitle(const S: string);
   end;
 
+  PHelpDialog = ^THelpDialog;
+  THelpDialog = object(TWindow)
+    constructor Init(var Bounds: Objects.TRect; const ATitle: string);
+    procedure Draw; virtual;
+    procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
   TSuperApp = object(TApplication)
     Cfg: TConfig;
     Lay: TLayout;
@@ -89,6 +97,11 @@ type
     ActiveWindow: integer;
     TemplateMode: boolean;
     SkipSave: boolean;
+    RemoteMode: boolean;
+    RemoteLost: boolean;
+    DetachRequested: boolean;
+    PrefixPending: boolean;
+    Remote: TSessionClient;
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -120,6 +133,11 @@ type
     function FindTemplateSession(ATemplate: integer; const AName: string): integer;
     function ActivateTemplate(ATemplate, ASession, AWindow: integer): boolean;
     procedure StopRuntime;
+    procedure ReleaseRuntime;
+    procedure CreateWindowForPane(i: integer; const ATitle: string);
+    procedure WritePaneInput(i: integer; const S: RawByteString);
+    function AttachRemoteSession: boolean;
+    procedure RequestDetach;
     procedure DoSwitchTemplate(AIndex: integer);
     procedure DoSwitchSession(AIndex: integer);
     procedure DoSwitchWindow(AIndex: integer);
@@ -296,9 +314,54 @@ var
   RowLen: integer;
   Scrolled: boolean;
   ShowBlk: boolean;
+  BlankWord: word;
+
+  function VideoColor(AAnsiColor: byte): byte;
+  begin
+    case AAnsiColor and $07 of
+      0: Result := 0; // black
+      1: Result := 4; // red
+      2: Result := 2; // green
+      3: Result := 6; // yellow
+      4: Result := 1; // blue
+      5: Result := 5; // magenta
+      6: Result := 3; // cyan
+    else
+      Result := 7;   // white
+    end;
+  end;
+
+  function RenderAttr(AAttr: word): word;
+  var
+    LocalFg, LocalBg, SwapColor: byte;
+  begin
+    if (AAttr and A_FGDEF) <> 0 then
+      LocalFg := 7
+    else
+      LocalFg := VideoColor(AAttr and $0F);
+    if (AAttr and A_BGDEF) <> 0 then
+      LocalBg := 0
+    else
+      LocalBg := VideoColor((AAttr shr 4) and $0F);
+    if (AAttr and $0080) <> 0 then
+      LocalBg := LocalBg or 8;
+    if (AAttr and A_BOLD) <> 0 then
+      LocalFg := LocalFg or 8;
+    if (AAttr and A_REVERSE) <> 0 then
+    begin
+      SwapColor := LocalFg;
+      LocalFg := LocalBg;
+      LocalBg := SwapColor;
+    end;
+    Result := (word(LocalBg) shl 12) or (word(LocalFg) shl 8);
+  end;
 begin
   App := PSuperApp(Application);
   w := Size.X;
+  if w > MaxViewWidth then
+    w := MaxViewWidth;
+  if w < 0 then
+    w := 0;
   h := Size.Y;
   if (App = nil) or (App^.Scr[PaneIdx] = nil) then
   begin
@@ -309,6 +372,7 @@ begin
     end;
     Exit;
   end;
+  BlankWord := RenderAttr(App^.Scr[PaneIdx].Attr);
   Scrolled := App^.Scr[PaneIdx].ViewOffset > 0;
   cx := App^.Scr[PaneIdx].CursorX;
   cy := App^.Scr[PaneIdx].CursorY;
@@ -324,21 +388,22 @@ begin
     begin
       for x := 0 to w - 1 do
       begin
-        if x < App^.Scr[PaneIdx].Width then
-        begin
-          cell := App^.Scr[PaneIdx].Grid[y][x];
-          if (cell.Len > 0) or (cell.Cont) then
-            Inc(NonBlank);
-           if (cell.Attr and A_FGDEF) <> 0 then fg := 7
-           else fg := cell.Attr and $0F;
-           if (cell.Attr and A_BGDEF) <> 0 then bg := 0
-           else bg := (cell.Attr shr 4) and $07;
-          B[x] := (word(bg) shl 12) or (word(fg) shl 8) or word(TranslitByte(cell));
-          if ShowBlk and (x = cx) and (y = cy) then
-            B[x] := $7000 or B[x] and $00FF;   // cursor: negro sobre blanco
-        end
-        else
-          B[x] := $0700 or word(' ');
+         if x < App^.Scr[PaneIdx].Width then
+         begin
+           cell := App^.Scr[PaneIdx].Grid[y][x];
+           if (cell.Len > 0) or (cell.Cont) then
+             Inc(NonBlank);
+           B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
+           if ShowBlk and (x = cx) and (y = cy) then
+           begin
+             fg := (B[x] shr 8) and $0F;
+             bg := (B[x] shr 12) and $0F;
+             B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
+               word(TranslitByte(cell));
+           end;
+         end
+         else
+           B[x] := BlankWord or word(' ');
       end;
     end
     else if Scrolled then
@@ -348,23 +413,20 @@ begin
       for x := 0 to w - 1 do
       begin
         if x < RowLen then
-        begin
-          cell := Row[x];
-          if (cell.Len > 0) or (cell.Cont) then
-            Inc(NonBlank);
-           if (cell.Attr and A_FGDEF) <> 0 then fg := 7
-           else fg := cell.Attr and $0F;
-           if (cell.Attr and A_BGDEF) <> 0 then bg := 0
-           else bg := (cell.Attr shr 4) and $07;
-          B[x] := (word(bg) shl 12) or (word(fg) shl 8) or word(TranslitByte(cell));
-        end
-        else
-          B[x] := $0700 or word(' ');
-      end;
+         begin
+           cell := Row[x];
+           if (cell.Len > 0) or (cell.Cont) then
+             Inc(NonBlank);
+           B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
+         end
+         else
+           B[x] := BlankWord or word(' ');
+       end;
     end
     else
-      MoveChar(B, ' ', $07, w);
-    WriteBuf(0, y, w, 1, B);
+      for x := 0 to w - 1 do
+        B[x] := BlankWord or word(' ');
+    WriteLine(0, y, w, 1, B);
   end;
   if Scrolled then
     DebugLog(Format('draw pane=%d scrolled=%d', [PaneIdx, App^.Scr[PaneIdx].ViewOffset]))
@@ -451,8 +513,10 @@ begin
       if (App^.Panes[PaneIdx] <> nil) and App^.Panes[PaneIdx].Alive then
       begin
         DebugLog(Format('key pane=%d code=$%.4x len=%d', [PaneIdx, Event.KeyCode, Length(seq)]));
-        App^.Panes[PaneIdx].WriteStr(seq);
+        App^.WritePaneInput(PaneIdx, seq);
       end
+      else if App^.RemoteMode then
+        App^.WritePaneInput(PaneIdx, seq)
       else if App^.Panes[PaneIdx] = nil then
         DebugLog(Format('key LOST pane=%d pty=nil', [PaneIdx]))
       else
@@ -467,12 +531,22 @@ end;
 { ---------------- TTermFrame ---------------- }
 
 procedure TTermFrame.Draw;
+var
+  B: TDrawBuffer;
+  Color: byte;
 begin
   inherited Draw;
   // FreeVision has close and zoom buttons but no minimize button. Keep the
   // minimize control in the same title-bar language as the native controls.
   if (Owner <> nil) and (State and sfActive <> 0) and (Size.X >= 14) then
-    WriteStr(Size.X - 10, 0, '[-]', GetColor($0503));
+  begin
+    Color := byte(GetColor($0503));
+    MoveChar(B, ' ', Color, 3);
+    B[0] := (B[0] and $FF00) or word('[');
+    B[1] := (B[1] and $FF00) or word('-');
+    B[2] := (B[2] and $FF00) or word(']');
+    WriteLine(Size.X - 10, 0, 3, 1, B);
+  end;
 end;
 
 procedure TTermFrame.HandleEvent(var Event: TEvent);
@@ -549,7 +623,9 @@ begin
     if (pw <> App^.Scr[PaneIdx].Width) or (ph <> App^.Scr[PaneIdx].Height) then
     begin
       App^.Scr[PaneIdx].Resize(pw, ph);
-      if App^.Panes[PaneIdx] <> nil then
+      if App^.RemoteMode then
+        App^.Remote.SendResize(PaneIdx, pw, ph)
+      else if App^.Panes[PaneIdx] <> nil then
         App^.Panes[PaneIdx].Resize(pw, ph);
     end;
   end;
@@ -610,6 +686,93 @@ begin
     Frame^.DrawView;
 end;
 
+constructor THelpDialog.Init(var Bounds: Objects.TRect; const ATitle: string);
+begin
+  inherited Init(Bounds, Copy(ATitle, 1, 80), wnNoNumber);
+  Flags := wfClose;
+  State := State and (not sfShadow);
+end;
+
+procedure THelpDialog.Draw;
+const
+  EnglishLines: array[0..4] of string = (
+    'F2/F3 split; F6/F7 change pane; F5 maximize',
+    'Alt-F3/Alt-F4 close; Alt-F9 minimize/restore',
+    'Ctrl-S save; Alt-X save and exit; Alt-Q exit without saving',
+    'Ctrl-B D detaches the session; use superterm --attach to return.',
+    'Session > New session wizard creates 1-4 panes with commands.');
+  SpanishLines: array[0..4] of string = (
+    'F2/F3 divide; F6/F7 cambia de panel; F5 maximiza',
+    'Alt-F3/Alt-F4 cierran; Alt-F9 minimiza/restaura',
+    'Ctrl-S guarda; Alt-X guarda y sale; Alt-Q sale sin guardar',
+    'Ctrl-B D separa la sesion; luego superterm --attach para volver.',
+    'Sesion > Asistente crea 1-4 paneles con comandos.');
+var
+  B: TDrawBuffer;
+  Color: byte;
+  I, J, InnerWidth, ButtonX: integer;
+  Line, ButtonText: string;
+begin
+  if Frame <> nil then
+    Frame^.DrawView;
+  InnerWidth := Size.X - 2;
+  if InnerWidth < 1 then
+    Exit;
+  Color := byte(GetColor(1));
+  for I := 1 to Size.Y - 2 do
+  begin
+    MoveChar(B, ' ', Color, InnerWidth);
+    Line := '';
+    if I <= Length(EnglishLines) then
+      if CurrentLanguage = ulSpanish then
+        Line := SpanishLines[I - 1]
+      else
+        Line := EnglishLines[I - 1];
+    if I = Size.Y - 2 then
+    begin
+      if CurrentLanguage = ulSpanish then
+        ButtonText := 'Aceptar'
+      else
+        ButtonText := 'OK';
+      Line := '[' + ButtonText + ']';
+      ButtonX := (InnerWidth - Length(Line)) div 2;
+      if ButtonX > 0 then
+        for J := 1 to ButtonX do
+          B[J - 1] := (B[J - 1] and $FF00) or word(' ');
+      for J := 1 to Length(Line) do
+        B[ButtonX + J - 1] := (B[ButtonX + J - 1] and $FF00) or word(Line[J]);
+      WriteLine(1, I, InnerWidth, 1, B);
+      Continue;
+    end;
+    if Length(Line) > InnerWidth then
+      Line := Copy(Line, 1, InnerWidth);
+    for J := 1 to Length(Line) do
+      B[J - 1] := (B[J - 1] and $FF00) or word(Line[J]);
+    WriteLine(1, I, InnerWidth, 1, B);
+  end;
+end;
+
+procedure THelpDialog.HandleEvent(var Event: TEvent);
+begin
+  if (Event.What = evKeyDown) and
+     ((Event.KeyCode = kbEsc) or (Event.KeyCode = kbEnter) or
+      (Event.KeyCode = kbCtrlF4)) then
+  begin
+    EndModal(cmOK);
+    ClearEvent(Event);
+    Exit;
+  end;
+  if (Event.What = evCommand) and
+     ((Event.Command = cmOK) or (Event.Command = cmCancel) or
+      (Event.Command = cmClose)) then
+  begin
+    EndModal(cmOK);
+    ClearEvent(Event);
+    Exit;
+  end;
+  inherited HandleEvent(Event);
+end;
+
 { ---------------- TSuperApp ---------------- }
 
 constructor TSuperApp.Init;
@@ -619,6 +782,7 @@ var
   Ok: boolean;
   Dir: TSplitDir;
 begin
+  InstallWideVideoOutput;
   inherited Init;
   LoadConfig(Cfg);
   CurrentLanguage := Cfg.Language;
@@ -651,6 +815,14 @@ begin
   ActiveWindow := -1;
   TemplateMode := Length(Templates) > 0;
   SkipSave := False;
+  RemoteMode := False;
+  RemoteLost := False;
+  DetachRequested := False;
+  PrefixPending := False;
+  Remote := nil;
+
+  if AttachRequested and AttachRemoteSession then
+    Exit;
 
   if TemplateMode then
   begin
@@ -780,7 +952,18 @@ end;
 destructor TSuperApp.Done;
 begin
   try
-  if TemplateMode then
+  if DetachRequested then
+  begin
+    // The server owns the PTYs after detach. Do not run TPty.Destroy here.
+    ReleaseRuntime;
+  end
+  else if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.CloseSession;
+    ReleaseRuntime;
+  end
+  else if TemplateMode then
   begin
     if not SkipSave then
     begin
@@ -791,8 +974,11 @@ begin
   else if Cfg.AutoSave then
     SaveSessionNow;
   finally
-  StopRuntime;
+  if not DetachRequested and not RemoteMode then
+    StopRuntime;
   Lay.Free;
+  if Remote <> nil then
+    Remote.Free;
   inherited Done;
   end;
 end;
@@ -829,8 +1015,6 @@ begin
     ResetVideoSurface;
     ReDraw;
   end;
-  DebugLog(Format('application resize cols=%d rows=%d video=%dx%d app=%dx%d',
-    [ACols, ARows, ScreenWidth, ScreenHeight, Size.X, Size.Y]));
 end;
 
 procedure TSuperApp.SyncTerminalSize;
@@ -965,10 +1149,21 @@ begin
       Exit;
     end;
   end;
-  Win[i] := New(PTermWindow, Init(R, ' ' + TitleS, i));
-  Desktop^.Insert(Win[i]);
+  CreateWindowForPane(i, TitleS);
   DebugLog(Format('startpane i=%d sysidx=%d win=%p term=%p termidx=%d scr=%dx%d',
     [i, ASysIdx, Win[i], Win[i]^.Term, Win[i]^.Term^.PaneIdx, pw, ph]));
+end;
+
+procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string);
+var
+  R: Objects.TRect;
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] <> nil) then
+    Exit;
+  R.Assign(0, 0, 40, 15);
+  Desktop^.GetExtent(R);
+  Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
+  Desktop^.Insert(Win[i]);
 end;
 
 procedure TSuperApp.KillPane(i: integer);
@@ -1301,6 +1496,182 @@ begin
   end;
 end;
 
+procedure TSuperApp.ReleaseRuntime;
+var
+  i: integer;
+begin
+  // Release only the client-side objects. PTy objects are deliberately left
+  // untouched when the detached server owns them.
+  for i := 0 to MAX_PANES - 1 do
+  begin
+    if Win[i] <> nil then
+    begin
+      if Desktop <> nil then
+        Desktop^.Delete(Win[i]);
+      Dispose(Win[i], Done);
+      Win[i] := nil;
+    end;
+    if Scr[i] <> nil then
+      FreeAndNil(Scr[i]);
+    Panes[i] := nil;
+    PaneTerm[i] := -1;
+  end;
+end;
+
+procedure TSuperApp.WritePaneInput(i: integer; const S: RawByteString);
+begin
+  if (i < 0) or (i >= MAX_PANES) or (S = '') then
+    Exit;
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendInput(i, S);
+  end
+  else if (Panes[i] <> nil) and Panes[i].Alive then
+    Panes[i].WriteStr(S);
+end;
+
+function TSuperApp.AttachRemoteSession: boolean;
+var
+  Snapshot: TSessionSnapshot;
+  NewLay: TLayout;
+  Stream: TMemoryStream;
+  I, N, SysIdx: integer;
+  TitleS: string;
+  Loaded: boolean;
+begin
+  Result := False;
+  Remote := TSessionClient.Create;
+  if not Remote.Connect(Snapshot) then
+  begin
+    Remote.Free;
+    Remote := nil;
+    Exit;
+  end;
+  if not LoadLayoutString(Snapshot.LayoutNodes, NewLay) then
+  begin
+    Remote.Free;
+    Remote := nil;
+    Exit;
+  end;
+  N := Snapshot.PaneCount;
+  if (N < 1) or (N > MAX_PANES) or (NewLay.PaneCount <> N) then
+  begin
+    NewLay.Free;
+    Remote.Free;
+    Remote := nil;
+    Exit;
+  end;
+  if Lay <> nil then
+    Lay.Free;
+  Lay := NewLay;
+  Lay.Focused := Snapshot.Focused;
+  if (Lay.Focused < 0) or (Lay.Focused >= N) then
+    Lay.Focused := 0;
+  TemplateMode := False;
+  ActiveTemplate := -1;
+  ActiveSession := -1;
+  ActiveWindow := -1;
+  RemoteMode := True;
+  Loaded := True;
+  for I := 0 to N - 1 do
+  begin
+    PaneTerm[I] := -1;
+    SysIdx := FindSysTerm(Snapshot.Panes[I].Term);
+    if SysIdx >= 0 then
+      PaneTerm[I] := SysIdx;
+    Stream := TMemoryStream.Create;
+    try
+      if Length(Snapshot.Panes[I].ScreenData) > 0 then
+        Stream.WriteBuffer(Snapshot.Panes[I].ScreenData[0],
+          Length(Snapshot.Panes[I].ScreenData));
+      Stream.Position := 0;
+      Scr[I] := TScreen.Create(1, 1);
+      Loaded := Scr[I].LoadFromStream(Stream);
+    finally
+      Stream.Free;
+    end;
+    if not Loaded then
+      Break;
+    TitleS := Trim(Snapshot.Panes[I].Title);
+    if TitleS = '' then
+      TitleS := UiText('session pane', 'panel de sesion');
+    CreateWindowForPane(I, TitleS);
+    if Win[I] = nil then
+    begin
+      Loaded := False;
+      Break;
+    end;
+  end;
+  if not Loaded then
+  begin
+    RemoteMode := False;
+    ReleaseRuntime;
+    Remote.Free;
+    Remote := nil;
+    Exit;
+  end;
+  RelayoutAll;
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  RebuildMenu;
+  Result := True;
+end;
+
+procedure TSuperApp.RequestDetach;
+var
+  N, I: integer;
+  PtyRefs: array of TPty;
+  ScreenRefs: array of TScreen;
+  Titles, Terms: array of string;
+begin
+  if DetachRequested then
+    Exit;
+  if RemoteMode then
+  begin
+    if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
+    begin
+      MessageBox(UiText('The session server is unavailable.',
+        'El servidor de sesiones no esta disponible.'), nil,
+        mfError or mfOKButton);
+      Exit;
+    end;
+    DetachRequested := True;
+    Message(@Self, evCommand, cmQuit, nil);
+    Exit;
+  end;
+  N := Lay.PaneCount;
+  if (N < 1) or (N > MAX_PANES) then
+    Exit;
+  SetLength(PtyRefs, N);
+  SetLength(ScreenRefs, N);
+  SetLength(Titles, N);
+  SetLength(Terms, N);
+  for I := 0 to N - 1 do
+  begin
+    PtyRefs[I] := Panes[I];
+    ScreenRefs[I] := Scr[I];
+    if Win[I] <> nil then
+      Titles[I] := Trim(Win[I]^.GetTitle(80));
+    if PaneTerm[I] >= 0 then
+      if PaneTerm[I] < Length(SysTerms) then
+        Terms[I] := SysTerms[PaneTerm[I]].Name;
+    if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
+      Exit;
+  end;
+  if not StartDetachedServer(Lay, PtyRefs, ScreenRefs, Titles, Terms,
+    Lay.Focused) then
+  begin
+    MessageBox(UiText('Could not create the detached session server.',
+      'No se pudo crear el servidor de la sesion separada.'), nil,
+      mfError or mfOKButton);
+    Exit;
+  end;
+  DetachRequested := True;
+  Message(@Self, evCommand, cmQuit, nil);
+end;
+
 function TSuperApp.ActivateTemplate(ATemplate, ASession,
   AWindow: integer): boolean;
 var
@@ -1517,18 +1888,21 @@ begin
 end;
 
 procedure TSuperApp.ShowHelp;
+var
+  R, DesktopRect: Objects.TRect;
+  Dialog: PHelpDialog;
 begin
-  MessageBox(
-    UiText(
-      'F2/F3 split; F6/F7 change pane; F5 maximize'#13+
-      'Alt-F3/Alt-F4 close; Alt-F9 minimize/restore'#13+
-      'Ctrl-S save; Alt-X save and exit; Alt-Q exit without saving'#13+
-      'Session > New session wizard creates 1-4 panes with commands.',
-      'F2/F3 divide; F6/F7 cambia de panel; F5 maximiza'#13+
-      'Alt-F3/Alt-F4 cierran; Alt-F9 minimiza/restaura'#13+
-      'Ctrl-S guarda; Alt-X guarda y sale; Alt-Q sale sin guardar'#13+
-      'Sesion > Asistente crea 1-4 paneles con comandos.'),
-    nil, mfInformation or mfOKButton);
+  Desktop^.GetExtent(DesktopRect);
+  R.Assign(0, 0, 84, 9);
+  if R.B.X > DesktopRect.B.X then
+    R.B.X := DesktopRect.B.X;
+  if R.B.Y > DesktopRect.B.Y then
+    R.B.Y := DesktopRect.B.Y;
+  R.Move((DesktopRect.B.X - R.B.X) div 2,
+    (DesktopRect.B.Y - R.B.Y) div 2);
+  Dialog := New(PHelpDialog, Init(R, UiText('Help', 'Ayuda')));
+  Desktop^.ExecView(Dialog);
+  Dispose(Dialog, Done);
 end;
 
 procedure TSuperApp.RebuildMenu;
@@ -1761,10 +2135,38 @@ var
   i, Num, EnabledIndex: integer;
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
+  PrefixByte: byte;
+  PrefixSeq: RawByteString;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
   ResizeHeight := Event.InfoWord;
+  if Event.What = evKeyDown then
+  begin
+    PrefixByte := Event.KeyCode and $00FF;
+    if PrefixPending then
+    begin
+      PrefixPending := False;
+      if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
+      begin
+        RequestDetach;
+        ClearEvent(Event);
+        Exit;
+      end;
+      // Preserve the normal terminal meaning when the prefix is followed by
+      // an unbound key.
+      PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) + TranslateKey(Event.KeyCode);
+      WritePaneInput(Lay.Focused, PrefixSeq);
+      ClearEvent(Event);
+      Exit;
+    end;
+    if PrefixByte = byte(Cfg.PrefixKey) then
+    begin
+      PrefixPending := True;
+      ClearEvent(Event);
+      Exit;
+    end;
+  end;
   // TProgram consumes Alt-1..Alt-9 for window-number selection before menu
   // commands reach us. Handle the documented terminal shortcuts first.
   if Event.What = evKeyDown then
@@ -1822,6 +2224,7 @@ begin
             mfInformation or mfOKButton);
         end;
       cmSessionWizard: RunSessionWizard;
+      cmDetach: RequestDetach;
       cmHelp: ShowHelp;
       cmQuitNoSave:
         begin
@@ -1894,6 +2297,7 @@ var
   st2: cint;
   p: TPid;
   Tick: cardinal;
+  RemoteEvent: TSessionEvent;
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
@@ -1901,10 +2305,51 @@ var
   begin
     inherited Idle;
   Tick := GetTickCount64;
+  RemoteEvent.Data := nil;
+  RemoteEvent.Text := '';
   if Tick - LastSizeCheck >= 250 then
   begin
     LastSizeCheck := Tick;
     SyncTerminalSize;
+  end;
+  if RemoteMode then
+  begin
+    while (Remote <> nil) and Remote.Poll(RemoteEvent) do
+    begin
+      case RemoteEvent.Kind of
+        sekOutput:
+          if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
+             (Scr[RemoteEvent.Pane] <> nil) and
+             (Length(RemoteEvent.Data) > 0) then
+          begin
+            Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
+              Length(RemoteEvent.Data));
+            if Win[RemoteEvent.Pane] <> nil then
+              Win[RemoteEvent.Pane]^.Term^.DrawView;
+          end;
+        sekExit:
+          if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
+             (Win[RemoteEvent.Pane] <> nil) then
+            Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+        sekError:
+          DebugLog('remote session error: ' + RemoteEvent.Text);
+        sekLost:
+          begin
+            RemoteLost := True;
+            RemoteMode := False;
+          end;
+      end;
+    end;
+    if Tick - LastBlink >= 530 then
+    begin
+      LastBlink := Tick;
+      CursorPhase := not CursorPhase;
+      i := Lay.Focused;
+      if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
+         (Win[i]^.Term <> nil) then
+        Win[i]^.Term^.DrawView;
+    end;
+    Exit;
   end;
   // poll de ptys
   maxfd := -1;
@@ -2006,7 +2451,7 @@ begin
       cmPaneNext, hcNoContext,
     NewItem(UiText('~P~revious (F7)', 'Anterior (~F7~)'), '', kbF7,
       cmPanePrev, hcNoContext,
-    nil))))));
+     nil))))));
   MSize := NewMenu(
     NewItem(UiText('More ~width~ (+)', 'Mas ~ancho~ (+)'), '', kbGrayPlus,
       cmGrowV, hcNoContext,
@@ -2016,17 +2461,19 @@ begin
       cmGrowH, hcNoContext,
     NewItem(UiText('Less ~height~ (/)', 'Menos al~t~o (/)'), '', kbNoKey,
       cmShrinkH, hcNoContext,
-    nil)))));
+     nil)))));
   MSess := NewMenu(
     NewItem(UiText('~N~ew session wizard', '~A~sistente nueva sesion'), '',
       kbNoKey, cmSessionWizard, hcNoContext,
+    NewItem(UiText('~D~etach (Ctrl-B D)', '~S~eparar (Ctrl-B D)'), '',
+      kbNoKey, cmDetach, hcNoContext,
     NewItem(UiText('~S~ave (Ctrl-S)', '~G~uardar (Ctrl-S)'), '', kbCtrlS,
       cmSaveSess, hcNoContext,
     NewItem(UiText('S~a~ve and exit (Alt-X)', '~S~alir guardando (Alt-X)'),
       '', kbAltX, cmQuit, hcNoContext,
      NewItem(UiText('Exit ~without~ saving (Alt-Q)',
        'Salir ~sin~ guardar (Alt-Q)'), '', kbAltQ, cmQuitNoSave, hcNoContext,
-      nil)))));
+       nil))))));
 
   TemplateItems := nil;
   for i := Length(Templates) - 1 downto 0 do
@@ -2189,6 +2636,8 @@ begin
     cmPaneClose, Items);
   Items := NewStatusKey(UiText('~Ctrl-S~ Save', '~Ctrl-S~ Guardar'), kbCtrlS,
     cmSaveSess, Items);
+  Items := NewStatusKey(UiText('Detach: Ctrl-B D', 'Separar: Ctrl-B D'),
+    kbNoKey, cmDetach, Items);
   Items := NewStatusKey(UiText('~Alt-F9~ Min.', '~Alt-F9~ Min.'), kbAltF9,
     cmWindowMinimize, Items);
   Items := NewStatusKey(UiText('~Ctrl-F5~ Move', '~Ctrl-F5~ Mover'), kbCtrlF5,

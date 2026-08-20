@@ -25,6 +25,8 @@ panes in a normal GNU/Linux terminal window.
   definitions, and optional post-connect commands.
 - INI templates and one SQLite database per template.
 - Automatic session save and restore through `~/.superterm/session.ini`.
+- Tmux-style live detach with `Ctrl-B`, `d`, or `Session -> Detach`. Local and
+  remote PTYs remain alive and can be continued with `superterm --attach`.
 - A session wizard for one to four panes. Each pane accepts a connection command
   and an optional command to feed to the connection after it starts.
 - English application interface by default, with a runtime-selectable Spanish
@@ -162,6 +164,7 @@ python3 test/sqlite_test.py
 python3 test/wizard_test.py
 python3 test/language_test.py
 python3 test/window_test.py
+python3 test/detach_test.py
 ```
 
 ## Run
@@ -169,6 +172,18 @@ python3 test/window_test.py
 ```sh
 ./bin/superterm
 ```
+
+To return to a live session after detaching:
+
+```sh
+./bin/superterm --attach
+```
+
+Detach starts a per-user session server at `~/.superterm/session.sock`. The
+server owns the PTY masters, process groups, terminal parsers, and scrollback,
+so leaving the FreeVision client does not close local shells or remote SSH
+connections. `Alt-X` and `Alt-Q` remain permanent exits: they close the live
+session instead of creating a detachable one.
 
 Optional diagnostics:
 
@@ -193,6 +208,7 @@ Do not put passwords in command lines or debug logs.
 | `+` / `-` | Increase or decrease pane width |
 | `*` / `/` | Increase or decrease pane height |
 | `Ctrl-S` | Save the current session or template selection |
+| `Ctrl-B`, `d` | Detach the live session; reattach with `superterm --attach` |
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
 

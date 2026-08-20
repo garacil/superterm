@@ -105,18 +105,23 @@ def check_layout(session, label):
     check(f'{label}: frame dimensions', len(top) == width and len(bottom) == width)
 
 
-s = Session(381, 104)
+s = Session(4096, 35)
 try:
     s.drain(1.5)
-    check_layout(s, '381x104 startup')
+    check_layout(s, '4096x35 startup')
+
+    s.send(b"printf '\\033[44m\\033[2J\\033[H'\r", 1.2)
+    background_cells = [s.screen.buffer[10][x].bg for x in range(2, s.width - 2)]
+    check('4096x35 background fills',
+          background_cells and all(color == 'blue' for color in background_cells))
 
     s.set_size(300, 80)
     s.drain(1.2)
     check_layout(s, '300x80 resize')
 
-    s.set_size(381, 104)
+    s.set_size(4096, 35)
     s.drain(1.2)
-    check_layout(s, '381x104 restore')
+    check_layout(s, '4096x35 restore')
 finally:
     try:
         s.send(b'\x1bq', 0.5)

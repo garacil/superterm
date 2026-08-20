@@ -11,7 +11,7 @@ unit st_screen;
 interface
 
 uses
-  SysUtils, Math;
+  SysUtils, Math, Classes;
 
 const
   MAX_SCREEN_SCROLLBACK = 100000;
@@ -32,6 +32,7 @@ type
 
   TRow = array of TCell;
   TGridArray = array of TRow;
+  TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
 
   TScreen = class
   private
@@ -45,7 +46,7 @@ type
     FSBHead: integer;
     FViewTop: integer;         // 0 = vivo; >0 = lineas hacia atras
     // parser
-    FPState: (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
+    FPState: TParserState;
     FPParams: array[0..15] of integer;
     FPCount: integer;
     FPPriv: boolean;
@@ -90,6 +91,8 @@ type
     function ViewOffset: integer;
     procedure ScrollViewport(ADelta: integer);  // + atras, - adelante
     function DisplayRow(y: integer): TRow;
+    procedure SaveToStream(Stream: TStream);
+    function LoadFromStream(Stream: TStream): boolean;
     property Grid: TGridArray read FGrid;
   end;
 
@@ -273,6 +276,203 @@ begin
   end
   else
     Result := Copy(FGrid[a - FSBCount], 0, MaxInt);
+end;
+
+procedure WriteScreenString(Stream: TStream; const S: RawByteString);
+var
+  L: Longint;
+begin
+  L := Length(S);
+  Stream.WriteBuffer(L, SizeOf(L));
+  if L > 0 then
+    Stream.WriteBuffer(S[1], L);
+end;
+
+function ReadScreenString(Stream: TStream; out S: RawByteString): boolean;
+var
+  L: Longint;
+begin
+  Result := False;
+  S := '';
+  Stream.ReadBuffer(L, SizeOf(L));
+  if (L < 0) or (L > 1024 * 1024) then
+    Exit;
+  SetLength(S, L);
+  if L > 0 then
+    Stream.ReadBuffer(S[1], L);
+  Result := True;
+end;
+
+procedure SaveScreenGrid(Stream: TStream; const G: TGridArray);
+var
+  Y, X, N: Longint;
+begin
+  N := Length(G);
+  Stream.WriteBuffer(N, SizeOf(N));
+  for Y := 0 to N - 1 do
+  begin
+    N := Length(G[Y]);
+    Stream.WriteBuffer(N, SizeOf(N));
+    for X := 0 to N - 1 do
+      Stream.WriteBuffer(G[Y][X], SizeOf(TCell));
+  end;
+end;
+
+function LoadScreenGrid(Stream: TStream; out G: TGridArray): boolean;
+var
+  Y, X, Rows, Cols: Longint;
+begin
+  Result := False;
+  G := nil;
+  Stream.ReadBuffer(Rows, SizeOf(Rows));
+  if (Rows < 0) or (Rows > 4096) then
+    Exit;
+  SetLength(G, Rows);
+  for Y := 0 to Rows - 1 do
+  begin
+    Stream.ReadBuffer(Cols, SizeOf(Cols));
+    if (Cols < 0) or (Cols > 4096) then
+      Exit;
+    SetLength(G[Y], Cols);
+    for X := 0 to Cols - 1 do
+      Stream.ReadBuffer(G[Y][X], SizeOf(TCell));
+  end;
+  Result := True;
+end;
+
+procedure TScreen.SaveToStream(Stream: TStream);
+var
+  I, Slot, X, N: Longint;
+  B: byte;
+begin
+  Stream.WriteBuffer(Width, SizeOf(Width));
+  Stream.WriteBuffer(Height, SizeOf(Height));
+  Stream.WriteBuffer(CursorX, SizeOf(CursorX));
+  Stream.WriteBuffer(CursorY, SizeOf(CursorY));
+  Stream.WriteBuffer(ScrollTop, SizeOf(ScrollTop));
+  Stream.WriteBuffer(ScrollBot, SizeOf(ScrollBot));
+  B := Ord(CursorVisible); Stream.WriteBuffer(B, SizeOf(B));
+  Stream.WriteBuffer(CursorStyle, SizeOf(CursorStyle));
+  Stream.WriteBuffer(Attr, SizeOf(Attr));
+  B := Ord(Dirty); Stream.WriteBuffer(B, SizeOf(B));
+  Stream.WriteBuffer(MaxScrollBack, SizeOf(MaxScrollBack));
+  B := Ord(FUsingAlt); Stream.WriteBuffer(B, SizeOf(B));
+  B := Ord(FPendingWrap); Stream.WriteBuffer(B, SizeOf(B));
+  N := Ord(FPState); Stream.WriteBuffer(N, SizeOf(N));
+  Stream.WriteBuffer(FPParams, SizeOf(FPParams));
+  Stream.WriteBuffer(FPCount, SizeOf(FPCount));
+  B := Ord(FPPriv); Stream.WriteBuffer(B, SizeOf(B));
+  Stream.WriteBuffer(FUtfBuf, SizeOf(FUtfBuf));
+  Stream.WriteBuffer(FUtfLen, SizeOf(FUtfLen));
+  Stream.WriteBuffer(FUtfNeed, SizeOf(FUtfNeed));
+  WriteScreenString(Stream, FOscBuf);
+  Stream.WriteBuffer(FSaveX, SizeOf(FSaveX));
+  Stream.WriteBuffer(FSaveY, SizeOf(FSaveY));
+  Stream.WriteBuffer(FInterm, SizeOf(FInterm));
+  B := Ord(FAutoWrap); Stream.WriteBuffer(B, SizeOf(B));
+  SaveScreenGrid(Stream, FGrid);
+  SaveScreenGrid(Stream, FAltGrid);
+
+  N := FSBCount;
+  Stream.WriteBuffer(N, SizeOf(N));
+  Stream.WriteBuffer(FViewTop, SizeOf(FViewTop));
+  if (MaxScrollBack > 0) and (FSBCount > 0) then
+    for I := 0 to FSBCount - 1 do
+    begin
+      Slot := (FSBHead - FSBCount + I + MaxScrollBack) mod MaxScrollBack;
+      N := Length(FSBRing[Slot]);
+      Stream.WriteBuffer(N, SizeOf(N));
+      if N > 0 then
+        for X := 0 to N - 1 do
+          Stream.WriteBuffer(FSBRing[(FSBHead - FSBCount + I + MaxScrollBack) mod MaxScrollBack][X],
+            SizeOf(TCell));
+    end;
+end;
+
+function TScreen.LoadFromStream(Stream: TStream): boolean;
+var
+  I, X, N, Cols, MaxSB, StateValue: Longint;
+  B: byte;
+  Row: TRow;
+begin
+  Result := False;
+  try
+    Stream.ReadBuffer(Width, SizeOf(Width));
+    Stream.ReadBuffer(Height, SizeOf(Height));
+    if (Width < 1) or (Width > 4096) or (Height < 1) or (Height > 4096) then
+      Exit;
+    Stream.ReadBuffer(CursorX, SizeOf(CursorX));
+    Stream.ReadBuffer(CursorY, SizeOf(CursorY));
+    Stream.ReadBuffer(ScrollTop, SizeOf(ScrollTop));
+    Stream.ReadBuffer(ScrollBot, SizeOf(ScrollBot));
+    Stream.ReadBuffer(B, SizeOf(B)); CursorVisible := B <> 0;
+    Stream.ReadBuffer(CursorStyle, SizeOf(CursorStyle));
+    Stream.ReadBuffer(Attr, SizeOf(Attr));
+    Stream.ReadBuffer(B, SizeOf(B)); Dirty := B <> 0;
+    Stream.ReadBuffer(MaxSB, SizeOf(MaxSB));
+    if (MaxSB < 0) or (MaxSB > MAX_SCREEN_SCROLLBACK) then
+      Exit;
+    MaxScrollBack := MaxSB;
+    Stream.ReadBuffer(B, SizeOf(B)); FUsingAlt := B <> 0;
+    Stream.ReadBuffer(B, SizeOf(B)); FPendingWrap := B <> 0;
+    Stream.ReadBuffer(StateValue, SizeOf(StateValue));
+    if (StateValue < Ord(Low(FPState))) or
+       (StateValue > Ord(High(FPState))) then
+      Exit;
+    FPState := TParserState(StateValue);
+    Stream.ReadBuffer(FPParams, SizeOf(FPParams));
+    Stream.ReadBuffer(FPCount, SizeOf(FPCount));
+    Stream.ReadBuffer(B, SizeOf(B)); FPPriv := B <> 0;
+    Stream.ReadBuffer(FUtfBuf, SizeOf(FUtfBuf));
+    Stream.ReadBuffer(FUtfLen, SizeOf(FUtfLen));
+    Stream.ReadBuffer(FUtfNeed, SizeOf(FUtfNeed));
+    if not ReadScreenString(Stream, FOscBuf) then
+      Exit;
+    Stream.ReadBuffer(FSaveX, SizeOf(FSaveX));
+    Stream.ReadBuffer(FSaveY, SizeOf(FSaveY));
+    Stream.ReadBuffer(FInterm, SizeOf(FInterm));
+    Stream.ReadBuffer(B, SizeOf(B)); FAutoWrap := B <> 0;
+    if not LoadScreenGrid(Stream, FGrid) then
+      Exit;
+    if (Length(FGrid) <> Height) then
+      Exit;
+    for I := 0 to Height - 1 do
+      if Length(FGrid[I]) <> Width then
+        Exit;
+    if not LoadScreenGrid(Stream, FAltGrid) then
+      Exit;
+    if (Length(FAltGrid) <> 0) and (Length(FAltGrid) <> Height) then
+      Exit;
+    if Length(FAltGrid) = Height then
+      for I := 0 to Height - 1 do
+        if Length(FAltGrid[I]) <> Width then
+          Exit;
+
+    Stream.ReadBuffer(N, SizeOf(N));
+    if (N < 0) or (N > MaxScrollBack) then
+      Exit;
+    FSBCount := N;
+    Stream.ReadBuffer(FViewTop, SizeOf(FViewTop));
+    if FViewTop < 0 then FViewTop := 0;
+    if FViewTop > FSBCount then FViewTop := FSBCount;
+    FSBHead := 0;
+    SetLength(FSBRing, MaxScrollBack);
+    for I := 0 to FSBCount - 1 do
+    begin
+      Stream.ReadBuffer(Cols, SizeOf(Cols));
+      if (Cols < 0) or (Cols > 4096) then
+        Exit;
+      SetLength(Row, Cols);
+      for X := 0 to Cols - 1 do
+        Stream.ReadBuffer(Row[X], SizeOf(TCell));
+      FSBRing[I] := Row;
+    end;
+    if MaxScrollBack > 0 then
+      FSBHead := FSBCount mod MaxScrollBack;
+    Result := True;
+  except
+    Result := False;
+  end;
 end;
 
 function TScreen.CellWidth(const S: RawByteString): integer;
@@ -698,7 +898,7 @@ begin
       end;
     'm':
       begin
-        if FPCount = 0 then
+        if (FPCount = 0) and (FPParams[0] = -1) then
         begin
           Attr := A_FGDEF or A_BGDEF;
           Exit;

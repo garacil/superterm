@@ -9,12 +9,20 @@ program superterm;
 {$mode objfpc}{$H+}
 
 uses
-  Objects, Drivers, App, st_fvui;
+  Objects, Drivers, App, st_fvui, st_server;
 
 var
   STApp: PSuperApp;
 
 begin
+  AttachRequested := False;
+  if ParamCount > 0 then
+    AttachRequested := (ParamStr(1) = '--attach');
+  if AttachRequested and (not SessionSocketIsLive) then
+  begin
+    WriteLn(StdErr, 'superterm: no detached session is available');
+    Halt(1);
+  end;
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
   STApp^.Run;

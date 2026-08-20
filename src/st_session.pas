@@ -25,6 +25,7 @@ type
 
 procedure SaveSession(const FileName: string; Lay: TLayout; const Panes: array of TPaneInfo);
 function LoadSession(const FileName: string; var Lay: TLayout; out Panes: TPaneArray): boolean;
+function SaveLayoutString(Lay: TLayout): string;
 function LoadLayoutString(const Nodes: string; out Lay: TLayout): boolean;
 
 implementation
@@ -233,6 +234,24 @@ begin
       Exit;
     end;
     Result := True;
+  finally
+    SL.Free;
+  end;
+end;
+
+function SaveLayoutString(Lay: TLayout): string;
+var
+  SL: TStringList;
+begin
+  Result := '';
+  if (Lay = nil) or (Lay.Root = nil) then
+    Exit;
+  SL := TStringList.Create;
+  try
+    SerializeNode(Lay.Root, SL);
+    SL.Delimiter := ';';
+    SL.StrictDelimiter := True;
+    Result := SL.DelimitedText;
   finally
     SL.Free;
   end;

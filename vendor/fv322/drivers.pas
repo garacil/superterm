@@ -654,9 +654,9 @@ CONST EventQSize = 16;                                { Default int bufsize }
 CONST QueueMax = 64;                                  { Max new queue size }
 
 {---------------------------------------------------------------------------}
-{   MAX WIEW WIDTH to avoid TDrawBuffer overrun in views unit               }
+{   MAX VIEW WIDTH to avoid TDrawBuffer overrun in views unit               }
 {---------------------------------------------------------------------------}
-CONST MaxViewWidth = 1024;                                  { Max view width }
+CONST MaxViewWidth = 8192;                                  { Max view width }
 
 {***************************************************************************}
 {                          PRIVATE INTERNAL TYPES                           }
@@ -1411,9 +1411,9 @@ begin
       GetVideoMode(ScreenMode);
     end;
 
+  ScreenWidth:=Video.ScreenWidth;
   if ScreenWidth > MaxViewWidth then
     ScreenWidth := MaxViewWidth;
-  ScreenWidth:=Video.ScreenWidth;
   ScreenHeight:=Video.ScreenHeight;
   VideoInitialized:=true;
   initvideo:=true;
