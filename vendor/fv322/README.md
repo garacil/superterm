@@ -3,7 +3,7 @@ These units are the Free Vision sources from Free Pascal 3.2.2
 
 The system Free Vision units cap views at 255 columns and store the detected
 screen dimensions in byte-sized fields. Superterm needs wider terminal panes,
-so `views.pas` and `drivers.pas` use a 1024-column draw buffer and word-sized
+so `views.pas` and `drivers.pas` use an 8192-column draw buffer and word-sized
 screen dimensions. The remaining units are rebuilt with them because their
 interfaces depend on the Free Vision view and driver units.
 

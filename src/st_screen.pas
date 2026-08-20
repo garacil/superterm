@@ -921,7 +921,8 @@ begin
             40..47: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4);
             49: Attr := (Attr and $FF0F) or A_BGDEF;
             90..97: Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_BOLD;
-            100..107: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 100) shl 4);
+            100..107: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
+              (word(n - 92) shl 4);
             38, 48:
               begin
                 if GetParam(i + 1, -1) = 5 then
@@ -939,7 +940,7 @@ begin
                     if n = 38 then
                       Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(p1 - 8) or A_BOLD
                     else
-                      Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(p1 - 8) shl 4);
+                      Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(p1) shl 4);
                   end
                   else
                   begin
@@ -1070,7 +1071,11 @@ begin
         FPState := psOsc;
         Exit;
       end;
-    '(', ')', '*', '+': FPState := psCharset;
+    '(', ')', '*', '+':
+      begin
+        FPState := psCharset;
+        Exit;
+      end;
     '7':
       begin
         FSaveX := CursorX;

@@ -86,6 +86,7 @@ def check(name, condition):
 
 
 first = Client()
+first.stream.feed(b'\033[10;20H')
 first.drain(1.5)
 check('detach menu is visible', 'Detach' in first.text())
 first.send(f'echo $$ > {PIDFILE}; sleep 1; echo DETACHED_OUTPUT\r'.encode(), 0.3)
@@ -93,6 +94,8 @@ first.send(b'\x02d', 1.0)
 first_status = first.wait()
 check('client exits after Ctrl-B d', first_status is not None and
       os.WIFEXITED(first_status) and os.WEXITSTATUS(first_status) == 0)
+check('cursor restored after detach',
+      first.screen.cursor.x == 19 and first.screen.cursor.y == 9)
 check('server socket remains', os.path.exists(SOCKET))
 
 pane_pid = None
@@ -126,5 +129,18 @@ if pane_pid is not None:
     except PermissionError:
         pane_alive = True
     check('permanent close terminates pane', not pane_alive)
+
+exit_client = Client()
+exit_client.stream.feed(b'\033[10;20H')
+exit_client.drain(1.5)
+exit_client.send(b'\x1bx', 1.0)
+exit_status = exit_client.wait()
+check('cursor restored after exit',
+      exit_status is not None and exit_client.screen.cursor.x == 19 and
+      exit_client.screen.cursor.y == 9)
+try:
+    os.close(exit_client.fd)
+except OSError:
+    pass
 
 sys.exit(1 if fails else 0)
