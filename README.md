@@ -1,4 +1,4 @@
-# superterm
+# superterm 2.1
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
