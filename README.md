@@ -1,4 +1,4 @@
-# superterm 2.1
+# superterm 3.0
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
@@ -25,6 +25,22 @@ panes in a normal GNU/Linux or macOS terminal window.
 - Profiles (`[profile.*]`): named workspaces of windows and pane layouts
   whose panes reference window classes. Legacy `[t-*]` terminals and
   `[template.*]` templates (INI or SQLite) are still read and migrated.
+- Every session is a server from launch (tmux-style): the visible terminal
+  is just the first attached client, and the whole workspace can be driven
+  from another shell with the control CLI. `[session] server=detach`
+  restores the classic detach-only flow.
+- A bilingual control CLI (commands and flags accepted in English AND
+  Spanish, output in the configured UI language): `list/listar`,
+  `send/enviar`, `capture/capturar` (visible screen, last N lines or the
+  whole scrollback), `kill/matar`, plus full window management from the
+  command line — `new/nueva`, `close/cerrar`, `focus/foco`,
+  `rename/renombrar`, `resize/tamano`, `minimize/minimizar`,
+  `restore/restaurar`, `zoom/ampliar` and `organize/organizar`. See
+  [`docs/CLI.md`](docs/CLI.md).
+- True multi-user sessions: up to 8 clients attached to the same session at
+  once, with output broadcast, live window events, per-pane smallest-size
+  negotiation, and slow-client flow control so one stalled client never
+  blocks the rest.
 - Named multi-session detach: several live sessions under
   `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
@@ -65,11 +81,11 @@ UI, VT engine, layout, configuration, and detach/attach server are shared withou
 change. The only platform-specific code is the PTY/process layer, selected at
 compile time with `{$IFDEF DARWIN}`:
 
-- **Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
+- **GNU/Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
   and reads process titles from `/proc`.
 - **macOS** allocates it with BSD `openpty` + `login_tty` and reads process
   titles with `libproc`/`sysctl`. Free Pascal auto-defines `DARWIN`, so no build
-  flag is required — run superterm in Terminal.app or iTerm2 exactly as on Linux.
+  flag is required — run superterm in Terminal.app or iTerm2 exactly as on GNU/Linux.
 
 See [`docs/MACOS.md`](docs/MACOS.md) for the macOS build, terminal setup, and
 platform notes.
@@ -93,11 +109,10 @@ tradeoff, not a claim that Pascal is universally better than C:
 
 A complete C rewrite would have to recreate the UI, PTY handling, VT parser,
 layout, session persistence, and tests without providing a concrete benefit for
-the current requirements. C would become a reasonable choice if the project
-needed a persistent multi-client server, C library integration, an external API,
-or a measured performance improvement. For the current cross-platform terminal
-multiplexer, continuing in Pascal has a better benefit-to-risk ratio than
-rewriting it in C.
+the current requirements — including the persistent multi-client session server
+and the bilingual control CLI, which are implemented in Pascal and covered by
+the regression suite. For this cross-platform terminal multiplexer, continuing
+in Pascal has a better benefit-to-risk ratio than rewriting it in C.
 
 ## Requirements
 

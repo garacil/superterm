@@ -39,6 +39,7 @@ language=en
 palette=color
 
 [session]
+server=always
 autosave=1
 autorestore=1
 default_profile=daily
@@ -84,6 +85,13 @@ saved when changed.
 
 ### [session]
 
+- `server=always` (default) starts a session server on every launch: the
+  visible terminal attaches to it as a client, the session gets an
+  automatic name (`--session NAME`, else the active profile, else
+  `session`), and the whole workspace can be driven from another shell
+  with the control CLI (see [`CLI.md`](CLI.md)). `server=detach` restores
+  the classic behaviour where the server only exists after detaching with
+  the prefix + `d`.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
   when no profile takes priority. Set it to `0` when every startup must

@@ -189,10 +189,10 @@ GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `select`, POSIX
 PTYs, and the bundled FreeVision text UI. The only conditionally compiled unit
 is `src/st_pty.pas`, which selects the PTY/process backend with `{$IFDEF DARWIN}`:
 
-- Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
+- GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
   Pascal auto-defines `DARWIN`, so the compile line, `configure`, and `make` are
-  identical to Linux. Run in Terminal.app or iTerm2. See
+  identical to GNU/Linux. Run in Terminal.app or iTerm2. See
   [`MACOS.md`](MACOS.md) for terminal setup and platform notes.
 
 No other unit is platform-conditional, so a change merged on one OS applies to
