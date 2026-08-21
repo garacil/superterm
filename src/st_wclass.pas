@@ -55,6 +55,10 @@ procedure LoadWindowClasses(const FileName: string; AOrigin: TWClassOrigin;
 procedure MergeWindowClasses(var Target: TWindowClassArray;
   const Extra: TWindowClassArray);
 
+// busca una clase por nombre (insensible a mayusculas); -1 si no esta
+function FindClassByName(const A: TWindowClassArray;
+  const AName: string): integer;
+
 // escribe las clases de origen usuario en FileName de forma atomica,
 // preservando las secciones ajenas; absorbe [t-*] legadas al guardar
 procedure SaveWindowClasses(const FileName: string;

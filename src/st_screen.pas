@@ -94,6 +94,11 @@ type
     function DisplayRow(y: integer): TRow;
     procedure SaveToStream(Stream: TStream);
     function LoadFromStream(Stream: TStream): boolean;
+    // captura a texto: filas absolutas 0..HistoryRows-1 = historial (la mas
+    // antigua primero) y HistoryRows..HistoryRows+Height-1 = pantalla viva
+    function HistoryRows: integer;
+    function AbsRow(AIndex: integer): TRow;
+    procedure RenderTextRange(AFrom, ACount: integer; AOut: TStream);
     property Grid: TGridArray read FGrid;
   end;
 
@@ -345,6 +350,79 @@ begin
       Stream.ReadBuffer(G[Y][X], SizeOf(TCell));
   end;
   Result := True;
+end;
+
+function TScreen.HistoryRows: integer;
+begin
+  Result := FSBCount;
+end;
+
+function TScreen.AbsRow(AIndex: integer): TRow;
+var
+  Slot: integer;
+begin
+  Result := nil;
+  if AIndex < 0 then
+    Exit;
+  if AIndex < FSBCount then
+  begin
+    // misma formula de ring que SaveToStream/DisplayRow
+    Slot := (FSBHead - FSBCount + AIndex + MaxScrollBack) mod MaxScrollBack;
+    Result := FSBRing[Slot];
+  end
+  else if AIndex - FSBCount < Height then
+    Result := FGrid[AIndex - FSBCount];
+end;
+
+// una fila de celdas a texto UTF-8 plano: los bytes crudos de cada celda
+// (Txt[0..Len-1]), espacio para celdas vacias, se saltan las continuaciones
+// de caracteres anchos, y se recortan los blancos finales
+function RowToUtf8(const R: TRow): RawByteString;
+var
+  x, i, LastNonBlank: integer;
+  S: RawByteString;
+begin
+  Result := '';
+  if R = nil then
+    Exit;
+  LastNonBlank := -1;
+  for x := 0 to High(R) do
+    if (not R[x].Cont) and (R[x].Len > 0) and
+       ((R[x].Len <> 1) or (R[x].Txt[0] <> ' ')) then
+      LastNonBlank := x;
+  S := '';
+  for x := 0 to LastNonBlank do
+  begin
+    if R[x].Cont then
+      continue;
+    if R[x].Len = 0 then
+      S := S + ' '
+    else
+      for i := 0 to R[x].Len - 1 do
+        S := S + R[x].Txt[i];
+  end;
+  Result := S;
+end;
+
+procedure TScreen.RenderTextRange(AFrom, ACount: integer; AOut: TStream);
+var
+  Total, i: integer;
+  S: RawByteString;
+const
+  NL: AnsiChar = #10;
+begin
+  Total := FSBCount + Height;
+  if AFrom < 0 then
+    AFrom := 0;
+  if AFrom + ACount > Total then
+    ACount := Total - AFrom;
+  for i := AFrom to AFrom + ACount - 1 do
+  begin
+    S := RowToUtf8(AbsRow(i));
+    if Length(S) > 0 then
+      AOut.WriteBuffer(S[1], Length(S));
+    AOut.WriteBuffer(NL, 1);
+  end;
 end;
 
 procedure TScreen.SaveToStream(Stream: TStream);

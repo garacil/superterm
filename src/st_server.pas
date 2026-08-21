@@ -14,7 +14,7 @@ interface
 
 uses
   Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
-  st_config, st_layout, st_pty, st_screen, st_session;
+  st_config, st_wclass, st_layout, st_pty, st_screen, st_session;
 
 const
   FRAME_ATTACH = 1;
@@ -25,12 +25,31 @@ const
   FRAME_KILLPANE = 6;   // cliente enganchado cierra un panel
   FRAME_LAYOUT = 7;     // cliente enganchado sincroniza arbol/geometria
 
+  // control efimero: una conexion, un frame de peticion, respuesta y cierre;
+  // nunca ocupa el slot de cliente interactivo (patron de FRAME_CLOSE)
+  FRAME_CTL_LIST = 11;     // detalles de sesion y paneles
+  FRAME_CTL_SEND = 12;     // texto crudo a un panel
+  FRAME_CTL_CAPTURE = 13;  // captura de pantalla/historial como texto
+  FRAME_CTL_WINOP = 14;    // gestion de ventanas (reservado)
+  FRAME_CTL_INFO = 15;     // solo cabecera de sesion
+
   FRAME_SESSION = 20;
   FRAME_SCREEN = 21;
   FRAME_READY = 22;
   FRAME_OUTPUT = 23;
   FRAME_EXIT = 24;
   FRAME_ERROR = 25;
+
+  // respuestas de control
+  FRAME_CTL_OK = 40;
+  FRAME_CTL_ERR = 41;
+  FRAME_CTL_DATA = 42;     // trozo de datos (texto o registros)
+  FRAME_CTL_END = 43;      // fin de la respuesta
+
+  // modos de captura (payload de FRAME_CTL_CAPTURE)
+  CAPTURE_VISIBLE = 0;
+  CAPTURE_ALL = 1;
+  CAPTURE_LAST_N = 2;
 
   MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
@@ -134,6 +153,21 @@ function SuggestSessionName(const ABase: string): string;
 // cierre permanente de una sesion separada por su socket (FRAME_CLOSE);
 // espera brevemente y solo devuelve True si el daemon murio de verdad
 function CloseSessionAt(const APath: string): boolean;
+
+type
+  // callback de datos para peticiones de control con respuesta en trozos
+  TCtlDataProc = procedure(const AChunk: TByteArray) of object;
+
+// peticion de control simple (OK/ERR): conecta, envia un frame, espera la
+// respuesta y cierra; AReply lleva el mensaje de error si lo hay
+function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
+  const APayload: TByteArray; out AReply: string): boolean;
+
+// peticion de control con datos (LIST/CAPTURE/INFO): igual pero entregando
+// cada FRAME_CTL_DATA por el callback hasta FRAME_CTL_END
+function CtlStream(const ASocket: string; AKind: byte; APane: integer;
+  const APayload: TByteArray; AOnData: TCtlDataProc): boolean;
+
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
@@ -173,6 +207,8 @@ type
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
     FDeskW, FDeskH: Longint;
+    FCtlClasses: TWindowClassArray;   // clases resueltas para LIST (lazy)
+    FCtlClassesLoaded: boolean;
     function CreateListener: boolean;
     function SendFrame(AKind: byte; APane: integer;
       const Data: TByteArray): boolean;
@@ -181,7 +217,12 @@ type
     function ReadFrame(AFd: cint; out AKind: byte; out APane: integer;
       out Data: TByteArray): boolean;
     function SendSnapshot(AFd: cint): boolean;
-    function ReadFirstFrame(AFd: cint; out AKind: byte): boolean;
+    function ReadFirstFrame(AFd: cint; out AKind: byte;
+      out APane: integer; out AData: TByteArray): boolean;
+    procedure HandleControlFrame(AFd: cint; AKind: byte; APane: integer;
+      const AData: TByteArray);
+    procedure CtlReplyErr(AFd: cint; const AMsg: string);
+    procedure EnsureCtlConfig;
     function HandleAttach(AFd: cint; AFirstKind: byte): boolean;
     function HandleClientFrame(var AClient: cint): boolean;
     procedure HandlePaneOutput(APane: integer);
@@ -223,6 +264,68 @@ begin
     Dec(Left, N);
   end;
   Result := True;
+end;
+
+// escritura completa con plazo total: select de escribibilidad por tramo y
+// deadline acumulado; si el receptor no consume a tiempo, se aborta (un
+// cliente de control muerto no debe colgar el bucle del daemon)
+function WriteFullTimeout(AFd: cint; const Buffer; ASize: integer;
+  ATotalMs: integer): boolean;
+var
+  P: PByte;
+  Left, N: integer;
+  SetW: TFDSet;
+  TV: TTimeVal;
+  Deadline: QWord;
+  NowMs: QWord;
+begin
+  Result := False;
+  if ASize < 0 then
+    Exit;
+  if ASize = 0 then
+    Exit(True);
+  P := @Buffer;
+  Left := ASize;
+  Deadline := GetTickCount64 + QWord(ATotalMs);
+  while Left > 0 do
+  begin
+    NowMs := GetTickCount64;
+    if NowMs >= Deadline then
+      Exit;
+    fpFD_ZERO(SetW);
+    fpFD_SET(AFd, SetW);
+    TV.tv_sec := (Deadline - NowMs) div 1000;
+    TV.tv_usec := ((Deadline - NowMs) mod 1000) * 1000;
+    if fpSelect(AFd + 1, nil, @SetW, nil, @TV) <= 0 then
+      Exit;
+    N := FileWrite(AFd, P^, Left);
+    if N <= 0 then
+      Exit;
+    Inc(P, N);
+    Dec(Left, N);
+  end;
+  Result := True;
+end;
+
+// frame completo (cabecera + payload) con el mismo plazo total
+function WriteFrameToTimeout(AFd: cint; AKind: byte; APane: integer;
+  const Data: TByteArray; ATotalMs: integer): boolean;
+var
+  H: TFrameHeader;
+begin
+  Result := False;
+  if Length(Data) > MAX_FRAME_SIZE then
+    Exit;
+  H := Default(TFrameHeader);
+  H.Kind := AKind;
+  H.Pane := APane;
+  H.Size := Length(Data);
+  if not WriteFullTimeout(AFd, H, SizeOf(H), ATotalMs) then
+    Exit;
+  if Length(Data) > 0 then
+    Result := WriteFullTimeout(AFd, Data[0], Length(Data), ATotalMs)
+  else
+    Result := True;
 end;
 
 function ReadFull(AFd: cint; var Buffer; ASize: integer): boolean;
@@ -611,6 +714,68 @@ begin
     if not SessionIsLive(APath) then
       Exit(True);
     Sleep(100);
+  end;
+end;
+
+function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
+  const APayload: TByteArray; out AReply: string): boolean;
+var
+  Fd: cint;
+  RKind: byte;
+  RPane: integer;
+  RData: TByteArray;
+begin
+  Result := False;
+  AReply := '';
+  Fd := ConnectSocket(ASocket);
+  if Fd < 0 then
+    Exit;
+  try
+    if not WriteFrameTo(Fd, AKind, APane, APayload) then
+      Exit;
+    if not ReadFrameFrom(Fd, RKind, RPane, RData) then
+      Exit;
+    if RKind = FRAME_CTL_OK then
+      Result := True
+    else if (RKind = FRAME_CTL_ERR) and (Length(RData) > 0) then
+      SetString(AReply, PAnsiChar(@RData[0]), Length(RData));
+  finally
+    FpClose(Fd);
+  end;
+end;
+
+function CtlStream(const ASocket: string; AKind: byte; APane: integer;
+  const APayload: TByteArray; AOnData: TCtlDataProc): boolean;
+var
+  Fd: cint;
+  RKind: byte;
+  RPane: integer;
+  RData: TByteArray;
+begin
+  Result := False;
+  Fd := ConnectSocket(ASocket);
+  if Fd < 0 then
+    Exit;
+  try
+    if not WriteFrameTo(Fd, AKind, APane, APayload) then
+      Exit;
+    repeat
+      if not ReadFrameFrom(Fd, RKind, RPane, RData) then
+        Exit;   // daemon viejo cierra sin responder -> False
+      case RKind of
+        FRAME_CTL_DATA:
+          if Assigned(AOnData) then
+            AOnData(RData);
+        FRAME_CTL_END:
+          Exit(True);
+        FRAME_CTL_ERR:
+          Exit(False);
+      else
+        Exit(False);
+      end;
+    until False;
+  finally
+    FpClose(Fd);
   end;
 end;
 
@@ -1130,15 +1295,16 @@ end;
 
 // lee el primer frame de una conexion recien aceptada con espera acotada:
 // un par que conecta y no escribe nada no debe dejar colgado al daemon
-function TDetachedSession.ReadFirstFrame(AFd: cint; out AKind: byte): boolean;
+function TDetachedSession.ReadFirstFrame(AFd: cint; out AKind: byte;
+  out APane: integer; out AData: TByteArray): boolean;
 var
   SetRead: TFDSet;
   TV: TTimeVal;
-  Pane: integer;
-  Data: TByteArray;
 begin
   Result := False;
   AKind := 0;
+  APane := -1;
+  AData := nil;
   fpFD_ZERO(SetRead);
   fpFD_SET(AFd, SetRead);
   TV.tv_sec := 1;
@@ -1147,7 +1313,7 @@ begin
     Exit;
   if fpFD_ISSET(AFd, SetRead) = 0 then
     Exit;
-  Result := ReadFrame(AFd, AKind, Pane, Data);
+  Result := ReadFrame(AFd, AKind, APane, AData);
 end;
 
 // atiende una adhesion cuyo primer frame ya fue leido en Run: solo un
@@ -1276,6 +1442,228 @@ begin
   end;
 end;
 
+procedure TDetachedSession.CtlReplyErr(AFd: cint; const AMsg: string);
+var
+  Data: TByteArray;
+begin
+  Data := nil;
+  SetLength(Data, Length(AMsg));
+  if Length(AMsg) > 0 then
+    Move(AMsg[1], Data[0], Length(AMsg));
+  WriteFrameToTimeout(AFd, FRAME_CTL_ERR, -1, Data, 5000);
+end;
+
+// carga perezosa de las clases de ventana para resolver kind/host en LIST
+procedure TDetachedSession.EnsureCtlConfig;
+var
+  SysClasses: TWindowClassArray;
+begin
+  if FCtlClassesLoaded then
+    Exit;
+  FCtlClassesLoaded := True;
+  LoadWindowClasses(ConfigFile, coUser, FCtlClasses);
+  LoadWindowClasses(SystemConfigFile, coSystem, SysClasses);
+  MergeWindowClasses(FCtlClasses, SysClasses);
+end;
+
+// peticion de control efimera: un frame de peticion ya leido, responder por
+// el mismo fd y volver (el llamante cierra la conexion)
+procedure TDetachedSession.HandleControlFrame(AFd: cint; AKind: byte;
+  APane: integer; const AData: TByteArray);
+const
+  CHUNK = 256 * 1024;
+var
+  Meta: TMemoryStream;
+  Data: TByteArray;
+  I, CIdx: integer;
+  S: RawByteString;
+  Mode, N: Longint;
+  Scr: TScreen;
+  From, Count, Sent, Take: integer;
+  KindB: byte;
+  Host, User, LiveCmd, LiveCwd: string;
+begin
+  case AKind of
+    FRAME_CTL_INFO, FRAME_CTL_LIST:
+      begin
+        EnsureCtlConfig;
+        Meta := TMemoryStream.Create;
+        try
+          // cabecera de sesion
+          WriteString(Meta, FName);
+          WriteString(Meta, FProfile);
+          Meta.WriteBuffer(FPaneCount, SizeOf(FPaneCount));
+          Meta.WriteBuffer(FFocused, SizeOf(FFocused));
+          I := 0;
+          if FClient >= 0 then
+            I := 1;
+          Meta.WriteBuffer(I, SizeOf(I));   // clientes enganchados
+          Meta.WriteBuffer(FDeskW, SizeOf(FDeskW));
+          Meta.WriteBuffer(FDeskH, SizeOf(FDeskH));
+          if AKind = FRAME_CTL_LIST then
+            for I := 0 to FPaneCount - 1 do
+            begin
+              // tipo y destino resueltos desde la clase por nombre
+              KindB := 255;
+              Host := '';
+              User := '';
+              CIdx := FindClassByName(FCtlClasses, FTerms[I]);
+              if FTerms[I] = '' then
+                KindB := 0    // ad-hoc = local
+              else if CIdx >= 0 then
+              begin
+                KindB := byte(Ord(FCtlClasses[CIdx].Kind));
+                Host := FCtlClasses[CIdx].Host;
+                User := FCtlClasses[CIdx].User;
+              end;
+              // comando/cwd vivos desde el proceso real
+              LiveCmd := '';
+              LiveCwd := '';
+              if (FPanes[I] <> nil) and FPanes[I].Alive then
+              begin
+                FPanes[I].QueryState;
+                LiveCmd := FPanes[I].TitleCmd;
+                LiveCwd := FPanes[I].TitleCwd;
+              end;
+              WriteString(Meta, FTitles[I]);
+              WriteString(Meta, FTerms[I]);
+              Meta.WriteBuffer(KindB, SizeOf(KindB));
+              WriteString(Meta, Host);
+              WriteString(Meta, User);
+              WriteString(Meta, LiveCmd);
+              WriteString(Meta, LiveCwd);
+              if FScreens[I] <> nil then
+              begin
+                Meta.WriteBuffer(FScreens[I].Width, SizeOf(integer));
+                Meta.WriteBuffer(FScreens[I].Height, SizeOf(integer));
+                N := FScreens[I].HistoryRows;
+              end
+              else
+              begin
+                N := 0;
+                Meta.WriteBuffer(N, SizeOf(N));
+                Meta.WriteBuffer(N, SizeOf(N));
+              end;
+              Meta.WriteBuffer(N, SizeOf(N));   // lineas de historial
+              Meta.WriteBuffer(FGeom[I].BX, SizeOf(Longint));
+              Meta.WriteBuffer(FGeom[I].BY, SizeOf(Longint));
+              Meta.WriteBuffer(FGeom[I].BW, SizeOf(Longint));
+              Meta.WriteBuffer(FGeom[I].BH, SizeOf(Longint));
+              KindB := 0;
+              if FGeom[I].Zoomed then KindB := 1;
+              Meta.WriteBuffer(KindB, SizeOf(KindB));
+              KindB := 0;
+              if FGeom[I].Minimized then KindB := 1;
+              Meta.WriteBuffer(KindB, SizeOf(KindB));
+              KindB := 0;
+              if (FPanes[I] <> nil) and FPanes[I].Alive then KindB := 1;
+              Meta.WriteBuffer(KindB, SizeOf(KindB));
+            end;
+          Data := nil;
+          SetLength(Data, Meta.Size);
+          if Meta.Size > 0 then
+          begin
+            Meta.Position := 0;
+            Meta.ReadBuffer(Data[0], Meta.Size);
+          end;
+          if WriteFrameToTimeout(AFd, FRAME_CTL_DATA, -1, Data, 5000) then
+          begin
+            Data := nil;
+            WriteFrameToTimeout(AFd, FRAME_CTL_END, -1, Data, 5000);
+          end;
+        finally
+          Meta.Free;
+        end;
+      end;
+    FRAME_CTL_SEND:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
+           (not FPanes[APane].Alive) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        if Length(AData) > 0 then
+        begin
+          SetString(S, PAnsiChar(@AData[0]), Length(AData));
+          FPanes[APane].WriteStr(S);
+        end;
+        Data := nil;
+        WriteFrameToTimeout(AFd, FRAME_CTL_OK, APane, Data, 5000);
+      end;
+    FRAME_CTL_CAPTURE:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) or
+           (FScreens[APane] = nil) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        Scr := FScreens[APane];
+        Mode := CAPTURE_VISIBLE;
+        N := 0;
+        if Length(AData) >= SizeOf(Longint) then
+          Move(AData[0], Mode, SizeOf(Longint));
+        if Length(AData) >= 2 * SizeOf(Longint) then
+          Move(AData[SizeOf(Longint)], N, SizeOf(Longint));
+        case Mode of
+          CAPTURE_ALL:
+            begin
+              From := 0;
+              Count := Scr.HistoryRows + Scr.Height;
+            end;
+          CAPTURE_LAST_N:
+            begin
+              if N < 0 then N := 0;
+              Count := N;
+              From := Scr.HistoryRows + Scr.Height - Count;
+              if From < 0 then
+              begin
+                From := 0;
+                Count := Scr.HistoryRows + Scr.Height;
+              end;
+            end;
+        else
+          From := Scr.HistoryRows;
+          Count := Scr.Height;
+        end;
+        // render por lotes: un CTL_DATA cada ~256KB, nunca el total en RAM
+        Meta := TMemoryStream.Create;
+        try
+          Sent := 0;
+          while Sent < Count do
+          begin
+            Take := 512;   // filas por lote
+            if Sent + Take > Count then
+              Take := Count - Sent;
+            Meta.Clear;
+            Scr.RenderTextRange(From + Sent, Take, Meta);
+            Inc(Sent, Take);
+            if (Meta.Size >= CHUNK) or (Sent >= Count) then
+            begin
+              Data := nil;
+              SetLength(Data, Meta.Size);
+              if Meta.Size > 0 then
+              begin
+                Meta.Position := 0;
+                Meta.ReadBuffer(Data[0], Meta.Size);
+              end;
+              if not WriteFrameToTimeout(AFd, FRAME_CTL_DATA, APane,
+                Data, 5000) then
+                Exit;
+            end;
+          end;
+          Data := nil;
+          WriteFrameToTimeout(AFd, FRAME_CTL_END, APane, Data, 5000);
+        finally
+          Meta.Free;
+        end;
+      end;
+    FRAME_CTL_WINOP:
+      CtlReplyErr(AFd, 'not supported');   // llega en la fase F3
+  end;
+end;
+
 function TDetachedSession.HandleClientFrame(var AClient: cint): boolean;
 var
   Kind: byte;
@@ -1393,6 +1781,8 @@ var
   Kind: byte;
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
+  FirstPane: integer;
+  FirstData: TByteArray;
 begin
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
@@ -1440,12 +1830,18 @@ begin
         // llegue por una conexion nueva (CloseSessionAt); FRAME_ATTACH
         // solo se atiende con el unico slot de cliente libre; cualquier
         // otra cosa (o el slot ocupado) cierra la conexion
-        if not ReadFirstFrame(NewClient, Kind) then
+        if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
           FpClose(NewClient)
         else if Kind = FRAME_CLOSE then
         begin
           FpClose(NewClient);
           FStop := True;
+        end
+        else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
+        begin
+          // peticion de control efimera: responder y cerrar; no ocupa slot
+          HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
+          FpClose(NewClient);
         end
         else if (FClient < 0) and HandleAttach(NewClient, Kind) then
           FClient := NewClient
