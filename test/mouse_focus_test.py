@@ -54,6 +54,16 @@ class Session:
         os.write(self.fd, f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m'.encode())
         self.drain(0.5)
 
+    # espera activa: sondea hasta que se cumple pred (o timeout), para no
+    # comprobar antes de que la UI reaccione. Robustez bajo carga.
+    def wait_until(self, pred, timeout=12.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.drain(0.2)
+            if pred():
+                return True
+        return pred()
+
     def close(self):
         try:
             os.close(self.fd)
@@ -76,17 +86,23 @@ def check(name, condition):
 
 s = Session()
 try:
-    s.drain(1.5)
+    # esperar a que el arranque dibuje la barra de menu antes de pinchar
+    s.wait_until(lambda: any('Panes' in ''.join(row) for row in s.screen.display))
     s.mouse(5, 1)
+    s.wait_until(lambda: any('Split vertical' in ''.join(row)
+                             for row in s.screen.display))
     check('mouse opens Panels menu',
           any('Split vertical' in ''.join(row) for row in s.screen.display))
 
     # Paneles > Vertical, using global 1-based SGR coordinates.
     s.mouse(5, 3)
+    s.wait_until(lambda: any('│' in ''.join(row) for row in s.screen.display))
     check('menu click creates split',
           any('│' in ''.join(row) for row in s.screen.display))
 
     s.send(b'echo RIGHT_TOKEN\r')
+    s.wait_until(lambda: any('RIGHT_TOKEN' in ''.join(row[W // 2:])
+                             for row in s.screen.display))
     check('new pane receives input',
           any('RIGHT_TOKEN' in ''.join(row[W // 2:])
               for row in s.screen.display))
@@ -94,6 +110,8 @@ try:
     # The split initially focuses the right pane; click the old left pane.
     s.mouse(10, 5)
     s.send(b'echo LEFT_TOKEN\r')
+    s.wait_until(lambda: any('LEFT_TOKEN' in ''.join(row[:W // 2])
+                             for row in s.screen.display))
     check('pane click focuses left pane',
           any('LEFT_TOKEN' in ''.join(row[:W // 2])
               for row in s.screen.display))
