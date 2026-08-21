@@ -398,8 +398,8 @@ begin
     $2717, $2718: Result := 'x';
     $E0B0, $E0B1: Result := '>';               // powerline
     $E0B2, $E0B3: Result := '<';
-    // circulos y puntos (bullets de CLIs modernas, p.ej. Claude Code ''),
-    // que antes caian a '?'
+    // circulos y puntos (bullets de CLIs y TUIs modernas), que antes
+    // caian a '?'
     $25CF, $25CB, $25C9, $25CE, $2B24, $23FA, $26AB, $26AA: Result := #7;
     $25E6, $2218, $2219, $2027, $30FB: Result := #250;
     $25AB, $25FB, $25FD, $25A1, $2610: Result := #254;
@@ -408,7 +408,7 @@ begin
     $23F4, $25C1: Result := #17;
     $23F6: Result := #30;
     $23F7: Result := #31;
-    // continuacion de arbol (Claude Code '', flechas de retorno)
+    // continuacion de arbol (ramas de arbol, flechas de retorno)
     $23BF, $2937, $21B3: Result := #192;
     // asteriscos decorativos y estrellas (spinners) -> '*'
     $2733, $2734, $273B, $273C, $273D, $2739, $2735,
