@@ -20,6 +20,13 @@
   terminal paint atomically, so moving and resizing windows is noticeably
   faster and no longer tears.
 
+### No more accidental nesting
+- Launching the interactive UI (`superterm` or `superterm attach`) from
+  inside a superterm pane is now refused, the way tmux guards `$TMUX`:
+  otherwise the pane attached to its own session and mirrored forever. The
+  control CLI (`list`/`send`/`capture`/...) still works from inside a pane;
+  set `SUPERTERM_ALLOW_NESTED=1` to force nesting on purpose.
+
 ## 3.0.1 - 2026-08
 
 - Attaching a client no longer bounces pane sizes across the session.

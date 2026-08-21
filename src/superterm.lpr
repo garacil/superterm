@@ -112,6 +112,32 @@ begin
       AttachSocket := Infos[0].SocketPath;
     // with several sessions and no name, the app selector decides
   end;
+  // refuse to nest: launching the interactive UI (attach or a new session)
+  // inside a superterm pane would attach the pane to its own session and
+  // mirror forever. The control CLI (list/send/capture/...) already ran and
+  // Halted in RunCli, so those still work inside a pane; only the TUI start
+  // reaches here. Escape hatch mirrors tmux's $TMUX: SUPERTERM_ALLOW_NESTED.
+  if (GetEnvironmentVariable('SUPERTERM') <> '') and
+     (GetEnvironmentVariable('SUPERTERM_ALLOW_NESTED') = '') then
+  begin
+    if CurrentLanguage = ulSpanish then
+    begin
+      WriteLn(StdErr, 'superterm: ya estas dentro de una sesion de superterm; ' +
+        'no se anida.');
+      WriteLn(StdErr, '  Usa list/send/capture desde aqui, o Ctrl-Q d para ' +
+        'separarte primero.');
+      WriteLn(StdErr, '  (exporta SUPERTERM_ALLOW_NESTED=1 para forzar el anidado)');
+    end
+    else
+    begin
+      WriteLn(StdErr, 'superterm: already inside a superterm session; ' +
+        'refusing to nest.');
+      WriteLn(StdErr, '  Use list/send/capture from here, or Ctrl-Q d to ' +
+        'detach first.');
+      WriteLn(StdErr, '  (export SUPERTERM_ALLOW_NESTED=1 to force nesting)');
+    end;
+    Halt(2);
+  end;
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
