@@ -4,19 +4,25 @@
 
 There are two configuration roles:
 
-- `~/.superterm/superterm.ini` stores user preferences such as the default
-  template and session.
-- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when the variable is not
-  set, stores terminal definitions and INI templates.
+- `~/.superterm/superterm.ini` is the user file. It stores preferences and
+  the user's own window classes and profiles. The in-application class and
+  profile managers save their changes here.
+- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when the variable is
+  not set, is the system file. It can provide shared window classes and
+  profiles.
 
-They may be the same file. This is convenient for a personal installation:
+Both files use the same syntax and may be the same file, which is convenient
+for a personal installation:
 
 ```sh
 export SUPERTERM_INI="$HOME/.superterm/superterm.ini"
 ```
 
-The application creates `~/.superterm` automatically. Use mode `700` for the
-directory when it contains credentials.
+Window classes and profiles are loaded from both files and merged by name;
+on a collision the user file wins. The application creates `~/.superterm`
+with mode `700` automatically and rewrites its configuration, session, and
+profile files atomically with mode `600`, because they may contain
+credentials and commands.
 
 ## User settings
 
@@ -25,162 +31,300 @@ directory when it contains credentials.
 shell=/bin/bash
 login=1
 
+[keymap]
+prefix=ctrl-q
+
 [ui]
 language=en
+palette=color
 
 [session]
 autosave=1
-autorestore=0
-default_template=daily
-default_session=remote
-default_window=production
+autorestore=1
+default_profile=daily
 ```
 
-`language` controls the application interface. It accepts `en` (English,
-the default) or `es` (Spanish). The same setting is available at runtime from
-`Language` or `Idioma` in the application menu; changing it updates the menus,
-status line, wizard, help, and standard dialogs immediately and saves the
-selection to the user configuration.
+### [autologin]
 
-`autorestore=1` restores `~/.superterm/session.ini` when no template takes
-priority. Set it to `0` when every startup must create fresh template
-connections.
+- `shell` is the local shell for new panes. Default: `$SHELL`, or
+  `/bin/bash` when unset.
+- `login=1` starts it as a login shell (reads `.profile`); `login=0` starts
+  an interactive non-login shell.
+- `user` is informative; superterm runs as the already logged-in user.
 
-## Terminal definitions
+### [keymap]
 
-Terminal sections must begin with `t` so the loader recognizes them:
+`prefix` selects the prefix key for tmux-style chords (`Ctrl-Q d` detach,
+`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q 1..9` go to
+window, `Ctrl-Q n`/`p` next/previous window, `Ctrl-Q` arrows resize the
+pane, prefix twice sends one literal prefix byte). Accepted values:
+
+- `ctrl-a` .. `ctrl-z`, for example `prefix=ctrl-q`.
+- A single letter `a` .. `z`, shorthand for the same Ctrl key.
+- A number `1` .. `26`, the raw control code (`17` = Ctrl-Q).
+
+The default is `Ctrl-Q`. Migration note: the numeric value `2` was the old
+default (Ctrl-B) and is migrated to Ctrl-Q so the prefix does not collide
+with a remote tmux. To really use Ctrl-B, write `prefix=ctrl-b` explicitly.
+The application saves the setting back in the `ctrl-x` form.
+
+### [ui]
+
+`language` controls the interface language: `en` (English, the default) or
+`es` (Spanish); `english`, `spanish`, and `espanol` are also accepted. The
+same setting is available at runtime from `Options -> Language`
+(`Opciones -> Idioma`); changing it updates the menus, status line, wizard,
+help, and dialogs immediately and saves the selection.
+
+`palette` selects the interface palette: `color` (the classic Turbo Pascal
+palette, the default), `bw` (black and white), or `mono` (monochrome). Any
+other value falls back to `color`. The same setting is available at runtime
+from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
+saved when changed.
+
+### [session]
+
+- `autosave=1` (default) saves the fallback session on exit.
+- `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
+  when no profile takes priority. Set it to `0` when every startup must
+  create fresh profile connections.
+- Both flags can also be toggled at runtime from the `Options` menu.
+- `default_profile` names the profile activated at startup.
+- The legacy keys `default_template`, `default_session`, and
+  `default_window` are still read. The startup profile is resolved as
+  `default_profile`, then `default_template`, then
+  `default_template/default_session` (the name produced by template
+  flattening). `default_window` selects the starting window of the profile
+  by name.
+
+## Window classes
+
+A window class is a reusable, named pane definition: what to run, where to
+connect, and what to send after connecting. Classes replace the old `[t-*]`
+terminal definitions. Sections are named `[class.NAME]`:
 
 ```ini
-[t-production]
+[class.production]
 name=production
 enabled=1
-type=ssh
 host=prod.example.com
 user=alice
 port=22
 key=~/.ssh/id_ed25519
+postconnect=tmux new -A -s main
 scrollback=20000
 
-[t-local-monitor]
-name=local-monitor
+[class.monitor]
+name=monitor
 enabled=1
-type=local
-shell=/bin/bash
-cmd=watch -n 2 uptime
-cwd=/tmp
+cmd=htop
 ```
 
-SSH fields:
+Fields:
 
-- `host` is the remote host.
-- `user` is optional and becomes `user@host`.
-- `port` is optional.
-- `key` is an optional private key path.
-- `password` is optional but requires `sshpass`; use a key or agent instead.
-- `cmd` is an optional remote command for an SSH definition.
+- `name` — canonical name; defaults to the section suffix.
+- `enabled` — `1`/`0` (also `true`/`yes`/`on`); default `1`.
+- `shell` — local shell for the pane; empty means the `[autologin]` shell.
+- `cmd` — command run when the pane opens (locally, or as the SSH remote
+  command when there is no `postconnect`).
+- `cwd` — working directory; `~/` is expanded.
+- `host`, `user`, `port`, `key` — structured SSH connection fields.
+- `password` — base64-encoded SSH password; requires `sshpass`; base64 is
+  storage encoding, not encryption. Prefer a key or an agent.
+- `connect` — free connection command; takes precedence over `host`.
+- `postconnect` — command sent after connecting; see the semantics below.
+- `scrollback` — scrollback lines; default `10000`, maximum `100000`.
 
-Local fields:
+The class type is derived when loading and is never stored:
 
-- `shell` selects the local shell.
-- `cmd` is executed by that shell.
-- `cwd` selects the starting directory.
+- `connect` present -> command class (free connection command).
+- otherwise `host` present -> SSH class (structured).
+- otherwise -> local class.
 
-## Templates
+The old `type=` key is ignored; the fields alone decide the type.
 
-A template is a named profile. A session selects its windows, and each window
-selects one or more panes:
+### SSH classes (structured)
+
+For an SSH class, superterm builds a structured argument list itself:
+
+```text
+ssh -tt [-p port] [-i key] -o StrictHostKeyChecking=accept-new [user@]host [command]
+```
+
+The remote command is a single argument, executed by the remote login
+shell. Its precedence, when a profile pane uses the class, is: pane
+`postconnect`, then class `postconnect`, then pane `cmd`, then class `cmd`.
+This makes persistent consoles natural:
 
 ```ini
-[template.daily]
-name=daily
-enabled=1
-default_session=remote
-sessions=remote
-
-[template.daily.session.remote]
-enabled=1
-focused_window=0
-windows=production,logs
-
-[template.daily.session.remote.window.production]
-enabled=1
-layout=L
-focused_pane=0
-panes=prod
-
-[template.daily.session.remote.window.production.pane.prod]
-enabled=1
-terminal=production
-postconnect=tmux new-session -A -s production
-
-[template.daily.session.remote.window.logs]
-enabled=1
-layout=L
-panes=logs
-
-[template.daily.session.remote.window.logs.pane.logs]
-enabled=1
-terminal=production
-postconnect=cd /var/log && tail -f application.log
+postconnect=tmux new -A -s main
 ```
 
-`postconnect` is sent as the remote command for SSH. This makes commands such
-as `tmux attach -t someone` natural: SSH authenticates, starts the remote
-command, and keeps the PTY attached while tmux is running.
-
-If a command should run and then leave an interactive shell, use a remote
-wrapper script or a command such as:
+SSH authenticates, starts the remote command, and keeps the PTY attached
+while it runs. If the command should end in an interactive shell, start
+one explicitly:
 
 ```ini
 postconnect=cd /srv/app && ./daily-command; exec bash -l
 ```
 
-For a persistent console, prefer:
+When `password` is set and `sshpass` is on `PATH`, the connection is wrapped
+with `sshpass` (the password is handed over on a private file descriptor,
+not on the command line).
 
-```ini
-postconnect=tmux new-session -A -s someone
+### Command classes and postconnect delivery
+
+A class with `connect` runs that command under the local shell. The
+effective `postconnect` is delivered on the connection's standard input as
+it starts, equivalent to:
+
+```sh
+printf '%s\n' '<postconnect>' | (<connect>)
 ```
 
-`layout=L` means one pane. Split layouts use `V:` or `H:` nodes, for example:
+This suits interactive PTY programs such as `ssh -tt`, `mosh`, `tmux
+attach`, and telnet-like commands. Programs that read a password from the
+same input may consume the injected line, so key-based login is
+recommended.
+
+### Local classes
+
+A local class runs `cmd` under `shell` in `cwd`. If `postconnect` is also
+set, it is fed to `cmd` through standard input as above. If only
+`postconnect` is set, it runs first and then leaves an interactive shell in
+the same pane (`exec <shell> -l` for a login shell, `-i` otherwise).
+
+### Pane overrides
+
+Profile panes may override class fields: pane `cmd`, `cwd`, `connect`,
+`postconnect`, and `scrollback` (when greater than `0`) replace the class
+values for that pane only.
+
+### Legacy [t-*] sections
+
+Any section whose name starts with `t` (except `[template.*]`) is still
+read as a window class with the same keys, so old `[t-production]`
+definitions keep working. The first time the class manager saves the user
+file, those sections are absorbed and rewritten as `[class.*]`.
+
+## Profiles
+
+A profile is a named workspace: a collection of windows, each with a pane
+layout, where every pane can reference a window class. Profiles replace the
+old three-level `[template.*]` model (its extra "session" level is gone).
+The model has three section levels:
+
+1. `[profile.NAME]` — the profile header: `name`, `enabled`,
+   `focused_window` (0-based index), and `windows` (comma-separated list of
+   window names).
+2. `[profile.NAME.window.W]` — one section per window: `enabled`, `layout`,
+   `focused_pane` (0-based index), and `panes` (comma-separated list of
+   pane names).
+3. `[profile.NAME.window.W.pane.P]` — one section per pane: `enabled`,
+   `class` (window class reference; empty means an ad-hoc pane), and the
+   overrides `cmd`, `cwd`, `connect`, `postconnect`, `scrollback`.
+   `terminal` is accepted as a legacy synonym of `class`.
+
+A full realistic example using the classes defined above:
 
 ```ini
+[profile.daily]
+name=daily
+enabled=1
+focused_window=0
+windows=servers,logs
+
+[profile.daily.window.servers]
+enabled=1
 layout=V:500;L;L
+focused_pane=0
+panes=prod,mon
+
+[profile.daily.window.servers.pane.prod]
+enabled=1
+class=production
+
+[profile.daily.window.servers.pane.mon]
+enabled=1
+class=monitor
+
+[profile.daily.window.logs]
+enabled=1
+layout=L
+focused_pane=0
+panes=logs
+
+[profile.daily.window.logs.pane.logs]
+enabled=1
+class=production
+; pane fields override the class: this pane opens a different tmux session
+postconnect=tmux new -A -s logs
 ```
 
-The ratio is in the range `0..1000`; `V` places panes side by side and `H`
-places them vertically.
+`layout` uses the same grammar as `session.ini`: a `;`-separated preorder
+list of nodes where `L` is one pane and `V:ratio` / `H:ratio` are splits.
+`V` places the two subtrees side by side, `H` stacks them vertically. The
+ratio ranges from `0` to `1000` (`500` = half) and is clamped to
+`150..850`. `V:500;L;L` is two panes side by side; plain `layout=L` is a
+single pane.
 
-## Startup behavior
+At runtime, use the `Profiles` menu to activate a profile, `Save current as
+profile...` to capture the current workspace, and `Manage profiles...` to
+edit them. `Ctrl-Q 1..9`, `Ctrl-Q n`/`p`, and `F8`/`F9` switch between the
+windows of the active profile.
 
-At startup, the configured default template/session/window is activated and
-its PTYs are created. Templates are alternatives, not simultaneous profiles.
-Switching templates recreates the target template's PTYs.
+## Detached sessions
 
-To launch the same four remote windows every day:
+`Ctrl-Q d` (or `Sessions -> Detach...`) prompts for a session name (default:
+the active profile) and moves the panes into a per-user background server:
 
-```ini
-[session]
-autorestore=0
-default_template=daily
-default_session=remote
-default_window=production
+- Socket: `~/.superterm/sessions/<name>.sock` (directory mode `700`).
+- Metadata sidecar: `~/.superterm/sessions/<name>.ini` with the session
+  name, profile, pane count, server PID, and creation time (mode `600`).
+
+Session names are sanitized to `A-Z a-z 0-9 . _ -`; other characters become
+`-`, leading dots and dashes are stripped, and names are limited to 64
+characters. Several named sessions can exist at the same time.
+
+To return:
+
+```sh
+superterm --attach            # one session: direct; several: picker
+superterm --attach NAME       # attach by name
+superterm --list-sessions     # table of live sessions (purges orphans)
 ```
 
-Use `Templates`, `Sessions`, and `Windows` in the English interface, or
-`Plantillas`, `Sesiones`, and `Ventanas` in the Spanish interface, to switch
-profiles while running.
+Inside the application, `Ctrl-Q s` (or `Sessions -> Attach / manage
+sessions...`) opens the same picker to attach to or permanently close other
+sessions. The single `~/.superterm/session.sock` used by older builds is
+still recognized and listed as an unnamed session.
 
-## SQLite templates
+## Fallback session
 
-Set:
+When no profile takes priority, `~/.superterm/session.ini` stores the
+current split tree and the pane `cmd`, `cwd`, and class identity. With
+`autosave=1` it is written on exit (and on `Ctrl-S`), and with
+`autorestore=1` it is restored at startup.
 
-```ini
-[storage]
-backend=sqlite
-directory=templates
-```
+## Legacy compatibility
 
-The directory is resolved relative to the configuration file. Each
-`templates/*.db` file is one template database with `metadata`, `sessions`,
-`windows`, and `panes` tables. SQLite storage is useful for generated or
-managed profiles; INI is easier to edit by hand.
+Old configurations keep working without manual edits:
+
+- `[t-*]` terminal sections are read as window classes and are migrated to
+  `[class.*]` the first time the class manager saves the user file. The
+  old `type=` key is ignored; the class type is derived from the fields.
+- `[template.*]` sections are read and flattened into profiles: a template
+  with one session becomes a profile with the template's name; a template
+  with several sessions becomes one profile per session, named
+  `template/session`. An explicit `[profile.*]` with the same name wins.
+  Saving profiles from the application absorbs the user's `[template.*]`
+  sections.
+- SQLite template storage (`[storage]` with `backend=sqlite` and
+  `directory=templates`, resolved relative to the configuration file) is
+  still read as a legacy template source and flattened the same way.
+- `[keymap]` `prefix=2` (the old numeric default, Ctrl-B) is migrated to
+  Ctrl-Q; write `prefix=ctrl-b` to keep Ctrl-B on purpose.
+- `[session]` `default_template`, `default_session`, and `default_window`
+  still select the startup profile and window as described above.
+- The old single `~/.superterm/session.sock` detached session is still
+  recognized by the picker and `--attach`.

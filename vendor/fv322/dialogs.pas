@@ -1936,13 +1936,13 @@ BEGIN
       Bc:=GetColor(8);
       if not DownFlag then
         begin
-          c := #179;
+          c := #220;                                   { Shadow, as fp IDE }
           MoveChar(Db,c,Bc,1);
           WriteLine(Size.X-1, 0, 1, 1, Db);
         end;
       MoveChar(Db,' ',Bc,1);
        if DownFlag then c:=' '
-        else c := #196;                                { Horizontal shadow }
+        else c := #223;                                { Shadow, as fp IDE }
       MoveChar(Db[1],c,Bc,Size.X-1);
       WriteLine(0, 1, Size.X, 1, Db);
     End;

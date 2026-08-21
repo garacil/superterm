@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """superterm console cursor test: every way of leaving the client must put
 the cursor back where the command was launched, not on the console's
-first line. Covers plain exit (Alt-Q), live detach (Ctrl-B d), and
+first line. Covers plain exit (Alt-Q), live detach (Ctrl-Q d), and
 permanent close from a reattached client (Alt-X).
 
 Emulates a REAL xterm-family terminal (Konsole): answers the DSR query
@@ -17,8 +17,27 @@ import os, pty, re, time, select, sys, fcntl, termios, struct
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
 HOME = '/tmp/opencode/sthome-cursor'
+SOCK = HOME + '/.superterm/sessions/session.sock'
+
+# autosanado: una ejecucion fallida anterior puede dejar un daemon vivo y su
+# socket; matarlo y limpiar el directorio de sesiones antes de empezar
+import glob as _glob, shutil as _shutil, socket as _socket, struct as _struct
+def _purge_sessions():
+    d = HOME + '/.superterm/sessions'
+    for sock in _glob.glob(d + '/*.sock'):
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(sock)
+            # FRAME_CLOSE (kind=5, longitud 0) al daemon zombi
+            s.sendall(_struct.pack('<BBhI', 5, 0, -1, 0))
+            s.close()
+        except OSError:
+            pass
+    time.sleep(0.5)
+    _shutil.rmtree(d, ignore_errors=True)
+_purge_sessions()
 os.makedirs(HOME, exist_ok=True)
-SOCK = HOME + '/.superterm/session.sock'
 
 W, H = 100, 30
 
@@ -89,10 +108,10 @@ answered, out = run_session([], 23, 7, b'\x1bq')
 check("DSR consultado (Alt-Q)", answered)
 final_position_ok("cursor tras salir con Alt-Q", out, 23, 7)
 
-# 2. detach dejando todo en ejecucion: Ctrl-B d
-answered, out = run_session([], 11, 5, b'\x02d')
+# 2. detach dejando todo en ejecucion: Ctrl-Q d (+\r acepta el nombre)
+answered, out = run_session([], 11, 5, b'\x11d\r')
 check("DSR consultado (detach)", answered)
-final_position_ok("cursor tras detach Ctrl-B d", out, 11, 5)
+final_position_ok("cursor tras detach Ctrl-Q d", out, 11, 5)
 check("servidor sigue vivo tras detach", os.path.exists(SOCK))
 
 # 3. reattach y cierre definitivo: superterm --attach + Alt-X

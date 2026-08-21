@@ -101,7 +101,7 @@ def check_layout(session, label):
     }
     check(f'{label}: full frame', expected <= corners)
     check(f'{label}: no stale corners', corners == expected)
-    check(f'{label}: status at bottom', 'V-split' in ''.join(status))
+    check(f'{label}: status at bottom', 'F2 Split' in ''.join(status))
     check(f'{label}: frame dimensions', len(top) == width and len(bottom) == width)
 
 

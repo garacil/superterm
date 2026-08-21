@@ -11,12 +11,21 @@ unit st_fvui;
 interface
 
 uses
-  Objects, Drivers, Views, Menus, App, FVConsts, MsgBox,
+  Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
-  st_config, st_pty, st_screen, st_layout, st_session, st_templates,
-  st_debug, st_server, st_video;
+  st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
+  st_layout, st_session, st_debug, st_server, st_video;
 
 const
+  // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenClass,
+  // cmProfileBase, cmSessionBase, cmWindowBase, cmWindowRestoreBase,
+  // cmLanguageBase) posee un rango reservado y NINGUN case directo puede
+  // caer dentro de un rango dinamico. Antes cmOpenClass=2111 chocaba con
+  // cmSessionWizard=2112 y cmDetach=2113: pulsar el 2o terminal del menu
+  // lanzaba el asistente y el 3o hacia detach.
+  // Rangos: 2100-2199 paneles/app · 2200-2259 plantillas · 2300-2349
+  // terminales (cmOpenClass+i) · 2400-2439 ventanas · 2500-2539 minimizados
+  // · 2550-2569 sesion (detach/asistente) · 2600 ayuda · 2700 idioma.
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -28,20 +37,34 @@ const
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
   cmQuitNoSave = 2110;
-  cmOpenTerm   = 2111;   // + indice en SysTerms
-  cmSessionWizard = 2112;
-  cmDetach      = 2113;
-  cmHelp        = 2600;
-  cmLanguageBase = 2700;
-  cmTemplateBase = 2200;
-  cmSessionBase  = 2300;
+  cmPaneTile    = 2111;    // recolocar en mosaico (Window|Tile clasico)
+  cmPaneCascade = 2112;
+  cmPaneList    = 2113;    // lista de paneles (Alt+0)
+  cmRedrawAll   = 2114;    // refrescar pantalla
+  cmPaneOrganize = 2115;   // rejilla NxM del vendor (TDeskTop.Tile)
+  cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
+  cmProfileBase = 2200;   // + indice de perfil (0..39)
+  cmProfileSaveAs = 2250;  // guardar el area de trabajo como perfil
+  cmProfileManage = 2251;  // gestor de perfiles
+  cmOpenClass   = 2320;     // + indice en WClasses (0..29)
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
-  cmWindowBase   = 2410;
+  cmWindowBase   = 2410;   // + indice de ventana (0..15)
+  cmClassPick    = 2340;   // selector de clase para panel nuevo
+  cmClassManage  = 2341;   // gestor de clases
   cmWindowMinimize = 2500;
   cmWindowMinimizeAll = 2501;
   cmWindowRestoreAll = 2502;
-  cmWindowRestoreBase = 2520;
+  cmWindowRestoreBase = 2520;  // + indice de panel (0..15)
+  cmDetach        = 2550;
+  cmSessionPick   = 2551;   // selector/gestor de sesiones separadas
+  cmSessionWizard = 2560;
+  cmHelp        = 2600;
+  cmAbout       = 2601;
+  cmLanguageBase = 2700;
+  cmPaletteBase  = 2750;   // +apColor/apBlackWhite/apMonochrome
+  cmToggleAutoSave    = 2760;
+  cmToggleAutoRestore = 2761;
 
 type
   PSuperApp = ^TSuperApp;
@@ -66,8 +89,11 @@ type
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
+    SavedRect: Objects.TRect;  // bounds previos al icono de minimizado
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
     procedure InitFrame; virtual;
+    procedure HandleEvent(var Event: TEvent); virtual;
+    procedure SizeLimits(var Min, Max: Objects.TPoint); virtual;
     procedure ChangeBounds(var Bounds: Objects.TRect); virtual;
     procedure Zoom; virtual;
     procedure Close; virtual;
@@ -76,29 +102,24 @@ type
     procedure SetTitle(const S: string);
   end;
 
-  PHelpDialog = ^THelpDialog;
-  THelpDialog = object(TWindow)
-    constructor Init(var Bounds: Objects.TRect; const ATitle: string);
-    procedure Draw; virtual;
-    procedure HandleEvent(var Event: TEvent); virtual;
-  end;
-
   TSuperApp = object(TApplication)
     Cfg: TConfig;
     Lay: TLayout;
     Panes: array[0..MAX_PANES - 1] of TPty;
     Scr: array[0..MAX_PANES - 1] of TScreen;
     Win: array[0..MAX_PANES - 1] of PTermWindow;
-    PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en SysTerms o -1
-    SysTerms: TTerminalArray;
-    Templates: TTemplateArray;
-    ActiveTemplate: integer;
-    ActiveSession: integer;
+    PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en WClasses o -1
+    PaneConnect: array[0..MAX_PANES - 1] of string; // conexion libre ad-hoc
+    WClasses: TWindowClassArray;
+    Profiles: TProfileArray;
+    ActiveProfile: integer;
     ActiveWindow: integer;
-    TemplateMode: boolean;
+    ProfileMode: boolean;
     SkipSave: boolean;
+    AbortRun: boolean;
     RemoteMode: boolean;
     RemoteLost: boolean;
+    CurrentSessionName: string;
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
@@ -117,7 +138,7 @@ type
     procedure FallbackPane(i: integer);
     procedure DoSplit(ADir: TSplitDir; ASysIdx: integer);
     procedure DoClosePane(i: integer);
-    procedure DoOpenSysTerm(ASysIdx: integer);
+    procedure DoOpenClassPane(ASysIdx: integer);
     procedure RelayoutAll;
     procedure FocusPane(i: integer);
     procedure CyclePane(ADelta: integer);
@@ -128,25 +149,40 @@ type
     procedure MinimizeAllWindows;
     procedure RestoreAllWindows;
     procedure SaveSessionNow;
-    function FindSysTerm(const AName: string): integer;
-    function FindTemplate(const AName: string): integer;
-    function FindTemplateSession(ATemplate: integer; const AName: string): integer;
-    function ActivateTemplate(ATemplate, ASession, AWindow: integer): boolean;
+    procedure ShowAbout;
+    procedure ArrangeIcons;
+    procedure DoTilePanes;
+    procedure DoCascadePanes;
+    procedure DoOrganizePanes;
+    procedure DoPaneList;
+    procedure ApplyPalette(AKind: integer);
+    procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
+      out ADeskW, ADeskH: integer);
+    procedure SyncRemoteLayout;
+    function FindWindowClass(const AName: string): integer;
+    function FindProfile(const AName: string): integer;
+    function ActivateProfile(AProfile, AWindow: integer): boolean;
+    function CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
+    procedure SaveWorkspaceAsProfile(const AName: string);
+    procedure RunProfileSaveAs;
+    procedure DoProfileManage;
     procedure StopRuntime;
     procedure ReleaseRuntime;
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
-    function AttachRemoteSession: boolean;
+    function AttachRemoteSession(const APath: string): boolean;
+    function PickSessionSocketUI(AForAttach: boolean): string;
+    function PromptAttachOnStart: boolean;
+    procedure DoSessionPick;
     procedure RequestDetach;
-    procedure DoSwitchTemplate(AIndex: integer);
-    procedure DoSwitchSession(AIndex: integer);
+    procedure DoSwitchProfile(AIndex: integer);
     procedure DoSwitchWindow(AIndex: integer);
     procedure DoCycleWindow(ADelta: integer);
     procedure RunSessionWizard;
     procedure ShowHelp;
     procedure RebuildMenu;
     procedure RebuildStatusLine;
-    procedure RememberTemplateSelection;
+    procedure RememberProfileSelection;
     procedure ApplyTerminalSize(ACols, ARows: integer);
     procedure SyncTerminalSize;
   end;
@@ -158,15 +194,6 @@ uses
 
 var
   CursorPhase: boolean = False;
-  CurrentLanguage: TUiLanguage = ulEnglish;
-
-function UiText(const EnglishText, SpanishText: string): string;
-begin
-  if CurrentLanguage = ulSpanish then
-    Result := SpanishText
-  else
-    Result := EnglishText;
-end;
 
 function FirstWord(const S: string): string;
 var
@@ -178,6 +205,19 @@ begin
     Result := Copy(Result, 1, i - 1);
 end;
 
+// cita solo cuando hace falta: los valores INI que empiezan por comilla
+// pierden las comillas exteriores al releerse (TIniFile las recorta)
+function NeedsShellQuote(const S: string): boolean;
+var
+  i: integer;
+begin
+  Result := S = '';
+  for i := 1 to Length(S) do
+    if not (S[i] in ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '/', ':', '=',
+      '@', '%', '^', ',', '+', '-']) then
+      Exit(True);
+end;
+
 function ArgsAsShell(const Args: TStringArray): string;
 var
   i: integer;
@@ -187,32 +227,40 @@ begin
   begin
     if i > 0 then
       Result := Result + ' ';
-    Result := Result + ShellQuote(Args[i]);
+    if NeedsShellQuote(Args[i]) then
+      Result := Result + ShellQuote(Args[i])
+    else
+      Result := Result + Args[i];
   end;
 end;
 
-function CommandWithInteractiveShell(const Command, Shell: string;
-  LoginShell: boolean): string;
+// True si el proceso observado es simplemente una shell interactiva/login:
+// capturarlo como comando seria redundante (y fragil); mejor cmd vacio
+function IsPlainShell(const Args: TStringArray; const ACmd: string): boolean;
+var
+  Base: string;
+  i: integer;
 begin
-  Result := Trim(Command);
-  if Result = '' then
-    Exit;
-  Result := Result + '; exec ' + ShellQuote(Shell);
-  if LoginShell then
-    Result := Result + ' -l'
+  Result := False;
+  if Length(Args) > 0 then
+    Base := ExtractFileName(Args[0])
   else
-    Result := Result + ' -i';
+    Base := ExtractFileName(ACmd);
+  // '-bash' (shell de login) y variantes
+  if (Base <> '') and (Base[1] = '-') then
+    Delete(Base, 1, 1);
+  if (Base <> 'bash') and (Base <> 'sh') and (Base <> 'zsh') and
+     (Base <> 'dash') and (Base <> 'fish') and (Base <> 'ksh') then
+    Exit;
+  for i := 1 to High(Args) do
+    if (Args[i] <> '-i') and (Args[i] <> '-l') and
+       (Args[i] <> '--login') and (Args[i] <> '') then
+      Exit;
+  Result := True;
 end;
 
-function WizardCommand(const AConnect, APostConnect: string): string;
-begin
-  Result := Trim(AConnect);
-  if Trim(APostConnect) <> '' then
-    // Feed the follow-up command to the connection's stdin. This works for
-    // ssh -tt and keeps the command out of the remote command arguments.
-    Result := 'printf ''%s\n'' ' + ShellQuote(Trim(APostConnect)) +
-      ' | (' + Result + ')';
-end;
+// CommandWithInteractiveShell y WizardCommand viven ahora en st_wclass,
+// compartidos con la composicion de comandos de las clases de ventana.
 
 function ReadTerminalSize(out ACols, ARows: integer): boolean;
 var
@@ -290,15 +338,62 @@ begin
     $20AC: Result := 'E';
     $00B0: Result := 'o';
     $00B7: Result := '.';
+    $00A0: Result := ' ';
     $00AB, $00BB: Result := '"';
+    $00D7: Result := 'x';
+    $00F7: Result := '/';
     $2018, $2019, $201A: Result := '''';
     $201C, $201D: Result := '"';
-    $2013, $2014: Result := '-';
-    $2022: Result := '*';
-    $2500, $2501: Result := '-';
-    $2502, $2503: Result := '|';
-    $2514, $2518, $250C, $2510: Result := '+';
-    $251C, $2524, $252C, $2534, $253C: Result := '+';
+    $2010, $2011, $2012, $2013, $2014, $2212: Result := '-';
+    $2026: Result := '.';
+    // caja y bloques: bytes CP437, el driver los pinta como glifos reales
+    $2022: Result := #7;                       // punto gordo
+    $2800..$28FF: Result := #250;              // braille (spinners CLI)
+    $2500, $2501: Result := #196;              // linea horizontal
+    $2502, $2503: Result := #179;              // linea vertical
+    $250C, $250F, $256D: Result := #218;       // esquinas
+    $2510, $2513, $256E: Result := #191;
+    $2514, $2517, $2570: Result := #192;
+    $2518, $251B, $256F: Result := #217;
+    $251C, $2523: Result := #195;              // cruces en T
+    $2524, $252B: Result := #180;
+    $252C, $2533: Result := #194;
+    $2534, $253B: Result := #193;
+    $253C, $254B: Result := #197;              // cruz completa
+    $2550: Result := #205;                     // dobles
+    $2551: Result := #186;
+    $2554: Result := #201;
+    $2557: Result := #187;
+    $255A: Result := #200;
+    $255D: Result := #188;
+    $2560: Result := #204;                     // uniones dobles
+    $2563: Result := #185;
+    $2566: Result := #203;
+    $2569: Result := #202;
+    $256C, $256A, $256B: Result := #206;
+    $2564: Result := #209;
+    $2567: Result := #207;
+    $2580: Result := #223;                     // medios bloques y sombras
+    $2584: Result := #220;
+    $2588: Result := #219;
+    $2591: Result := #176;
+    $2592: Result := #177;
+    $2593: Result := #178;
+    $25A0, $25AA, $25FC, $25FE: Result := #254;
+    $2190: Result := #27;                      // flechas
+    $2191: Result := #24;
+    $2192: Result := #26;
+    $2193: Result := #25;
+    $2194: Result := #29;
+    $2195: Result := #18;
+    $25B2, $25B4: Result := #30;
+    $25BA, $25B6: Result := #16;
+    $25BC, $25BE: Result := #31;
+    $25C4, $25C0: Result := #17;
+    $2713, $2714: Result := 'v';               // check
+    $2717, $2718: Result := 'x';
+    $E0B0, $E0B1: Result := '>';               // powerline
+    $E0B2, $E0B3: Result := '<';
   else
     Result := '?';
   end;
@@ -548,8 +643,38 @@ procedure TTermFrame.Draw;
 var
   B: TDrawBuffer;
   Color: byte;
+  W, i, xo: integer;
+  T: string;
 begin
   B := Default(TDrawBuffer);
+  // icono de minimizada: marco y titulo en negro (el gris pasivo no se
+  // lee sobre el azul claro); dibujo propio de las dos filas
+  if (Owner <> nil) and PTermWindow(Owner)^.Minimized then
+  begin
+    W := Size.X;
+    if W > MaxViewWidth then
+      W := MaxViewWidth;
+    if (W < 4) or (Size.Y < 2) then
+      Exit;
+    T := '';
+    if PTermWindow(Owner)^.Title <> nil then
+      T := PTermWindow(Owner)^.Title^;
+    if Length(T) > W - 6 then
+      T := Copy(T, 1, W - 6);
+    T := ' ' + T + ' ';
+    MoveChar(B, #196, $10, W);
+    B[0] := (B[0] and $FF00) or word(byte(#218));
+    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#191));
+    xo := (W - Length(T)) div 2;
+    for i := 1 to Length(T) do
+      B[xo + i - 1] := (B[xo + i - 1] and $FF00) or word(byte(T[i]));
+    WriteLine(0, 0, W, 1, B);
+    MoveChar(B, #196, $10, W);
+    B[0] := (B[0] and $FF00) or word(byte(#192));
+    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#217));
+    WriteLine(0, 1, W, 1, B);
+    Exit;
+  end;
   inherited Draw;
   // FreeVision has close and zoom buttons but no minimize button. Keep the
   // minimize control in the same title-bar language as the native controls.
@@ -572,6 +697,13 @@ begin
   if Event.What = evMouseDown then
   begin
     App := PSuperApp(Application);
+    if (App <> nil) and (Owner <> nil) and
+       PTermWindow(Owner)^.Minimized then
+    begin
+      App^.RestoreWindow(PTermWindow(Owner)^.PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
     if (App <> nil) and (Owner <> nil) then
       App^.FocusPane(PTermWindow(Owner)^.PaneIdx);
     Mouse := Default(Objects.TPoint);
@@ -608,6 +740,36 @@ begin
   Insert(Term);
 end;
 
+procedure TTermWindow.HandleEvent(var Event: TEvent);
+var
+  App: PSuperApp;
+begin
+  // un clic sobre el icono minimizado lo restaura, antes de que la
+  // seleccion de ventana del vendor se trague el evento
+  if Minimized and (Event.What = evMouseDown) then
+  begin
+    App := PSuperApp(Application);
+    if App <> nil then
+    begin
+      App^.RestoreWindow(PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
+  end;
+  inherited HandleEvent(Event);
+end;
+
+procedure TTermWindow.SizeLimits(var Min, Max: Objects.TPoint);
+begin
+  inherited SizeLimits(Min, Max);
+  if Minimized then
+  begin
+    // el icono de minimizada es una barrita de 2 filas
+    Min.X := 10;
+    Min.Y := 2;
+  end;
+end;
+
 procedure TTermWindow.InitFrame;
 var
   R: Objects.TRect;
@@ -631,7 +793,7 @@ begin
       Term^.Locate(R);
   end;
   App := PSuperApp(Application);
-  if (App <> nil) and (App^.Scr[PaneIdx] <> nil) then
+  if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
     ph := Size.Y - 2;
@@ -680,8 +842,13 @@ procedure TTermWindow.Minimize;
 begin
   if not Minimized then
   begin
+    // icono estilo Turbo Vision: la ventana queda visible como barrita;
+    // la aplicacion la coloca abajo con ArrangeIcons
+    GetBounds(SavedRect);
     Minimized := True;
-    Hide;
+    Options := Options and (not ofTileable); // fuera del Tile del vendor
+    if Term <> nil then
+      Term^.Hide; // el icono es solo marco y titulo
   end;
 end;
 
@@ -689,8 +856,10 @@ procedure TTermWindow.Restore;
 begin
   if Minimized then
   begin
-    Minimized := False;
-    Show;
+    Minimized := False; // el llamante recoloca con RelayoutAll
+    Options := Options or ofTileable;
+    if Term <> nil then
+      Term^.Show;
   end;
 end;
 
@@ -703,94 +872,6 @@ begin
     Frame^.DrawView;
 end;
 
-constructor THelpDialog.Init(var Bounds: Objects.TRect; const ATitle: string);
-begin
-  inherited Init(Bounds, Copy(ATitle, 1, 80), wnNoNumber);
-  Flags := wfClose;
-  State := State and (not sfShadow);
-end;
-
-procedure THelpDialog.Draw;
-const
-  EnglishLines: array[0..4] of string = (
-    'F2/F3 split; F6/F7 change pane; F5 maximize',
-    'Alt-F3/Alt-F4 close; Alt-F9 minimize/restore',
-    'Ctrl-S save; Alt-X save and exit; Alt-Q exit without saving',
-    'Ctrl-B D detaches the session; use superterm --attach to return.',
-    'Session > New session wizard creates 1-4 panes with commands.');
-  SpanishLines: array[0..4] of string = (
-    'F2/F3 divide; F6/F7 cambia de panel; F5 maximiza',
-    'Alt-F3/Alt-F4 cierran; Alt-F9 minimiza/restaura',
-    'Ctrl-S guarda; Alt-X guarda y sale; Alt-Q sale sin guardar',
-    'Ctrl-B D separa la sesion; luego superterm --attach para volver.',
-    'Sesion > Asistente crea 1-4 paneles con comandos.');
-var
-  B: TDrawBuffer;
-  Color: byte;
-  I, J, InnerWidth, ButtonX: integer;
-  Line, ButtonText: string;
-begin
-  B := Default(TDrawBuffer);
-  if Frame <> nil then
-    Frame^.DrawView;
-  InnerWidth := Size.X - 2;
-  if InnerWidth < 1 then
-    Exit;
-  Color := byte(GetColor(1));
-  for I := 1 to Size.Y - 2 do
-  begin
-    MoveChar(B, ' ', Color, InnerWidth);
-    Line := '';
-    if I <= Length(EnglishLines) then
-      if CurrentLanguage = ulSpanish then
-        Line := SpanishLines[I - 1]
-      else
-        Line := EnglishLines[I - 1];
-    if I = Size.Y - 2 then
-    begin
-      if CurrentLanguage = ulSpanish then
-        ButtonText := 'Aceptar'
-      else
-        ButtonText := 'OK';
-      Line := '[' + ButtonText + ']';
-      ButtonX := (InnerWidth - Length(Line)) div 2;
-      if ButtonX > 0 then
-        for J := 1 to ButtonX do
-          B[J - 1] := (B[J - 1] and $FF00) or word(' ');
-      for J := 1 to Length(Line) do
-        B[ButtonX + J - 1] := (B[ButtonX + J - 1] and $FF00) or word(Line[J]);
-      WriteLine(1, I, InnerWidth, 1, B);
-      Continue;
-    end;
-    if Length(Line) > InnerWidth then
-      Line := Copy(Line, 1, InnerWidth);
-    for J := 1 to Length(Line) do
-      B[J - 1] := (B[J - 1] and $FF00) or word(Line[J]);
-    WriteLine(1, I, InnerWidth, 1, B);
-  end;
-end;
-
-procedure THelpDialog.HandleEvent(var Event: TEvent);
-begin
-  if (Event.What = evKeyDown) and
-     ((Event.KeyCode = kbEsc) or (Event.KeyCode = kbEnter) or
-      (Event.KeyCode = kbCtrlF4)) then
-  begin
-    EndModal(cmOK);
-    ClearEvent(Event);
-    Exit;
-  end;
-  if (Event.What = evCommand) and
-     ((Event.Command = cmOK) or (Event.Command = cmCancel) or
-      (Event.Command = cmClose)) then
-  begin
-    EndModal(cmOK);
-    ClearEvent(Event);
-    Exit;
-  end;
-  inherited HandleEvent(Event);
-end;
-
 { ---------------- TSuperApp ---------------- }
 
 constructor TSuperApp.Init;
@@ -799,17 +880,31 @@ var
   i, n, k, SysIdx: integer;
   Ok: boolean;
   Dir: TSplitDir;
+  DeskW, DeskH: integer;
+  RD, WR: Objects.TRect;
+  SysClassesTmp: TWindowClassArray;
 begin
   InstallWideVideoOutput;
   inherited Init;
   LoadConfig(Cfg);
+  if Cfg.Palette = 'bw' then
+    AppPalette := apBlackWhite
+  else if Cfg.Palette = 'mono' then
+    AppPalette := apMonochrome
+  else
+    AppPalette := apColor;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
-  LoadSystemTerminals(SystemConfigFile, SysTerms);
-  LoadTemplates(SystemConfigFile, Templates);
-  DebugLog(Format('init: sysini=%s shell=%s terms=%d templates=%d',
-    [SystemConfigFile, Cfg.Shell, Length(SysTerms), Length(Templates)]));
-  // inherited Init llamo a InitMenuBar con SysTerms vacio: reconstruir
+  // clases de ventana: fichero de usuario + fichero de sistema (gana user);
+  // si SUPERTERM_INI apunta al fichero de usuario, la mezcla deduplica
+  LoadWindowClasses(ConfigFile, coUser, WClasses);
+  LoadWindowClasses(SystemConfigFile, coSystem, SysClassesTmp);
+  MergeWindowClasses(WClasses, SysClassesTmp);
+  // perfiles: [profile.*] de usuario+sistema mas plantillas legadas aplanadas
+  LoadProfiles(ConfigFile, SystemConfigFile, Profiles);
+  DebugLog(Format('init: sysini=%s shell=%s classes=%d profiles=%d',
+    [SystemConfigFile, Cfg.Shell, Length(WClasses), Length(Profiles)]));
+  // inherited Init llamo a InitMenuBar con WClasses vacio: reconstruir
   if MenuBar <> nil then
   begin
     Dispose(MenuBar, Done);
@@ -828,82 +923,98 @@ begin
     PaneTerm[i] := -1;
   end;
   SyncTerminalSize;
-  ActiveTemplate := -1;
-  ActiveSession := -1;
+  for i := 0 to MAX_PANES - 1 do
+    PaneConnect[i] := '';
+  ActiveProfile := -1;
   ActiveWindow := -1;
-  TemplateMode := Length(Templates) > 0;
+  ProfileMode := Length(Profiles) > 0;
   SkipSave := False;
+  AbortRun := False;
   RemoteMode := False;
   RemoteLost := False;
   DetachRequested := False;
   PrefixPending := False;
   Remote := nil;
 
-  if AttachRequested and AttachRemoteSession then
+  CurrentSessionName := '';
+  if AttachRequested then
+  begin
+    if AttachSocket = '' then
+    begin
+      AttachSocket := PickSessionSocketUI(True);
+      ResetVideoSurface;
+      ReDraw;
+    end;
+    if (AttachSocket <> '') and AttachRemoteSession(AttachSocket) then
+      Exit;
+    // seleccion cancelada o attach fallido: salir limpio sin guardar.
+    // Un cmQuit posteado aqui se perderia (TGroup.Execute pone EndState
+    // a 0 al entrar en Run), asi que se marca AbortRun y el programa
+    // principal se salta Run; no se construye ningun workspace
+    SkipSave := True;
+    AbortRun := True;
+    Exit;
+  end
+  else if PromptAttachOnStart then
     Exit;
 
-  if TemplateMode then
+  if ProfileMode then
   begin
-    ActiveTemplate := FindTemplate(Cfg.DefaultTemplate);
-    if (ActiveTemplate < 0) or (not Templates[ActiveTemplate].Enabled) then
-      for i := 0 to Length(Templates) - 1 do
-        if Templates[i].Enabled then
+    // resolucion del perfil por defecto: default_profile nuevo, con
+    // retro-compatibilidad para default_template [+ /default_session]
+    ActiveProfile := FindProfile(Cfg.DefaultProfile);
+    if ActiveProfile < 0 then
+      ActiveProfile := FindProfile(Cfg.DefaultTemplate);
+    if (ActiveProfile < 0) and (Cfg.DefaultSession <> '') then
+      ActiveProfile := FindProfile(Cfg.DefaultTemplate + '/' +
+        Cfg.DefaultSession);
+    if (ActiveProfile < 0) or (not Profiles[ActiveProfile].Enabled) then
+      for i := 0 to Length(Profiles) - 1 do
+        if Profiles[i].Enabled then
         begin
-          ActiveTemplate := i;
+          ActiveProfile := i;
           Break;
         end;
-    if ActiveTemplate < 0 then
-      TemplateMode := False
+    if ActiveProfile < 0 then
+      ProfileMode := False
     else
     begin
-      ActiveSession := FindTemplateSession(ActiveTemplate, Cfg.DefaultSession);
-      if ActiveSession < 0 then
-        ActiveSession := FindTemplateSession(ActiveTemplate,
-          Templates[ActiveTemplate].DefaultSession);
-      if ActiveSession < 0 then
-        for i := 0 to Length(Templates[ActiveTemplate].Sessions) - 1 do
-          if Templates[ActiveTemplate].Sessions[i].Enabled then
-          begin
-            ActiveSession := i;
-            Break;
-          end;
       ActiveWindow := -1;
-      if ActiveSession >= 0 then
-      begin
-        for i := 0 to Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) - 1 do
-          if Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Enabled and
-             SameText(Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Name,
-               Cfg.DefaultWindow) then
+      for i := 0 to Length(Profiles[ActiveProfile].Windows) - 1 do
+        if Profiles[ActiveProfile].Windows[i].Enabled and
+           SameText(Profiles[ActiveProfile].Windows[i].Name,
+             Cfg.DefaultWindow) then
+        begin
+          ActiveWindow := i;
+          Break;
+        end;
+      if (ActiveWindow < 0) and
+         (Profiles[ActiveProfile].FocusedWindow >= 0) and
+         (Profiles[ActiveProfile].FocusedWindow <
+          Length(Profiles[ActiveProfile].Windows)) and
+         Profiles[ActiveProfile].Windows[
+           Profiles[ActiveProfile].FocusedWindow].Enabled then
+        ActiveWindow := Profiles[ActiveProfile].FocusedWindow;
+      if ActiveWindow < 0 then
+        for i := 0 to Length(Profiles[ActiveProfile].Windows) - 1 do
+          if Profiles[ActiveProfile].Windows[i].Enabled then
           begin
             ActiveWindow := i;
             Break;
           end;
-        if (ActiveWindow < 0) and
-           (Templates[ActiveTemplate].Sessions[ActiveSession].FocusedWindow >= 0) and
-           (Templates[ActiveTemplate].Sessions[ActiveSession].FocusedWindow <
-            Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows)) and
-           Templates[ActiveTemplate].Sessions[ActiveSession].Windows[
-             Templates[ActiveTemplate].Sessions[ActiveSession].FocusedWindow].Enabled then
-          ActiveWindow := Templates[ActiveTemplate].Sessions[ActiveSession].FocusedWindow;
-        if ActiveWindow < 0 then
-          for i := 0 to Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) - 1 do
-            if Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Enabled then
-            begin
-              ActiveWindow := i;
-              Break;
-            end;
-      end;
-      if (ActiveSession < 0) or (ActiveWindow < 0) or
-         (not ActivateTemplate(ActiveTemplate, ActiveSession, ActiveWindow)) then
-        TemplateMode := False;
+      if (ActiveWindow < 0) or
+         (not ActivateProfile(ActiveProfile, ActiveWindow)) then
+        ProfileMode := False;
     end;
-    if TemplateMode then
+    if ProfileMode then
       Exit;
   end;
   Pin := nil;
   Ok := False;
+  DeskW := 0;
+  DeskH := 0;
   if Cfg.AutoRestore then
-    Ok := LoadSession(SessionFile, Lay, Pin);
+    Ok := LoadSession(SessionFile, Lay, Pin, DeskW, DeskH);
   if not Ok then
   begin
     Lay.Free;
@@ -911,25 +1022,25 @@ begin
     Pin := nil;
     // terminales definidos en /etc/superterm/superterm.ini
     n := 0;
-    for i := 0 to Length(SysTerms) - 1 do
-      if SysTerms[i].Enabled then
+    for i := 0 to Length(WClasses) - 1 do
+      if WClasses[i].Enabled then
         Inc(n);
     if n > MAX_PANES then
       n := MAX_PANES;
     if n > 0 then
     begin
       k := 0;
-      for i := 0 to Length(SysTerms) - 1 do
+      for i := 0 to Length(WClasses) - 1 do
       begin
-        if (not SysTerms[i].Enabled) or (k >= MAX_PANES) then
+        if (not WClasses[i].Enabled) or (k >= MAX_PANES) then
           continue;
         if k > 0 then
         begin
           if Odd(k) then Dir := sdV else Dir := sdH;
           Lay.SplitPane(Lay.PaneCount - 1, Dir);
         end;
-        StartPaneEx(k, SysTerms[i].Cwd, '', i, '', '', SysTerms[i].Name,
-          SysTerms[i].ScrollBack);
+        StartPaneEx(k, WClasses[i].Cwd, '', i, '', '', WClasses[i].Name,
+          WClasses[i].ScrollBack);
         Inc(k);
       end;
       Lay.Focused := 0;
@@ -948,10 +1059,10 @@ begin
   begin
     SysIdx := -1;
     if i <= High(Pin) then
-      SysIdx := FindSysTerm(Pin[i].Term);
+      SysIdx := FindWindowClass(Pin[i].Term);
     if SysIdx >= 0 then
-      StartPaneEx(i, '', '', SysIdx, '', '', SysTerms[SysIdx].Name,
-        SysTerms[SysIdx].ScrollBack)
+      StartPaneEx(i, '', '', SysIdx, '', '', WClasses[SysIdx].Name,
+        WClasses[SysIdx].ScrollBack)
     else if (i <= High(Pin)) and (Length(Pin[i].Args) > 0) then
       StartPane(i, Pin[i].Cwd,
         CommandWithInteractiveShell(ArgsAsShell(Pin[i].Args), Cfg.Shell,
@@ -967,6 +1078,33 @@ begin
   if Lay.Focused >= n then
     Lay.Focused := 0;
   RelayoutAll;
+  // reaplicar geometria/estado manuales de las ventanas (movidas o
+  // redimensionadas con Ctrl-F5, maximizadas, minimizadas) guardados en
+  // session.ini; solo si el escritorio mide lo mismo que al guardar,
+  // porque los bounds son absolutos
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  if Ok and (DeskW = RD.B.X - RD.A.X) and (DeskH = RD.B.Y - RD.A.Y) then
+  begin
+    for i := 0 to n - 1 do
+      if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) then
+      begin
+        if (Pin[i].BW > 0) and (Pin[i].BH > 0) then
+        begin
+          WR := Default(Objects.TRect);
+          WR.Assign(Pin[i].BX, Pin[i].BY,
+            Pin[i].BX + Pin[i].BW, Pin[i].BY + Pin[i].BH);
+          Win[i]^.Locate(WR);
+        end;
+        if Pin[i].Zoomed and (not Win[i]^.Zoomed) then
+          Win[i]^.Zoom;
+      end;
+    // los minimizados al final: MinimizeWindow gestiona el foco
+    for i := 0 to n - 1 do
+      if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) and
+         Pin[i].Minimized then
+        MinimizeWindow(i);
+  end;
   ResetVideoSurface;
   ReDraw;
   FocusPane(Lay.Focused);
@@ -986,15 +1124,18 @@ begin
       Remote.CloseSession;
     ReleaseRuntime;
   end
-  else if TemplateMode then
+  else if ProfileMode then
   begin
     if not SkipSave then
     begin
-      RememberTemplateSelection;
+      RememberProfileSelection;
       SaveConfig(Cfg);
     end;
   end
-  else if Cfg.AutoSave then
+  // SkipSave tambien protege este ramal: tras un attach abortado o una
+  // conexion remota perdida, Lay puede ser el layout remoto (con Panes=nil)
+  // y guardarlo machacaria el session.ini local con paneles vacios
+  else if Cfg.AutoSave and (not SkipSave) then
     SaveSessionNow;
   finally
   if not DetachRequested and not RemoteMode then
@@ -1088,23 +1229,24 @@ begin
   if ph < 2 then ph := 2;
   if ASysIdx >= 0 then
   begin
-    CmdS := TerminalCommand(SysTerms[ASysIdx]);
-    if SysTerms[ASysIdx].Kind = tkLocal then
-      CwdS := SysTerms[ASysIdx].Cwd
+    if WClasses[ASysIdx].Shell <> '' then
+      ShellS := WClasses[ASysIdx].Shell
+    else
+      ShellS := Cfg.Shell;
+    // wcLocal/wcCommand: comando compuesto con la semantica unificada
+    // (para wcSSH el camino es el argv estructurado de mas abajo)
+    CmdS := ComposePaneCommand(WClasses[ASysIdx], ACmd, '', '', ShellS,
+      Cfg.LoginShell);
+    if WClasses[ASysIdx].Kind <> wcSSH then
+      CwdS := WClasses[ASysIdx].Cwd
     else
       CwdS := '';
     if ACwd <> '' then
       CwdS := ACwd;
-    if SysTerms[ASysIdx].Shell <> '' then
-      ShellS := SysTerms[ASysIdx].Shell
-    else
-      ShellS := Cfg.Shell;
-    ExtraS := TerminalEnvPass(SysTerms[ASysIdx]);
-    TitleS := SysTerms[ASysIdx].Name;
+    ExtraS := '';
+    TitleS := WClasses[ASysIdx].Name;
     if AMaxSB <= 0 then
-      AMaxSB := SysTerms[ASysIdx].ScrollBack;
-    if ACmd <> '' then
-      CmdS := ACmd;
+      AMaxSB := WClasses[ASysIdx].ScrollBack;
   end
   else
   begin
@@ -1127,16 +1269,17 @@ begin
     CmdS := ACommandOverride;
   CwdS := ExpandUserPath(CwdS);
   PaneTerm[i] := ASysIdx;
+  PaneConnect[i] := ''; // los llamantes con conexion libre lo fijan despues
   Scr[i] := TScreen.Create(pw, ph, AMaxSB);
   Panes[i] := TPty.Create;
   ExecArgs := TStringList.Create;
   try
     ExecProgram := '';
     ExecSecret := '';
-    if (ASysIdx >= 0) and (SysTerms[ASysIdx].Kind = tkSSH) then
+    if (ASysIdx >= 0) and (WClasses[ASysIdx].Kind = wcSSH) then
     begin
-      BuildTerminalExec(SysTerms[ASysIdx], ExecProgram, ExecArgs, ExecSecret,
-        ACommandOverride);
+      BuildWindowClassExec(WClasses[ASysIdx], ExecProgram, ExecArgs,
+        ExecSecret, ACommandOverride);
       SpawnOK := Panes[i].SpawnArgv(ExecProgram, ExecArgs.ToStringArray,
         CwdS, pw, ph, ExtraS, ExecSecret);
     end
@@ -1216,7 +1359,7 @@ begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (Scr[i] = nil) then
     Exit;
-  TitleS := SysTerms[PaneTerm[i]].Name;
+  TitleS := WClasses[PaneTerm[i]].Name;
   Cmd := 'printf ' + ShellQuote(
     UiText('superterm: remote terminal unavailable: ',
       'superterm: terminal remoto no disponible: ') + TitleS + #10) +
@@ -1239,14 +1382,23 @@ procedure TSuperApp.RelayoutAll;
 var
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
   LR, TileR: Objects.TRect;
-  i: integer;
+  i, TileH: integer;
   R: Objects.TRect;
+  HasIcons: boolean;
 begin
   R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
-  Lay.ComputeRects(R.B.X - R.A.X, R.B.Y - R.A.Y, Rects);
+  // con minimizadas, el mosaico reserva la franja inferior de iconos
+  HasIcons := False;
   for i := 0 to MAX_PANES - 1 do
-    if Win[i] <> nil then
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      HasIcons := True;
+  TileH := R.B.Y - R.A.Y;
+  if HasIcons then
+    Dec(TileH, 2);
+  Lay.ComputeRects(R.B.X - R.A.X, TileH, Rects);
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
       Rects[i].W := Rects[i].W - 2;  // hueco entre marcos
       Rects[i].H := Rects[i].H - 1;
@@ -1318,6 +1470,36 @@ begin
   end;
 end;
 
+// agrupa los iconos de minimizadas en filas al pie del escritorio
+procedure TSuperApp.ArrangeIcons;
+const
+  ICON_W = 26;
+  ICON_H = 2;
+var
+  RD, R: Objects.TRect;
+  i, k, PerRow, DeskW: integer;
+begin
+  if Desktop = nil then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  DeskW := RD.B.X - RD.A.X;
+  PerRow := DeskW div (ICON_W + 1);
+  if PerRow < 1 then
+    PerRow := 1;
+  k := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
+      R.Assign((k mod PerRow) * (ICON_W + 1),
+        RD.B.Y - RD.A.Y - ICON_H * (1 + k div PerRow),
+        (k mod PerRow) * (ICON_W + 1) + ICON_W,
+        RD.B.Y - RD.A.Y - ICON_H * (k div PerRow));
+      Win[i]^.Locate(R);
+      Inc(k);
+    end;
+end;
+
 procedure TSuperApp.MinimizeWindow(i: integer);
 var
   NextPane: integer;
@@ -1329,6 +1511,8 @@ begin
   if NextPane = i then
     NextPane := -1;
   Win[i]^.Minimize;
+  RelayoutAll;
+  ArrangeIcons;
   if Lay.Focused = i then
   begin
     if NextPane >= 0 then
@@ -1349,8 +1533,9 @@ begin
     Exit;
   Win[i]^.Restore;
   Lay.Focused := i;
-  FocusPane(i);
   RelayoutAll;
+  ArrangeIcons;
+  FocusPane(i);
   RebuildMenu;
 end;
 
@@ -1454,7 +1639,7 @@ begin
   FocusPane(Lay.Focused);
 end;
 
-procedure TSuperApp.DoOpenSysTerm(ASysIdx: integer);
+procedure TSuperApp.DoOpenClassPane(ASysIdx: integer);
 var
   Dir: TSplitDir;
 begin
@@ -1468,42 +1653,27 @@ begin
   DoSplit(Dir, ASysIdx);
 end;
 
-function TSuperApp.FindSysTerm(const AName: string): integer;
+function TSuperApp.FindWindowClass(const AName: string): integer;
 var
   i: integer;
 begin
   Result := -1;
   if AName = '' then
     Exit;
-  for i := 0 to Length(SysTerms) - 1 do
-    if SameText(SysTerms[i].Name, AName) then
+  for i := 0 to Length(WClasses) - 1 do
+    if SameText(WClasses[i].Name, AName) then
       Exit(i);
 end;
 
-function TSuperApp.FindTemplate(const AName: string): integer;
+function TSuperApp.FindProfile(const AName: string): integer;
 var
   i: integer;
 begin
   Result := -1;
   if AName = '' then
     Exit;
-  for i := 0 to Length(Templates) - 1 do
-    if Templates[i].Enabled and SameText(Templates[i].Name, AName) then
-      Exit(i);
-end;
-
-function TSuperApp.FindTemplateSession(ATemplate: integer;
-  const AName: string): integer;
-var
-  i: integer;
-begin
-  Result := -1;
-  if (ATemplate < 0) or (ATemplate >= Length(Templates)) or
-     (AName = '') then
-    Exit;
-  for i := 0 to Length(Templates[ATemplate].Sessions) - 1 do
-    if Templates[ATemplate].Sessions[i].Enabled and
-       SameText(Templates[ATemplate].Sessions[i].Name, AName) then
+  for i := 0 to Length(Profiles) - 1 do
+    if Profiles[i].Enabled and SameText(Profiles[i].Name, AName) then
       Exit(i);
 end;
 
@@ -1557,18 +1727,22 @@ begin
     Panes[i].WriteStr(S);
 end;
 
-function TSuperApp.AttachRemoteSession: boolean;
+function TSuperApp.AttachRemoteSession(const APath: string): boolean;
 var
   Snapshot: TSessionSnapshot;
-  NewLay: TLayout;
+  NewLay, OldLay: TLayout;
   Stream: TMemoryStream;
   I, N, SysIdx: integer;
+  OldActiveProfile, OldActiveWindow: integer;
+  OldProfileMode: boolean;
+  OldSessionName: string;
   TitleS: string;
   Loaded: boolean;
+  GR: Objects.TRect;
 begin
   Result := False;
   Remote := TSessionClient.Create;
-  if not Remote.Connect(Snapshot) then
+  if not Remote.Connect(APath, Snapshot) then
   begin
     Remote.Free;
     Remote := nil;
@@ -1588,22 +1762,27 @@ begin
     Remote := nil;
     Exit;
   end;
-  if Lay <> nil then
-    Lay.Free;
+  // guardar el estado previo: la carga por panel aun puede fallar (blob de
+  // pantalla corrupto o ventana no creada) y hay que poder restaurarlo
+  OldLay := Lay;
+  OldProfileMode := ProfileMode;
+  OldActiveProfile := ActiveProfile;
+  OldActiveWindow := ActiveWindow;
+  OldSessionName := CurrentSessionName;
   Lay := NewLay;
   Lay.Focused := Snapshot.Focused;
   if (Lay.Focused < 0) or (Lay.Focused >= N) then
     Lay.Focused := 0;
-  TemplateMode := False;
-  ActiveTemplate := -1;
-  ActiveSession := -1;
+  ProfileMode := False;
+  ActiveProfile := -1;
   ActiveWindow := -1;
   RemoteMode := True;
+  CurrentSessionName := Snapshot.Name;
   Loaded := True;
   for I := 0 to N - 1 do
   begin
     PaneTerm[I] := -1;
-    SysIdx := FindSysTerm(Snapshot.Panes[I].Term);
+    SysIdx := FindWindowClass(Snapshot.Panes[I].Term);
     if SysIdx >= 0 then
       PaneTerm[I] := SysIdx;
     Stream := TMemoryStream.Create;
@@ -1631,18 +1810,103 @@ begin
   end;
   if not Loaded then
   begin
+    // deshacer toda la mutacion: el arranque debe continuar como si el
+    // attach nunca se hubiera intentado (perfil incluido)
     RemoteMode := False;
     ReleaseRuntime;
+    Lay := OldLay;
+    ProfileMode := OldProfileMode;
+    ActiveProfile := OldActiveProfile;
+    ActiveWindow := OldActiveWindow;
+    CurrentSessionName := OldSessionName;
+    NewLay.Free;
     Remote.Free;
     Remote := nil;
     Exit;
   end;
+  OldLay.Free;
   RelayoutAll;
+  // geometria de ventanas que el daemon conserva (movidas, maximizadas,
+  // minimizadas); solo aplicable si el escritorio mide igual que al guardar
+  if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
+  begin
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    if (Snapshot.DeskW = GR.B.X - GR.A.X) and
+       (Snapshot.DeskH = GR.B.Y - GR.A.Y) then
+    begin
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) then
+        begin
+          if (Snapshot.Geom[I].BW > 0) and (Snapshot.Geom[I].BH > 0) then
+          begin
+            GR.Assign(Snapshot.Geom[I].BX, Snapshot.Geom[I].BY,
+              Snapshot.Geom[I].BX + Snapshot.Geom[I].BW,
+              Snapshot.Geom[I].BY + Snapshot.Geom[I].BH);
+            Win[I]^.Locate(GR);
+          end;
+          if Snapshot.Geom[I].Zoomed and (not Win[I]^.Zoomed) then
+            Win[I]^.Zoom;
+        end;
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) and
+           Snapshot.Geom[I].Minimized then
+          MinimizeWindow(I);
+    end;
+  end;
   ResetVideoSurface;
   ReDraw;
   FocusPane(Lay.Focused);
   RebuildMenu;
   Result := True;
+end;
+
+// selector de sesiones para --attach (o arranque con sesiones vivas)
+function TSuperApp.PickSessionSocketUI(AForAttach: boolean): string;
+var
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Result := '';
+  Path := '';
+  Act := RunSessionPicker(not AForAttach, Path);
+  if Act = spAttach then
+    Result := Path;
+end;
+
+// arranque normal con sesiones vivas: ofrecer engancharse antes de crear
+// un workspace nuevo; Esc o "Nueva sesion" siguen el arranque normal
+function TSuperApp.PromptAttachOnStart: boolean;
+var
+  Infos: TSessionInfoArray;
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Result := False;
+  if not EnumerateSessions(Infos) then
+    Exit;
+  Path := '';
+  Act := RunSessionPicker(True, Path);
+  if (Act = spAttach) and (Path <> '') then
+    Result := AttachRemoteSession(Path);
+end;
+
+// gestor de sesiones dentro de la app: listar, purgar y cerrar; el cambio
+// de sesion en caliente llegara mas adelante (separar primero)
+procedure TSuperApp.DoSessionPick;
+var
+  Act: TSessionPickAction;
+  Path: string;
+begin
+  Path := '';
+  Act := RunSessionPicker(False, Path);
+  if Act = spAttach then
+    MessageBox(UiText(
+      'Detach first (' + PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d) and run superterm --attach to connect.',
+      'Separa primero (' + PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d) y usa superterm --attach para conectar.'),
+      nil, mfInformation or mfOKButton);
 end;
 
 procedure TSuperApp.RequestDetach;
@@ -1651,11 +1915,18 @@ var
   PtyRefs: TPtyArray;
   ScreenRefs: TScreenArray;
   Titles, Terms: TStrArray;
+  DGeom: TPaneGeomArray;
+  DW, DH: integer;
+  NameBuf: ShortString;
+  SessName, ProfName: string;
 begin
   if DetachRequested then
     Exit;
   if RemoteMode then
   begin
+    // cliente ya enganchado: el daemon conserva su nombre, sin prompt;
+    // empujar antes el layout para que el proximo attach lo restaure
+    SyncRemoteLayout;
     if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
     begin
       MessageBox(UiText('The session server is unavailable.',
@@ -1670,6 +1941,32 @@ begin
   N := Lay.PaneCount;
   if (N < 1) or (N > MAX_PANES) then
     Exit;
+  // nombre de la sesion: por defecto el perfil activo (o sesion-N libre);
+  // colision con una sesion viva -> sugerir nombre-2 y volver a preguntar
+  ProfName := '';
+  if ProfileMode and (ActiveProfile >= 0) and
+     (ActiveProfile < Length(Profiles)) then
+    ProfName := Profiles[ActiveProfile].Name;
+  if ProfName <> '' then
+    SessName := SuggestSessionName(ProfName)
+  else
+    SessName := SuggestSessionName(UiText('session', 'sesion'));
+  repeat
+    NameBuf := Copy(SessName, 1, 32);
+    if InputBox(UiText('Detach session', 'Separar sesion'),
+      UiText('Session name:', 'Nombre de la sesion:'), NameBuf, 32) <> cmOK then
+      Exit;
+    SessName := SanitizeSessionName(Trim(NameBuf));
+    if SessionIsLive(SessionSocketPathFor(SessName)) then
+    begin
+      MessageBox(UiText('A session with that name already exists.',
+        'Ya existe una sesion con ese nombre.'), nil,
+        mfError or mfOKButton);
+      SessName := SuggestSessionName(SessName);
+    end
+    else
+      Break;
+  until False;
   PtyRefs := nil;
   ScreenRefs := nil;
   Titles := nil;
@@ -1685,13 +1982,23 @@ begin
     if Win[I] <> nil then
       Titles[I] := Trim(Win[I]^.GetTitle(80));
     if PaneTerm[I] >= 0 then
-      if PaneTerm[I] < Length(SysTerms) then
-        Terms[I] := SysTerms[PaneTerm[I]].Name;
+      if PaneTerm[I] < Length(WClasses) then
+        Terms[I] := WClasses[PaneTerm[I]].Name;
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
+    begin
+      // avisar en vez de abortar en silencio: el usuario ya confirmo un
+      // nombre y debe saber que la sesion NO se ha separado
+      MessageBox(UiText(
+        'Cannot detach: a pane has no live terminal.',
+        'No se puede separar: un panel no tiene terminal vivo.'), nil,
+        mfError or mfOKButton);
       Exit;
+    end;
   end;
-  if not StartDetachedServer(Lay, PtyRefs, ScreenRefs, Titles, Terms,
-    Lay.Focused) then
+  // el daemon nace conociendo la geometria actual de las ventanas
+  CollectPaneGeom(DGeom, DW, DH);
+  if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
+    Titles, Terms, Lay.Focused, DGeom, DW, DH) then
   begin
     MessageBox(UiText('Could not create the detached session server.',
       'No se pudo crear el servidor de la sesion separada.'), nil,
@@ -1702,41 +2009,31 @@ begin
   Message(@Self, evCommand, cmQuit, nil);
 end;
 
-function TSuperApp.ActivateTemplate(ATemplate, ASession,
-  AWindow: integer): boolean;
+function TSuperApp.ActivateProfile(AProfile, AWindow: integer): boolean;
 var
   NewLay: TLayout;
-  WS: TTemplateWindowSpec;
-  PS: TTemplatePaneSpec;
+  WS: TProfileWindowSpec;
+  PS: TProfilePaneSpec;
+  AdHoc: TWindowClass;
   i, n, SysIdx: integer;
   Started: boolean;
-  CommandOverride, LocalCmd: string;
+  CommandOverride, LocalCmd, ShellFor, TitleS: string;
 begin
   Result := False;
-  if (ATemplate < 0) or (ATemplate >= Length(Templates)) or
-     (not Templates[ATemplate].Enabled) then
+  if (AProfile < 0) or (AProfile >= Length(Profiles)) or
+     (not Profiles[AProfile].Enabled) then
     Exit;
-  if (ASession < 0) or
-     (ASession >= Length(Templates[ATemplate].Sessions)) or
-     (not Templates[ATemplate].Sessions[ASession].Enabled) then
-    Exit;
-  if (AWindow < 0) or
-     (AWindow >= Length(Templates[ATemplate].Sessions[ASession].Windows)) or
-     (not Templates[ATemplate].Sessions[ASession].Windows[AWindow].Enabled) then
+  if (AWindow < 0) or (AWindow >= Length(Profiles[AProfile].Windows)) or
+     (not Profiles[AProfile].Windows[AWindow].Enabled) then
     Exit;
 
-  WS := Templates[ATemplate].Sessions[ASession].Windows[AWindow];
+  WS := Profiles[AProfile].Windows[AWindow];
   if not LoadLayoutString(WS.Layout, NewLay) then
     NewLay := TLayout.Create;
   n := NewLay.PaneCount;
-  DebugLog(Format('template activate t=%d s=%d w=%d layout=%s leaves=%d specs=%d',
-    [ATemplate, ASession, AWindow, WS.Layout, n, Length(WS.Panes)]));
-  if Length(WS.Panes) > n then
-  begin
-    NewLay.Free;
-    Exit;
-  end;
-  if (n < 1) or (n > MAX_PANES) then
+  DebugLog(Format('profile activate p=%d w=%d layout=%s leaves=%d specs=%d',
+    [AProfile, AWindow, WS.Layout, n, Length(WS.Panes)]));
+  if (Length(WS.Panes) > n) or (n < 1) or (n > MAX_PANES) then
   begin
     NewLay.Free;
     Exit;
@@ -1746,42 +2043,54 @@ begin
   if Lay <> nil then
     Lay.Free;
   Lay := NewLay;
-  ActiveTemplate := ATemplate;
-  ActiveSession := ASession;
+  ActiveProfile := AProfile;
   ActiveWindow := AWindow;
 
   Started := True;
   for i := 0 to n - 1 do
   begin
+    PS := Default(TProfilePaneSpec);
     PS.Name := 'pane' + IntToStr(i);
     PS.Enabled := True;
-    PS.Terminal := '';
-    PS.Cmd := '';
-    PS.Cwd := '';
-    PS.PostConnect := '';
-    PS.ScrollBack := 0;
     if i <= High(WS.Panes) then
       PS := WS.Panes[i];
-    CommandOverride := PS.Cmd;
-    if PS.PostConnect <> '' then
-      CommandOverride := PS.PostConnect;
-    SysIdx := FindSysTerm(PS.Terminal);
-    DebugLog(Format('template pane=%d enabled=%d terminal=%s cmd=%s post=%s sysidx=%d',
-      [i, Ord(PS.Enabled), PS.Terminal, PS.Cmd, PS.PostConnect, SysIdx]));
-    if (SysIdx >= 0) and PS.Enabled then
-      StartPaneEx(i, PS.Cwd, PS.Cmd, SysIdx, '', '',
-        Templates[ATemplate].Name + '/' +
-        Templates[ATemplate].Sessions[ASession].Name + '/' + WS.Name,
-        PS.ScrollBack, CommandOverride)
-    else if PS.Enabled then
+    SysIdx := FindWindowClass(PS.WClass);
+    TitleS := Profiles[AProfile].Name + '/' + WS.Name;
+    DebugLog(Format('profile pane=%d enabled=%d class=%s cmd=%s post=%s sysidx=%d',
+      [i, Ord(PS.Enabled), PS.WClass, PS.Cmd, PS.PostConnect, SysIdx]));
+    if not PS.Enabled then
+      StartPane(i, '', '')
+    else if (SysIdx >= 0) and (WClasses[SysIdx].Kind = wcSSH) then
     begin
-      LocalCmd := PS.Cmd;
-      if LocalCmd = '' then
-        LocalCmd := PS.PostConnect;
-      StartPane(i, PS.Cwd, LocalCmd);
+      // ssh: la precedencia pane.post > class.post > pane.cmd > class.cmd
+      // se resuelve entre el override y BuildWindowClassExec
+      CommandOverride := PS.PostConnect;
+      if CommandOverride = '' then
+        CommandOverride := PS.Cmd;
+      StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
+        CommandOverride);
+    end
+    else if SysIdx >= 0 then
+    begin
+      // clase local o de comando libre con overrides del panel
+      if WClasses[SysIdx].Shell <> '' then
+        ShellFor := WClasses[SysIdx].Shell
+      else
+        ShellFor := Cfg.Shell;
+      LocalCmd := ComposePaneCommand(WClasses[SysIdx], PS.Cmd, PS.PostConnect,
+        PS.Connect, ShellFor, Cfg.LoginShell);
+      StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
+        LocalCmd);
     end
     else
-      StartPane(i, '', '');
+    begin
+      // panel ad-hoc sin clase (incluye los del asistente persistidos)
+      AdHoc := DefaultWindowClass;
+      LocalCmd := ComposePaneCommand(AdHoc, PS.Cmd, PS.PostConnect,
+        PS.Connect, Cfg.Shell, Cfg.LoginShell);
+      StartPaneEx(i, PS.Cwd, LocalCmd, -1, '', '', TitleS, PS.ScrollBack);
+      PaneConnect[i] := PS.Connect;
+    end;
     if Win[i] = nil then
       Started := False;
   end;
@@ -1797,6 +2106,133 @@ begin
   FocusPane(Lay.Focused);
   RebuildMenu;
   Result := True;
+end;
+
+function TSuperApp.CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
+var
+  i, n: integer;
+begin
+  Result := Default(TProfileWindowSpec);
+  Result.Name := AName;
+  Result.Enabled := True;
+  Result.Layout := SaveLayoutString(Lay);
+  Result.FocusedPane := Lay.Focused;
+  n := Lay.PaneCount;
+  if n > MAX_PANES then
+    n := MAX_PANES;
+  SetLength(Result.Panes, n);
+  for i := 0 to n - 1 do
+  begin
+    Result.Panes[i] := Default(TProfilePaneSpec);
+    Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
+    Result.Panes[i].Enabled := True;
+    if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+      Result.Panes[i].WClass := WClasses[PaneTerm[i]].Name
+    else if Panes[i] <> nil then
+    begin
+      if PaneConnect[i] <> '' then
+        Result.Panes[i].Connect := PaneConnect[i]
+      else
+      begin
+        Panes[i].QueryState;
+        // una shell interactiva se captura como cmd vacio (= shell normal)
+        if not IsPlainShell(Panes[i].TitleArgs, Panes[i].TitleCmd) then
+        begin
+          if Length(Panes[i].TitleArgs) > 0 then
+            Result.Panes[i].Cmd := ArgsAsShell(Panes[i].TitleArgs)
+          else
+            Result.Panes[i].Cmd := Panes[i].TitleCmd;
+        end;
+        Result.Panes[i].Cwd := Panes[i].TitleCwd;
+      end;
+    end;
+  end;
+end;
+
+procedure TSuperApp.SaveWorkspaceAsProfile(const AName: string);
+var
+  P: TProfileSpec;
+  idx: integer;
+begin
+  P := Default(TProfileSpec);
+  P.Name := AName;
+  P.Enabled := True;
+  P.Origin := coUser;
+  P.FocusedWindow := 0;
+  SetLength(P.Windows, 1);
+  P.Windows[0] := CaptureCurrentAsWindow(UiText('main', 'principal'));
+  idx := FindProfileByName(Profiles, AName);
+  if idx >= 0 then
+    Profiles[idx] := P
+  else
+  begin
+    SetLength(Profiles, Length(Profiles) + 1);
+    Profiles[High(Profiles)] := P;
+  end;
+  SaveProfiles(ConfigFile, Profiles);
+  RebuildMenu;
+end;
+
+procedure TSuperApp.RunProfileSaveAs;
+var
+  NameS: string;
+  Buf: ShortString;
+begin
+  Buf := '';
+  if ProfileMode and (ActiveProfile >= 0) and
+     (ActiveProfile < Length(Profiles)) then
+    Buf := Copy(Profiles[ActiveProfile].Name, 1, 32);
+  if InputBox(UiText('Save profile', 'Guardar perfil'),
+    UiText('Profile name:', 'Nombre del perfil:'), Buf, 32) <> cmOK then
+    Exit;
+  NameS := Trim(Buf);
+  if NameS = '' then
+    Exit;
+  SaveWorkspaceAsProfile(NameS);
+  // sin FormatStr: el nombre podria contener '%'
+  MessageBox(UiText('Profile saved: ', 'Perfil guardado: ') + NameS, nil,
+    mfInformation or mfOKButton);
+end;
+
+procedure TSuperApp.DoProfileManage;
+var
+  Act: TProfileAction;
+  Tgt, DefIdx: integer;
+begin
+  DefIdx := FindProfileByName(Profiles, Cfg.DefaultProfile);
+  if not RunProfileManager(Profiles, ActiveProfile, DefIdx, Act, Tgt) then
+    Exit;
+  case Act of
+    paActivate:
+      DoSwitchProfile(Tgt);
+    paSaveCurrent:
+      if (Tgt >= 0) and (Tgt < Length(Profiles)) then
+      begin
+        if ProfileMode and (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
+           (ActiveWindow < Length(Profiles[Tgt].Windows)) then
+          // guardar el area actual SOLO en la ventana activa del perfil,
+          // conservando sus demas ventanas
+          Profiles[Tgt].Windows[ActiveWindow] :=
+            CaptureCurrentAsWindow(Profiles[Tgt].Windows[ActiveWindow].Name)
+        else
+        begin
+          SetLength(Profiles[Tgt].Windows, 1);
+          Profiles[Tgt].Windows[0] :=
+            CaptureCurrentAsWindow(UiText('main', 'principal'));
+          Profiles[Tgt].FocusedWindow := 0;
+        end;
+        Profiles[Tgt].Origin := coUser;
+        SaveProfiles(ConfigFile, Profiles);
+      end;
+    paSetDefault:
+      if (Tgt >= 0) and (Tgt < Length(Profiles)) then
+      begin
+        Cfg.DefaultProfile := Profiles[Tgt].Name;
+        SaveConfig(Cfg);
+      end;
+    paNone: ;
+  end;
+  RebuildMenu;
 end;
 
 procedure TSuperApp.RunSessionWizard;
@@ -1817,7 +2253,7 @@ begin
   WindowCountText := '1';
   repeat
     Choice := InputBox(UiText('Session wizard', 'Asistente de sesion'),
-      UiText('Number of windows (1-4):', 'Numero de ventanas (1-4):'),
+      UiText('Number of panes (1-4):', 'Numero de paneles (1-4):'),
       WindowCountText, 1);
     if Choice = cmCancel then
       Exit;
@@ -1837,7 +2273,7 @@ begin
   begin
     ConnectCmd[I] := '';
     Choice := InputBox(
-      Format(UiText('Wizard: window %d/%d', 'Asistente: ventana %d/%d'),
+      Format(UiText('Wizard: pane %d/%d', 'Asistente: panel %d/%d'),
         [I + 1, WindowCount]),
       UiText('Connection command:', 'Comando de conexion:'), ConnectCmd[I], 240);
     if Choice = cmCancel then
@@ -1852,7 +2288,7 @@ begin
 
     PostConnectCmd[I] := '';
     Choice := InputBox(
-      Format(UiText('Wizard: window %d/%d', 'Asistente: ventana %d/%d'),
+      Format(UiText('Wizard: pane %d/%d', 'Asistente: panel %d/%d'),
         [I + 1, WindowCount]),
       UiText('After connecting (optional):',
         'Despues de conectar (opcional):'), PostConnectCmd[I], 240);
@@ -1881,16 +2317,17 @@ begin
   if Lay <> nil then
     Lay.Free;
   Lay := NewLay;
-  ActiveTemplate := -1;
-  ActiveSession := -1;
+  ActiveProfile := -1;
   ActiveWindow := -1;
-  TemplateMode := False;
+  ProfileMode := False;
   Started := True;
   for I := 0 to WindowCount - 1 do
   begin
     StartPaneEx(I, GetEnvironmentVariable('HOME'),
       WizardCommand(ConnectCmd[I], PostConnectCmd[I]), -1, '', '',
       UiText('wizard ', 'asistente ') + IntToStr(I + 1), DEFAULT_SCROLLBACK);
+    // recordar la conexion libre para poder guardar esto como perfil
+    PaneConnect[I] := Trim(ConnectCmd[I]);
     if Win[I] = nil then
       Started := False;
   end;
@@ -1902,8 +2339,8 @@ begin
     Lay := TLayout.Create;
     StartPane(0, GetEnvironmentVariable('HOME'), '');
     Lay.Focused := 0;
-    MessageBox(UiText('The wizard could not start a window.',
-      'No se pudo iniciar una ventana del asistente.'), nil,
+    MessageBox(UiText('The wizard could not start a pane.',
+      'No se pudo iniciar un panel del asistente.'), nil,
       mfError or mfOKButton);
   end
   else
@@ -1919,21 +2356,91 @@ end;
 
 procedure TSuperApp.ShowHelp;
 var
-  R, DesktopRect: Objects.TRect;
-  Dialog: PHelpDialog;
+  R: Objects.TRect;
+  D: PDialog;
+  Lines: array[0..6] of string;
+  I: integer;
 begin
-  DesktopRect := Default(Objects.TRect);
-  Desktop^.GetExtent(DesktopRect);
-  R.Assign(0, 0, 84, 9);
-  if R.B.X > DesktopRect.B.X then
-    R.B.X := DesktopRect.B.X;
-  if R.B.Y > DesktopRect.B.Y then
-    R.B.Y := DesktopRect.B.Y;
-  R.Move((DesktopRect.B.X - R.B.X) div 2,
-    (DesktopRect.B.Y - R.B.Y) div 2);
-  Dialog := New(PHelpDialog, Init(R, UiText('Help', 'Ayuda')));
-  Desktop^.ExecView(Dialog);
-  Dispose(Dialog, Done);
+  // dialogo estandar: paleta de dialogo con contraste correcto (el antiguo
+  // THelpDialog pintaba con GetColor(1), el color del marco pasivo)
+  Lines[0] := UiText(
+    'F2/F3 split panes; F6/F7 next/prev pane; Alt-1..9 go to pane N',
+    'F2/F3 dividen paneles; F6/F7 panel sig./ant.; Alt-1..9 ir al panel N');
+  Lines[1] := UiText(
+    'F5 zoom; Alt-F9 minimize; Ctrl-F5 move/resize; Alt-F3 close pane',
+    'F5 zoom; Alt-F9 minimiza; Ctrl-F5 mover/tamano; Alt-F3 cierra panel');
+  Lines[2] := UiText(
+    'F8/F9 next/prev window; ' + PrefixKeyLabel(Cfg.PrefixKey) +
+    ' 1..9 go to window N',
+    'F8/F9 ventana sig./ant.; ' + PrefixKeyLabel(Cfg.PrefixKey) +
+    ' 1..9 ir a la ventana N');
+  Lines[3] := UiText(
+    PrefixKeyLabel(Cfg.PrefixKey) + ' c open a class in a new pane; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' arrows resize the pane',
+    PrefixKeyLabel(Cfg.PrefixKey) + ' c abre una clase en panel nuevo; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' flechas dan tamano');
+  Lines[4] := UiText(
+    PrefixKeyLabel(Cfg.PrefixKey) + ' d detach; superterm --attach ' +
+    'returns; Ctrl-S save',
+    PrefixKeyLabel(Cfg.PrefixKey) + ' d separa; superterm --attach ' +
+    'vuelve; Ctrl-S guarda');
+  Lines[5] := UiText(
+    'Profiles menu saves and restores named workspaces',
+    'El menu Perfiles guarda y restaura areas de trabajo con nombre');
+  Lines[6] := UiText(
+    'Alt-X save and exit; Alt-Q quit without saving',
+    'Alt-X guarda y sale; Alt-Q sale sin guardar');
+  R.Assign(0, 0, 74, 13);
+  D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
+  D^.Options := D^.Options or ofCentered;
+  for I := 0 to High(Lines) do
+  begin
+    R.Assign(3, 2 + I, 71, 3 + I);
+    D^.Insert(New(PStaticText, Init(R, Lines[I])));
+  end;
+  D^.NewButton(31, 10, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+    hcNoContext, bfDefault);
+  Desktop^.ExecView(D);
+  Dispose(D, Done);
+end;
+
+procedure TSuperApp.ShowAbout;
+var
+  R: Objects.TRect;
+  D: PDialog;
+begin
+  R.Assign(0, 0, 54, 17);
+  D := New(PDialog, Init(R, UiText('About', 'Acerca de')));
+  D^.Options := D^.Options or ofCentered;
+  R.Assign(2, 2, 52, 3);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'superterm ' + SUPERTERM_VERSION)));
+  R.Assign(2, 3, 52, 4);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('The productive terminal manager',
+      'El gestor de terminales productivo'))));
+  R.Assign(2, 5, 52, 6);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'Germ'#160'n Luis Aracil Boned')));
+  R.Assign(2, 6, 52, 7);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('August 2026 - License: GNU GPL v3',
+      'Agosto 2026 - Licencia: GNU GPL v3'))));
+  R.Assign(2, 8, 52, 11);
+  D^.Insert(New(PStaticText, Init(R,
+    #3 + UiText('Dedicated to Richard Stallman and his GNU',
+      'Dedicado a Richard Stallman y a su proyecto') + #13 +
+    #3 + UiText('project, with thanks for his drive to make',
+      'GNU, con las gracias por su af'#160'n en conseguir') + #13 +
+    #3 + UiText('software free for everyone.',
+      'un software libre para todos.'))));
+  R.Assign(2, 12, 52, 13);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'https://www.gnu.org')));
+  D^.NewButton(21, 14, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+    hcNoContext, bfDefault);
+  Desktop^.ExecView(D);
+  Dispose(D, Done);
 end;
 
 procedure TSuperApp.RebuildMenu;
@@ -1960,102 +2467,64 @@ begin
     Insert(StatusLine);
 end;
 
-procedure TSuperApp.RememberTemplateSelection;
+procedure TSuperApp.RememberProfileSelection;
 begin
-  if (ActiveTemplate >= 0) and (ActiveTemplate < Length(Templates)) then
-    Cfg.DefaultTemplate := Templates[ActiveTemplate].Name;
-  if (ActiveTemplate >= 0) and (ActiveTemplate < Length(Templates)) and
-     (ActiveSession >= 0) and
-     (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) then
-    Cfg.DefaultSession := Templates[ActiveTemplate].Sessions[ActiveSession].Name;
-  if (ActiveTemplate >= 0) and (ActiveTemplate < Length(Templates)) and
-     (ActiveSession >= 0) and
-     (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) and
+  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+    Cfg.DefaultProfile := Profiles[ActiveProfile].Name;
+  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) and
      (ActiveWindow >= 0) and
-     (ActiveWindow < Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows)) then
-    Cfg.DefaultWindow := Templates[ActiveTemplate].Sessions[ActiveSession].Windows[ActiveWindow].Name;
+     (ActiveWindow < Length(Profiles[ActiveProfile].Windows)) then
+    Cfg.DefaultWindow := Profiles[ActiveProfile].Windows[ActiveWindow].Name;
 end;
 
-procedure TSuperApp.DoSwitchTemplate(AIndex: integer);
+procedure TSuperApp.DoSwitchProfile(AIndex: integer);
 var
-  S, W, I, OldT, OldS, OldW: integer;
+  W, I, OldP, OldW: integer;
 begin
-  if (AIndex < 0) or (AIndex >= Length(Templates)) or
-     (not Templates[AIndex].Enabled) then
+  if (AIndex < 0) or (AIndex >= Length(Profiles)) or
+     (not Profiles[AIndex].Enabled) then
     Exit;
-  OldT := ActiveTemplate;
-  OldS := ActiveSession;
+  OldP := ActiveProfile;
   OldW := ActiveWindow;
-  S := FindTemplateSession(AIndex, Templates[AIndex].DefaultSession);
-  if S < 0 then
-    for I := 0 to Length(Templates[AIndex].Sessions) - 1 do
-      if Templates[AIndex].Sessions[I].Enabled then
-      begin
-        S := I;
-        Break;
-      end;
   W := -1;
-  if (S >= 0) and (S < Length(Templates[AIndex].Sessions)) then
-    for I := 0 to Length(Templates[AIndex].Sessions[S].Windows) - 1 do
-      if Templates[AIndex].Sessions[S].Windows[I].Enabled then
+  if (Profiles[AIndex].FocusedWindow >= 0) and
+     (Profiles[AIndex].FocusedWindow < Length(Profiles[AIndex].Windows)) and
+     Profiles[AIndex].Windows[Profiles[AIndex].FocusedWindow].Enabled then
+    W := Profiles[AIndex].FocusedWindow;
+  if W < 0 then
+    for I := 0 to Length(Profiles[AIndex].Windows) - 1 do
+      if Profiles[AIndex].Windows[I].Enabled then
       begin
         W := I;
         Break;
       end;
-  if (S < 0) or (W < 0) or not ActivateTemplate(AIndex, S, W) then
+  if (W < 0) or not ActivateProfile(AIndex, W) then
   begin
-    if (OldT >= 0) and (OldS >= 0) and (OldW >= 0) then
-      ActivateTemplate(OldT, OldS, OldW);
-    MessageBox(UiText('The template could not be started.',
-      'No se pudo iniciar el template'), nil,
+    if (OldP >= 0) and (OldW >= 0) then
+      ActivateProfile(OldP, OldW);
+    MessageBox(UiText('The profile could not be started.',
+      'No se pudo iniciar el perfil.'), nil,
       mfError or mfOKButton);
-  end;
-end;
-
-procedure TSuperApp.DoSwitchSession(AIndex: integer);
-var
-  W, I, OldS, OldW: integer;
-begin
-  if (ActiveTemplate < 0) or (ActiveTemplate >= Length(Templates)) then
-    Exit;
-  OldS := ActiveSession;
-  OldW := ActiveWindow;
-  W := -1;
-  if (AIndex >= 0) and (AIndex < Length(Templates[ActiveTemplate].Sessions)) and
-     Templates[ActiveTemplate].Sessions[AIndex].Enabled then
-    for I := 0 to Length(Templates[ActiveTemplate].Sessions[AIndex].Windows) - 1 do
-      if Templates[ActiveTemplate].Sessions[AIndex].Windows[I].Enabled then
-      begin
-        W := I;
-        Break;
-      end;
-  if (W < 0) or not ActivateTemplate(ActiveTemplate, AIndex, W) then
-  begin
-    if (OldS >= 0) and (OldW >= 0) then
-      ActivateTemplate(ActiveTemplate, OldS, OldW);
-    MessageBox(UiText('The session could not be started.',
-      'No se pudo iniciar la sesion'), nil,
-      mfError or mfOKButton);
-  end;
+  end
+  else
+    ProfileMode := True;
 end;
 
 procedure TSuperApp.DoSwitchWindow(AIndex: integer);
 var
   OldWindow: integer;
 begin
-  if (ActiveTemplate < 0) or (ActiveTemplate >= Length(Templates)) or
-     (ActiveSession < 0) or
-     (ActiveSession >= Length(Templates[ActiveTemplate].Sessions)) then
+  if (ActiveProfile < 0) or (ActiveProfile >= Length(Profiles)) then
     Exit;
   if (AIndex < 0) or
-     (AIndex >= Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows)) or
-     (not Templates[ActiveTemplate].Sessions[ActiveSession].Windows[AIndex].Enabled) then
+     (AIndex >= Length(Profiles[ActiveProfile].Windows)) or
+     (not Profiles[ActiveProfile].Windows[AIndex].Enabled) then
     Exit;
   OldWindow := ActiveWindow;
-  if not ActivateTemplate(ActiveTemplate, ActiveSession, AIndex) then
+  if not ActivateProfile(ActiveProfile, AIndex) then
   begin
     if OldWindow >= 0 then
-      ActivateTemplate(ActiveTemplate, ActiveSession, OldWindow);
+      ActivateProfile(ActiveProfile, OldWindow);
     MessageBox(UiText('The window could not be started.',
       'No se pudo iniciar la ventana'), nil,
       mfError or mfOKButton);
@@ -2066,11 +2535,9 @@ procedure TSuperApp.DoCycleWindow(ADelta: integer);
 var
   N, Step, Candidate: integer;
 begin
-  if (ActiveTemplate < 0) or (ActiveTemplate >= Length(Templates)) or
-     (ActiveSession < 0) or
-     (ActiveSession >= Length(Templates[ActiveTemplate].Sessions)) then
+  if (ActiveProfile < 0) or (ActiveProfile >= Length(Profiles)) then
     Exit;
-  N := Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows);
+  N := Length(Profiles[ActiveProfile].Windows);
   if N = 0 then
     Exit;
   Candidate := ActiveWindow;
@@ -2079,7 +2546,7 @@ begin
     Candidate := (Candidate + ADelta) mod N;
     if Candidate < 0 then
       Inc(Candidate, N);
-    if Templates[ActiveTemplate].Sessions[ActiveSession].Windows[Candidate].Enabled then
+    if Profiles[ActiveProfile].Windows[Candidate].Enabled then
     begin
       DoSwitchWindow(Candidate);
       Exit;
@@ -2099,6 +2566,10 @@ begin
     Exit;
   end;
   OldFocused := Lay.Focused;
+  // en remoto el panel vive en el daemon: matarlo alli y compactar en
+  // espejo (mismos indices); en local KillPane hace el trabajo
+  if RemoteMode and (Remote <> nil) and Remote.Connected then
+    Remote.SendKillPane(i);
   Lay.ClosePane(i);
   KillPane(i);
   for j := i to MAX_PANES - 2 do
@@ -2130,12 +2601,207 @@ begin
     Lay.Focused := FirstVisiblePane;
   RelayoutAll;
   FocusPane(Lay.Focused);
+  SyncRemoteLayout; // el arbol cambio: reflejarlo en el daemon
+end;
+
+// geometria actual de todas las ventanas (mismas reglas que el guardado
+// local: una maximizada aporta su ZoomRect, una minimizada sus bounds)
+procedure TSuperApp.CollectPaneGeom(out AGeom: TPaneGeomArray;
+  out ADeskW, ADeskH: integer);
+var
+  n, i: integer;
+  WR, RD: Objects.TRect;
+begin
+  AGeom := Default(TPaneGeomArray);
+  ADeskW := 0;
+  ADeskH := 0;
+  n := Lay.PaneCount;
+  if (n < 1) or (Desktop = nil) then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  ADeskW := RD.B.X - RD.A.X;
+  ADeskH := RD.B.Y - RD.A.Y;
+  SetLength(AGeom, n);
+  for i := 0 to n - 1 do
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      if Win[i]^.Zoomed then
+        WR := Win[i]^.ZoomRect
+      else if Win[i]^.Minimized then
+        WR := Win[i]^.SavedRect
+      else
+      begin
+        WR := Default(Objects.TRect);
+        Win[i]^.GetBounds(WR);
+      end;
+      AGeom[i].BX := WR.A.X;
+      AGeom[i].BY := WR.A.Y;
+      AGeom[i].BW := WR.B.X - WR.A.X;
+      AGeom[i].BH := WR.B.Y - WR.A.Y;
+      AGeom[i].Zoomed := Win[i]^.Zoomed;
+      AGeom[i].Minimized := Win[i]^.Minimized;
+    end;
+end;
+
+// estando enganchado, empuja el estado del cliente al daemon para que el
+// proximo attach restaure exactamente lo que se ve ahora
+procedure TSuperApp.SyncRemoteLayout;
+var
+  Geom: TPaneGeomArray;
+  Titles: TStrArray;
+  DeskW, DeskH: integer;
+  n, i: integer;
+begin
+  if (not RemoteMode) or (Remote = nil) or (not Remote.Connected) then
+    Exit;
+  n := Lay.PaneCount;
+  if n < 1 then
+    Exit;
+  CollectPaneGeom(Geom, DeskW, DeskH);
+  if Length(Geom) <> n then
+    Exit;
+  Titles := Default(TStrArray);
+  SetLength(Titles, n);
+  for i := 0 to n - 1 do
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+      Titles[i] := Win[i]^.GetTitle(80);
+  Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
+    DeskW, DeskH);
+end;
+
+// Window|Tile clasico: recalcular el mosaico y descartar geometria manual
+procedure TSuperApp.DoTilePanes;
+var
+  i: integer;
+begin
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      RestoreWindow(i);
+  RelayoutAll;
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// Window|Cascade clasico: ventanas escalonadas de 2/3 del escritorio
+procedure TSuperApp.DoCascadePanes;
+var
+  RD, R: Objects.TRect;
+  i, k, w, h, maxoff: integer;
+begin
+  if Desktop = nil then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  w := (RD.B.X - RD.A.X) * 2 div 3;
+  h := (RD.B.Y - RD.A.Y) * 2 div 3;
+  if w < 20 then w := 20;
+  if h < 6 then h := 6;
+  maxoff := RD.B.Y - RD.A.Y - h - 1;
+  if maxoff < 1 then maxoff := 1;
+  k := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and (not Win[i]^.Minimized) then
+    begin
+      R.Assign(RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w),
+        RD.A.Y + k mod maxoff,
+        RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w) + w,
+        RD.A.Y + k mod maxoff + h);
+      Win[i]^.Locate(R);
+      Inc(k);
+    end;
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// rejilla del vendor: reparte todas las visibles en filas y columnas
+// que quepan en pantalla (TDeskTop.Tile sobre las vistas ofTileable)
+procedure TSuperApp.DoOrganizePanes;
+var
+  R: Objects.TRect;
+  i: integer;
+  HasIcons: boolean;
+begin
+  if Desktop = nil then
+    Exit;
+  R := Default(Objects.TRect);
+  Desktop^.GetExtent(R);
+  HasIcons := False;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+      HasIcons := True;
+  if HasIcons then
+    Dec(R.B.Y, 2); // respetar la franja de iconos
+  Desktop^.Tile(R);
+  ResetVideoSurface;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  SyncRemoteLayout;
+end;
+
+// Window|List clasico (Alt+0): elegir panel, restaurando si esta minimizado
+procedure TSuperApp.DoPaneList;
+var
+  Titles: TStrArray;
+  n, i, Sel: integer;
+  T: string;
+begin
+  n := Lay.PaneCount;
+  if n < 1 then
+    Exit;
+  Titles := Default(TStrArray);
+  SetLength(Titles, n);
+  for i := 0 to n - 1 do
+  begin
+    T := '';
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      T := Win[i]^.GetTitle(60);
+      if Win[i]^.Minimized then
+        T := T + UiText(' (minimized)', ' (minimizada)');
+      if Win[i]^.Zoomed then
+        T := T + UiText(' (zoom)', ' (zoom)');
+    end;
+    Titles[i] := Format('%d  %s', [i + 1, T]);
+  end;
+  Sel := -1;
+  if RunPaneList(Titles, Lay.Focused, Sel) then
+    if (Sel >= 0) and (Sel < MAX_PANES) and (Win[Sel] <> nil) then
+    begin
+      if Win[Sel]^.Minimized then
+        RestoreWindow(Sel);
+      FocusPane(Sel);
+    end;
+end;
+
+// cambio de paleta en vivo + persistencia en superterm.ini
+procedure TSuperApp.ApplyPalette(AKind: integer);
+begin
+  if (AKind < apColor) or (AKind > apMonochrome) then
+    Exit;
+  AppPalette := AKind;
+  case AKind of
+    apBlackWhite: Cfg.Palette := 'bw';
+    apMonochrome: Cfg.Palette := 'mono';
+  else
+    Cfg.Palette := 'color';
+  end;
+  SaveConfig(Cfg);
+  RebuildMenu;
+  RebuildStatusLine;
+  ResetVideoSurface;
+  ReDraw;
 end;
 
 procedure TSuperApp.SaveSessionNow;
 var
   Pin: TPaneArray;
   n, i: integer;
+  RD, WR: Objects.TRect;
 begin
   n := Lay.PaneCount;
   if n < 1 then
@@ -2149,7 +2815,7 @@ begin
     if Panes[i] <> nil then
     begin
       if PaneTerm[i] >= 0 then
-        Pin[i].Term := SysTerms[PaneTerm[i]].Name
+        Pin[i].Term := WClasses[PaneTerm[i]].Name
       else
       begin
         Panes[i].QueryState;
@@ -2158,13 +2824,35 @@ begin
         Pin[i].Args := Panes[i].TitleArgs;
       end;
     end;
+    // geometria y estado de la ventana: para una maximizada el rect real
+    // es ZoomRect (el de restauracion); Minimize solo oculta, conserva bounds
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      if Win[i]^.Zoomed then
+        WR := Win[i]^.ZoomRect
+      else if Win[i]^.Minimized then
+        WR := Win[i]^.SavedRect
+      else
+      begin
+        WR := Default(Objects.TRect);
+        Win[i]^.GetBounds(WR);
+      end;
+      Pin[i].BX := WR.A.X;
+      Pin[i].BY := WR.A.Y;
+      Pin[i].BW := WR.B.X - WR.A.X;
+      Pin[i].BH := WR.B.Y - WR.A.Y;
+      Pin[i].Minimized := Win[i]^.Minimized;
+      Pin[i].Zoomed := Win[i]^.Zoomed;
+    end;
   end;
-  SaveSession(SessionFile, Lay, Pin);
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  SaveSession(SessionFile, Lay, Pin, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
 end;
 
 procedure TSuperApp.HandleEvent(var Event: TEvent);
 var
-  i, Num, EnabledIndex: integer;
+  i: integer;
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
@@ -2179,9 +2867,72 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
+      // chords del prefijo (estilo tmux): d=detach, n/p=ventana +-,
+      // 1..9=ventana N, flechas=tamano del panel, prefijo doble=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('c')) or (PrefixByte = Ord('C')) then
+      begin
+        Message(@Self, evCommand, cmClassPick, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('s')) or (PrefixByte = Ord('S')) then
+      begin
+        Message(@Self, evCommand, cmSessionPick, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('n')) or (PrefixByte = Ord('N')) then
+      begin
+        Message(@Self, evCommand, cmWindowNext, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('p')) or (PrefixByte = Ord('P')) then
+      begin
+        Message(@Self, evCommand, cmWindowPrev, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte >= Ord('1')) and (PrefixByte <= Ord('9')) then
+      begin
+        Message(@Self, evCommand, cmWindowBase + PrefixByte - Ord('1'), nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbRight then
+      begin
+        Message(@Self, evCommand, cmGrowV, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbLeft then
+      begin
+        Message(@Self, evCommand, cmShrinkV, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbDown then
+      begin
+        Message(@Self, evCommand, cmGrowH, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbUp then
+      begin
+        Message(@Self, evCommand, cmShrinkH, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if PrefixByte = byte(Cfg.PrefixKey) then
+      begin
+        // prefijo doble: enviar UN prefijo literal al panel (como tmux)
+        WritePaneInput(Lay.Focused, AnsiChar(Chr(Cfg.PrefixKey)));
         ClearEvent(Event);
         Exit;
       end;
@@ -2199,25 +2950,8 @@ begin
       Exit;
     end;
   end;
-  // TProgram consumes Alt-1..Alt-9 for window-number selection before menu
-  // commands reach us. Handle the documented terminal shortcuts first.
-  if Event.What = evKeyDown then
-    for Num := 1 to 9 do
-      if Event.KeyCode = kbAlt1 + (Num - 1) then
-      begin
-        EnabledIndex := 0;
-        for i := 0 to Length(SysTerms) - 1 do
-          if SysTerms[i].Enabled then
-          begin
-            Inc(EnabledIndex);
-            if EnabledIndex = Num then
-            begin
-              DoOpenSysTerm(i);
-              ClearEvent(Event);
-              Exit;
-            end;
-          end;
-      end;
+  // Alt-1..9 ya NO se intercepta: cae al TProgram nativo, que selecciona
+  // el panel N (cmSelectWindowNum); abrir clases vive en el menu Clases
   // sincronizar foco del layout con la ventana seleccionada
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
@@ -2241,22 +2975,74 @@ begin
       cmPaneNext: CyclePane(1);
       cmPanePrev: CyclePane(-1);
       cmWindowMinimize: MinimizeWindow(Lay.Focused);
+      cmAbout: ShowAbout;
+      cmPaneTile: DoTilePanes;
+      cmPaneCascade: DoCascadePanes;
+      cmPaneOrganize: DoOrganizePanes;
+      cmPaneList: DoPaneList;
+      cmRedrawAll:
+        begin
+          ResetVideoSurface;
+          ReDraw;
+        end;
+      cmToggleAutoSave:
+        begin
+          Cfg.AutoSave := not Cfg.AutoSave;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
+      cmToggleAutoRestore:
+        begin
+          Cfg.AutoRestore := not Cfg.AutoRestore;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
       cmWindowMinimizeAll: MinimizeAllWindows;
       cmWindowRestoreAll: RestoreAllWindows;
       cmSaveSess:
         begin
-          if TemplateMode then
+          // toast contextual: cada modo dice exactamente que se guardo
+          if ProfileMode then
           begin
-            RememberTemplateSelection;
+            RememberProfileSelection;
             SaveConfig(Cfg);
+            MessageBox(UiText('Profile selection saved.',
+              'Seleccion del perfil guardada.'), nil,
+              mfInformation or mfOKButton);
+          end
+          else if RemoteMode then
+          begin
+            SyncRemoteLayout;
+            MessageBox(UiText('Layout synced to the detached session.',
+              'Layout sincronizado con la sesion separada.'), nil,
+              mfInformation or mfOKButton);
           end
           else
+          begin
             SaveSessionNow;
-          MessageBox(UiText('Session saved.', 'Sesion guardada.'), nil,
-            mfInformation or mfOKButton);
+            MessageBox(UiText('Session layout saved.',
+              'Layout de la sesion guardado.'), nil,
+              mfInformation or mfOKButton);
+          end;
         end;
       cmSessionWizard: RunSessionWizard;
       cmDetach: RequestDetach;
+      cmSessionPick: DoSessionPick;
+      cmClassPick:
+        begin
+          if RunClassPicker(WClasses, i) then
+          begin
+            if i < 0 then
+              DoSplit(sdV, -1)
+            else
+              DoOpenClassPane(i);
+          end;
+        end;
+      cmClassManage:
+        begin
+          if RunClassManager(WClasses) then
+            RebuildMenu;
+        end;
       cmHelp: ShowHelp;
       cmQuitNoSave:
         begin
@@ -2279,39 +3065,38 @@ begin
         RebuildMenu;
         RebuildStatusLine;
       end
-      else if (Event.Command >= cmTemplateBase) and
-         (Event.Command < cmTemplateBase + Length(Templates)) then
-        DoSwitchTemplate(Event.Command - cmTemplateBase)
-      else if TemplateMode and (ActiveTemplate >= 0) and
-         (ActiveTemplate < Length(Templates)) and
-         (Event.Command >= cmSessionBase) and
-         (Event.Command < cmSessionBase + Length(Templates[ActiveTemplate].Sessions)) then
-        DoSwitchSession(Event.Command - cmSessionBase)
-      else if TemplateMode and (ActiveTemplate >= 0) and
-         (ActiveTemplate < Length(Templates)) and (ActiveSession >= 0) and
-         (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) and
-         (Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) > 0) and
+      else if (Event.Command >= cmProfileBase) and
+         (Event.Command < cmProfileBase + Length(Profiles)) then
+        DoSwitchProfile(Event.Command - cmProfileBase)
+      else if Event.Command = cmProfileSaveAs then
+        RunProfileSaveAs
+      else if Event.Command = cmProfileManage then
+        DoProfileManage
+      else if ProfileMode and (ActiveProfile >= 0) and
+         (ActiveProfile < Length(Profiles)) and
+         (Length(Profiles[ActiveProfile].Windows) > 0) and
          (Event.Command = cmWindowNext) then
         DoCycleWindow(+1)
-      else if TemplateMode and (ActiveTemplate >= 0) and
-         (ActiveTemplate < Length(Templates)) and (ActiveSession >= 0) and
-         (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) and
-         (Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) > 0) and
+      else if ProfileMode and (ActiveProfile >= 0) and
+         (ActiveProfile < Length(Profiles)) and
+         (Length(Profiles[ActiveProfile].Windows) > 0) and
          (Event.Command = cmWindowPrev) then
         DoCycleWindow(-1)
-       else if TemplateMode and (ActiveTemplate >= 0) and
-          (ActiveTemplate < Length(Templates)) and (ActiveSession >= 0) and
-          (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) and
+       else if ProfileMode and (ActiveProfile >= 0) and
+          (ActiveProfile < Length(Profiles)) and
           (Event.Command >= cmWindowBase) and
           (Event.Command < cmWindowBase +
-           Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows)) then
+           Length(Profiles[ActiveProfile].Windows)) then
          DoSwitchWindow(Event.Command - cmWindowBase)
        else if (Event.Command >= cmWindowRestoreBase) and
           (Event.Command < cmWindowRestoreBase + MAX_PANES) then
          RestoreWindow(Event.Command - cmWindowRestoreBase)
-       else if (Event.Command >= cmOpenTerm) and
-         (Event.Command < cmOpenTerm + Length(SysTerms)) then
-        DoOpenSysTerm(Event.Command - cmOpenTerm)
+       else if (Event.Command >= cmPaletteBase) and
+          (Event.Command <= cmPaletteBase + apMonochrome) then
+         ApplyPalette(Event.Command - cmPaletteBase)
+       else if (Event.Command >= cmOpenClass) and
+         (Event.Command < cmOpenClass + Length(WClasses)) then
+        DoOpenClassPane(Event.Command - cmOpenClass)
       else
         Exit;
     end;
@@ -2369,6 +3154,13 @@ var
           begin
             RemoteLost := True;
             RemoteMode := False;
+            // marcar antes del MessageBox: nada de esta instancia debe
+            // guardarse (el layout es el de la sesion remota perdida)
+            SkipSave := True;
+            MessageBox(UiText('Connection to the session was lost.',
+              'Se perdio la conexion con la sesion.'), nil,
+              mfError or mfOKButton);
+            Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
     end;
@@ -2426,8 +3218,8 @@ var
         begin
           Panes[i].MarkExited;
           if (PaneTerm[i] >= 0) and
-             (PaneTerm[i] < Length(SysTerms)) and
-             (SysTerms[PaneTerm[i]].Kind = tkSSH) then
+             (PaneTerm[i] < Length(WClasses)) and
+             (WClasses[PaneTerm[i]].Kind = wcSSH) then
             FallbackPane(i)
           else if Win[i] <> nil then
             Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
@@ -2460,196 +3252,252 @@ var
   end;
 end;
 
+// fila informativa de menu: siempre en gris, nunca despachable (los sets
+// de comandos de TV solo cubren 0..255, asi que se marca el item directo)
+function NewInfoItem(const AText, AParam: string; ANext: PMenuItem): PMenuItem;
+begin
+  Result := NewItem(AText, AParam, kbNoKey, cmInfoRow, hcNoContext, ANext);
+  if Result <> nil then
+    Result^.Disabled := True;
+end;
+
 procedure TSuperApp.InitMenuBar;
 var
   R: Objects.TRect;
-  MPanes, MSize, MSess, MTemplates, MSessions, MWindows, MTerms, MHelp,
-    MLanguage: PMenu;
-  MItems, Chain: PMenuItem;
-  TemplateItems, SessionItems, WindowItems, LanguageItems: PMenuItem;
-  i, Num, Key: integer;
-  Mark, TitleS: string;
-  HasMinimized: boolean;
+  MPanes, MWindows, MClasses, MProfiles, MSessMenu, MOptions, MHelp: PMenu;
+  Chain: PMenuItem;
+  PaneItems, WindowItems, ClassItems, ProfileItems, SessItems,
+    LanguageItems: PMenuItem;
+  i, Num: integer;
+  TitleS: string;
+  HasProfiles: boolean;
+  PaletteItems: PMenuItem;
 begin
   R := Default(Objects.TRect);
   GetExtent(R);
   R.B.Y := R.A.Y + 1;
-  MPanes := NewMenu(
-    NewItem(UiText('~V~ertical (F2)', '~V~ertical (F2)'), '', kbF2,
-      cmSplitV, hcNoContext,
-    NewItem(UiText('~H~orizontal (F3)', '~H~orizontal (F3)'), '', kbF3,
-      cmSplitH, hcNoContext,
-    NewItem(UiText('~C~lose (Alt-F3)', '~C~errar (Alt-F3)'), '', kbAltF3,
-      cmPaneClose, hcNoContext,
-    NewItem(UiText('~N~ext (F6)', 'Siguiente (~F6~)'), '', kbF6,
-      cmPaneNext, hcNoContext,
-    NewItem(UiText('~P~revious (F7)', 'Anterior (~F7~)'), '', kbF7,
-      cmPanePrev, hcNoContext,
-     nil))))));
-  MSize := NewMenu(
-    NewItem(UiText('More ~width~ (+)', 'Mas ~ancho~ (+)'), '', kbGrayPlus,
-      cmGrowV, hcNoContext,
-    NewItem(UiText('Less ~width~ (-)', 'Menos an~c~ho (-)'), '', kbGrayMinus,
-      cmShrinkV, hcNoContext,
-    NewItem(UiText('More ~height~ (*)', 'Mas ~alto~ (*)'), '', kbNoKey,
-      cmGrowH, hcNoContext,
-    NewItem(UiText('Less ~height~ (/)', 'Menos al~t~o (/)'), '', kbNoKey,
-      cmShrinkH, hcNoContext,
-     nil)))));
-  MSess := NewMenu(
-    NewItem(UiText('~N~ew session wizard', '~A~sistente nueva sesion'), '',
-      kbNoKey, cmSessionWizard, hcNoContext,
-    NewItem(UiText('~D~etach (Ctrl-B D)', '~S~eparar (Ctrl-B D)'), '',
-      kbNoKey, cmDetach, hcNoContext,
-    NewItem(UiText('~S~ave (Ctrl-S)', '~G~uardar (Ctrl-S)'), '', kbCtrlS,
-      cmSaveSess, hcNoContext,
-    NewItem(UiText('S~a~ve and exit (Alt-X)', '~S~alir guardando (Alt-X)'),
-      '', kbAltX, cmQuit, hcNoContext,
-     NewItem(UiText('Exit ~without~ saving (Alt-Q)',
-       'Salir ~sin~ guardar (Alt-Q)'), '', kbAltQ, cmQuitNoSave, hcNoContext,
-       nil))))));
 
-  TemplateItems := nil;
-  for i := Length(Templates) - 1 downto 0 do
-    if Templates[i].Enabled then
-    begin
-      if i = ActiveTemplate then Mark := '*' else Mark := ' ';
-      Chain := NewItem(Format('%s %s', [
-        Mark,
-        Copy(Templates[i].Name, 1, 24)]), '', kbNoKey,
-        cmTemplateBase + i, hcNoContext, TemplateItems);
-      if Chain <> nil then
-        TemplateItems := Chain;
-    end;
-  MTemplates := NewMenu(TemplateItems);
-
-  SessionItems := nil;
-  if (ActiveTemplate >= 0) and (ActiveTemplate < Length(Templates)) then
-    for i := Length(Templates[ActiveTemplate].Sessions) - 1 downto 0 do
-      if Templates[ActiveTemplate].Sessions[i].Enabled then
-      begin
-        if i = ActiveSession then Mark := '*' else Mark := ' ';
-        Chain := NewItem(Format('%s %s', [
-          Mark,
-          Copy(Templates[ActiveTemplate].Sessions[i].Name, 1, 24)]),
-          '', kbNoKey, cmSessionBase + i, hcNoContext, SessionItems);
-        if Chain <> nil then
-          SessionItems := Chain;
-      end;
-  MSessions := NewMenu(SessionItems);
-
-  WindowItems := nil;
-  if TemplateMode then
-  begin
-    WindowItems := NewItem(UiText('Next window (F8)', 'Siguiente ventana (F8)'), '', kbF8,
-      cmWindowNext, hcNoContext,
-      NewItem(UiText('Previous window (F9)', 'Ventana anterior (F9)'), '', kbF9, cmWindowPrev,
-      hcNoContext, nil));
-  end;
-  if TemplateMode and (ActiveTemplate >= 0) and
-     (ActiveTemplate < Length(Templates)) and
-     (ActiveSession >= 0) and
-     (ActiveSession < Length(Templates[ActiveTemplate].Sessions)) then
-    for i := Length(Templates[ActiveTemplate].Sessions[ActiveSession].Windows) - 1
-      downto 0 do
-      if Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Enabled then
-      begin
-        Chain := NewItem(Format('%d %s', [i + 1,
-          Copy(Templates[ActiveTemplate].Sessions[ActiveSession].Windows[i].Name,
-          1, 22)]), '', kbNoKey, cmWindowBase + i, hcNoContext,
-         WindowItems);
-         if Chain <> nil then
-           WindowItems := Chain;
-       end;
-  HasMinimized := False;
-  for i := 0 to MAX_PANES - 1 do
+  // ---- Paneles: operaciones de tile (split, foco, zoom, min, tamano) ----
+  PaneItems := nil;
+  PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #24,
+    kbNoKey, cmShrinkH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~T~aller', 'Mas a~l~to'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #25,
+    kbNoKey, cmGrowH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Narrow~e~r', 'M~e~nos ancho'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #27,
+    kbNoKey, cmShrinkV, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~W~ider', 'Mas ~a~ncho'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #26,
+    kbNoKey, cmGrowV, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'), 'Ctrl-F5',
+    kbCtrlF5, cmResize, hcNoContext, PaneItems);
+  for i := MAX_PANES - 1 downto 0 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
-      HasMinimized := True;
-  if HasMinimized then
+    begin
+      TitleS := Trim(Win[i]^.GetTitle(24));
+      if TitleS = '' then
+        TitleS := UiText('pane ', 'panel ') + IntToStr(i + 1);
+      Chain := NewItem(Format(UiText('Restore %d %s', 'Restaurar %d %s'),
+        [i + 1, Copy(TitleS, 1, 20)]), '', kbNoKey,
+        cmWindowRestoreBase + i, hcNoContext, PaneItems);
+      if Chain <> nil then
+        PaneItems := Chain;
+    end;
+  PaneItems := NewItem(UiText('~R~estore all', '~R~estaurar todos'), '',
+    kbNoKey, cmWindowRestoreAll, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Minimize ~a~ll', 'Minimizar to~d~os'), '',
+    kbNoKey, cmWindowMinimizeAll, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
+    kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Ma~x~imize/restore', 'Ma~x~imizar/restaurar'),
+    'F5', kbF5, cmZoom, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewInfoItem(UiText('Go to pane 1-9', 'Ir al panel 1-9'),
+    'Alt-1..9', PaneItems);
+  PaneItems := NewItem(UiText('~P~revious pane', 'Panel an~t~erior'), 'F7',
+    kbF7, cmPanePrev, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~N~ext pane', 'Siguie~n~te panel'), 'F6',
+    kbF6, cmPaneNext, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'), 'Alt-F3',
+    kbAltF3, cmPaneClose, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Split ~h~orizontal', 'Dividir ~h~orizontal'),
+    'F3', kbF3, cmSplitH, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Split ~v~ertical', 'Dividir ~v~ertical'),
+    'F2', kbF2, cmSplitV, hcNoContext, PaneItems);
+  MPanes := NewMenu(PaneItems);
+
+  // ---- Ventanas: solo navegacion de workspaces del perfil activo ----
+  WindowItems := nil;
+  if ProfileMode and (ActiveProfile >= 0) and
+     (ActiveProfile < Length(Profiles)) then
   begin
-    if WindowItems <> nil then
-      WindowItems := NewLine(WindowItems);
-    for i := MAX_PANES - 1 downto 0 do
-      if (Win[i] <> nil) and Win[i]^.Minimized then
+    for i := Length(Profiles[ActiveProfile].Windows) - 1 downto 0 do
+      if Profiles[ActiveProfile].Windows[i].Enabled then
       begin
-        TitleS := Trim(Win[i]^.GetTitle(24));
-        if TitleS = '' then
-          TitleS := UiText('pane ', 'panel ') + IntToStr(i + 1);
-        Chain := NewItem(Format(UiText('Restore %d %s', 'Restaurar %d %s'), [i + 1,
-          Copy(TitleS, 1, 20)]), '', kbNoKey,
-          cmWindowRestoreBase + i, hcNoContext, WindowItems);
+        Chain := NewItem(ActiveMark(i = ActiveWindow) +
+          Copy(Profiles[ActiveProfile].Windows[i].Name, 1, 22),
+          PrefixKeyLabel(Cfg.PrefixKey) + ' ' + IntToStr(i + 1), kbNoKey,
+          cmWindowBase + i, hcNoContext, WindowItems);
         if Chain <> nil then
           WindowItems := Chain;
       end;
-  end;
-  if WindowItems <> nil then
-    WindowItems := NewLine(WindowItems);
-  // Native TWindow commands provide move, resize, close, and zoom. The
-  // application-specific commands handle hidden windows and pane focus.
-  WindowItems := NewItem(UiText('Previous pane (F7)', 'Anterior panel (F7)'), '', kbF7, cmPanePrev,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Next pane (F6)', 'Siguiente panel (F6)'), '', kbF6, cmPaneNext,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Close window (Alt-F4)', 'Cerrar ventana (Alt-F4)'), '', kbAltF4, cmClose,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Move/resize (Ctrl-F5)', 'Mover/tamano (Ctrl-F5)'), '', kbCtrlF5, cmResize,
-    hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~R~estore all', '~R~estaurar todas'), '', kbNoKey,
-    cmWindowRestoreAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~M~inimize all', '~M~inimizar todas'), '', kbNoKey,
-    cmWindowMinimizeAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Minimize (Alt-F9)', 'Minimizar (Alt-F9)'), '', kbAltF9,
-    cmWindowMinimize, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('Maximize/restore (F5)', 'Maximizar/restaurar (F5)'), '', kbF5, cmZoom,
-    hcNoContext, WindowItems);
+    if WindowItems <> nil then
+      WindowItems := NewLine(WindowItems);
+    WindowItems := NewItem(UiText('~P~revious window', 'Ventana an~t~erior'),
+      'F9', kbF9, cmWindowPrev, hcNoContext, WindowItems);
+    WindowItems := NewItem(UiText('~N~ext window', 'Siguie~n~te ventana'),
+      'F8', kbF8, cmWindowNext, hcNoContext, WindowItems);
+  end
+  else
+    WindowItems := NewInfoItem(UiText('(no profile active)',
+      '(sin perfil activo)'), '', nil);
+  // organizacion de ventanas en pantalla (como Window del IDE clasico)
+  WindowItems := NewLine(WindowItems);
+  WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
+    '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'), 'Alt-0', kbAlt0,
+    cmPaneList, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('Cascad~e~', 'Cascad~a~'), '', kbNoKey,
+    cmPaneCascade, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~O~rganize', '~O~rganizar'), '', kbNoKey,
+    cmPaneOrganize, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~T~ile', '~M~osaico'), '', kbNoKey,
+    cmPaneTile, hcNoContext, WindowItems);
   MWindows := NewMenu(WindowItems);
 
-  // Terminal definitions from /etc/superterm/superterm.ini
-  MItems := nil;
+  // ---- Clases: abre un panel nuevo de cada clase configurada ----
+  ClassItems := nil;
   Num := 0;
-  for i := Length(SysTerms) - 1 downto 0 do
+  for i := 0 to Length(WClasses) - 1 do
+    if WClasses[i].Enabled then
+      Inc(Num);
+  for i := Length(WClasses) - 1 downto 0 do
   begin
-    if not SysTerms[i].Enabled then
+    if not WClasses[i].Enabled then
       continue;
-    Inc(Num);
-    if Num > 9 then
-      Break;
-    Key := kbAlt1 + (Num - 1);
-    Chain := NewItem(Format('~%d~ %s', [Num, Copy(SysTerms[i].Name, 1, 20)]), '',
-      Key, cmOpenTerm + i, hcNoContext, MItems);
+    if Num <= 8 then
+      TitleS := Format('~%d~ %s', [Num + 1, Copy(WClasses[i].Name, 1, 20)])
+    else
+      TitleS := '  ' + Copy(WClasses[i].Name, 1, 20);
+    Dec(Num);
+    Chain := NewItem(TitleS, '', kbNoKey, cmOpenClass + i, hcNoContext,
+      ClassItems);
     if Chain <> nil then
-      MItems := Chain;
+      ClassItems := Chain;
   end;
-  if MItems <> nil then
+  ClassItems := NewItem(UiText('~1~ Local shell', '~1~ Shell local'), '',
+    kbNoKey, cmSplitV, hcNoContext, ClassItems);
+  // gestion al final del menu, separada de la lista de apertura
+  Chain := ClassItems;
+  while (Chain <> nil) and (Chain^.Next <> nil) do
+    Chain := Chain^.Next;
+  if Chain <> nil then
+    Chain^.Next := NewLine(
+      NewItem(UiText('~O~pen class in new pane...',
+        '~A~brir clase en panel nuevo...'), PrefixKeyLabel(Cfg.PrefixKey) + ' c', kbNoKey, cmClassPick,
+        hcNoContext,
+      NewItem(UiText('~M~anage classes...', '~G~estionar clases...'), '',
+        kbNoKey, cmClassManage, hcNoContext, nil)));
+  MClasses := NewMenu(ClassItems);
+
+  // ---- Perfiles: activar y gestionar ----
+  ProfileItems := NewLine(
+    NewItem(UiText('~S~ave current as profile...',
+      '~G~uardar actual como perfil...'), '', kbNoKey, cmProfileSaveAs,
+      hcNoContext,
+    NewItem(UiText('~M~anage profiles...', 'Ge~s~tionar perfiles...'), '',
+      kbNoKey, cmProfileManage, hcNoContext, nil)));
+  HasProfiles := False;
+  for i := Length(Profiles) - 1 downto 0 do
+    if Profiles[i].Enabled then
+    begin
+      HasProfiles := True;
+      Chain := NewItem(ActiveMark(ProfileMode and (i = ActiveProfile)) +
+        Copy(Profiles[i].Name, 1, 24), '', kbNoKey,
+        cmProfileBase + i, hcNoContext, ProfileItems);
+      if Chain <> nil then
+        ProfileItems := Chain;
+    end;
+  if not HasProfiles then
+    ProfileItems := NewInfoItem(UiText('(no profiles yet)',
+      '(aun no hay perfiles)'), '', ProfileItems);
+  MProfiles := NewMenu(ProfileItems);
+
+  // ---- Sesiones: detach y ciclo de vida de la aplicacion ----
+  SessItems := nil;
+  SessItems := NewItem(UiText('~Q~uit without saving', 'Salir si~n~ guardar'),
+    'Alt-Q', kbAltQ, cmQuitNoSave, hcNoContext, SessItems);
+  SessItems := NewItem(UiText('Save and e~x~it', 'Guardar y sa~l~ir'),
+    'Alt-X', kbAltX, cmQuit, hcNoContext, SessItems);
+  SessItems := NewLine(SessItems);
+  SessItems := NewItem(UiText('Quick session ~w~izard...',
+    '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,
+    hcNoContext, SessItems);
+  SessItems := NewItem(UiText('Sa~v~e now', '~G~uardar ahora'), 'Ctrl-S',
+    kbCtrlS, cmSaveSess, hcNoContext, SessItems);
+  SessItems := NewLine(SessItems);
+  SessItems := NewItem(UiText('~A~ttach / manage sessions...',
+    '~C~onectar / gestionar sesiones...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
+    cmSessionPick, hcNoContext, SessItems);
+  SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' d',
+    kbNoKey, cmDetach, hcNoContext, SessItems);
+  // enganchado a una sesion con nombre: mostrarlo como fila informativa
+  if RemoteMode and (CurrentSessionName <> '') then
   begin
-    Chain := NewItem(UiText('New local ~t~erminal', 'Nueva ~t~erminal local'), '', kbNoKey, cmSplitV,
-      hcNoContext, MItems);
-    if Chain <> nil then
-      MItems := Chain;
+    SessItems := NewLine(SessItems);
+    SessItems := NewInfoItem(UiText('Session: ', 'Sesion: ') +
+      Copy(CurrentSessionName, 1, 24), '', SessItems);
   end;
-  MTerms := NewMenu(MItems);
+  MSessMenu := NewMenu(SessItems);
+
+  // ---- Opciones: idioma en orden fijo, nombres sin traducir ----
   LanguageItems := nil;
-  if CurrentLanguage = ulEnglish then Mark := '*' else Mark := ' ';
-  LanguageItems := NewItem(Format('%s ~E~nglish', [Mark]), '', kbNoKey,
-    cmLanguageBase + Ord(ulEnglish), hcNoContext, LanguageItems);
-  if CurrentLanguage = ulSpanish then Mark := '*' else Mark := ' ';
-  LanguageItems := NewItem(Format('%s E~s~panol', [Mark]), '', kbNoKey,
-    cmLanguageBase + Ord(ulSpanish), hcNoContext, LanguageItems);
-  MLanguage := NewMenu(LanguageItems);
+  LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulSpanish) +
+    'E~s~pa'#164'ol', '', kbNoKey, cmLanguageBase + Ord(ulSpanish),
+    hcNoContext, LanguageItems);
+  LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulEnglish) +
+    '~E~nglish', '', kbNoKey, cmLanguageBase + Ord(ulEnglish), hcNoContext,
+    LanguageItems);
+  PaletteItems := nil;
+  PaletteItems := NewItem(ActiveMark(AppPalette = apMonochrome) +
+    UiText('~M~onochrome', '~M~onocromo'), '', kbNoKey,
+    cmPaletteBase + apMonochrome, hcNoContext, PaletteItems);
+  PaletteItems := NewItem(ActiveMark(AppPalette = apBlackWhite) +
+    UiText('~B~lack and white', '~B~lanco y negro'), '', kbNoKey,
+    cmPaletteBase + apBlackWhite, hcNoContext, PaletteItems);
+  PaletteItems := NewItem(ActiveMark(AppPalette = apColor) +
+    UiText('~C~olor (classic Turbo Pascal)',
+      '~C~olor (Turbo Pascal clasico)'), '', kbNoKey,
+    cmPaletteBase + apColor, hcNoContext, PaletteItems);
+  MOptions := NewMenu(
+    NewSubMenu(UiText('~L~anguage', '~I~dioma'), hcNoContext,
+      NewMenu(LanguageItems),
+    NewSubMenu(UiText('Color ~p~alette', '~P~aleta de colores'), hcNoContext,
+      NewMenu(PaletteItems),
+    NewLine(
+    NewItem(ActiveMark(Cfg.AutoSave) +
+      UiText('Auto~s~ave on exit', 'Auto~g~uardar al salir'), '', kbNoKey,
+      cmToggleAutoSave, hcNoContext,
+    NewItem(ActiveMark(Cfg.AutoRestore) +
+      UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
+      kbNoKey, cmToggleAutoRestore, hcNoContext, nil))))));
+
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
-      cmHelp, hcNoContext, nil));
+      cmHelp, hcNoContext,
+    NewLine(
+    NewItem(UiText('A~b~out...', 'A~c~erca de...'), '', kbNoKey,
+      cmAbout, hcNoContext, nil))));
+
   MenuBar := New(PMenuBar, Init(R, NewMenu(
-    NewSubMenu(UiText('~P~anels', '~P~aneles'), 0, MPanes,
-    NewSubMenu(UiText('Si~z~e', 'Ta~m~ano'), 0, MSize,
-    NewSubMenu(UiText('~T~emplates', 'P~l~antillas'), 0, MTemplates,
+    NewSubMenu(UiText('~P~anes', '~P~aneles'), 0, MPanes,
     NewSubMenu(UiText('~W~indows', '~V~entanas'), 0, MWindows,
-    NewSubMenu(UiText('Sess~i~ons', '~S~esiones'), 0, MSessions,
-    NewSubMenu(UiText('T~e~rminals', '~T~erminales'), 0, MTerms,
-    NewSubMenu(UiText('~S~ession', 'S~e~sion'), 0, MSess,
+    NewSubMenu(UiText('~C~lasses', '~C~lases'), 0, MClasses,
+    NewSubMenu(UiText('P~r~ofiles', 'Pe~r~files'), 0, MProfiles,
+    NewSubMenu(UiText('~S~essions', '~S~esiones'), 0, MSessMenu,
+    NewSubMenu(UiText('~O~ptions', '~O~pciones'), 0, MOptions,
     NewSubMenu(UiText('~H~elp', '~A~yuda'), 0, MHelp,
-    NewSubMenu(UiText('~L~anguage', '~I~dioma'), 0, MLanguage,
-    nil))))))))))));
+    nil))))))))));
 end;
 
 procedure TSuperApp.InitStatusLine;
@@ -2661,31 +3509,30 @@ begin
   GetExtent(R);
   R.A.Y := R.B.Y - 1;
   Items := nil;
+  // teclas invisibles: despachan sin ocupar sitio en la linea de estado
+  Items := NewStatusKey('', kbAltQ, cmQuitNoSave, Items);
+  Items := NewStatusKey('', kbCtrlS, cmSaveSess, Items);
+  Items := NewStatusKey('', kbCtrlF5, cmResize, Items);
+  Items := NewStatusKey('', kbAltF9, cmWindowMinimize, Items);
+  Items := NewStatusKey('', kbAltF4, cmClose, Items);
+  Items := NewStatusKey('', kbAltF3, cmPaneClose, Items);
+  Items := NewStatusKey('', kbF9, cmWindowPrev, Items);
+  Items := NewStatusKey('', kbF7, cmPanePrev, Items);
+  Items := NewStatusKey('', kbF3, cmSplitH, Items);
+  // visibles: lo critico para un novato, cabiendo en 80 columnas
   Items := NewStatusKey(UiText('~Alt-X~ Exit', '~Alt-X~ Salir'), kbAltX,
     cmQuit, Items);
-  Items := NewStatusKey(UiText('~Alt-Q~ Exit without saving',
-    '~Alt-Q~ Sin guardar'), kbAltQ, cmQuitNoSave, Items);
-  Items := NewStatusKey(UiText('~Alt-F4~ Close', '~Alt-F4~ Cerrar'), kbAltF4,
-    cmClose, Items);
-  Items := NewStatusKey(UiText('~Alt-F3~ Close', '~Alt-F3~ Cerrar'), kbAltF3,
-    cmPaneClose, Items);
-  Items := NewStatusKey(UiText('~Ctrl-S~ Save', '~Ctrl-S~ Guardar'), kbCtrlS,
-    cmSaveSess, Items);
-  Items := NewStatusKey(UiText('Detach: Ctrl-B D', 'Separar: Ctrl-B D'),
+  Items := NewStatusKey(UiText(
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Detach',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Separar'),
     kbNoKey, cmDetach, Items);
-  Items := NewStatusKey(UiText('~Alt-F9~ Min.', '~Alt-F9~ Min.'), kbAltF9,
-    cmWindowMinimize, Items);
-  Items := NewStatusKey(UiText('~Ctrl-F5~ Move', '~Ctrl-F5~ Mover'), kbCtrlF5,
-    cmResize, Items);
-  Items := NewStatusKey(UiText('~F5~ Max/restore', '~F5~ Max/rest.'), kbF5,
+  Items := NewStatusKey(UiText('~F5~ Zoom', '~F5~ Zoom'), kbF5,
     cmZoom, Items);
-  Items := NewStatusKey(UiText('~F7~ Prev.', '~F7~ Ant.'), kbF7,
-    cmPanePrev, Items);
-  Items := NewStatusKey(UiText('~F6~ Next', '~F6~ Sig.'), kbF6,
+  Items := NewStatusKey(UiText('~F8~ Window', '~F8~ Ventana'), kbF8,
+    cmWindowNext, Items);
+  Items := NewStatusKey(UiText('~F6~ Pane', '~F6~ Panel'), kbF6,
     cmPaneNext, Items);
-  Items := NewStatusKey(UiText('~F3~ H-split', '~F3~ H-split'), kbF3,
-    cmSplitH, Items);
-  Items := NewStatusKey(UiText('~F2~ V-split', '~F2~ V-split'), kbF2,
+  Items := NewStatusKey(UiText('~F2~ Split', '~F2~ Dividir'), kbF2,
     cmSplitV, Items);
   StatusLine := New(PStatusLine, Init(R,
     NewStatusDef(0, $FFFF, Items, nil)));

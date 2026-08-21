@@ -82,7 +82,7 @@ if os.path.exists(SESS):
 s = Session()
 s.drain(2.5)
 scr = s.text()
-check("menu Terminals visible", "Terminals" in scr)
+check("menu Terminals visible", "Classes" in scr)
 check("titulo pane uno", "uno" in scr)
 check("titulo pane dos", "dos" in scr)
 check("t1 arrancado", pgrep('sleep 321') != '')

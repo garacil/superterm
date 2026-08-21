@@ -110,7 +110,7 @@ try:
     text = session.text()
     if 'db-shell' not in text:
         fails.append('SQLite template starts terminal')
-    os.write(session.fd, b'\x1bt')
+    os.write(session.fd, b'\x1br')
     session.drain(0.4)
     if 'database-template' not in session.text():
         fails.append('SQLite template appears in menu')

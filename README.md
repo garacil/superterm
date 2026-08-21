@@ -1,11 +1,11 @@
-# superterm
+# superterm 2.1
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
 visible pane remains a real PTY-backed terminal.
 
 It is designed for working with several local shells and remote SSH sessions
-at once. Sessions can be restored automatically, named templates can describe
+at once. Sessions can be restored automatically, named profiles can describe
 repeatable workspaces, and the session wizard can launch a small ad-hoc
 workspace without editing a configuration file.
 
@@ -19,16 +19,24 @@ panes in a normal GNU/Linux or macOS terminal window.
 - Vertical and horizontal pane splits, focus navigation, mouse focus, resize,
   maximize, minimize, restore, and close operations.
 - Up to 16 panes in one visible layout.
-- Local shell commands and SSH terminal definitions with keys, agents, or
-  optional `sshpass` password support.
-- Named templates containing sessions, windows, pane layouts, terminal
-  definitions, and optional post-connect commands.
-- INI templates and one SQLite database per template.
+- Window classes (`[class.*]`): reusable named pane definitions for local
+  commands and structured SSH connections with keys, agents, optional
+  `sshpass` password support, and post-connect commands.
+- Profiles (`[profile.*]`): named workspaces of windows and pane layouts
+  whose panes reference window classes. Legacy `[t-*]` terminals and
+  `[template.*]` templates (INI or SQLite) are still read and migrated.
+- Named multi-session detach: several live sessions under
+  `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
+  (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
+  remote PTYs stay alive on the session server.
+- A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
 - Automatic session save and restore through `~/.superterm/session.ini`.
-- Tmux-style live detach with `Ctrl-B`, `d`, or `Session -> Detach`. Local and
-  remote PTYs remain alive and can be continued with `superterm --attach`.
-- A session wizard for one to four panes. Each pane accepts a connection command
-  and an optional command to feed to the connection after it starts.
+- A quick session wizard for one to four panes. Each pane accepts a connection
+  command and an optional command to feed to the connection after it starts.
+- A custom keyboard driver: a lone `Esc` reaches the pane (timeout-based, not
+  treated as an Alt prefix), with CSI/SS3 decoding and X10/SGR mouse support.
+- 256-color and truecolor escape sequences are parsed and approximated to the
+  16-color palette.
 - English application interface by default, with a runtime-selectable Spanish
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux
@@ -183,17 +191,25 @@ python3 test/detach_test.py
 ./bin/superterm
 ```
 
-To return to a live session after detaching:
+Detaching prompts for a session name (default: the active profile). To
+return to a live session:
 
 ```sh
-./bin/superterm --attach
+./bin/superterm --attach            # one session: direct; several: picker
+./bin/superterm --attach dev        # attach by name
+./bin/superterm --list-sessions     # table of live sessions (purges orphans)
 ```
 
-Detach starts a per-user session server at `~/.superterm/session.sock`. The
-server owns the PTY masters, process groups, terminal parsers, and scrollback,
-so leaving the FreeVision client does not close local shells or remote SSH
-connections. `Alt-X` and `Alt-Q` remain permanent exits: they close the live
-session instead of creating a detachable one.
+Plain `superterm` also offers the session picker at startup when detached
+sessions exist. Each detach starts a per-user session server at
+`~/.superterm/sessions/<name>.sock` with a `<name>.ini` metadata sidecar
+(the pre-existing single `~/.superterm/session.sock` from older builds is
+still recognized). The server owns the PTY masters, process groups,
+terminal parsers, and scrollback, so leaving the FreeVision client does not
+close local shells or remote SSH connections. `Alt-X` and `Alt-Q` remain
+permanent exits: they close the live session instead of creating a
+detachable one. Inside the app, `Ctrl-Q s` opens the session picker to
+attach to or permanently close other sessions.
 
 Optional diagnostics:
 
@@ -205,32 +221,43 @@ Do not put passwords in command lines or debug logs.
 
 ## Controls
 
+`Ctrl-Q` is the default prefix key; `[keymap] prefix` can change it. After
+the prefix, an unbound key sends the prefix byte plus that key to the pane.
+
 | Key | Action |
 | --- | --- |
 | `F2` | Vertical split, side by side |
 | `F3` | Horizontal split, stacked |
-| `Alt-F3` | Close the focused pane; exit when one remains |
+| `Alt-F3` / `Alt-F4` | Close the focused pane; exit when one remains |
 | `F6` / `F7` | Next / previous pane |
-| `F5` | Maximize or restore the focused window |
-| `Ctrl-F5` | Move or resize the focused window |
-| `Alt-F9` | Minimize the focused window |
-| `Alt-F4` | Close the focused window |
-| `+` / `-` | Increase or decrease pane width |
-| `*` / `/` | Increase or decrease pane height |
-| `Ctrl-S` | Save the current session or template selection |
-| `Ctrl-B`, `d` | Detach the live session; reattach with `superterm --attach` |
+| `Alt-1..9` | Go to pane N |
+| `Alt-0` | Pane list: pick a pane, restoring it if minimized |
+| `F5` | Maximize or restore the focused pane |
+| `Ctrl-F5` | Move or resize the focused pane |
+| `Alt-F9` | Minimize the focused pane |
+| `F8` / `F9` | Next / previous profile window |
+| `Ctrl-Q 1..9` | Go to profile window N |
+| `Ctrl-Q n` / `Ctrl-Q p` | Next / previous profile window |
+| `Ctrl-Q` arrows | Resize the focused pane |
+| `Ctrl-Q c` | Open a window class in a new pane |
+| `Ctrl-Q s` | Session picker: attach to or close detached sessions |
+| `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
+| `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
 
-The same actions are available from `Panels`, `Size`, `Templates`, `Windows`,
-`Sessions`, `Terminals`, `Session`, and `Help`. The `Language` menu switches
-between `English` and `Espanol` immediately. In Spanish mode these menus are
-translated to `Paneles`, `Tamano`, `Plantillas`, `Ventanas`, `Sesiones`,
-`Terminales`, `Sesion`, and `Ayuda`.
+The same actions are available from the `Panes`, `Windows`, `Classes`,
+`Profiles`, `Sessions`, `Options`, and `Help` menus. The `Panes` menu also
+offers classic `Tile`, `Cascade`, and `Refresh display` operations. `Options`
+holds the language (`English`/`Espanol`, applied immediately), the color
+palette (color, black and white, monochrome), and the autosave/autorestore
+toggles. In Spanish mode the menus are `Paneles`, `Ventanas`, `Clases`,
+`Perfiles`, `Sesiones`, `Opciones`, and `Ayuda`.
 
 ## Session Wizard
 
-Open `Session -> New session wizard`. In Spanish mode use
+Open `Sessions -> Quick session wizard`. In Spanish mode use
 `Sesion -> Asistente nueva sesion`.
 
 The wizard asks for one to four panes. For each pane enter:
@@ -260,10 +287,10 @@ consume the same input, so key-based authentication is recommended.
 
 There are two configuration roles:
 
-- `~/.superterm/superterm.ini` stores user preferences such as language,
-  autosave, and default template/session/window selection.
-- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when unset, stores
-  terminal definitions and templates.
+- `~/.superterm/superterm.ini` stores user preferences (language, prefix key,
+  autosave, default profile) and the user's own window classes and profiles.
+- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when unset, can provide
+  shared window classes and profiles.
 
 They may be the same file for a personal installation:
 
@@ -271,8 +298,9 @@ They may be the same file for a personal installation:
 export SUPERTERM_INI="$HOME/.superterm/superterm.ini"
 ```
 
-The application creates `~/.superterm` automatically. Use mode `700` for the
-directory when it contains credentials.
+Classes and profiles from both files are merged by name; the user file wins.
+The application creates `~/.superterm` with mode `700` automatically and
+writes its own files with mode `600`.
 
 ### User settings
 
@@ -281,123 +309,117 @@ directory when it contains credentials.
 shell=/bin/bash
 login=1
 
+[keymap]
+prefix=ctrl-q               ; ctrl-a..ctrl-z, a letter, or 1..26
+
 [ui]
 language=en                 ; en (default) or es
+palette=color               ; color (default), bw, or mono
 
 [session]
 autosave=1
-autorestore=0               ; use 0 for a fresh template startup
-default_template=daily
-default_session=remote
-default_window=production
+autorestore=1               ; use 0 for a fresh profile startup
+default_profile=daily
 ```
 
 The language value accepts `en`, `english`, `es`, `spanish`, or `espanol`.
-Configuration keys and values such as `local`, `ssh`, `remote`, `ini`,
-`sqlite`, `L`, `V`, and `H` are stable format identifiers and must not be
-translated.
+The legacy `default_template`, `default_session`, and `default_window` keys
+are still honored to select the startup profile and window. Configuration
+keys and values such as `ini`, `sqlite`, `L`, `V`, and `H` are stable format
+identifiers and must not be translated.
 
-### Terminal definitions
+### Window classes
 
-Terminal sections must begin with `t`:
+A window class (`[class.NAME]`) is a reusable pane definition. Its type is
+derived from the fields: `connect` makes a free command class, `host` makes a
+structured SSH class, and neither makes a local class. Legacy `[t-*]`
+sections are still read and are migrated to `[class.*]` on save.
 
 ```ini
-[t-production]
+[class.production]
 name=production
 enabled=1
-type=ssh
 host=prod.example.com
 user=alice
 port=22
 key=~/.ssh/id_ed25519
+postconnect=tmux new -A -s main
 scrollback=20000
 
-[t-local-monitor]
-name=local-monitor
+[class.monitor]
+name=monitor
 enabled=1
-type=local
-shell=/bin/bash
-cmd=watch -n 2 uptime
-cwd=/tmp
+cmd=htop
 ```
 
-SSH fields include `host`, optional `user`, `port`, `key`, `password`, and
-optional remote `cmd`. Local fields include `shell`, `cmd`, and `cwd`.
+For SSH classes, `postconnect` is passed as the remote command, making
+`tmux new -A` natural; `password` (base64) is supported through `sshpass`
+but keys or an agent are preferred. For command and local classes,
+`postconnect` is fed through the connection's standard input.
 
-### Templates, sessions, and windows
+### Profiles
 
-A template is a named profile. A session selects its windows, and each window
-selects one or more panes:
+A profile (`[profile.NAME]`) is a named workspace: windows with pane layouts
+whose panes reference window classes. Legacy `[template.*]` sections (INI or
+SQLite `[storage]`) are still read and flattened into profiles.
 
 ```ini
-[template.office]
-name=office
-enabled=1
-default_session=remote
-sessions=remote,local
-
-[template.office.session.remote]
+[profile.daily]
+name=daily
 enabled=1
 focused_window=0
 windows=servers,logs
 
-[template.office.session.remote.window.servers]
+[profile.daily.window.servers]
 enabled=1
-layout=V:500;L;L
+layout=V:500;L;L            ; L = one pane; V side by side; H stacked
 focused_pane=0
-panes=production,backup
+panes=prod,mon
 
-[template.office.session.remote.window.servers.pane.production]
+[profile.daily.window.servers.pane.prod]
 enabled=1
-terminal=production-ssh
-postconnect=tmux attach -t terminalremota
+class=production
 
-[template.office.session.remote.window.servers.pane.backup]
+[profile.daily.window.servers.pane.mon]
 enabled=1
-terminal=backup-ssh
+class=monitor
 ```
 
-`postconnect` is optional. For SSH terminal definitions it is passed as the
-remote command, making `tmux attach` or `tmux new-session -A` natural. If it is
-empty, the terminal remains at the remote shell. Templates are alternatives,
-not simultaneous profiles; switching one recreates the target PTYs.
+Pane fields (`cmd`, `cwd`, `connect`, `postconnect`, `scrollback`) override
+the referenced class. Layout ratios range from `0` to `1000`. Switch profile
+windows with `Ctrl-Q 1..9`, `Ctrl-Q n`/`p`, or `F8`/`F9`.
 
-`layout=L` means one pane. `V:500;L;L` places two panes side by side, while an
-`H` node places them vertically. Ratios range from `0` to `1000`.
-
-SQLite can be selected with:
-
-```ini
-[storage]
-backend=sqlite
-directory=templates
-```
-
-Each `templates/*.db` file is one independent template database containing
-the `metadata`, `sessions`, `windows`, and `panes` tables.
-
-See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the complete grammar
-and [`docs/WIZARD.md`](docs/WIZARD.md) for the wizard behavior.
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the complete
+grammar, the SSH command structure, postconnect semantics, detached session
+storage, and legacy compatibility (`[t-*]`, `[template.*]`, SQLite storage,
+old `prefix=2`), and [`docs/WIZARD.md`](docs/WIZARD.md) for the wizard
+behavior.
 
 ### Fallback session
 
-When no template takes priority, `~/.superterm/session.ini` stores the current
-split tree and pane `cmd`, `cwd`, and terminal identity. With `autorestore=1`,
-the file is restored at startup. Set `autorestore=0` when a default template
-must create fresh daily connections.
+When no profile takes priority, `~/.superterm/session.ini` stores the current
+split tree and pane `cmd`, `cwd`, and class identity. With `autorestore=1`
+(the default), the file is restored at startup. Set `autorestore=0` when a
+default profile must create fresh daily connections.
 
 ## Source Layout
 
 ```text
 src/
-├── superterm.lpr   Program entry point.
+├── superterm.lpr   Program entry point and CLI (--attach, --list-sessions).
 ├── st_fvui.pas     FreeVision application, menus, panes, focus, and polling.
+├── st_dialogs.pas  Class/profile managers, session picker, pane list.
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
 ├── st_pty.pas      POSIX PTYs, fork/exec, I/O, resize, and process cleanup.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
-├── st_session.pas  Fallback session serialization and restore.
-├── st_config.pas   User settings, terminal definitions, and paths.
-├── st_templates.pas INI and SQLite template loading.
+├── st_server.pas   Detached session daemon, protocol and enumeration.
+├── st_session.pas  Session serialization and restore.
+├── st_wclass.pas   Window classes ([class.*], legacy [t-*] reader).
+├── st_profiles.pas Profiles ([profile.*], legacy template flattening).
+├── st_config.pas   User settings, prefix key, palette, and paths.
+├── st_templates.pas Legacy INI and SQLite template loading.
+├── st_kbd.pas      Custom keyboard driver (ESC timeout, CSI/SS3, mouse).
+├── st_video.pas    Wide video output, CP437 glyph mapping, cursor restore.
 ├── st_keys.pas     FreeVision key codes to terminal escape sequences.
 └── st_debug.pas    Optional runtime logging.
 ```
@@ -437,8 +459,8 @@ Current limitations:
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.
-- Switching templates recreates PTYs instead of using a separate persistent
-  server.
+- Activating a profile recreates local PTYs; only detached sessions keep
+  processes alive across a switch.
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 
@@ -447,7 +469,8 @@ better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author
 
-Author: German Luis Aracil Boned.
+Author: Germán Luis Aracil Boned — August 2026.
 
-See the source tree and bundled FreeVision licensing notices for project and
-dependency licensing details.
+superterm is free software, released under the GNU General Public License
+version 3 (see the `LICENSE` file). The bundled FreeVision fork in
+`vendor/fv322` keeps its own licensing notices.

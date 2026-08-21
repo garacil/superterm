@@ -724,6 +724,64 @@ begin
   Dirty := True;
 end;
 
+// distancia minima al cuadrado contra la paleta xterm de 16 colores; el
+// indice devuelto usa orden ANSI (0 negro, 1 rojo, ... 7 blanco, +8 brillo)
+function Ansi16FromRgb(R, G, B: integer): integer;
+const
+  PAL: array[0..15, 0..2] of integer = (
+    (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
+    (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
+    (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+    (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255));
+var
+  i, d, bestd, dr, dg, db: integer;
+begin
+  // los parametros CSI llegan sin limite: acotar a canal valido
+  if R < 0 then R := 0;
+  if R > 255 then R := 255;
+  if G < 0 then G := 0;
+  if G > 255 then G := 255;
+  if B < 0 then B := 0;
+  if B > 255 then B := 255;
+  Result := 7;
+  bestd := High(integer);
+  for i := 0 to 15 do
+  begin
+    dr := R - PAL[i][0];
+    dg := G - PAL[i][1];
+    db := B - PAL[i][2];
+    d := dr * dr + dg * dg + db * db;
+    if d < bestd then
+    begin
+      bestd := d;
+      Result := i;
+    end;
+  end;
+end;
+
+// indice xterm-256 -> ANSI 16 (cubo 6x6x6 y rampa de grises aproximados);
+// -1 = indice invalido, el llamante usa el color por defecto
+function Ansi16From256(N: integer): integer;
+const
+  CUBE: array[0..5] of integer = (0, 95, 135, 175, 215, 255);
+var
+  c, L: integer;
+begin
+  if (N >= 0) and (N < 16) then
+    Exit(N);
+  if (N >= 16) and (N <= 231) then
+  begin
+    c := N - 16;
+    Exit(Ansi16FromRgb(CUBE[c div 36], CUBE[(c div 6) mod 6], CUBE[c mod 6]));
+  end;
+  if (N >= 232) and (N <= 255) then
+  begin
+    L := 8 + 10 * (N - 232);
+    Exit(Ansi16FromRgb(L, L, L));
+  end;
+  Result := -1;
+end;
+
 function TScreen.GetParam(i, def: integer): integer;
 begin
   if (i <= FPCount) and (FPParams[i] <> -1) then
@@ -939,40 +997,41 @@ begin
               (word(n - 92) shl 4);
             38, 48:
               begin
-                if GetParam(i + 1, -1) = 5 then
+                // 38/48;5;N (indexado) consume 2 extra; 38/48;2;r;g;b
+                // (truecolor) consume 4; ambos se aproximan a ANSI 16
+                p2 := GetParam(i + 1, -1);
+                if p2 = 5 then
                 begin
-                  p1 := GetParam(i + 2, -1);
-                  if p1 < 8 then
-                  begin
-                    if n = 38 then
-                      Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(p1)
-                    else
-                      Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(p1) shl 4);
-                  end
-                  else if (p1 >= 8) and (p1 < 16) then
-                  begin
-                    if n = 38 then
-                      Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(p1 - 8) or A_BOLD
-                    else
-                      Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(p1) shl 4);
-                  end
+                  p1 := Ansi16From256(GetParam(i + 2, -1));
+                  Inc(i, 2);
+                end
+                else if p2 = 2 then
+                begin
+                  p1 := Ansi16FromRgb(GetParam(i + 2, 0), GetParam(i + 3, 0),
+                    GetParam(i + 4, 0));
+                  Inc(i, 4);
+                end
+                else
+                  p1 := -1; // forma desconocida: color por defecto
+                if n = 38 then
+                begin
+                  if p1 < 0 then
+                    Attr := (Attr and $FFF0) or A_FGDEF
+                  else if p1 < 8 then
+                    Attr := ((Attr and $FFF0) and
+                      (not (A_FGDEF or A_BOLD))) or word(p1)
                   else
-                  begin
-                    if n = 38 then
-                      Attr := (Attr and $FFF0) or A_FGDEF
-                    else
-                      Attr := (Attr and $FF0F) or A_BGDEF;
-                  end;
+                    Attr := ((Attr and $FFF0) and (not A_FGDEF)) or
+                      word(p1 and 7) or A_BOLD;
                 end
                 else
                 begin
-                  // 38;2;r;g;b truecolor: aproximar a default
-                  if n = 38 then
-                    Attr := (Attr and $FFF0) or A_FGDEF
+                  if p1 < 0 then
+                    Attr := (Attr and $FF0F) or A_BGDEF
                   else
-                    Attr := (Attr and $FF0F) or A_BGDEF;
+                    Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
+                      (word(p1) shl 4);
                 end;
-                Inc(i, 4);
               end;
           end;
           Inc(i);
@@ -1193,8 +1252,10 @@ begin
             else
               FPParams[FPCount] := FPParams[FPCount] * 10 + (b - $30);
           end
-          else if b = Ord(';') then
+          else if (b = Ord(';')) or (b = Ord(':')) then
           begin
+            // ':' separa subparametros (38:5:196m de emisores modernos);
+            // tratarlo como ';' evita imprimir el resto como texto
             Inc(FPCount);
             if FPCount > 15 then FPCount := 15;
           end

@@ -80,8 +80,8 @@ s = Session()
 try:
     s.drain(1.2)
     s.send(b'\x1bs')  # Session
-    check('session menu shows wizard', 'New session wizard' in s.text())
-    s.send(b'\r')
+    check('session menu shows wizard', 'Quick session wizard' in s.text())
+    s.send(b'w')
     s.send(b'2\r')
     s.send(b'bash -i\r')
     s.send(b'echo WIZARD_ONE\r')
