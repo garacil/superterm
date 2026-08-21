@@ -93,7 +93,8 @@ def check(name, cond):
         fails.append(name)
 
 def run_cli(*args):
-    env = dict(os.environ, HOME=HOME, SUPERTERM_INI=SYSINI)
+    # LANG=C: las aserciones de este test comprueban el formato ingles
+    env = dict(os.environ, HOME=HOME, SUPERTERM_INI=SYSINI, LANG='C')
     return subprocess.run([BIN, *args], capture_output=True, text=True, env=env)
 
 # ---- 1: separar la sesion A con nombre propio 'alfa' ----
