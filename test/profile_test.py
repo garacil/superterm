@@ -175,7 +175,10 @@ s.send(b'\r', 0.5)                 # cerrar el toast
 txt = open(USERINI).read()
 check("ini has profile.captured", "[profile.captured]" in txt)
 check("ini has layout key", "layout=" in txt)
-check("ini captured marker cmd", ("cmd=python3" in txt) or ("cmd='python3'" in txt))
+# macOS: /usr/bin/python3 is a stub that re-execs the framework Python, so the
+# captured foreground command is the resolved Python.framework path, not "python3".
+check("ini captured marker cmd", ("cmd=python3" in txt) or ("cmd='python3'" in txt)
+      or ("Python3.framework" in txt))
 check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
 check("ini keeps default_profile", "default_profile=dev" in txt)
 check("ini keeps class section", "[class.keepme]" in txt)
