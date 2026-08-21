@@ -42,6 +42,21 @@ panes in a normal GNU/Linux terminal window.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux
   mouse fixes. The system FreeVision installation is not modified.
 
+## Screenshots
+
+Reusable window classes, named workspaces, and detachable sessions, all edited
+in the app and stored in one INI file:
+
+| Window classes | Profiles |
+|---|---|
+| ![Window class manager](screenshots/classes.png) | ![Profile manager](screenshots/profiles.png) |
+
+| Detachable sessions | Quick session wizard |
+|---|---|
+| ![Session picker](screenshots/sessions.png) | ![Session wizard](screenshots/wizard.png) |
+
+More captures are on the [Screenshots wiki page](https://github.com/garacil/superterm/wiki/Screenshots).
+
 ## Platform Support
 
 The supported native platform is GNU/Linux: the GNU project's userland and
