@@ -9,6 +9,26 @@ at once. Sessions can be restored automatically, named profiles can describe
 repeatable workspaces, and the session wizard can launch a small ad-hoc
 workspace without editing a configuration file.
 
+Since 3.0, **every session is a client/server pair from the moment it
+starts**: the terminal you see is just the first attached client. That makes
+superterm far more than a window manager for shells — the entire workspace
+can be driven from any other shell, script, cron job or automation tool,
+with commands and flags accepted **in English and in Spanish**:
+
+```sh
+superterm send prod:2 tail -f /var/log/syslog   # type into any pane
+superterm capture prod:2 --history | grep ERROR # dump 100k lines of scrollback
+superterm new prod --cmd htop -t Monitor        # open panes from outside
+superterm focus prod:Monitor                    # move the focus
+superterm organize prod grid                    # re-tile every window
+superterm listar prod                           # the same CLI, en español
+```
+
+Meanwhile several people (or several of your own terminals) can be attached
+to that same session at once, each seeing every keystroke, title change and
+window operation live — and a slow or dead client can never stall the rest.
+Full reference: [`docs/CLI.md`](docs/CLI.md).
+
 ![superterm four-pane workspace](screenshots/four-pane.png)
 
 The screenshot shows the English interface with four independent PTY-backed
