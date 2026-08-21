@@ -4,7 +4,7 @@ import os, pty, time, select, sys, fcntl, termios, struct, subprocess
 import pyte
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-HOME = '/tmp/opencode/sthome'
+HOME = '/tmp/opencode/st-restore'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
 W, H = 110, 35
@@ -95,26 +95,26 @@ focused=1
 
 [pane0]
 cmd=
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=0
 
 [pane1]
 cmd=/usr/bin/true
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=1
 arg0=/usr/bin/true
 
 [pane2]
 cmd=
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=0
 
 [pane3]
 cmd=
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=0
 """)
@@ -139,13 +139,13 @@ deskh={DESKH}
 
 [pane0]
 cmd=
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=0
 
 [pane1]
 cmd=
-cwd=/tmp/opencode/sthome
+cwd=/tmp/opencode/st-restore
 term=
 argc=0
 bx={BX}

@@ -4,7 +4,7 @@ import os, pty, time, select, sys, fcntl, termios, struct, subprocess, re
 import pyte
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-HOME = '/tmp/opencode/sthome'
+HOME = '/tmp/opencode/st-sysconfig'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
 SYSINI = HOME + '/sys_test.ini'
