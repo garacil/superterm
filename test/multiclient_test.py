@@ -135,6 +135,26 @@ if row1:
             break
 check('pane 1 sized to smallest client', size_ok)
 
+# ---- 3.0.1: un attach con otra geometria no rebota tamanos ----
+# antes, las peticiones transitorias del attach (tile -> geometria final)
+# encogian y re-agrandaban las pantallas de TODOS y el contenido visible
+# se iba al historial; ahora el attach hace una unica peticion final
+run_cli(['send', SES + ':1', 'echo GEOM_TOKEN_31'], HOME)
+a.wait_until(lambda t: 'GEOM_TOKEN_31' in t)
+b.wait_until(lambda t: 'GEOM_TOKEN_31' in t)
+run_cli(['organize', SES, 'grid'], HOME)
+a.drain(1.0)
+b.drain(1.0)
+c3 = stlib.Client(HOME, args=['--attach'], w=90, h=26)
+c3.drain(3.0)
+a.drain(1.0)
+check('new client sees snapshot content', 'GEOM_TOKEN_31' in c3.text())
+check('old client keeps visible content', 'GEOM_TOKEN_31' in a.text())
+c3.send(b'\x11', 0.4)
+c3.send(b'd', 1.0)
+c3.wait_exit(timeout=8.0)
+c3.close()
+
 # ---- cerrar el panel nuevo por CLI: ambos clientes compactan ----
 r = run_cli(['close', SES + ':2'], HOME)
 check('close while attached exit 0', r.returncode == 0)

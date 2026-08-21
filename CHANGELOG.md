@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.1 - 2026-08
+
+- Attaching a client no longer bounces pane sizes across the session.
+  While the attach builds its windows (tile positions first, saved
+  geometry afterwards) it now stays silent and sends a single size
+  request per pane once the geometry is final, so the other clients'
+  screens are not shrunk and re-grown in between and the visible content
+  of every pane stays on screen instead of sliding into the scrollback.
+
 ## 3.0 - 2026-08
 
 Superterm becomes a true client/server multiplexer, tmux-style but driven

@@ -127,6 +127,10 @@ type
     Remote: TSessionClient;
     RemoteLayoutHash: string;   // ultima geometria empujada/aplicada
     CurrentSessionSocket: string;  // socket de la sesion enganchada
+    // attach en construccion: las ventanas pasan por bounds intermedios
+    // (tile -> geometria final) y NO deben pedir tamanos transitorios al
+    // daemon ni redimensionar la pantalla del snapshot a cada paso
+    RemoteAttachSettling: boolean;
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -834,6 +838,8 @@ begin
       Term^.Locate(R);
   end;
   App := PSuperApp(Application);
+  if (App <> nil) and App^.RemoteMode and App^.RemoteAttachSettling then
+    Exit;   // el attach hara UNA pasada final con la geometria definitiva
   if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
@@ -978,6 +984,7 @@ begin
   Remote := nil;
   RemoteLayoutHash := '';
   CurrentSessionSocket := '';
+  RemoteAttachSettling := False;
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -1836,6 +1843,7 @@ var
   TitleS: string;
   Loaded: boolean;
   GR: Objects.TRect;
+  PW, PH: integer;
 begin
   Result := False;
   Remote := TSessionClient.Create;
@@ -1874,6 +1882,7 @@ begin
   ActiveProfile := -1;
   ActiveWindow := -1;
   RemoteMode := True;
+  RemoteAttachSettling := True;
   CurrentSessionName := Snapshot.Name;
   Loaded := True;
   for I := 0 to N - 1 do
@@ -1910,6 +1919,7 @@ begin
     // deshacer toda la mutacion: el arranque debe continuar como si el
     // attach nunca se hubiera intentado (perfil incluido)
     RemoteMode := False;
+    RemoteAttachSettling := False;
     ReleaseRuntime;
     Lay := OldLay;
     ProfileMode := OldProfileMode;
@@ -1951,6 +1961,24 @@ begin
           MinimizeWindow(I);
     end;
   end;
+  // las ventanas ya estan en su sitio definitivo: UNA peticion de tamano
+  // por panel (espejo exacto de ChangeBounds); sin transitorios, el daemon
+  // no rebota tamanos hacia los demas clientes al engancharse este
+  RemoteAttachSettling := False;
+  for I := 0 to Lay.PaneCount - 1 do
+    if (I < MAX_PANES) and (Win[I] <> nil) and
+       (not Win[I]^.Minimized) and (Scr[I] <> nil) then
+    begin
+      PW := Win[I]^.Size.X - 2;
+      PH := Win[I]^.Size.Y - 2;
+      if PW < 4 then PW := 4;
+      if PH < 2 then PH := 2;
+      if (PW <> Scr[I].Width) or (PH <> Scr[I].Height) then
+      begin
+        Scr[I].Resize(PW, PH);
+        Remote.SendResize(I, PW, PH);
+      end;
+    end;
   ResetVideoSurface;
   ReDraw;
   FocusPane(Lay.Focused);

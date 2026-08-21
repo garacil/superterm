@@ -1,1 +1,1 @@
-const SUPERTERM_VERSION = '3.0';
+const SUPERTERM_VERSION = '3.0.1';
