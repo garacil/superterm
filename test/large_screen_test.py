@@ -107,7 +107,7 @@ def check_layout(session, label):
 
 s = Session(4096, 35)
 try:
-    s.drain(1.5)
+    s.drain(4.0)
     check_layout(s, '4096x35 startup')
 
     s.send(b"printf '\\033[44m\\033[2J\\033[H'\r", 1.2)
@@ -122,7 +122,7 @@ try:
           all(color == 'brightwhite' for color in bright_background_cells))
 
     s.set_size(8192, 35)
-    s.drain(1.8)
+    s.drain(3.5)
     check_layout(s, '8192x35 maximum')
 
     s.set_size(300, 80)

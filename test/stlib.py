@@ -244,7 +244,10 @@ class Client:
                     pass
 
     def send(self, data, seconds=0.8):
-        os.write(self.fd, data)
+        try:
+            os.write(self.fd, data)
+        except OSError:
+            pass   # el cliente ya salio (p. ej. tras un detach inmediato)
         self.drain(seconds)
 
     def text(self):

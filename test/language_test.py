@@ -107,6 +107,9 @@ try:
           'Paneles' in s.text() and 'Opciones' in s.text())
     s.send(b'\x1ba\r')  # Ayuda -> Ayuda y atajos
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
+    s.send(b'\x1b', 0.5)  # cerrar el dialogo de ayuda
+    s.send(b'\x1b', 0.5)  # y cualquier menu que quedara abierto
+    s.send(b'\x1bq', 1.5)  # Alt-Q: cierra cliente y daemon de sesion
 finally:
     s.close()
 

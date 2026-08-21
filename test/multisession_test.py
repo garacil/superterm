@@ -77,14 +77,12 @@ class Client:
 def exited_ok(status):
     return status is not None and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
-def detach_named(c, name):
-    c.send(b'\x11', 0.4)                   # prefijo separado del 'd': un
-    c.send(b'd', 0.8)                       # write unico se coalesce a veces
-    ok = 'Session name:' in c.text()
-    c.send(b'\x1b[3~' * 40, 0.3)           # Supr: vaciar el nombre prellenado
-    c.send(name, 0.3)
-    os.write(c.fd, b'\r')
-    return ok
+def detach_now(c):
+    # servidor-siempre: la sesion ya tiene nombre desde el arranque y el
+    # prefijo + d separa sin dialogo alguno
+    c.send(b'\x11', 0.4)
+    c.send(b'd', 0.8)
+    return 'Session name:' not in c.text()
 
 fails = []
 def check(name, cond):
@@ -97,13 +95,13 @@ def run_cli(*args):
     env = dict(os.environ, HOME=HOME, SUPERTERM_INI=SYSINI, LANG='C')
     return subprocess.run([BIN, *args], capture_output=True, text=True, env=env)
 
-# ---- 1: separar la sesion A con nombre propio 'alfa' ----
-a = Client()
+# ---- 1: sesion A nombrada al lanzar con --session alfa ----
+a = Client(['--session', 'alfa'])
 a.drain(1.5)
 a.send(b'echo SESION_A_TOKEN\r', 0.8)
 check("A token visible", "SESION_A_TOKEN" in a.text())
-prompt_a = detach_named(a, b'alfa')
-check("detach prompts for name", prompt_a)
+check("alfa live at launch", os.path.exists(spath('alfa')))
+check("detach needs no prompt", detach_now(a))
 check("A client exits", exited_ok(a.wait()))
 a.close()
 check("alfa socket exists", os.path.exists(spath('alfa')))
@@ -111,7 +109,7 @@ check("alfa sidecar exists", os.path.exists(mpath('alfa')))
 check("alfa sidecar has name", 'name=alfa' in open(mpath('alfa')).read())
 
 # ---- 2: arranque normal con sesion viva -> selector; Esc sigue normal ----
-b = Client()
+b = Client(['--session', 'beta'])
 b.drain(1.5)
 scr = b.text()
 check("picker on startup", "Detached sessions" in scr)
@@ -122,7 +120,7 @@ b.send(b'echo SESION_B_TOKEN\r', 1.2)
 scr = b.text()
 check("esc continues startup", "SESION_B_TOKEN" in scr)
 check("picker dismissed", "Detached sessions" not in scr)
-detach_named(b, b'beta')
+detach_now(b)
 check("B client exits", exited_ok(b.wait()))
 b.close()
 check("two session pairs", all(os.path.exists(p) for p in

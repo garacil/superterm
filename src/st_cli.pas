@@ -19,14 +19,36 @@ unit st_cli;
 
 interface
 
+uses
+  Classes, SysUtils, st_config, st_server;
+
+type
+  // fila de panel del LIST de control (datos vivos que solo tiene el daemon)
+  TPaneRow = record
+    Title, Term, Host, User, Cmd, Cwd: string;
+    Kind: byte;
+    Cols, Rows, Hist: Longint;
+    BX, BY, BW, BH: Longint;
+    Zoomed, Minimized, Alive: boolean;
+  end;
+  TPaneRows = array of TPaneRow;
+
+  TListInfo = record
+    Name, Profile: string;
+    PaneCount, Focused, Attached, DeskW, DeskH: Longint;
+    Panes: TPaneRows;
+  end;
+
 // procesa la linea de comandos; si era un comando de CLI, ejecuta y hace
 // Halt con su codigo; si no (arranque normal de la TUI o --attach), vuelve
 procedure RunCli;
 
-implementation
+// consulta LIST/INFO de una sesion por su socket (tambien lo usa la UI
+// enganchada para capturar cmd/cwd vivos al guardar un perfil)
+function FetchList(const ASocket: string; WithPanes: boolean;
+  out L: TListInfo): boolean;
 
-uses
-  Classes, SysUtils, st_config, st_server;
+implementation
 
 type
   THelpLine = record
@@ -229,21 +251,6 @@ end;
 // ------------------------------------------------- lecturas de LIST/INFO
 
 type
-  TPaneRow = record
-    Title, Term, Host, User, Cmd, Cwd: string;
-    Kind: byte;
-    Cols, Rows, Hist: Longint;
-    BX, BY, BW, BH: Longint;
-    Zoomed, Minimized, Alive: boolean;
-  end;
-  TPaneRows = array of TPaneRow;
-
-  TListInfo = record
-    Name, Profile: string;
-    PaneCount, Focused, Attached, DeskW, DeskH: Longint;
-    Panes: TPaneRows;
-  end;
-
   TBlobGrab = class
     Blob: TByteArray;
     procedure OnData(const AChunk: TByteArray);

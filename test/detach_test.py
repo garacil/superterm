@@ -93,11 +93,12 @@ first.stream.feed(b'\033[10;20H')
 first.drain(1.5)
 check('detach menu is visible', 'Detach' in first.text())
 first.send(f'echo $$ > {PIDFILE}; sleep 1; echo DETACHED_OUTPUT\r'.encode(), 0.3)
-first.send(b'\x11d', 0.8)
-first.send(b'\r', 1.0)   # aceptar el nombre por defecto ('session')
+first.send(b'\x11', 0.4)
+first.send(b'd', 0.8)     # servidor-siempre: separa sin dialogo de nombre
 first_status = first.wait()
 check('client exits after Ctrl-Q d', first_status is not None and
       os.WIFEXITED(first_status) and os.WEXITSTATUS(first_status) == 0)
+first.drain(0.6)          # consumir la restauracion del cursor ya en cola
 check('cursor restored after detach',
       first.screen.cursor.x == 19 and first.screen.cursor.y == 9)
 check('server socket remains', os.path.exists(SOCKET))
@@ -130,17 +131,30 @@ second.send(b'\x1bx', 1.0)
 second_status = second.wait()
 check('permanent close exits client', second_status is not None and
       os.WIFEXITED(second_status) and os.WEXITSTATUS(second_status) == 0)
-check('server socket is removed', not os.path.exists(SOCKET))
-check('session sidecar removed', not os.path.exists(META))
+
+
+def _wait_gone(path, timeout=4.0):
+    # el daemon guarda session.ini y mata sus paneles antes de retirar el
+    # socket: darle un margen en vez de mirar en el mismo instante
+    end = time.time() + timeout
+    while time.time() < end:
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.1)
+    return not os.path.exists(path)
+
+
+check('server socket is removed', _wait_gone(SOCKET))
+check('session sidecar removed', _wait_gone(META))
 
 if pane_pid is not None:
-    try:
-        os.kill(pane_pid, 0)
-        pane_alive = True
-    except ProcessLookupError:
-        pane_alive = False
-    except PermissionError:
-        pane_alive = True
+    pane_alive = True
+    end = time.time() + 4.0
+    while time.time() < end:
+        if not _pid_alive(pane_pid):
+            pane_alive = False
+            break
+        time.sleep(0.1)
     check('permanent close terminates pane', not pane_alive)
 
 exit_client = Client()

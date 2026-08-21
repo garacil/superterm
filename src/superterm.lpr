@@ -41,7 +41,15 @@ begin
   i := 1;
   while i <= ParamCount do
   begin
-    if ParamStr(i) = '--attach' then
+    if (ParamStr(i) = '--session') or (ParamStr(i) = '--sesion') then
+    begin
+      if i < ParamCount then
+      begin
+        CliSessionName := ParamStr(i + 1);
+        Inc(i);
+      end;
+    end
+    else if ParamStr(i) = '--attach' then
     begin
       AttachRequested := True;
       if (i < ParamCount) and (Copy(ParamStr(i + 1), 1, 1) <> '-') then
@@ -113,7 +121,13 @@ begin
   // attach cancelado o fallido durante Init: no arrancar el bucle de
   // eventos (un cmQuit posteado en Init se perderia al entrar en Run)
   if not STApp^.AbortRun then
-    STApp^.Run;
+  begin
+    // servidor-siempre: el workspace recien construido pasa a un daemon
+    // y esta instancia queda de cliente (config [session] server=always)
+    STApp^.PromoteToServer;
+    if not STApp^.AbortRun then
+      STApp^.Run;
+  end;
   Dispose(STApp, Done);
   // dejar el cursor donde estaba al lanzar el programa (cierre o detach)
   RestoreConsoleCursor;

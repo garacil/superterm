@@ -75,6 +75,7 @@ const
   WINOP_ORGANIZE = 8;   // byte How: 0 rejilla, 1 mosaico, 2 cascada
   WINOP_RENAME = 9;     // string NewTitle
   WINOP_RESIZE = 10;    // Longint Cols, Rows (tamano del terminal)
+  WINOP_SAVE = 11;      // guarda session.ini con el estado del daemon
 
   MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
@@ -109,6 +110,7 @@ type
   TPtyArray = array of TPty;
   TScreenArray = array of TScreen;
   TStrArray = array of string;
+  TBoolArray = array of boolean;
 
   // geometria de una ventana del cliente (bounds absolutos del escritorio)
   TPaneGeom = record
@@ -170,7 +172,8 @@ type
     function SendInput(APane: integer; const S: RawByteString): boolean;
     function SendResize(APane, ACols, ARows: integer): boolean;
     function Detach: boolean;
-    function CloseSession: boolean;
+    // cierra la sesion; con ASave el daemon guarda antes session.ini
+    function CloseSession(ASave: boolean = False): boolean;
     // cierre de un panel del daemon (el cliente compacta en espejo)
     function SendKillPane(APane: integer): boolean;
     // sincroniza arbol de splits, foco, titulos y geometria de ventanas
@@ -233,7 +236,8 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer; const AGeom: TPaneGeomArray;
-  ADeskW, ADeskH: integer): boolean;
+  ADeskW, ADeskH: integer;
+  const ATitleFixed: TBoolArray = nil): boolean;
 
 // decodifica el payload de FRAME_LAYOUT / FRAME_LAYOUT_EV
 function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
@@ -248,6 +252,7 @@ function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
 var
   AttachRequested: boolean = False;
   AttachSocket: string = '';   // socket resuelto por la CLI ('' = selector)
+  CliSessionName: string = ''; // nombre pedido con --session/--sesion
 
 implementation
 
@@ -280,6 +285,7 @@ type
     FPanes: array[0..MAX_PANES - 1] of TPty;
     FScreens: array[0..MAX_PANES - 1] of TScreen;
     FTitles: array[0..MAX_PANES - 1] of string;
+    FTitleFixed: array[0..MAX_PANES - 1] of boolean;  // renombrado a mano
     FTerms: array[0..MAX_PANES - 1] of string;
     FSocketPath: string;
     FMetaPath: string;
@@ -294,6 +300,8 @@ type
     FCtlClasses: TWindowClassArray;   // clases resueltas para LIST (lazy)
     FCtlClassesLoaded: boolean;
     FCtlCfg: TConfig;                 // config para spawns daemon-side
+    FEmptySince: QWord;               // tick sin clientes ni paneles vivos
+    FLastTitleTick: QWord;            // derivacion periodica de titulos
     function CreateListener: boolean;
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
@@ -308,6 +316,7 @@ type
     function BuildLayoutBlob(out AData: TByteArray): boolean;
     procedure BroadcastLayoutEv(AExcept: integer);
     procedure BroadcastTitle(APane: integer);
+    procedure DaemonSaveSession;
     function DoNewPane(AAt: integer; ADir: byte; const AClass, ACmd,
       ACwd, ATitle: string; out ANewIdx: integer; out AErr: string): boolean;
     function ReadFrame(AFd: cint; out AKind: byte; out APane: integer;
@@ -323,7 +332,8 @@ type
     procedure HandleWinOp(AFd: cint; APane: integer;
       const AData: TByteArray);
     function SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
-      ACols, ARows: integer; out APty: TPty; out ATerm: string): boolean;
+      ACols, ARows: integer; out APty: TPty; out ATerm: string;
+      out ADefTitle: string): boolean;
     procedure ReapChildren;
     function HandleAttach(AFd: cint; AFirstKind: byte;
       const AFirstData: TByteArray): boolean;
@@ -338,7 +348,7 @@ type
       const APanes: TPtyArray; const AScreens: TScreenArray;
       const ATitles: TStrArray; const ATerms: TStrArray;
       AFocused: integer; const AGeom: TPaneGeomArray;
-      ADeskW, ADeskH: integer);
+      ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray);
     destructor Destroy; override;
     procedure Run(AReadyFd: cint);
   end;
@@ -1250,11 +1260,17 @@ begin
   CloseSocket;
 end;
 
-function TSessionClient.CloseSession: boolean;
+function TSessionClient.CloseSession(ASave: boolean): boolean;
 var
   Data: TByteArray;
 begin
+  // byte tolerante: un daemon antiguo lo ignora (cierra sin guardar)
   Data := nil;
+  SetLength(Data, 1);
+  if ASave then
+    Data[0] := 1
+  else
+    Data[0] := 0;
   Result := SendFrame(FRAME_CLOSE, -1, Data);
   CloseSocket;
 end;
@@ -1377,7 +1393,7 @@ constructor TDetachedSession.Create(const AName, AProfile: string;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer; const AGeom: TPaneGeomArray;
-  ADeskW, ADeskH: integer);
+  ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray);
 var
   I: integer;
 begin
@@ -1395,6 +1411,7 @@ begin
     FScreens[I] := AScreens[I];
     if I <= High(ATitles) then FTitles[I] := ATitles[I];
     if I <= High(ATerms) then FTerms[I] := ATerms[I];
+    if I <= High(ATitleFixed) then FTitleFixed[I] := ATitleFixed[I];
   end;
   FName := SanitizeSessionName(AName);
   FProfile := AProfile;
@@ -1918,6 +1935,7 @@ begin
     FPanes[I] := FPanes[I + 1];
     FScreens[I] := FScreens[I + 1];
     FTitles[I] := FTitles[I + 1];
+    FTitleFixed[I] := FTitleFixed[I + 1];
     FTerms[I] := FTerms[I + 1];
     FGeom[I] := FGeom[I + 1];
     for C := 0 to MAX_CLIENTS - 1 do
@@ -2027,7 +2045,8 @@ end;
 // crea un PTY para una clase de ventana o un comando, como StartPaneEx
 // pero sin FreeVision: wcSSH -> argv estructurado; resto -> comando compuesto
 function TDetachedSession.SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
-  ACols, ARows: integer; out APty: TPty; out ATerm: string): boolean;
+  ACols, ARows: integer; out APty: TPty; out ATerm: string;
+  out ADefTitle: string): boolean;
 var
   CIdx: integer;
   ShellS, CmdS, CwdS: string;
@@ -2037,6 +2056,7 @@ begin
   Result := False;
   APty := nil;
   ATerm := '';
+  ADefTitle := '';
   EnsureCtlConfig;
   CIdx := -1;
   if AClass <> '' then
@@ -2045,6 +2065,11 @@ begin
     if CIdx < 0 then
       Exit;
     ATerm := FCtlClasses[CIdx].Name;
+    // titulo por defecto de la clase (espejo de StartPaneEx en la UI)
+    if FCtlClasses[CIdx].Title <> '' then
+      ADefTitle := FCtlClasses[CIdx].Title
+    else
+      ADefTitle := FCtlClasses[CIdx].Name;
   end;
   APty := TPty.Create;
   if (CIdx >= 0) and (FCtlClasses[CIdx].Kind = wcSSH) then
@@ -2097,7 +2122,7 @@ var
   Cols, Rows, L, PC: Longint;
   OldCount, j, C: integer;
   NewPty: TPty;
-  TermS: string;
+  TermS, DefTitle: string;
   Meta: TMemoryStream;
   Data: TByteArray;
   DirB: byte;
@@ -2138,8 +2163,9 @@ begin
   ANewIdx := FLayout.LastInsertedIndex;
   NewPty := nil;
   TermS := '';
+  DefTitle := '';
   if not SpawnPaneForSpec(AClass, ACmd, ACwd, Cols, Rows, NewPty,
-    TermS) then
+    TermS, DefTitle) then
   begin
     FLayout.ClosePane(ANewIdx);
     ANewIdx := -1;
@@ -2155,6 +2181,7 @@ begin
     FPanes[j] := FPanes[j - 1];
     FScreens[j] := FScreens[j - 1];
     FTitles[j] := FTitles[j - 1];
+    FTitleFixed[j] := FTitleFixed[j - 1];
     FTerms[j] := FTerms[j - 1];
     FGeom[j] := FGeom[j - 1];
     for C := 0 to MAX_CLIENTS - 1 do
@@ -2166,10 +2193,11 @@ begin
   FPanes[ANewIdx] := NewPty;
   FScreens[ANewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   FTerms[ANewIdx] := TermS;
+  FTitleFixed[ANewIdx] := ATitle <> '';
   if ATitle <> '' then
     FTitles[ANewIdx] := ' ' + ATitle
-  else if TermS <> '' then
-    FTitles[ANewIdx] := ' ' + TermS
+  else if DefTitle <> '' then
+    FTitles[ANewIdx] := ' ' + DefTitle
   else if ACmd <> '' then
     FTitles[ANewIdx] := ' ' + ACmd
   else
@@ -2206,6 +2234,61 @@ begin
     Meta.Free;
   end;
   Result := True;
+end;
+
+// plazo de autolimpieza; SUPERTERM_REAP_MS solo existe para que los tests
+// no tengan que esperar el minuto de produccion
+function ReapGraceMs: QWord;
+var
+  S: string;
+  V: integer;
+begin
+  Result := 60000;
+  S := GetEnvironmentVariable('SUPERTERM_REAP_MS');
+  if S <> '' then
+  begin
+    V := StrToIntDef(S, 0);
+    if V > 0 then
+      Result := QWord(V);
+  end;
+end;
+
+// guardado daemon-side de session.ini: espejo de SaveSessionNow con el
+// estado vivo del daemon (Alt-X y Ctrl-S remotos guardan aqui)
+procedure TDetachedSession.DaemonSaveSession;
+var
+  Pin: TPaneArray;
+  i: integer;
+begin
+  if FPaneCount < 1 then
+    Exit;
+  Pin := Default(TPaneArray);
+  SetLength(Pin, FPaneCount);
+  for i := 0 to FPaneCount - 1 do
+  begin
+    Pin[i].Term := FTerms[i];
+    if (FTerms[i] = '') and (FPanes[i] <> nil) and FPanes[i].Alive then
+    begin
+      FPanes[i].QueryState;
+      Pin[i].Cmd := FPanes[i].TitleCmd;
+      Pin[i].Cwd := FPanes[i].TitleCwd;
+      Pin[i].Args := FPanes[i].TitleArgs;
+    end;
+    if FTitleFixed[i] then
+      Pin[i].Title := Trim(FTitles[i])
+    else
+      Pin[i].Title := '';
+    if FGeomValid then
+    begin
+      Pin[i].BX := FGeom[i].BX;
+      Pin[i].BY := FGeom[i].BY;
+      Pin[i].BW := FGeom[i].BW;
+      Pin[i].BH := FGeom[i].BH;
+      Pin[i].Zoomed := FGeom[i].Zoomed;
+      Pin[i].Minimized := FGeom[i].Minimized;
+    end;
+  end;
+  SaveSession(SessionFile, FLayout, Pin, FDeskW, FDeskH);
 end;
 
 // gestion de ventanas por control; con clientes enganchados cada cambio
@@ -2403,6 +2486,7 @@ begin
           Exit;
         end;
         FTitles[APane] := ' ' + Trim(TitleS);
+        FTitleFixed[APane] := True;
         BroadcastTitle(APane);
         CtlReplyOk(AFd, '');
       end;
@@ -2439,6 +2523,11 @@ begin
         Pair[0] := Cols;
         Pair[1] := Rows;
         Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_SAVE:
+      begin
+        DaemonSaveSession;
         CtlReplyOk(AFd, '');
       end;
   else
@@ -2715,6 +2804,9 @@ begin
       DropClient(AIdx);
     FRAME_CLOSE:
       begin
+        // byte tolerante: 1 = guardar session.ini antes de morir
+        if (Length(Data) > 0) and (Data[0] = 1) then
+          DaemonSaveSession;
         DropClient(AIdx);
         FStop := True;
       end;
@@ -2764,6 +2856,7 @@ begin
         if Trim(TitleS) <> '' then
         begin
           FTitles[Pane] := ' ' + Trim(TitleS);
+          FTitleFixed[Pane] := True;
           if Length(Data) > 0 then
             Broadcast(FRAME_TITLE_EV, Pane, Data[0], Length(Data), True,
               AIdx);
@@ -2839,6 +2932,7 @@ var
   FirstData: TByteArray;
   B0: byte;
   FlowBlocked: boolean;
+  NewTitle: string;
 begin
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
@@ -2913,6 +3007,8 @@ begin
           FpClose(NewClient)
         else if Kind = FRAME_CLOSE then
         begin
+          if (Length(FirstData) > 0) and (FirstData[0] = 1) then
+            DaemonSaveSession;
           FpClose(NewClient);
           FStop := True;
         end
@@ -2941,6 +3037,45 @@ begin
            (FPanes[I].Master >= 0) and
            (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
           HandlePaneOutput(I);
+    // titulos vivos: los paneles ad-hoc sin titulo fijado muestran el
+    // comando o el directorio actual, igual que hace la UI en local
+    if GetTickCount64 - FLastTitleTick > 1500 then
+    begin
+      FLastTitleTick := GetTickCount64;
+      for I := 0 to FPaneCount - 1 do
+        if (FPanes[I] <> nil) and FPanes[I].Alive and
+           (FTerms[I] = '') and (not FTitleFixed[I]) then
+        begin
+          FPanes[I].QueryState;
+          if FPanes[I].TitleCmd <> '' then
+            NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
+          else if FPanes[I].TitleCwd <> '' then
+            NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
+              1, 24)
+          else
+            NewTitle := FTitles[I];
+          if NewTitle <> FTitles[I] then
+          begin
+            FTitles[I] := NewTitle;
+            BroadcastTitle(I);
+          end;
+        end;
+    end;
+    // autolimpieza: todos los paneles muertos y nadie enganchado durante
+    // un minuto -> la sesion ya no sirve a nadie, cerrarla sola
+    FlowBlocked := False;
+    for I := 0 to FPaneCount - 1 do
+      if (FPanes[I] <> nil) and FPanes[I].Alive then
+      begin
+        FlowBlocked := True;
+        Break;
+      end;
+    if FlowBlocked or (AttachedCount > 0) then
+      FEmptySince := 0
+    else if FEmptySince = 0 then
+      FEmptySince := GetTickCount64
+    else if GetTickCount64 - FEmptySince > ReapGraceMs then
+      FStop := True;
   end;
   // aviso ordenado de cierre a los clientes capaces; los legados ven el
   // EOF y reaccionan como hoy (conexion perdida)
@@ -2952,7 +3087,8 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer; const AGeom: TPaneGeomArray;
-  ADeskW, ADeskH: integer): boolean;
+  ADeskW, ADeskH: integer;
+  const ATitleFixed: TBoolArray): boolean;
 var
   ReadyPipe: TFilDes;
   Pid: TPid;
@@ -2983,7 +3119,8 @@ begin
     FpClose(1);
     FpClose(2);
     Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
-      AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH);
+      AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
+      ATitleFixed);
     try
       Server.Run(ReadyPipe[1]);
     finally

@@ -14,7 +14,7 @@ uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
-  st_layout, st_session, st_debug, st_server, st_video;
+  st_layout, st_session, st_debug, st_server, st_video, st_cli;
 
 const
   // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenClass,
@@ -126,6 +126,7 @@ type
     PrefixPending: boolean;
     Remote: TSessionClient;
     RemoteLayoutHash: string;   // ultima geometria empujada/aplicada
+    CurrentSessionSocket: string;  // socket de la sesion enganchada
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -182,6 +183,11 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
+    // servidor-siempre: convierte el workspace local recien construido en
+    // una sesion con daemon y se engancha a ella como cliente
+    procedure PromoteToServer;
+    // suelta la sesion remota actual matando su daemon (cambio de perfil)
+    procedure LeaveRemoteSession;
     function PickSessionSocketUI(AForAttach: boolean): string;
     function PromptAttachOnStart: boolean;
     procedure DoSessionPick;
@@ -970,6 +976,8 @@ begin
   DetachRequested := False;
   PrefixPending := False;
   Remote := nil;
+  RemoteLayoutHash := '';
+  CurrentSessionSocket := '';
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -1164,7 +1172,12 @@ begin
   else if RemoteMode then
   begin
     if (Remote <> nil) and Remote.Connected then
-      Remote.CloseSession;
+    begin
+      // empujar la geometria final y pedir al daemon que guarde (Alt-X);
+      // con Alt-Q SkipSave manda y muere sin guardar, como en local
+      SyncRemoteLayout;
+      Remote.CloseSession(Cfg.AutoSave and (not SkipSave));
+    end;
     ReleaseRuntime;
   end
   else if ProfileMode then
@@ -1942,7 +1955,123 @@ begin
   ReDraw;
   FocusPane(Lay.Focused);
   RebuildMenu;
+  CurrentSessionSocket := APath;
+  RemoteLayoutHash := ComputeLayoutHash;
   Result := True;
+end;
+
+// arranque servidor-siempre: el workspace local (paneles ya vivos) pasa a
+// un daemon hijo y este proceso queda como su primer cliente interactivo;
+// si el fork o el attach fallan se sigue en modo local (degradacion)
+procedure TSuperApp.PromoteToServer;
+var
+  N, I: integer;
+  PtyRefs: TPtyArray;
+  ScreenRefs: TScreenArray;
+  Titles, Terms: TStrArray;
+  Fixed: TBoolArray;
+  DGeom: TPaneGeomArray;
+  DW, DH: integer;
+  SessName, ProfName, Sock: string;
+  WasProfile: boolean;
+  OldActiveProfile, OldActiveWindow: integer;
+begin
+  if RemoteMode or AbortRun or DetachRequested then
+    Exit;
+  if Cfg.ServerMode <> 'always' then
+    Exit;
+  N := Lay.PaneCount;
+  if (N < 1) or (N > MAX_PANES) then
+    Exit;
+  // nombre automatico, sin dialogos: --session > perfil activo > session
+  ProfName := '';
+  if ProfileMode and (ActiveProfile >= 0) and
+     (ActiveProfile < Length(Profiles)) then
+    ProfName := Profiles[ActiveProfile].Name;
+  if CliSessionName <> '' then
+    SessName := SuggestSessionName(SanitizeSessionName(CliSessionName))
+  else if ProfName <> '' then
+    SessName := SuggestSessionName(SanitizeSessionName(ProfName))
+  else
+    SessName := SuggestSessionName('session');
+  PtyRefs := nil;
+  ScreenRefs := nil;
+  Titles := nil;
+  Terms := nil;
+  Fixed := nil;
+  SetLength(PtyRefs, N);
+  SetLength(ScreenRefs, N);
+  SetLength(Titles, N);
+  SetLength(Terms, N);
+  SetLength(Fixed, N);
+  for I := 0 to N - 1 do
+  begin
+    PtyRefs[I] := Panes[I];
+    ScreenRefs[I] := Scr[I];
+    if Win[I] <> nil then
+    begin
+      Titles[I] := Trim(Win[I]^.GetTitle(80));
+      Fixed[I] := Win[I]^.TitleFixed;
+    end;
+    if (PaneTerm[I] >= 0) and (PaneTerm[I] < Length(WClasses)) then
+      Terms[I] := WClasses[PaneTerm[I]].Name;
+    if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
+      Exit;   // panel sin terminal vivo: quedarse en modo local
+  end;
+  CollectPaneGeom(DGeom, DW, DH);
+  if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
+    Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
+    Exit;   // sin daemon: modo local clasico
+  Sock := SessionSocketPathFor(SessName);
+  // el daemon es ahora el dueno de los procesos: soltar los PTY del
+  // padre sin senalar a nadie y sustituir el workspace por el remoto
+  for I := 0 to MAX_PANES - 1 do
+    if Panes[I] <> nil then
+    begin
+      Panes[I].Abandon;
+      Panes[I].Free;
+      Panes[I] := nil;
+    end;
+  ReleaseRuntime;
+  // el attach resetea el estado de perfil (esta pensado para engancharse a
+  // sesiones ajenas); aqui la sesion ES el perfil activo: conservarlo
+  WasProfile := ProfileMode;
+  OldActiveProfile := ActiveProfile;
+  OldActiveWindow := ActiveWindow;
+  if not AttachRemoteSession(Sock) then
+  begin
+    // rarisimo (daemon recien nacido): no dejarlo huerfano ni fingir
+    // que hay workspace; cerrar ordenadamente
+    CloseSessionAt(Sock);
+    SkipSave := True;
+    AbortRun := True;
+    Message(@Self, evCommand, cmQuit, nil);
+    Exit;
+  end;
+  ProfileMode := WasProfile;
+  ActiveProfile := OldActiveProfile;
+  ActiveWindow := OldActiveWindow;
+  if ProfileMode then
+    RebuildMenu;
+end;
+
+// deja la sesion remota actual cerrando su daemon: el cambio de perfil o
+// el asistente reconstruyen el workspace en local y re-promocionan
+procedure TSuperApp.LeaveRemoteSession;
+begin
+  if not RemoteMode then
+    Exit;
+  if (Remote <> nil) and Remote.Connected then
+    Remote.CloseSession(False);
+  if Remote <> nil then
+  begin
+    Remote.Free;
+    Remote := nil;
+  end;
+  RemoteMode := False;
+  CurrentSessionSocket := '';
+  CurrentSessionName := '';
+  ReleaseRuntime;
 end;
 
 // selector de sesiones para --attach (o arranque con sesiones vivas)
@@ -1999,6 +2128,7 @@ var
   PtyRefs: TPtyArray;
   ScreenRefs: TScreenArray;
   Titles, Terms: TStrArray;
+  Fixed: TBoolArray;
   DGeom: TPaneGeomArray;
   DW, DH: integer;
   NameBuf: ShortString;
@@ -2055,16 +2185,21 @@ begin
   ScreenRefs := nil;
   Titles := nil;
   Terms := nil;
+  Fixed := nil;
   SetLength(PtyRefs, N);
   SetLength(ScreenRefs, N);
   SetLength(Titles, N);
   SetLength(Terms, N);
+  SetLength(Fixed, N);
   for I := 0 to N - 1 do
   begin
     PtyRefs[I] := Panes[I];
     ScreenRefs[I] := Scr[I];
     if Win[I] <> nil then
+    begin
       Titles[I] := Trim(Win[I]^.GetTitle(80));
+      Fixed[I] := Win[I]^.TitleFixed;
+    end;
     if PaneTerm[I] >= 0 then
       if PaneTerm[I] < Length(WClasses) then
         Terms[I] := WClasses[PaneTerm[I]].Name;
@@ -2082,7 +2217,7 @@ begin
   // el daemon nace conociendo la geometria actual de las ventanas
   CollectPaneGeom(DGeom, DW, DH);
   if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
-    Titles, Terms, Lay.Focused, DGeom, DW, DH) then
+    Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
   begin
     MessageBox(UiText('Could not create the detached session server.',
       'No se pudo crear el servidor de la sesion separada.'), nil,
@@ -2095,6 +2230,7 @@ end;
 
 function TSuperApp.ActivateProfile(AProfile, AWindow: integer): boolean;
 var
+  WasRemote: boolean;
   NewLay: TLayout;
   WS: TProfileWindowSpec;
   PS: TProfilePaneSpec;
@@ -2110,6 +2246,11 @@ begin
   if (AWindow < 0) or (AWindow >= Length(Profiles[AProfile].Windows)) or
      (not Profiles[AProfile].Windows[AWindow].Enabled) then
     Exit;
+  // cambiar de perfil estando enganchado: se cierra la sesion remota y
+  // el workspace nuevo se construye en local (y se re-promociona al final)
+  WasRemote := RemoteMode;
+  if RemoteMode then
+    LeaveRemoteSession;
 
   WS := Profiles[AProfile].Windows[AWindow];
   if not LoadLayoutString(WS.Layout, NewLay) then
@@ -2197,6 +2338,8 @@ begin
   FocusPane(Lay.Focused);
   RebuildMenu;
   Result := True;
+  if WasRemote then
+    PromoteToServer;   // la sesion nueva tambien nace con servidor
 end;
 
 // reaplica la geometria EXACTA guardada en el perfil (posicion/tamano
@@ -2239,7 +2382,15 @@ var
   i, n: integer;
   CurTitle, DefTitle: string;
   WR, RD: Objects.TRect;
+  RL: TListInfo;
+  HaveRL: boolean;
+  NoArgs: TStringArray;
 begin
+  // en modo servidor los PTY viven en el daemon: pedirle cmd/cwd vivos
+  RL := Default(TListInfo);
+  HaveRL := RemoteMode and (CurrentSessionSocket <> '') and
+    FetchList(CurrentSessionSocket, True, RL);
+  NoArgs := nil;
   Result := Default(TProfileWindowSpec);
   Result.Name := AName;
   Result.Enabled := True;
@@ -2318,6 +2469,12 @@ begin
         end;
         Result.Panes[i].Cwd := Panes[i].TitleCwd;
       end;
+    end
+    else if HaveRL and (i < Length(RL.Panes)) then
+    begin
+      if not IsPlainShell(NoArgs, RL.Panes[i].Cmd) then
+        Result.Panes[i].Cmd := RL.Panes[i].Cmd;
+      Result.Panes[i].Cwd := RL.Panes[i].Cwd;
     end;
   end;
 end;
@@ -2468,6 +2625,11 @@ begin
     if Choice = cmCancel then
       Exit;
   end;
+  // con todo confirmado: si estabamos enganchados a una sesion (modo
+  // servidor-siempre), cerrarla; el workspace nuevo nace en local y se
+  // re-promociona al final
+  if RemoteMode then
+    LeaveRemoteSession;
 
   NewLay := TLayout.Create;
   for I := 1 to WindowCount - 1 do
@@ -2523,6 +2685,7 @@ begin
     ResetVideoSurface;
     ReDraw;
     FocusPane(Lay.Focused);
+    PromoteToServer;   // la sesion del asistente tambien nace con servidor
   end;
   RebuildMenu;
 end;
@@ -2639,6 +2802,10 @@ begin
     Cur := UiText('shell', 'shell');
   Win[i]^.SetTitle(' ' + Cur);
   Win[i]^.TitleFixed := True;
+  // en remoto el titulo fijado debe vivir en el daemon (se difunde a los
+  // demas clientes y sobrevive al guardado daemon-side)
+  if RemoteMode and (Remote <> nil) and Remote.Connected then
+    Remote.SendRename(i, Cur);
 end;
 
 procedure TSuperApp.RebuildMenu;
@@ -3320,6 +3487,8 @@ end;
 
 procedure TSuperApp.HandleEvent(var Event: TEvent);
 var
+  SaveReply: string;
+  SavePayload: TByteArray;
   i: integer;
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
@@ -3482,9 +3651,20 @@ begin
           else if RemoteMode then
           begin
             SyncRemoteLayout;
-            MessageBox(UiText('Layout synced to the detached session.',
-              'Layout sincronizado con la sesion separada.'), nil,
-              mfInformation or mfOKButton);
+            SaveReply := '';
+            SavePayload := nil;
+            SetLength(SavePayload, 1);
+            SavePayload[0] := WINOP_SAVE;
+            if (CurrentSessionSocket <> '') and
+               CtlSimple(CurrentSessionSocket, FRAME_CTL_WINOP, -1,
+                 SavePayload, SaveReply) then
+              MessageBox(UiText('Session saved by the server.',
+                'Sesion guardada por el servidor.'), nil,
+                mfInformation or mfOKButton)
+            else
+              MessageBox(UiText('Layout synced to the detached session.',
+                'Layout sincronizado con la sesion separada.'), nil,
+                mfInformation or mfOKButton);
           end
           else
           begin

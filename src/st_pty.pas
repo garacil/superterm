@@ -47,6 +47,9 @@ type
     function WriteStr(const S: RawByteString): boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
+    // suelta el PTY sin tocar al hijo: el proceso pasa a ser propiedad
+    // del daemon de sesion (el padre cierra su copia del master)
+    procedure Abandon;
     procedure MarkDead;
     procedure MarkExited;
     procedure QueryState;
@@ -616,6 +619,17 @@ begin
   FPid := -1;
   FPendingSecret := '';
   FPromptBuffer := '';
+end;
+
+procedure TPty.Abandon;
+begin
+  if FMaster >= 0 then
+  begin
+    FpClose(FMaster);
+    FMaster := -1;
+  end;
+  FPid := 0;   // KillPane/Destroy ya no senalan a nadie
+  FAlive := False;
 end;
 
 procedure TPty.MarkDead;

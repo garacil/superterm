@@ -159,8 +159,9 @@ corner = d.screen.buffer[1 + BY][BX].data
 check("D: moved window at saved pos", corner == '╔')
 d.send(b'\x13', 1.0)  # Ctrl-S: guardar sesion
 d.send(b'\r', 0.5)    # cerrar el aviso "Session saved."
+d.send(b'\x1bq', 1.0) # Alt-Q: salir cerrando tambien el daemon de sesion
 d.close()
-time.sleep(0.4)
+time.sleep(0.6)
 txt = open(SESS).read()
 check("D: bounds round-trip", f'bx={BX}' in txt and f'bw={BW_}' in txt)
 check("D: desk size saved", f'deskw={DESKW}' in txt)

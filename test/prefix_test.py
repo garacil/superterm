@@ -12,6 +12,7 @@ HOME = '/tmp/opencode/sthome-prefix'
 W, H = 100, 30
 
 sys.path.insert(0, os.path.dirname(__file__))
+import socket as _socket
 import pyte
 
 fails = []
@@ -29,14 +30,14 @@ def write_ini(prefix_line):
         f.write('[keymap]\n' + prefix_line + '\n')
 
 class Client:
-    def __init__(self):
+    def __init__(self, args=None):
         self.screen = pyte.Screen(W, H)
         self.stream = pyte.ByteStream(self.screen)
         pid, fd = pty.fork()
         if pid == 0:
             os.environ.update(TERM='xterm', SHELL='/bin/bash', HOME=HOME,
                               SUPERTERM_INI=HOME + '/no-sys.ini')
-            os.execv(BIN, [BIN])
+            os.execv(BIN, [BIN] + (args or []))
         self.pid, self.fd = pid, fd
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', H, W, 0, 0))
 
@@ -69,40 +70,68 @@ class Client:
             pass
         time.sleep(0.3)
 
-def prompt_visible(c):
-    t = c.text()
-    return 'Session name' in t or 'Nombre' in t
+def client_exited(c, timeout=3.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            pid, _st = os.waitpid(c.pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if pid:
+            return True
+        c.drain(0.1)
+    return False
 
-def detach_prompts(prefix_byte):
-    """Arranca, manda prefijo+d y devuelve si aparece el prompt de nombre."""
+def detach_works(prefix_byte):
+    """Arranca, manda prefijo+d y devuelve si el cliente separo (salio
+    dejando el socket vivo); en servidor-siempre no hay dialogo de nombre."""
     c = Client()
     c.drain(2.0)
-    c.send(prefix_byte, 0.4)
-    c.send(b'd', 0.9)
-    ok = prompt_visible(c)
-    c.send(b'\x1b', 0.6)          # cancelar el InputBox si aparecio
-    c.send(b'\x1bq', 0.8)         # Alt-Q sin guardar
+    try:
+        os.write(c.fd, prefix_byte)
+    except OSError:
+        pass
+    c.drain(0.4)
+    try:
+        os.write(c.fd, b'd')
+    except OSError:
+        pass
+    ok = client_exited(c) and bool(
+        glob.glob(HOME + '/.superterm/sessions/*.sock'))
+    if not ok:
+        c.send(b'\x1bq', 0.8)     # no era prefijo: salir sin guardar
     c.close()
+    # limpiar la sesion que quedo viva para la siguiente ronda
+    for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(sock)
+            s.sendall(struct.pack('<BBhI', 5, 0, -1, 0))
+            s.close()
+        except OSError:
+            pass
+    time.sleep(0.4)
     return ok
 
 # ---- 1: default sin ini = Ctrl-Q ----
 reset_home()
-check("default Ctrl-Q abre prompt", detach_prompts(b'\x11'))
+check("default Ctrl-Q separa", detach_works(b'\x11'))
 
 # ---- 2: prefix=2 numerico antiguo migra a Ctrl-Q ----
 reset_home()
 write_ini('prefix=2')
-check("prefix=2 migra a Ctrl-Q", detach_prompts(b'\x11'))
+check("prefix=2 migra a Ctrl-Q", detach_works(b'\x11'))
 
 # ---- 3: ctrl-b textual explicito se respeta ----
 reset_home()
 write_ini('prefix=ctrl-b')
-check("prefix=ctrl-b respeta Ctrl-B", detach_prompts(b'\x02'))
+check("prefix=ctrl-b respeta Ctrl-B", detach_works(b'\x02'))
 
 # ---- 4: con ctrl-b explicito, Ctrl-Q NO es prefijo ----
 reset_home()
 write_ini('prefix=ctrl-b')
-check("ctrl-b: Ctrl-Q no es prefijo", not detach_prompts(b'\x11'))
+check("ctrl-b: Ctrl-Q no es prefijo", not detach_works(b'\x11'))
 
 # ---- 5: prefijo-s abre el selector de sesiones ----
 reset_home()
@@ -116,18 +145,12 @@ c.send(b'\x1b', 0.6)
 c.send(b'\x1bq', 0.8)
 c.close()
 
-# ---- 6: el nombre del detach se sanea (sin ../ ni espacios) ----
+# ---- 6: el nombre de sesion se sanea (sin ../ ni espacios) ----
 reset_home()
-c = Client()
-c.drain(2.0)
-c.send(b'\x11', 0.4)
-c.send(b'd', 0.9)
-if prompt_visible(c):
-    for _ in range(40):
-        c.send(b'\x1b[3~', 0.02)   # vaciar el default del InputBox
-    c.send(b'../evil name!', 0.4)
-    c.send(b'\r', 1.2)
+c = Client(['--session', '../evil name!'])
+c.drain(2.5)
 c.close()
+time.sleep(0.5)
 socks = [os.path.basename(p) for p in glob.glob(HOME + '/.superterm/sessions/*.sock')]
 inside = glob.glob(HOME + '/.superterm/*.sock') + glob.glob('/tmp/opencode/*.sock')
 ok_name = len(socks) == 1 and all(ch.isalnum() or ch in '._-' for ch in socks[0][:-5])
@@ -135,7 +158,6 @@ check("nombre saneado dentro del dir", ok_name and '..' not in socks[0])
 check("sin sockets fuera del dir", not inside)
 
 # limpieza: cerrar el daemon que quedo vivo
-import socket as _socket
 for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
     try:
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)

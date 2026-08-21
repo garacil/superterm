@@ -29,6 +29,10 @@ type
     DefaultWindow: string;
     Language: TUiLanguage;
     Palette: string;       // 'color' (TP clasico) | 'bw' | 'mono'
+    // 'always': toda sesion nace con servidor y el terminal es un cliente
+    // (controlable por CLI desde el arranque); 'detach': modo clasico,
+    // el servidor solo existe tras separar con el prefijo + d
+    ServerMode: string;
   end;
 
 function ConfigDir: string;
@@ -197,6 +201,7 @@ begin
   Cfg.DefaultWindow := '';
   Cfg.Language := ulEnglish;
   Cfg.Palette := 'color';
+  Cfg.ServerMode := 'always';
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -212,6 +217,10 @@ begin
     Cfg.LoginShell := Ini.ReadBool('autologin', 'login', Cfg.LoginShell);
     Cfg.User := Ini.ReadString('autologin', 'user', Cfg.User);
     Cfg.PrefixKey := ParsePrefixKey(Ini.ReadString('keymap', 'prefix', ''));
+    Cfg.ServerMode := LowerCase(Trim(Ini.ReadString('session', 'server',
+      Cfg.ServerMode)));
+    if (Cfg.ServerMode <> 'always') and (Cfg.ServerMode <> 'detach') then
+      Cfg.ServerMode := 'always';
     Cfg.AutoSave := Ini.ReadBool('session', 'autosave', Cfg.AutoSave);
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
     Cfg.DefaultProfile := Ini.ReadString('session', 'default_profile',
@@ -243,6 +252,7 @@ begin
     Ini.WriteBool('autologin', 'login', Cfg.LoginShell);
     Ini.WriteString('autologin', 'user', Cfg.User);
     Ini.WriteString('keymap', 'prefix', PrefixKeyCode(Cfg.PrefixKey));
+    Ini.WriteString('session', 'server', Cfg.ServerMode);
     Ini.WriteBool('session', 'autosave', Cfg.AutoSave);
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
     Ini.WriteString('session', 'default_profile', Cfg.DefaultProfile);
