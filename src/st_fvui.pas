@@ -2701,7 +2701,9 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  RelayoutAll;
+  // NO re-tilear: las ventanas que quedan conservan su tamano y posicion.
+  // KillPane ya quito la cerrada del escritorio; solo repintar.
+  ReDraw;
   FocusPane(Lay.Focused);
   SyncRemoteLayout; // el arbol cambio: reflejarlo en el daemon
 end;

@@ -338,6 +338,9 @@ begin
     Args.Add('sshpass');
     Args.Add('-d');
     Args.Add('3');
+    // el comando que sshpass ejecuta: sin este 'ssh', el '-tt' de abajo se
+    // lo comeria sshpass ("invalid option -- 't'") en vez de pasarlo a ssh
+    Args.Add('ssh');
   end
   else
   begin
