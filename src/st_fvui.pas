@@ -1554,7 +1554,8 @@ begin
   if NextPane = i then
     NextPane := -1;
   Win[i]^.Minimize;
-  RelayoutAll;
+  // NO re-tilear: las demas ventanas se quedan donde el usuario las dejo.
+  // Solo se recolocan los iconos de minimizadas al pie del escritorio.
   ArrangeIcons;
   if Lay.Focused = i then
   begin
@@ -1575,9 +1576,13 @@ begin
      (not Win[i]^.Minimized) then
     Exit;
   Win[i]^.Restore;
+  // volver EXACTAMENTE a donde estaba antes de minimizar, sin re-tilear ni
+  // tocar el resto de ventanas (el usuario manda sobre sus posiciones)
+  if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+     (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+    Win[i]^.Locate(Win[i]^.SavedRect);
   Lay.Focused := i;
-  RelayoutAll;
-  ArrangeIcons;
+  ArrangeIcons;   // recolocar los iconos que sigan minimizados
   FocusPane(i);
   RebuildMenu;
 end;
@@ -1590,6 +1595,7 @@ begin
     if Win[i] <> nil then
       Win[i]^.Minimize;
   Lay.Focused := -1;
+  ArrangeIcons;   // colocar todos los iconos al pie, sin re-tilear
   RebuildMenu;
 end;
 
@@ -1597,13 +1603,18 @@ procedure TSuperApp.RestoreAllWindows;
 var
   i: integer;
 begin
+  // cada ventana vuelve a su posicion previa a minimizar; nada se re-tila
   for i := 0 to MAX_PANES - 1 do
-    if Win[i] <> nil then
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
       Win[i]^.Restore;
+      if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+         (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+        Win[i]^.Locate(Win[i]^.SavedRect);
+    end;
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  RelayoutAll;
   FocusPane(Lay.Focused);
   RebuildMenu;
 end;
