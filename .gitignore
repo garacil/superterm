@@ -3,3 +3,4 @@
 /build/
 /Makefile
 /config.status
+__pycache__/
