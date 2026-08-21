@@ -483,7 +483,7 @@ const
     (En: '  capture   TARGET           print a pane (screen, -H history, -l N)';
      Es: '  capturar  DESTINO          vuelca un panel (pantalla, -H todo, -l N)'),
     (En: ''; Es: ''),
-    (En: 'Windows (on detached sessions):'; Es: 'Ventanas (en sesiones separadas):'),
+    (En: 'Windows:'; Es: 'Ventanas:'),
     (En: '  new       SESSION          open a pane (-c CLASS, --cmd, --cwd, -t)';
      Es: '  nueva     SESION           abre un panel (-c CLASE, --cmd, --cwd, -t)'),
     (En: '  close     TARGET           close a pane';
@@ -634,12 +634,14 @@ end;
 
 procedure HelpWindows;
 const
-  L: array[0..21] of THelpLine = (
-    (En: 'superterm windows - manage the panes of a detached session';
-     Es: 'superterm ventanas - gestiona los paneles de una sesion separada'),
+  L: array[0..22] of THelpLine = (
+    (En: 'superterm windows - manage the panes of a session';
+     Es: 'superterm ventanas - gestiona los paneles de una sesion'),
     (En: ''; Es: ''),
-    (En: 'These commands work on sessions with no client attached.';
-     Es: 'Estas ordenes actuan sobre sesiones sin cliente conectado.'),
+    (En: 'They work with or without attached clients: everyone attached';
+     Es: 'Funcionan con o sin clientes conectados: los conectados ven'),
+    (En: 'sees the changes live.';
+     Es: 'los cambios en vivo.'),
     (En: ''; Es: ''),
     (En: 'Usage:'; Es: 'Uso:'),
     (En: '  superterm new SESSION[:PANE] [options]     open/split a pane';
