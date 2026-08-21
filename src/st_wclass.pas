@@ -26,6 +26,7 @@ type
     Enabled: boolean;
     Kind: TWClassKind;     // derivado, no persistido
     Origin: TWClassOrigin; // solo en memoria: user = editable
+    Title: string;         // titulo por defecto de la ventana ('' = usa Name)
     Shell: string;         // local: shell a lanzar ('' = shell de la config)
     Cmd: string;           // comando al abrir (local o remoto ssh)
     Cwd: string;           // directorio de trabajo
@@ -162,6 +163,7 @@ begin
       if Trim(C.Name) = '' then
         continue;
       C.Enabled := ParseBoolStr(Ini.ReadString(Sec, 'enabled', '1'), True);
+      C.Title := Ini.ReadString(Sec, 'title', '');
       C.Shell := Ini.ReadString(Sec, 'shell', '');
       C.Cmd := Ini.ReadString(Sec, 'cmd', '');
       C.Cwd := Ini.ReadString(Sec, 'cwd', '');
@@ -255,6 +257,8 @@ begin
       Sec := 'class.' + AClasses[i].Name;
       Ini.WriteString(Sec, 'name', AClasses[i].Name);
       Ini.WriteInteger(Sec, 'enabled', Ord(AClasses[i].Enabled));
+      if AClasses[i].Title <> '' then
+        Ini.WriteString(Sec, 'title', IniQuoteGuard(AClasses[i].Title));
       if AClasses[i].Shell <> '' then
         Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
       if AClasses[i].Cmd <> '' then

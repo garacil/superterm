@@ -21,6 +21,7 @@ type
     Name: string;
     Enabled: boolean;
     WClass: string;         // referencia a clase de ventana ('' = ad-hoc)
+    Title: string;          // titulo propio de la ventana ('' = usa clase/cwd)
     Cmd: string;            // overrides por panel (pisan a la clase)
     Cwd: string;
     Connect: string;        // conexion libre ad-hoc (paneles del asistente)
@@ -173,6 +174,7 @@ begin
           // 'class' canonico; 'terminal' aceptado como sinonimo legado
           PSpec.WClass := Ini.ReadString(PSec, 'class',
             Ini.ReadString(PSec, 'terminal', ''));
+          PSpec.Title := Ini.ReadString(PSec, 'title', '');
           PSpec.Cmd := Ini.ReadString(PSec, 'cmd', '');
           PSpec.Cwd := Ini.ReadString(PSec, 'cwd', '');
           PSpec.Connect := Ini.ReadString(PSec, 'connect', '');
@@ -345,6 +347,9 @@ begin
           if AProfiles[i].Windows[w].Panes[p].WClass <> '' then
             Ini.WriteString(PSec, 'class',
               AProfiles[i].Windows[w].Panes[p].WClass);
+          if AProfiles[i].Windows[w].Panes[p].Title <> '' then
+            Ini.WriteString(PSec, 'title',
+              IniQuoteGuard(AProfiles[i].Windows[w].Panes[p].Title));
           if AProfiles[i].Windows[w].Panes[p].Cmd <> '' then
             Ini.WriteString(PSec, 'cmd',
               IniQuoteGuard(AProfiles[i].Windows[w].Panes[p].Cmd));

@@ -116,6 +116,7 @@ type
     CwdLine: PInputLine;
     ShellLine: PInputLine;
     ScrollLine: PInputLine;
+    TitleLine: PInputLine;
     TypeRadio: PRadioButtons;
     EnabledBox: PCheckBoxes;
     OtherNames: PNameArray;
@@ -393,6 +394,8 @@ begin
     NewLabel(2, 12, 'Scrollback', ScrollLine);
     R.Assign(33, 12, 53, 13);
     Insert(New(PStaticText, Init(R, Format('(0..%d)', [MAX_SCROLLBACK]))));
+    TitleLine := NewInputLine(22, 13, 41, 40, hcNoContext, nil);
+    NewLabel(2, 13, UiText('Default title', 'Titulo por defecto'), TitleLine);
     // Nombre el ultimo: foco inicial (las coordenadas son absolutas, el
     // orden de insercion no cambia el layout)
     NameLine := NewInputLine(22, 1, 25, 40, hcNoContext, nil);
@@ -412,6 +415,7 @@ begin
     SetLineText(CwdLine, C.Cwd);
     SetLineText(ShellLine, C.Shell);
     SetLineText(ScrollLine, IntToStr(C.ScrollBack));
+    SetLineText(TitleLine, C.Title);
     W := Sw_Word(Ord(C.Kind));   // preseleccion del tipo derivado
     TypeRadio^.SetData(W);
     W := 0;
@@ -434,6 +438,7 @@ begin
     C.Cmd := Trim(LineText(D^.CmdLine));
     C.Cwd := Trim(LineText(D^.CwdLine));
     C.Shell := Trim(LineText(D^.ShellLine));
+    C.Title := Trim(LineText(D^.TitleLine));
     S := Trim(LineText(D^.ScrollLine));
     if S = '' then
       C.ScrollBack := DEFAULT_SCROLLBACK

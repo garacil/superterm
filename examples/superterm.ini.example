@@ -37,6 +37,7 @@ default_profile=daily
 [class.production]
 name=production
 enabled=1
+title=Production        ; default window title (falls back to the class name)
 host=prod.example.com
 user=alice
 port=22

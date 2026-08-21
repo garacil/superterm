@@ -18,6 +18,7 @@ type
     Cmd: string;
     Cwd: string;
     Term: string;   // nombre del terminal de /etc/superterm ('' = ad-hoc)
+    Title: string;  // titulo propio de la ventana ('' = derivado de cwd/cmd)
     Args: TStringArray; // argumentos observados, para restauracion segura
     // geometria/estado de la ventana del panel (BW<=0 = sin datos, tiling):
     // las ventanas movidas o redimensionadas a mano con Ctrl-F5 deben
@@ -132,6 +133,8 @@ begin
       Ini.WriteString(Sec, 'cmd', Panes[i].Cmd);
       Ini.WriteString(Sec, 'cwd', Panes[i].Cwd);
       Ini.WriteString(Sec, 'term', Panes[i].Term);
+      if Panes[i].Title <> '' then
+        Ini.WriteString(Sec, 'title', Panes[i].Title);
       if (Panes[i].BW > 0) and (Panes[i].BH > 0) then
       begin
         Ini.WriteInteger(Sec, 'bx', Panes[i].BX);
@@ -218,6 +221,7 @@ begin
       Panes[i].Cmd := Ini.ReadString(Sec, 'cmd', '');
       Panes[i].Cwd := Ini.ReadString(Sec, 'cwd', '');
       Panes[i].Term := Ini.ReadString(Sec, 'term', '');
+      Panes[i].Title := Ini.ReadString(Sec, 'title', '');
       Panes[i].BX := Ini.ReadInteger(Sec, 'bx', 0);
       Panes[i].BY := Ini.ReadInteger(Sec, 'by', 0);
       Panes[i].BW := Ini.ReadInteger(Sec, 'bw', 0);
