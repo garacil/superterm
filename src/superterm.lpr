@@ -9,7 +9,8 @@ program superterm;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, Objects, Drivers, App, st_fvui, st_server, st_video, st_kbd;
+  SysUtils, Objects, Drivers, App, st_fvui, st_server, st_video, st_kbd,
+  st_config, st_cli;
 
 var
   STApp: PSuperApp;
@@ -17,10 +18,24 @@ var
   AttachName: string;
   ListOnly: boolean;
   Infos: TSessionInfoArray;
+  BootCfg: TConfig;
 
 begin
   AttachRequested := False;
   AttachSocket := '';
+  // idioma resuelto ANTES de imprimir nada: la CLI habla el idioma del IDE
+  // (o el de LANG si aun no hay configuracion)
+  BootCfg := Default(TConfig);
+  if FileExists(ConfigFile) then
+  begin
+    LoadConfig(BootCfg);
+    CurrentLanguage := BootCfg.Language;
+  end
+  else if Copy(LowerCase(GetEnvironmentVariable('LANG')), 1, 2) = 'es' then
+    CurrentLanguage := ulSpanish;
+  // comandos de CLI (list/send/capture/... en ingles o espanol): ejecutan y
+  // salen; el arranque de la TUI y --attach continuan por aqui
+  RunCli;
   AttachName := '';
   ListOnly := False;
   i := 1;
