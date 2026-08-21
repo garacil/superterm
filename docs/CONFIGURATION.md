@@ -287,8 +287,10 @@ windows of the active profile.
 
 ## Detached sessions
 
-`Ctrl-Q d` (or `Sessions -> Detach...`) prompts for a session name (default:
-the active profile) and moves the panes into a per-user background server:
+Since 3.0 every session lives in a per-user background server from launch
+(`[session] server=always`), named automatically: `--session NAME`, else the
+active profile, else `session`. `Ctrl-Q d` (or `Sessions -> Detach...`)
+simply disconnects the client, instantly and with no dialog:
 
 - Socket: `~/.superterm/sessions/<name>.sock` (directory mode `700`).
 - Metadata sidecar: `~/.superterm/sessions/<name>.ini` with the session

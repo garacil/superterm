@@ -80,6 +80,36 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
+**superterm 3.0 in action — one capture per feature.**
+
+Two clients attached to the same session at once: everything typed in client
+A (left) appears live in client B (right), including the `print` injected
+from a third shell with the control CLI:
+
+![Two clients attached to one session](screenshots/multiuser.png)
+
+A workspace built entirely from the command line — panes opened with
+`nueva`, renamed with `renombrar`, re-tiled with `organizar rejilla`, the
+Python expression typed with `send` — while the attached client watches it
+happen:
+
+![A workspace driven from the CLI](screenshots/cli-windows.png)
+
+Listing sessions and pane details (live command, size, scrollback lines,
+focus flags) — note the English command with Spanish output, and the
+Spanish `listar` alias:
+
+![Session and pane listing](screenshots/cli-list.png)
+
+Typing into a pane and capturing its screen or its whole scrollback from
+another shell, pipe-clean:
+
+![Send and capture round-trip](screenshots/cli-send-capture.png)
+
+The bilingual built-in help (`--help` / `--ayuda`):
+
+![The CLI help in Spanish](screenshots/cli-help.png)
+
 Reusable window classes, named workspaces, and detachable sessions, all edited
 in the app and stored in one INI file:
 
@@ -241,25 +271,27 @@ python3 test/detach_test.py
 ./bin/superterm
 ```
 
-Detaching prompts for a session name (default: the active profile). To
-return to a live session:
+Since 3.0 the session is named when it starts (`--session NAME`, else the
+active profile, else `session`) and `Ctrl-Q d` detaches instantly, with no
+dialog. To return to a live session:
 
 ```sh
 ./bin/superterm --attach            # one session: direct; several: picker
 ./bin/superterm --attach dev        # attach by name
-./bin/superterm --list-sessions     # table of live sessions (purges orphans)
+./bin/superterm list                # sessions table (also --list-sessions)
 ```
 
-Plain `superterm` also offers the session picker at startup when detached
-sessions exist. Each detach starts a per-user session server at
+Plain `superterm` also offers the session picker at startup when live
+sessions exist. Every launch starts a per-user session server at
 `~/.superterm/sessions/<name>.sock` with a `<name>.ini` metadata sidecar
 (the pre-existing single `~/.superterm/session.sock` from older builds is
 still recognized). The server owns the PTY masters, process groups,
-terminal parsers, and scrollback, so leaving the FreeVision client does not
-close local shells or remote SSH connections. `Alt-X` and `Alt-Q` remain
-permanent exits: they close the live session instead of creating a
-detachable one. Inside the app, `Ctrl-Q s` opens the session picker to
-attach to or permanently close other sessions.
+terminal parsers, and scrollback, so leaving the client — or losing it —
+does not close local shells or remote SSH connections. `Alt-X` and `Alt-Q`
+remain permanent exits that close the whole session: `Alt-X` asks the
+server to save `session.ini` first, `Alt-Q` skips saving. Inside the app,
+`Ctrl-Q s` opens the session picker to attach to or permanently close
+other sessions.
 
 Optional diagnostics:
 
