@@ -24,6 +24,9 @@ const
   FRAME_CLOSE = 5;
   FRAME_KILLPANE = 6;   // cliente enganchado cierra un panel
   FRAME_LAYOUT = 7;     // cliente enganchado sincroniza arbol/geometria
+  FRAME_NEWPANE = 8;    // panel nuevo daemon-side: byte Dir; Class,Cmd,Cwd,Title
+  FRAME_FOCUS = 9;      // cambia el panel enfocado (panel en cabecera)
+  FRAME_RENAME = 10;    // string NuevoTitulo (panel en cabecera)
 
   // control efimero: una conexion, un frame de peticion, respuesta y cierre;
   // nunca ocupa el slot de cliente interactivo (patron de FRAME_CLOSE)
@@ -39,6 +42,17 @@ const
   FRAME_OUTPUT = 23;
   FRAME_EXIT = 24;
   FRAME_ERROR = 25;
+
+  // eventos servidor->cliente (solo a clientes que declaran la capacidad;
+  // un cliente antiguo trata cualquier frame desconocido como conexion
+  // perdida, asi que jamas se le envian)
+  FRAME_LAYOUT_EV = 26;    // mismo payload que FRAME_LAYOUT
+  FRAME_KILLPANE_EV = 27;  // panel cerrado (panel en cabecera)
+  FRAME_NEWPANE_EV = 28;   // At,NewIdx,PaneCount,Dir,Cols,Rows,Title,Term
+  FRAME_RESIZE_EV = 29;    // Longint Cols,Rows (panel en cabecera)
+  FRAME_TITLE_EV = 30;     // string Titulo (panel en cabecera)
+  FRAME_FOCUS_EV = 31;     // panel enfocado (panel en cabecera)
+  FRAME_SHUTDOWN_EV = 32;  // la sesion se cierra
 
   // respuestas de control
   FRAME_CTL_OK = 40;
@@ -63,6 +77,29 @@ const
   WINOP_RESIZE = 10;    // Longint Cols, Rows (tamano del terminal)
 
   MAX_FRAME_SIZE = 64 * 1024 * 1024;
+
+  // adhesion versionada (cola tolerante del payload de FRAME_ATTACH):
+  // ProtoVer, DeskW, DeskH, Caps; sin payload = cliente legado exclusivo
+  ATTACH_PROTO_VER = 2;
+  ATTACH_CAP_EVENTS = 1;   // bit0 de Caps: entiende los eventos 26+
+
+  MAX_CLIENTS = 8;
+  // tope duro del buffer de salida por cliente (corte inmediato)
+  MAX_EGRESS = 8 * 1024 * 1024;
+  // control de flujo: con esta cantidad pendiente hacia algun cliente se
+  // deja de leer de los PTY (el productor se frena solo en su buffer);
+  // asi un lector lento pausa la sesion en vez de perder salida
+  FLOW_STOP = 2 * 1024 * 1024;
+  // cliente rezagado: pendiente alto sin ningun progreso durante el
+  // periodo de gracia -> desconectar para que la sesion siga viva
+  LAG_MIN_PENDING = 512 * 1024;
+  LAG_GRACE_MS = 10000;
+
+  {$ifdef darwin}
+  ST_MSG_DONTWAIT = $80;
+  {$else}
+  ST_MSG_DONTWAIT = $40;
+  {$endif}
 
 type
   TByteArray = array of byte;
@@ -97,10 +134,15 @@ type
     // o nunca recibio un FRAME_LAYOUT); bounds absolutos para DeskW x DeskH
     Geom: TPaneGeomArray;
     DeskW, DeskH: Longint;
+    // version del daemon (cola tolerante 3; 0 = daemon anterior a los
+    // eventos: no enviarle frames nuevos)
+    ProtoVer: Longint;
     Panes: array[0..MAX_PANES - 1] of TSessionPaneSnapshot;
   end;
 
-  TSessionEventKind = (sekOutput, sekExit, sekError, sekLost);
+  TSessionEventKind = (sekOutput, sekExit, sekError, sekLost,
+    sekLayoutEv, sekKillPaneEv, sekNewPaneEv, sekResizeEv, sekTitleEv,
+    sekFocusEv, sekShutdown, sekIgnore);
 
   TSessionEvent = record
     Kind: TSessionEventKind;
@@ -113,6 +155,7 @@ type
   private
     FSocket: cint;
     FConnected: boolean;
+    FServerProto: Longint;
     function SendFrame(AKind: byte; APane: integer;
       const Data: TByteArray): boolean;
     function ReadFrame(out AKind: byte; out APane: integer;
@@ -134,7 +177,14 @@ type
     function SendLayout(const ANodes: string; AFocused: integer;
       const ATitles: TStrArray; const AGeom: TPaneGeomArray;
       ADeskW, ADeskH: integer): boolean;
+    // panel nuevo creado por el daemon; la ventana llega por NEWPANE_EV
+    function SendNewPane(APane: integer; ADir: byte;
+      const AClass, ACmd, ACwd, ATitle: string): boolean;
+    function SendFocus(APane: integer): boolean;
+    function SendRename(APane: integer; const ATitle: string): boolean;
     property Connected: boolean read FConnected;
+    // version del daemon al que estamos enganchados (0 = anterior a v2)
+    property ServerProto: Longint read FServerProto;
   end;
 
 type
@@ -185,6 +235,16 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   AFocused: integer; const AGeom: TPaneGeomArray;
   ADeskW, ADeskH: integer): boolean;
 
+// decodifica el payload de FRAME_LAYOUT / FRAME_LAYOUT_EV
+function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
+  out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
+  out ADeskW, ADeskH: Longint): boolean;
+
+// decodifica el payload de FRAME_NEWPANE_EV
+function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
+  APaneCount: Longint; out ADir: byte; out ACols, ARows: Longint;
+  out ATitle, ATerm: string): boolean;
+
 var
   AttachRequested: boolean = False;
   AttachSocket: string = '';   // socket resuelto por la CLI ('' = selector)
@@ -197,6 +257,19 @@ type
     Reserved: byte;
     Pane: SmallInt;
     Size: LongWord;
+  end;
+
+  // un cliente interactivo enganchado: fd, capacidades, buffer de egreso y
+  // ultima peticion de tamano por panel (para el minimo comun)
+  TClientConn = record
+    Fd: cint;
+    Caps: Longint;
+    Legacy: boolean;         // ATTACH sin payload: protocolo v1, exclusivo
+    DeskW, DeskH: Longint;
+    OutBuf: RawByteString;
+    LastProgress: QWord;     // ultimo tick con bytes aceptados por su socket
+    ReqCols: array[0..MAX_PANES - 1] of Longint;
+    ReqRows: array[0..MAX_PANES - 1] of Longint;
   end;
 
   TDetachedSession = class
@@ -213,7 +286,7 @@ type
     FName: string;
     FProfile: string;
     FListener: cint;
-    FClient: cint;
+    FClients: array[0..MAX_CLIENTS - 1] of TClientConn;
     FStop: boolean;
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
@@ -222,10 +295,21 @@ type
     FCtlClassesLoaded: boolean;
     FCtlCfg: TConfig;                 // config para spawns daemon-side
     function CreateListener: boolean;
-    function SendFrame(AKind: byte; APane: integer;
-      const Data: TByteArray): boolean;
-    function SendRawFrame(AKind: byte; APane: integer;
+    function AttachedCount: integer;
+    function HasLegacyClient: boolean;
+    procedure DropClient(AIdx: integer);
+    function QueueOut(AIdx: integer; const Buffer; ASize: integer): boolean;
+    function SendFrameToIdx(AIdx: integer; AKind: byte; APane: integer;
       const Buffer; ASize: integer): boolean;
+    procedure Broadcast(AKind: byte; APane: integer; const Buffer;
+      ASize: integer; ANeedCaps: boolean; AExcept: integer);
+    procedure FlushClient(AIdx: integer);
+    procedure NegotiateResize(APane: integer);
+    function BuildLayoutBlob(out AData: TByteArray): boolean;
+    procedure BroadcastLayoutEv(AExcept: integer);
+    procedure BroadcastTitle(APane: integer);
+    function DoNewPane(AAt: integer; ADir: byte; const AClass, ACmd,
+      ACwd, ATitle: string; out ANewIdx: integer; out AErr: string): boolean;
     function ReadFrame(AFd: cint; out AKind: byte; out APane: integer;
       out Data: TByteArray): boolean;
     function SendSnapshot(AFd: cint): boolean;
@@ -241,10 +325,10 @@ type
     function SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
       ACols, ARows: integer; out APty: TPty; out ATerm: string): boolean;
     procedure ReapChildren;
-    function HandleAttach(AFd: cint; AFirstKind: byte): boolean;
-    function HandleClientFrame(var AClient: cint): boolean;
+    function HandleAttach(AFd: cint; AFirstKind: byte;
+      const AFirstData: TByteArray): boolean;
+    procedure HandleClientFrame(AIdx: integer);
     procedure HandlePaneOutput(APane: integer);
-    procedure CloseClient(var AClient: cint);
     procedure SignalReady(AFd: cint; AOk: boolean);
     procedure WriteSidecar;
     procedure DoKillPane(APane: integer);
@@ -797,6 +881,105 @@ begin
   end;
 end;
 
+function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
+  out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
+  out ADeskW, ADeskH: Longint): boolean;
+var
+  Stream: TMemoryStream;
+  Cnt, I: Longint;
+  T: string;
+  Flag: byte;
+begin
+  Result := False;
+  ANodes := '';
+  AFocused := 0;
+  ATitles := nil;
+  AGeom := nil;
+  ADeskW := 0;
+  ADeskH := 0;
+  if Length(Data) = 0 then
+    Exit;
+  Stream := TMemoryStream.Create;
+  try
+    Stream.WriteBuffer(Data[0], Length(Data));
+    Stream.Position := 0;
+    if not ReadTailString(Stream, ANodes) then
+      Exit;
+    Cnt := Default(Longint);
+    if Stream.Position + 2 * SizeOf(Longint) > Stream.Size then
+      Exit;
+    Stream.ReadBuffer(AFocused, SizeOf(AFocused));
+    Stream.ReadBuffer(Cnt, SizeOf(Cnt));
+    if (Cnt < 1) or (Cnt > MAX_PANES) then
+      Exit;
+    SetLength(ATitles, Cnt);
+    for I := 0 to Cnt - 1 do
+    begin
+      if not ReadTailString(Stream, T) then
+        Exit;
+      ATitles[I] := T;
+    end;
+    if Stream.Position + 2 * SizeOf(Longint) +
+       Cnt * (4 * SizeOf(Longint) + 2) > Stream.Size then
+      Exit;
+    Stream.ReadBuffer(ADeskW, SizeOf(ADeskW));
+    Stream.ReadBuffer(ADeskH, SizeOf(ADeskH));
+    SetLength(AGeom, Cnt);
+    for I := 0 to Cnt - 1 do
+    begin
+      Stream.ReadBuffer(AGeom[I].BX, SizeOf(Longint));
+      Stream.ReadBuffer(AGeom[I].BY, SizeOf(Longint));
+      Stream.ReadBuffer(AGeom[I].BW, SizeOf(Longint));
+      Stream.ReadBuffer(AGeom[I].BH, SizeOf(Longint));
+      Flag := Default(byte);
+      Stream.ReadBuffer(Flag, SizeOf(Flag));
+      AGeom[I].Zoomed := Flag <> 0;
+      Stream.ReadBuffer(Flag, SizeOf(Flag));
+      AGeom[I].Minimized := Flag <> 0;
+    end;
+    Result := True;
+  finally
+    Stream.Free;
+  end;
+end;
+
+function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
+  APaneCount: Longint; out ADir: byte; out ACols, ARows: Longint;
+  out ATitle, ATerm: string): boolean;
+var
+  Stream: TMemoryStream;
+begin
+  Result := False;
+  AAt := 0;
+  ANewIdx := 0;
+  APaneCount := 0;
+  ADir := 0;
+  ACols := 0;
+  ARows := 0;
+  ATitle := '';
+  ATerm := '';
+  if Length(Data) < 3 * SizeOf(Longint) + 1 + 2 * SizeOf(Longint) then
+    Exit;
+  Stream := TMemoryStream.Create;
+  try
+    Stream.WriteBuffer(Data[0], Length(Data));
+    Stream.Position := 0;
+    Stream.ReadBuffer(AAt, SizeOf(AAt));
+    Stream.ReadBuffer(ANewIdx, SizeOf(ANewIdx));
+    Stream.ReadBuffer(APaneCount, SizeOf(APaneCount));
+    Stream.ReadBuffer(ADir, SizeOf(ADir));
+    Stream.ReadBuffer(ACols, SizeOf(ACols));
+    Stream.ReadBuffer(ARows, SizeOf(ARows));
+    if not ReadTailString(Stream, ATitle) then
+      Exit;
+    if not ReadTailString(Stream, ATerm) then
+      Exit;
+    Result := True;
+  finally
+    Stream.Free;
+  end;
+end;
+
 function SuggestSessionName(const ABase: string): string;
 var
   Base: string;
@@ -885,6 +1068,7 @@ var
   Data: TByteArray;
   Stream: TMemoryStream;
   I: integer;
+  L: Longint;
 begin
   Result := False;
   Snapshot.LayoutNodes := '';
@@ -895,6 +1079,8 @@ begin
   Snapshot.Geom := nil;
   Snapshot.DeskW := 0;
   Snapshot.DeskH := 0;
+  Snapshot.ProtoVer := 0;
+  FServerProto := 0;
   for I := 0 to MAX_PANES - 1 do
   begin
     Snapshot.Panes[I].Title := '';
@@ -905,7 +1091,17 @@ begin
   if FSocket < 0 then
     Exit;
   FConnected := True;
+  // cola tolerante del ATTACH: version, escritorio y capacidades; un
+  // daemon antiguo ignora el payload y sirve el protocolo v1 de siempre
   Data := nil;
+  SetLength(Data, 4 * SizeOf(Longint));
+  L := ATTACH_PROTO_VER;
+  Move(L, Data[0], SizeOf(L));
+  L := 0;   // DeskW/DeskH: aun sin escritorio en el arranque
+  Move(L, Data[SizeOf(Longint)], SizeOf(L));
+  Move(L, Data[2 * SizeOf(Longint)], SizeOf(L));
+  L := ATTACH_CAP_EVENTS;
+  Move(L, Data[3 * SizeOf(Longint)], SizeOf(L));
   if not SendFrame(FRAME_ATTACH, -1, Data) then
   begin
     CloseSocket;
@@ -938,7 +1134,13 @@ begin
     // ante una cola truncada el campo queda en '' y no se sigue leyendo
     if ReadTailString(Stream, Snapshot.Name) then
       if ReadTailString(Stream, Snapshot.Profile) then
+      begin
         ReadSnapshotGeom(Stream, Snapshot);
+        // cola tolerante 3: version del daemon (ausente en los antiguos)
+        if Stream.Position + SizeOf(Longint) <= Stream.Size then
+          Stream.ReadBuffer(Snapshot.ProtoVer, SizeOf(Longint));
+      end;
+    FServerProto := Snapshot.ProtoVer;
   finally
     Stream.Free;
   end;
@@ -1002,7 +1204,16 @@ begin
         if Length(Event.Data) > 0 then
           SetString(Event.Text, PAnsiChar(@Event.Data[0]), Length(Event.Data));
       end;
+    FRAME_LAYOUT_EV: Event.Kind := sekLayoutEv;
+    FRAME_KILLPANE_EV: Event.Kind := sekKillPaneEv;
+    FRAME_NEWPANE_EV: Event.Kind := sekNewPaneEv;
+    FRAME_RESIZE_EV: Event.Kind := sekResizeEv;
+    FRAME_TITLE_EV: Event.Kind := sekTitleEv;
+    FRAME_FOCUS_EV: Event.Kind := sekFocusEv;
+    FRAME_SHUTDOWN_EV: Event.Kind := sekShutdown;
   else
+    // frame futuro: ignorar en vez de darlo por conexion perdida
+    Event.Kind := sekIgnore;
     Event.Data := nil;
   end;
   Result := True;
@@ -1111,6 +1322,56 @@ begin
   end;
 end;
 
+function TSessionClient.SendNewPane(APane: integer; ADir: byte;
+  const AClass, ACmd, ACwd, ATitle: string): boolean;
+var
+  Stream: TMemoryStream;
+  Data: TByteArray;
+begin
+  Data := Default(TByteArray);
+  Stream := TMemoryStream.Create;
+  try
+    Stream.WriteBuffer(ADir, SizeOf(ADir));
+    WriteString(Stream, AClass);
+    WriteString(Stream, ACmd);
+    WriteString(Stream, ACwd);
+    WriteString(Stream, ATitle);
+    SetLength(Data, Stream.Size);
+    Stream.Position := 0;
+    Stream.ReadBuffer(Data[0], Stream.Size);
+  finally
+    Stream.Free;
+  end;
+  Result := SendFrame(FRAME_NEWPANE, APane, Data);
+end;
+
+function TSessionClient.SendFocus(APane: integer): boolean;
+var
+  Data: TByteArray;
+begin
+  Data := nil;
+  Result := SendFrame(FRAME_FOCUS, APane, Data);
+end;
+
+function TSessionClient.SendRename(APane: integer;
+  const ATitle: string): boolean;
+var
+  Stream: TMemoryStream;
+  Data: TByteArray;
+begin
+  Data := Default(TByteArray);
+  Stream := TMemoryStream.Create;
+  try
+    WriteString(Stream, ATitle);
+    SetLength(Data, Stream.Size);
+    Stream.Position := 0;
+    Stream.ReadBuffer(Data[0], Stream.Size);
+  finally
+    Stream.Free;
+  end;
+  Result := SendFrame(FRAME_RENAME, APane, Data);
+end;
+
 constructor TDetachedSession.Create(const AName, AProfile: string;
   ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
@@ -1140,7 +1401,11 @@ begin
   FSocketPath := SessionSocketPathFor(FName);
   FMetaPath := SessionMetaPathFor(FName);
   FListener := -1;
-  FClient := -1;
+  for I := 0 to MAX_CLIENTS - 1 do
+  begin
+    FClients[I] := Default(TClientConn);
+    FClients[I].Fd := -1;
+  end;
   FStop := False;
   // geometria inicial de las ventanas tal como estaban al separar
   FGeomValid := Length(AGeom) = FPaneCount;
@@ -1155,7 +1420,12 @@ destructor TDetachedSession.Destroy;
 var
   I: integer;
 begin
-  CloseClient(FClient);
+  for I := 0 to MAX_CLIENTS - 1 do
+    if FClients[I].Fd >= 0 then
+    begin
+      FpClose(FClients[I].Fd);
+      FClients[I].Fd := -1;
+    end;
   if FListener >= 0 then
     FpClose(FListener);
   if FileExists(FSocketPath) then
@@ -1209,17 +1479,253 @@ begin
   Result := True;
 end;
 
-function TDetachedSession.SendFrame(AKind: byte; APane: integer;
-  const Data: TByteArray): boolean;
+function TDetachedSession.AttachedCount: integer;
+var
+  I: integer;
 begin
-  Result := (FClient >= 0) and WriteFrameTo(FClient, AKind, APane, Data);
+  Result := 0;
+  for I := 0 to MAX_CLIENTS - 1 do
+    if FClients[I].Fd >= 0 then
+      Inc(Result);
 end;
 
-function TDetachedSession.SendRawFrame(AKind: byte; APane: integer;
-  const Buffer; ASize: integer): boolean;
+function TDetachedSession.HasLegacyClient: boolean;
+var
+  I: integer;
 begin
-  Result := (FClient >= 0) and WriteRawFrameTo(FClient, AKind, APane,
-    Buffer, ASize);
+  Result := False;
+  for I := 0 to MAX_CLIENTS - 1 do
+    if (FClients[I].Fd >= 0) and FClients[I].Legacy then
+      Exit(True);
+end;
+
+procedure TDetachedSession.DropClient(AIdx: integer);
+var
+  P: integer;
+begin
+  if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or (FClients[AIdx].Fd < 0) then
+    Exit;
+  FpClose(FClients[AIdx].Fd);
+  FClients[AIdx] := Default(TClientConn);
+  FClients[AIdx].Fd := -1;
+  // al soltar un cliente el minimo comun de tamanos puede crecer
+  for P := 0 to FPaneCount - 1 do
+    NegotiateResize(P);
+  WriteSidecar;
+end;
+
+// encola bytes hacia un cliente sin bloquear jamas al daemon: primero un
+// envio directo no bloqueante y el resto al buffer de egreso; si el buffer
+// supera el tope el cliente esta muerto o parado y se le desconecta
+function TDetachedSession.QueueOut(AIdx: integer; const Buffer;
+  ASize: integer): boolean;
+var
+  P: PByte;
+  Left, Pending: integer;
+  N: ssize_t;
+begin
+  Result := False;
+  if (FClients[AIdx].Fd < 0) or (ASize <= 0) then
+    Exit;
+  P := @Buffer;
+  Left := ASize;
+  if FClients[AIdx].OutBuf = '' then
+    while Left > 0 do
+    begin
+      N := fpSend(FClients[AIdx].Fd, P, Left, ST_MSG_DONTWAIT);
+      if N > 0 then
+      begin
+        Inc(P, N);
+        Dec(Left, integer(N));
+        FClients[AIdx].LastProgress := GetTickCount64;
+      end
+      else if (N < 0) and (fpgeterrno = ESysEINTR) then
+        continue
+      else if (N < 0) and (fpgeterrno = ESysEAGAIN) then
+        Break
+      else
+      begin
+        DropClient(AIdx);
+        Exit;
+      end;
+    end;
+  if Left > 0 then
+  begin
+    Pending := Length(FClients[AIdx].OutBuf);
+    if Pending + Left > MAX_EGRESS then
+    begin
+      DropClient(AIdx);
+      Exit;
+    end;
+    SetLength(FClients[AIdx].OutBuf, Pending + Left);
+    Move(P^, FClients[AIdx].OutBuf[Pending + 1], Left);
+  end;
+  Result := True;
+end;
+
+function TDetachedSession.SendFrameToIdx(AIdx: integer; AKind: byte;
+  APane: integer; const Buffer; ASize: integer): boolean;
+var
+  Hdr: TFrameHeader;
+  Frame: RawByteString;
+begin
+  Result := False;
+  if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or (FClients[AIdx].Fd < 0) or
+     (ASize < 0) then
+    Exit;
+  Hdr.Kind := AKind;
+  Hdr.Reserved := 0;
+  Hdr.Pane := SmallInt(APane);
+  Hdr.Size := LongWord(ASize);
+  Frame := '';
+  SetLength(Frame, SizeOf(Hdr) + ASize);
+  Move(Hdr, Frame[1], SizeOf(Hdr));
+  if ASize > 0 then
+    Move(Buffer, Frame[1 + SizeOf(Hdr)], ASize);
+  Result := QueueOut(AIdx, Frame[1], Length(Frame));
+end;
+
+procedure TDetachedSession.Broadcast(AKind: byte; APane: integer;
+  const Buffer; ASize: integer; ANeedCaps: boolean; AExcept: integer);
+var
+  I: integer;
+begin
+  for I := 0 to MAX_CLIENTS - 1 do
+    if (FClients[I].Fd >= 0) and (I <> AExcept) and
+       ((not ANeedCaps) or
+        ((FClients[I].Caps and ATTACH_CAP_EVENTS) <> 0)) then
+      SendFrameToIdx(I, AKind, APane, Buffer, ASize);
+end;
+
+procedure TDetachedSession.FlushClient(AIdx: integer);
+var
+  N: ssize_t;
+begin
+  if (FClients[AIdx].Fd < 0) or (FClients[AIdx].OutBuf = '') then
+    Exit;
+  N := fpSend(FClients[AIdx].Fd, @FClients[AIdx].OutBuf[1],
+    Length(FClients[AIdx].OutBuf), ST_MSG_DONTWAIT);
+  if N > 0 then
+  begin
+    Delete(FClients[AIdx].OutBuf, 1, integer(N));
+    FClients[AIdx].LastProgress := GetTickCount64;
+  end
+  else if (N < 0) and ((fpgeterrno = ESysEAGAIN) or
+     (fpgeterrno = ESysEINTR)) then
+    Exit
+  else
+    DropClient(AIdx);
+end;
+
+// tamano efectivo de un panel = minimo comun de lo pedido por los clientes
+// (asi todos parsean los mismos bytes); el resultado se difunde y cada
+// cliente ajusta su TScreen al recibirlo
+procedure TDetachedSession.NegotiateResize(APane: integer);
+var
+  I: integer;
+  MinC, MinR: Longint;
+  Pair: array[0..1] of Longint;
+begin
+  if (APane < 0) or (APane >= FPaneCount) or (FScreens[APane] = nil) then
+    Exit;
+  MinC := 0;
+  MinR := 0;
+  for I := 0 to MAX_CLIENTS - 1 do
+    if (FClients[I].Fd >= 0) and (FClients[I].ReqCols[APane] > 0) and
+       (FClients[I].ReqRows[APane] > 0) then
+    begin
+      if (MinC = 0) or (FClients[I].ReqCols[APane] < MinC) then
+        MinC := FClients[I].ReqCols[APane];
+      if (MinR = 0) or (FClients[I].ReqRows[APane] < MinR) then
+        MinR := FClients[I].ReqRows[APane];
+    end;
+  if (MinC < 4) or (MinR < 2) then
+    Exit;
+  if (MinC = FScreens[APane].Width) and (MinR = FScreens[APane].Height) then
+    Exit;
+  FScreens[APane].Resize(MinC, MinR);
+  if FPanes[APane] <> nil then
+    FPanes[APane].Resize(MinC, MinR);
+  Pair[0] := MinC;
+  Pair[1] := MinR;
+  Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
+end;
+
+// serializa el estado de layout con el mismo formato que FRAME_LAYOUT
+function TDetachedSession.BuildLayoutBlob(out AData: TByteArray): boolean;
+var
+  Meta: TMemoryStream;
+  Cnt, I, F: Longint;
+  Flag: byte;
+begin
+  Result := False;
+  AData := nil;
+  if not FGeomValid then
+    Exit;
+  Meta := TMemoryStream.Create;
+  try
+    WriteString(Meta, SaveLayoutString(FLayout));
+    F := FFocused;
+    Meta.WriteBuffer(F, SizeOf(F));
+    Cnt := FPaneCount;
+    Meta.WriteBuffer(Cnt, SizeOf(Cnt));
+    for I := 0 to Cnt - 1 do
+      WriteString(Meta, FTitles[I]);
+    Meta.WriteBuffer(FDeskW, SizeOf(FDeskW));
+    Meta.WriteBuffer(FDeskH, SizeOf(FDeskH));
+    for I := 0 to Cnt - 1 do
+    begin
+      Meta.WriteBuffer(FGeom[I].BX, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].BY, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].BW, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].BH, SizeOf(Longint));
+      if FGeom[I].Zoomed then Flag := 1 else Flag := 0;
+      Meta.WriteBuffer(Flag, SizeOf(Flag));
+      if FGeom[I].Minimized then Flag := 1 else Flag := 0;
+      Meta.WriteBuffer(Flag, SizeOf(Flag));
+    end;
+    SetLength(AData, Meta.Size);
+    if Meta.Size > 0 then
+    begin
+      Meta.Position := 0;
+      Meta.ReadBuffer(AData[0], Meta.Size);
+    end;
+    Result := True;
+  finally
+    Meta.Free;
+  end;
+end;
+
+procedure TDetachedSession.BroadcastLayoutEv(AExcept: integer);
+var
+  Data: TByteArray;
+begin
+  if AttachedCount = 0 then
+    Exit;
+  if not BuildLayoutBlob(Data) then
+    Exit;
+  if Length(Data) > 0 then
+    Broadcast(FRAME_LAYOUT_EV, -1, Data[0], Length(Data), True, AExcept);
+end;
+
+procedure TDetachedSession.BroadcastTitle(APane: integer);
+var
+  Meta: TMemoryStream;
+  Data: TByteArray;
+begin
+  if (APane < 0) or (APane >= FPaneCount) or (AttachedCount = 0) then
+    Exit;
+  Meta := TMemoryStream.Create;
+  try
+    WriteString(Meta, FTitles[APane]);
+    Data := nil;
+    SetLength(Data, Meta.Size);
+    Meta.Position := 0;
+    Meta.ReadBuffer(Data[0], Meta.Size);
+    Broadcast(FRAME_TITLE_EV, APane, Data[0], Length(Data), True, -1);
+  finally
+    Meta.Free;
+  end;
 end;
 
 function TDetachedSession.ReadFrame(AFd: cint; out AKind: byte;
@@ -1278,6 +1784,10 @@ begin
         Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
     end;
+    // cola tolerante 3: version del protocolo del daemon (un cliente
+    // nuevo la usa para no enviar frames v2 a un daemon antiguo)
+    GeomCnt := ATTACH_PROTO_VER;
+    Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
     SetLength(Data, Meta.Size);
     if Meta.Size > 0 then
     begin
@@ -1334,28 +1844,63 @@ begin
   Result := ReadFrame(AFd, AKind, APane, AData);
 end;
 
-// atiende una adhesion cuyo primer frame ya fue leido en Run: solo un
-// FRAME_ATTACH legitimo desemboca en el envio del snapshot
-function TDetachedSession.HandleAttach(AFd: cint; AFirstKind: byte): boolean;
+// atiende una adhesion cuyo primer frame ya fue leido en Run; el payload
+// versionado decide el slot: vacio = cliente legado (protocolo v1), que
+// exige exclusividad porque no entiende los eventos de compartir sesion
+function TDetachedSession.HandleAttach(AFd: cint; AFirstKind: byte;
+  const AFirstData: TByteArray): boolean;
+var
+  Slot, I: integer;
+  Ver: Longint;
+  IsLegacy: boolean;
 begin
   Result := False;
   if AFirstKind <> FRAME_ATTACH then
     Exit;
-  Result := SendSnapshot(AFd);
-end;
-
-procedure TDetachedSession.CloseClient(var AClient: cint);
-begin
-  if AClient >= 0 then
-    FpClose(AClient);
-  AClient := -1;
+  IsLegacy := Length(AFirstData) < 4 * SizeOf(Longint);
+  if HasLegacyClient then
+    Exit;
+  if IsLegacy and (AttachedCount > 0) then
+    Exit;
+  Slot := -1;
+  for I := 0 to MAX_CLIENTS - 1 do
+    if FClients[I].Fd < 0 then
+    begin
+      Slot := I;
+      Break;
+    end;
+  if Slot < 0 then
+    Exit;
+  Ver := 0;
+  if not IsLegacy then
+  begin
+    Move(AFirstData[0], Ver, SizeOf(Ver));
+    if Ver < ATTACH_PROTO_VER then
+      Exit;
+  end;
+  if not SendSnapshot(AFd) then
+    Exit;
+  FClients[Slot] := Default(TClientConn);
+  FClients[Slot].Fd := AFd;
+  FClients[Slot].Legacy := IsLegacy;
+  FClients[Slot].LastProgress := GetTickCount64;
+  if not IsLegacy then
+  begin
+    Move(AFirstData[SizeOf(Longint)], FClients[Slot].DeskW, SizeOf(Longint));
+    Move(AFirstData[2 * SizeOf(Longint)], FClients[Slot].DeskH,
+      SizeOf(Longint));
+    Move(AFirstData[3 * SizeOf(Longint)], FClients[Slot].Caps,
+      SizeOf(Longint));
+  end;
+  WriteSidecar;
+  Result := True;
 end;
 
 // el cliente cerro un panel: matar el proceso y compactar en espejo del
 // cliente (mismos desplazamientos de indices para que INPUT siga alineado)
 procedure TDetachedSession.DoKillPane(APane: integer);
 var
-  I: integer;
+  I, C: integer;
 begin
   if (APane < 0) or (APane >= FPaneCount) or (FPaneCount <= 1) then
     Exit;
@@ -1375,6 +1920,11 @@ begin
     FTitles[I] := FTitles[I + 1];
     FTerms[I] := FTerms[I + 1];
     FGeom[I] := FGeom[I + 1];
+    for C := 0 to MAX_CLIENTS - 1 do
+    begin
+      FClients[C].ReqCols[I] := FClients[C].ReqCols[I + 1];
+      FClients[C].ReqRows[I] := FClients[C].ReqRows[I + 1];
+    end;
   end;
   FPanes[FPaneCount - 1] := nil;
   FScreens[FPaneCount - 1] := nil;
@@ -1390,74 +1940,42 @@ begin
   WriteSidecar; // el numero de paneles del sidecar cambio
 end;
 
-// el cliente sincroniza arbol de splits, foco, titulos y geometria; solo se
-// acepta si el numero de paneles coincide con el estado vivo del daemon
+// el cliente sincroniza arbol de splits, foco, titulos y geometria; solo
+// se acepta si el numero de paneles coincide con el estado vivo del daemon
 procedure TDetachedSession.ApplyLayoutFrame(const Data: TByteArray);
 var
-  Stream: TMemoryStream;
   Nodes: string;
-  Focused, Cnt, I: Longint;
+  Focused, DeskW, DeskH: Longint;
+  Titles: TStrArray;
+  Geom: TPaneGeomArray;
   NewLay: TLayout;
-  T: string;
-  Flag: byte;
+  I: integer;
 begin
-  if Length(Data) = 0 then
+  if not DecodeLayoutBlob(Data, Nodes, Focused, Titles, Geom, DeskW,
+    DeskH) then
     Exit;
-  Stream := TMemoryStream.Create;
-  try
-    Stream.WriteBuffer(Data[0], Length(Data));
-    Stream.Position := 0;
-    if not ReadTailString(Stream, Nodes) then
-      Exit;
-    Focused := Default(Longint);
-    Cnt := Default(Longint);
-    if Stream.Position + 2 * SizeOf(Longint) > Stream.Size then
-      Exit;
-    Stream.ReadBuffer(Focused, SizeOf(Focused));
-    Stream.ReadBuffer(Cnt, SizeOf(Cnt));
-    if Cnt <> FPaneCount then
-      Exit;
-    NewLay := nil;
-    if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
+  if Length(Titles) <> FPaneCount then
+    Exit;
+  NewLay := nil;
+  if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
+  begin
+    if NewLay.PaneCount = FPaneCount then
     begin
-      if NewLay.PaneCount = FPaneCount then
-      begin
-        FLayout.Free;
-        FLayout := NewLay;
-      end
-      else
-        NewLay.Free;
-    end;
-    if (Focused >= 0) and (Focused < FPaneCount) then
-      FFocused := Focused;
-    for I := 0 to Cnt - 1 do
-    begin
-      if not ReadTailString(Stream, T) then
-        Exit;
-      FTitles[I] := T;
-    end;
-    // geometria: DeskW, DeskH y por panel bounds + flags
-    if Stream.Position + 2 * SizeOf(Longint) +
-       Cnt * (4 * SizeOf(Longint) + 2) > Stream.Size then
-      Exit;
-    Stream.ReadBuffer(FDeskW, SizeOf(FDeskW));
-    Stream.ReadBuffer(FDeskH, SizeOf(FDeskH));
-    for I := 0 to Cnt - 1 do
-    begin
-      Stream.ReadBuffer(FGeom[I].BX, SizeOf(Longint));
-      Stream.ReadBuffer(FGeom[I].BY, SizeOf(Longint));
-      Stream.ReadBuffer(FGeom[I].BW, SizeOf(Longint));
-      Stream.ReadBuffer(FGeom[I].BH, SizeOf(Longint));
-      Flag := Default(byte);
-      Stream.ReadBuffer(Flag, SizeOf(Flag));
-      FGeom[I].Zoomed := Flag <> 0;
-      Stream.ReadBuffer(Flag, SizeOf(Flag));
-      FGeom[I].Minimized := Flag <> 0;
-    end;
-    FGeomValid := True;
-  finally
-    Stream.Free;
+      FLayout.Free;
+      FLayout := NewLay;
+    end
+    else
+      NewLay.Free;
   end;
+  if (Focused >= 0) and (Focused < FPaneCount) then
+    FFocused := Focused;
+  for I := 0 to FPaneCount - 1 do
+    FTitles[I] := Titles[I];
+  FDeskW := DeskW;
+  FDeskH := DeskH;
+  for I := 0 to FPaneCount - 1 do
+    FGeom[I] := Geom[I];
+  FGeomValid := True;
 end;
 
 procedure TDetachedSession.CtlReplyErr(AFd: cint; const AMsg: string);
@@ -1569,18 +2087,138 @@ begin
     FreeAndNil(APty);
 end;
 
-// gestion de ventanas por control; con un cliente enganchado se rechaza
-// (hasta la fase multi-cliente, que difunde los cambios en vivo)
+// crea un panel nuevo en el daemon (split del arbol + spawn + arrays en
+// espejo del cliente) y difunde NEWPANE_EV a todos los clientes capaces:
+// el resultado del daemon es el autoritativo y alli nace cada ventana
+function TDetachedSession.DoNewPane(AAt: integer; ADir: byte;
+  const AClass, ACmd, ACwd, ATitle: string; out ANewIdx: integer;
+  out AErr: string): boolean;
+var
+  Cols, Rows, L, PC: Longint;
+  OldCount, j, C: integer;
+  NewPty: TPty;
+  TermS: string;
+  Meta: TMemoryStream;
+  Data: TByteArray;
+  DirB: byte;
+begin
+  Result := False;
+  ANewIdx := -1;
+  AErr := '';
+  if FPaneCount >= MAX_PANES then
+  begin
+    AErr := 'max panes';
+    Exit;
+  end;
+  if (AAt < 0) or (AAt >= FPaneCount) then
+    AAt := FFocused;
+  if (AAt < 0) or (AAt >= FPaneCount) then
+    AAt := 0;
+  Cols := 80;
+  Rows := 24;
+  if FScreens[AAt] <> nil then
+  begin
+    Cols := FScreens[AAt].Width;
+    Rows := FScreens[AAt].Height;
+  end;
+  OldCount := FPaneCount;
+  if ADir = 1 then
+  begin
+    if not FLayout.SplitPane(AAt, sdH) then
+    begin
+      AErr := 'split failed';
+      Exit;
+    end;
+  end
+  else if not FLayout.SplitPane(AAt, sdV) then
+  begin
+    AErr := 'split failed';
+    Exit;
+  end;
+  ANewIdx := FLayout.LastInsertedIndex;
+  NewPty := nil;
+  TermS := '';
+  if not SpawnPaneForSpec(AClass, ACmd, ACwd, Cols, Rows, NewPty,
+    TermS) then
+  begin
+    FLayout.ClosePane(ANewIdx);
+    ANewIdx := -1;
+    if AClass <> '' then
+      AErr := 'unknown class or spawn failed'
+    else
+      AErr := 'spawn failed';
+    Exit;
+  end;
+  // desplazar los arrays en espejo del cliente (DoSplit)
+  for j := OldCount downto ANewIdx + 1 do
+  begin
+    FPanes[j] := FPanes[j - 1];
+    FScreens[j] := FScreens[j - 1];
+    FTitles[j] := FTitles[j - 1];
+    FTerms[j] := FTerms[j - 1];
+    FGeom[j] := FGeom[j - 1];
+    for C := 0 to MAX_CLIENTS - 1 do
+    begin
+      FClients[C].ReqCols[j] := FClients[C].ReqCols[j - 1];
+      FClients[C].ReqRows[j] := FClients[C].ReqRows[j - 1];
+    end;
+  end;
+  FPanes[ANewIdx] := NewPty;
+  FScreens[ANewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
+  FTerms[ANewIdx] := TermS;
+  if ATitle <> '' then
+    FTitles[ANewIdx] := ' ' + ATitle
+  else if TermS <> '' then
+    FTitles[ANewIdx] := ' ' + TermS
+  else if ACmd <> '' then
+    FTitles[ANewIdx] := ' ' + ACmd
+  else
+    FTitles[ANewIdx] := ' shell';
+  FGeom[ANewIdx] := Default(TPaneGeom);
+  for C := 0 to MAX_CLIENTS - 1 do
+  begin
+    FClients[C].ReqCols[ANewIdx] := 0;
+    FClients[C].ReqRows[ANewIdx] := 0;
+  end;
+  Inc(FPaneCount);
+  FFocused := ANewIdx;
+  WriteSidecar;
+  Meta := TMemoryStream.Create;
+  try
+    L := AAt;
+    Meta.WriteBuffer(L, SizeOf(L));
+    L := ANewIdx;
+    Meta.WriteBuffer(L, SizeOf(L));
+    PC := FPaneCount;
+    Meta.WriteBuffer(PC, SizeOf(PC));
+    DirB := ADir;
+    Meta.WriteBuffer(DirB, SizeOf(DirB));
+    Meta.WriteBuffer(Cols, SizeOf(Cols));
+    Meta.WriteBuffer(Rows, SizeOf(Rows));
+    WriteString(Meta, FTitles[ANewIdx]);
+    WriteString(Meta, FTerms[ANewIdx]);
+    Data := nil;
+    SetLength(Data, Meta.Size);
+    Meta.Position := 0;
+    Meta.ReadBuffer(Data[0], Meta.Size);
+    Broadcast(FRAME_NEWPANE_EV, ANewIdx, Data[0], Length(Data), True, -1);
+  finally
+    Meta.Free;
+  end;
+  Result := True;
+end;
+
+// gestion de ventanas por control; con clientes enganchados cada cambio
+// se difunde como evento para que lo apliquen en vivo
 procedure TDetachedSession.HandleWinOp(AFd: cint; APane: integer;
   const AData: TByteArray);
 var
   Ofs: integer;
-  Op, HowB, DirB: byte;
-  ClassS, CmdS, CwdS, TitleS: string;
-  NewPty: TPty;
-  TermS: string;
-  NewIdx, OldCount, j, N, i, k: integer;
+  Op, HowB, DirB, B0: byte;
+  ClassS, CmdS, CwdS, TitleS, ErrS: string;
+  NewIdx, j, N, i, k: integer;
   Cols, Rows: Longint;
+  Pair: array[0..1] of Longint;
   GC, GR, CW, CH, MaxOff: integer;
 
   function RdStr: string;
@@ -1607,21 +2245,12 @@ begin
     CtlReplyErr(AFd, 'bad request');
     Exit;
   end;
-  if FClient >= 0 then
-  begin
-    CtlReplyErr(AFd, 'session is attached');
-    Exit;
-  end;
   Op := AData[0];
   Ofs := 1;
+  B0 := 0;
   case Op of
     WINOP_NEWPANE:
       begin
-        if FPaneCount >= MAX_PANES then
-        begin
-          CtlReplyErr(AFd, 'max panes');
-          Exit;
-        end;
         DirB := 0;
         if Ofs < Length(AData) then
         begin
@@ -1632,69 +2261,13 @@ begin
         CmdS := RdStr;
         CwdS := RdStr;
         TitleS := RdStr;
-        // dividir el panel indicado (o el enfocado)
-        if (APane < 0) or (APane >= FPaneCount) then
-          APane := FFocused;
-        if (APane < 0) or (APane >= FPaneCount) then
-          APane := 0;
-        Cols := 80;
-        Rows := 24;
-        if FScreens[APane] <> nil then
-        begin
-          Cols := FScreens[APane].Width;
-          Rows := FScreens[APane].Height;
-        end;
-        OldCount := FPaneCount;
-        if DirB = 1 then
-        begin
-          if not FLayout.SplitPane(APane, sdH) then
-          begin
-            CtlReplyErr(AFd, 'split failed');
-            Exit;
-          end;
-        end
-        else if not FLayout.SplitPane(APane, sdV) then
-        begin
-          CtlReplyErr(AFd, 'split failed');
-          Exit;
-        end;
-        NewIdx := FLayout.LastInsertedIndex;
-        if not SpawnPaneForSpec(ClassS, CmdS, CwdS, Cols, Rows,
-          NewPty, TermS) then
-        begin
-          FLayout.ClosePane(NewIdx);
-          if ClassS <> '' then
-            CtlReplyErr(AFd, 'unknown class or spawn failed')
-          else
-            CtlReplyErr(AFd, 'spawn failed');
-          Exit;
-        end;
-        // desplazar los arrays en espejo del cliente (DoSplit)
-        for j := OldCount downto NewIdx + 1 do
-        begin
-          FPanes[j] := FPanes[j - 1];
-          FScreens[j] := FScreens[j - 1];
-          FTitles[j] := FTitles[j - 1];
-          FTerms[j] := FTerms[j - 1];
-          FGeom[j] := FGeom[j - 1];
-        end;
-        FPanes[NewIdx] := NewPty;
-        FScreens[NewIdx] := TScreen.Create(Cols, Rows,
-          DEFAULT_SCROLLBACK);
-        FTerms[NewIdx] := TermS;
-        if TitleS <> '' then
-          FTitles[NewIdx] := ' ' + TitleS
-        else if TermS <> '' then
-          FTitles[NewIdx] := ' ' + TermS
-        else if CmdS <> '' then
-          FTitles[NewIdx] := ' ' + CmdS
+        ErrS := '';
+        NewIdx := -1;
+        if DoNewPane(APane, DirB, ClassS, CmdS, CwdS, TitleS, NewIdx,
+          ErrS) then
+          CtlReplyOk(AFd, IntToStr(NewIdx + 1))
         else
-          FTitles[NewIdx] := ' shell';
-        FGeom[NewIdx] := Default(TPaneGeom);
-        Inc(FPaneCount);
-        FFocused := NewIdx;
-        WriteSidecar;
-        CtlReplyOk(AFd, IntToStr(NewIdx + 1));
+          CtlReplyErr(AFd, ErrS);
       end;
     WINOP_KILL:
       begin
@@ -1709,6 +2282,7 @@ begin
           Exit;
         end;
         DoKillPane(APane);
+        Broadcast(FRAME_KILLPANE_EV, APane, B0, 0, True, -1);
         CtlReplyOk(AFd, '');
       end;
     WINOP_FOCUS:
@@ -1722,6 +2296,8 @@ begin
         // enfocar restaura si estaba minimizada
         FGeom[APane].Minimized := False;
         FGeomValid := True;
+        Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
+        BroadcastLayoutEv(-1);
         CtlReplyOk(AFd, '');
       end;
     WINOP_MINIMIZE, WINOP_RESTORE, WINOP_ZOOM:
@@ -1748,6 +2324,7 @@ begin
             end;
         end;
         FGeomValid := True;
+        BroadcastLayoutEv(-1);
         CtlReplyOk(AFd, '');
       end;
     WINOP_ORGANIZE:
@@ -1809,6 +2386,7 @@ begin
           end;
         end;
         FGeomValid := True;
+        BroadcastLayoutEv(-1);
         CtlReplyOk(AFd, '');
       end;
     WINOP_RENAME:
@@ -1825,6 +2403,7 @@ begin
           Exit;
         end;
         FTitles[APane] := ' ' + Trim(TitleS);
+        BroadcastTitle(APane);
         CtlReplyOk(AFd, '');
       end;
     WINOP_RESIZE:
@@ -1850,6 +2429,16 @@ begin
         FScreens[APane].Resize(Cols, Rows);
         if FPanes[APane] <> nil then
           FPanes[APane].Resize(Cols, Rows);
+        // anular las peticiones de los clientes para que la negociacion
+        // del minimo comun no deshaga el tamano pedido por control
+        for j := 0 to MAX_CLIENTS - 1 do
+        begin
+          FClients[j].ReqCols[APane] := 0;
+          FClients[j].ReqRows[APane] := 0;
+        end;
+        Pair[0] := Cols;
+        Pair[1] := Rows;
+        Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
         CtlReplyOk(AFd, '');
       end;
   else
@@ -1885,9 +2474,7 @@ begin
           WriteString(Meta, FProfile);
           Meta.WriteBuffer(FPaneCount, SizeOf(FPaneCount));
           Meta.WriteBuffer(FFocused, SizeOf(FFocused));
-          I := 0;
-          if FClient >= 0 then
-            I := 1;
+          I := AttachedCount;
           Meta.WriteBuffer(I, SizeOf(I));   // clientes enganchados
           Meta.WriteBuffer(FDeskW, SizeOf(FDeskW));
           Meta.WriteBuffer(FDeskH, SizeOf(FDeskH));
@@ -2055,20 +2642,42 @@ begin
   end;
 end;
 
-function TDetachedSession.HandleClientFrame(var AClient: cint): boolean;
+procedure TDetachedSession.HandleClientFrame(AIdx: integer);
 var
   Kind: byte;
   Pane: integer;
   Data: TByteArray;
   Cols, Rows: integer;
   S: RawByteString;
-begin
-  Result := True;
-  if not ReadFrame(AClient, Kind, Pane, Data) then
+  Ofs, NewIdx: integer;
+  DirB, B0: byte;
+  ClassS, CmdS, CwdS, TitleS, ErrS: string;
+
+  function RdStr: string;
+  var
+    L: Longint;
   begin
-    CloseClient(AClient);
+    Result := '';
+    L := Default(Longint);
+    if Ofs + SizeOf(Longint) > Length(Data) then
+      Exit;
+    Move(Data[Ofs], L, SizeOf(L));
+    Inc(Ofs, SizeOf(L));
+    if (L < 0) or (Ofs + L > Length(Data)) then
+      Exit;
+    SetLength(Result, L);
+    if L > 0 then
+      Move(Data[Ofs], Result[1], L);
+    Inc(Ofs, L);
+  end;
+
+begin
+  if not ReadFrame(FClients[AIdx].Fd, Kind, Pane, Data) then
+  begin
+    DropClient(AIdx);
     Exit;
   end;
+  B0 := 0;
   case Kind of
     FRAME_INPUT:
       if (Pane >= 0) and (Pane < FPaneCount) and (FPanes[Pane] <> nil) and
@@ -2086,23 +2695,80 @@ begin
         Move(Data[4], Rows, SizeOf(Rows));
         if (Cols > 0) and (Rows > 0) then
         begin
-          if FScreens[Pane] <> nil then
-            FScreens[Pane].Resize(Cols, Rows);
-          if FPanes[Pane] <> nil then
-            FPanes[Pane].Resize(Cols, Rows);
+          if FClients[AIdx].Legacy then
+          begin
+            // protocolo v1: un unico cliente manda, aplicar directamente
+            if FScreens[Pane] <> nil then
+              FScreens[Pane].Resize(Cols, Rows);
+            if FPanes[Pane] <> nil then
+              FPanes[Pane].Resize(Cols, Rows);
+          end
+          else
+          begin
+            FClients[AIdx].ReqCols[Pane] := Cols;
+            FClients[AIdx].ReqRows[Pane] := Rows;
+            NegotiateResize(Pane);
+          end;
         end;
       end;
     FRAME_DETACH:
-      CloseClient(AClient);
+      DropClient(AIdx);
     FRAME_CLOSE:
       begin
-        CloseClient(AClient);
+        DropClient(AIdx);
         FStop := True;
       end;
     FRAME_KILLPANE:
-      DoKillPane(Pane);
+      if (Pane >= 0) and (Pane < FPaneCount) and (FPaneCount > 1) then
+      begin
+        DoKillPane(Pane);
+        Broadcast(FRAME_KILLPANE_EV, Pane, B0, 0, True, AIdx);
+      end;
     FRAME_LAYOUT:
-      ApplyLayoutFrame(Data);
+      begin
+        ApplyLayoutFrame(Data);
+        if Length(Data) > 0 then
+          Broadcast(FRAME_LAYOUT_EV, -1, Data[0], Length(Data), True, AIdx);
+      end;
+    FRAME_NEWPANE:
+      begin
+        DirB := 0;
+        Ofs := 0;
+        if Length(Data) > 0 then
+        begin
+          DirB := Data[0];
+          Ofs := 1;
+        end;
+        ClassS := RdStr;
+        CmdS := RdStr;
+        CwdS := RdStr;
+        TitleS := RdStr;
+        ErrS := '';
+        NewIdx := -1;
+        if not DoNewPane(Pane, DirB, ClassS, CmdS, CwdS, TitleS,
+          NewIdx, ErrS) then
+          if ErrS <> '' then
+            SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
+      end;
+    FRAME_FOCUS:
+      if (Pane >= 0) and (Pane < FPaneCount) then
+      begin
+        FFocused := Pane;
+        Broadcast(FRAME_FOCUS_EV, Pane, B0, 0, True, AIdx);
+      end;
+    FRAME_RENAME:
+      if (Pane >= 0) and (Pane < FPaneCount) then
+      begin
+        Ofs := 0;
+        TitleS := RdStr;
+        if Trim(TitleS) <> '' then
+        begin
+          FTitles[Pane] := ' ' + Trim(TitleS);
+          if Length(Data) > 0 then
+            Broadcast(FRAME_TITLE_EV, Pane, Data[0], Length(Data), True,
+              AIdx);
+        end;
+      end;
   end;
 end;
 
@@ -2119,16 +2785,12 @@ begin
   begin
     if FScreens[APane] <> nil then
       FScreens[APane].WriteBytes(Buf, N);
-    if FClient >= 0 then
-      if not SendRawFrame(FRAME_OUTPUT, APane, Buf, N) then
-        CloseClient(FClient);
+    Broadcast(FRAME_OUTPUT, APane, Buf, N, False, -1);
   end
   else if (N = 0) or (fpgeterrno <> ESysEAGAIN) then
   begin
     FPanes[APane].MarkDead;
-    if FClient >= 0 then
-      if not SendRawFrame(FRAME_EXIT, APane, Buf, 0) then
-        CloseClient(FClient);
+    Broadcast(FRAME_EXIT, APane, Buf, 0, False, -1);
   end;
 end;
 
@@ -2143,6 +2805,7 @@ begin
     Ini.WriteString('session', 'name', IniQuoteGuard(FName));
     Ini.WriteString('session', 'profile', IniQuoteGuard(FProfile));
     Ini.WriteInteger('session', 'panes', FPaneCount);
+    Ini.WriteInteger('session', 'attached', AttachedCount);
     Ini.WriteInteger('session', 'pid', fpGetPid);
     Ini.WriteString('session', 'created',
       FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
@@ -2166,7 +2829,7 @@ end;
 
 procedure TDetachedSession.Run(AReadyFd: cint);
 var
-  ReadSet: TFDSet;
+  ReadSet, WriteSet: TFDSet;
   TV: TTimeVal;
   MaxFd, I, NewClient, N: cint;
   Kind: byte;
@@ -2174,6 +2837,8 @@ var
   AddrLen: TSockLen;
   FirstPane: integer;
   FirstData: TByteArray;
+  B0: byte;
+  FlowBlocked: boolean;
 begin
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
@@ -2186,24 +2851,47 @@ begin
   SignalReady(AReadyFd, True);
   while not FStop do
   begin
+    // rezagados: mucho pendiente y ningun progreso en el periodo de
+    // gracia -> desconectar ANTES de armar los fd_set (un fd cerrado
+    // dentro del set haria fallar el select con EBADF)
+    for I := 0 to MAX_CLIENTS - 1 do
+      if (FClients[I].Fd >= 0) and
+         (Length(FClients[I].OutBuf) > LAG_MIN_PENDING) and
+         (GetTickCount64 - FClients[I].LastProgress > LAG_GRACE_MS) then
+        DropClient(I);
     fpFD_ZERO(ReadSet);
+    fpFD_ZERO(WriteSet);
     MaxFd := FListener;
     fpFD_SET(FListener, ReadSet);
-    if FClient >= 0 then
-    begin
-      fpFD_SET(FClient, ReadSet);
-      if FClient > MaxFd then MaxFd := FClient;
-    end;
-    for I := 0 to FPaneCount - 1 do
-      if (FPanes[I] <> nil) and FPanes[I].Alive and
-         (FPanes[I].Master >= 0) then
+    for I := 0 to MAX_CLIENTS - 1 do
+      if FClients[I].Fd >= 0 then
       begin
-        fpFD_SET(FPanes[I].Master, ReadSet);
-        if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
+        fpFD_SET(FClients[I].Fd, ReadSet);
+        if FClients[I].OutBuf <> '' then
+          fpFD_SET(FClients[I].Fd, WriteSet);
+        if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
       end;
+    // control de flujo: con demasiado pendiente hacia algun cliente no se
+    // lee de los PTY; el productor se frena en el buffer del terminal
+    FlowBlocked := False;
+    for I := 0 to MAX_CLIENTS - 1 do
+      if (FClients[I].Fd >= 0) and
+         (Length(FClients[I].OutBuf) > FLOW_STOP) then
+      begin
+        FlowBlocked := True;
+        Break;
+      end;
+    if not FlowBlocked then
+      for I := 0 to FPaneCount - 1 do
+        if (FPanes[I] <> nil) and FPanes[I].Alive and
+           (FPanes[I].Master >= 0) then
+        begin
+          fpFD_SET(FPanes[I].Master, ReadSet);
+          if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
+        end;
     TV.tv_sec := 0;
     TV.tv_usec := 100000;
-    N := fpSelect(MaxFd + 1, @ReadSet, nil, nil, @TV);
+    N := fpSelect(MaxFd + 1, @ReadSet, @WriteSet, nil, @TV);
     if N < 0 then
     begin
       if fpgeterrno = ESysEINTR then
@@ -2219,8 +2907,8 @@ begin
       begin
         // el primer frame decide: FRAME_CLOSE apaga el daemon aunque
         // llegue por una conexion nueva (CloseSessionAt); FRAME_ATTACH
-        // solo se atiende con el unico slot de cliente libre; cualquier
-        // otra cosa (o el slot ocupado) cierra la conexion
+        // ocupa un slot si el payload versionado lo permite; cualquier
+        // otra cosa cierra la conexion
         if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
           FpClose(NewClient)
         else if Kind = FRAME_CLOSE then
@@ -2234,21 +2922,30 @@ begin
           HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
           FpClose(NewClient);
         end
-        else if (FClient < 0) and HandleAttach(NewClient, Kind) then
-          FClient := NewClient
-        else
+        else if not HandleAttach(NewClient, Kind, FirstData) then
           FpClose(NewClient);
       end;
     end;
-    if (FClient >= 0) and (fpFD_ISSET(FClient, ReadSet) <> 0) then
-      HandleClientFrame(FClient);
+    for I := 0 to MAX_CLIENTS - 1 do
+      if (FClients[I].Fd >= 0) and
+         (fpFD_ISSET(FClients[I].Fd, WriteSet) <> 0) then
+        FlushClient(I);
+    for I := 0 to MAX_CLIENTS - 1 do
+      if (FClients[I].Fd >= 0) and
+         (fpFD_ISSET(FClients[I].Fd, ReadSet) <> 0) then
+        HandleClientFrame(I);
     ReapChildren;
-    for I := 0 to FPaneCount - 1 do
-      if (FPanes[I] <> nil) and FPanes[I].Alive and
-         (FPanes[I].Master >= 0) and
-         (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
-        HandlePaneOutput(I);
+    if not FlowBlocked then
+      for I := 0 to FPaneCount - 1 do
+        if (FPanes[I] <> nil) and FPanes[I].Alive and
+           (FPanes[I].Master >= 0) and
+           (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
+          HandlePaneOutput(I);
   end;
+  // aviso ordenado de cierre a los clientes capaces; los legados ven el
+  // EOF y reaccionan como hoy (conexion perdida)
+  B0 := 0;
+  Broadcast(FRAME_SHUTDOWN_EV, -1, B0, 0, True, -1);
 end;
 
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;

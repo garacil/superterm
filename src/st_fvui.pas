@@ -125,6 +125,7 @@ type
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
+    RemoteLayoutHash: string;   // ultima geometria empujada/aplicada
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -162,6 +163,12 @@ type
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
+    function ComputeLayoutHash: string;
+    procedure ApplyRemoteLayoutEv(const AData: TByteArray);
+    procedure ApplyRemoteKillPane(APane: integer);
+    procedure ApplyRemoteNewPane(const AData: TByteArray);
+    procedure ApplyRemoteResize(APane: integer; const AData: TByteArray);
+    procedure ApplyRemoteTitle(APane: integer; const AData: TByteArray);
     function FindWindowClass(const AName: string): integer;
     function FindProfile(const AName: string): integer;
     function ActivateProfile(AProfile, AWindow: integer): boolean;
@@ -1623,11 +1630,33 @@ end;
 procedure TSuperApp.DoSplit(ADir: TSplitDir; ASysIdx: integer);
 var
   OldCount, NewIdx, j: integer;
+  DirB: byte;
+  ClassS: string;
 begin
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
   if Lay.Focused < 0 then
     Exit;
+  if RemoteMode then
+  begin
+    // el panel vive en el daemon: pedirlo alli; la ventana llega para
+    // todos los clientes con el evento NEWPANE_EV
+    if (Remote <> nil) and Remote.Connected and
+       (Remote.ServerProto >= 2) then
+    begin
+      if ADir = sdH then DirB := 1 else DirB := 0;
+      ClassS := '';
+      if (ASysIdx >= 0) and (ASysIdx < Length(WClasses)) then
+        ClassS := WClasses[ASysIdx].Name;
+      Remote.SendNewPane(Lay.Focused, DirB, ClassS, '', '', '');
+    end
+    else
+      MessageBox(UiText(
+        'The session server is too old to open panes remotely.',
+        'El servidor de sesion es demasiado antiguo para abrir paneles.'),
+        nil, mfError or mfOKButton);
+    Exit;
+  end;
   OldCount := Lay.PaneCount;
   if not Lay.SplitPane(Lay.Focused, ADir) then
   begin
@@ -2839,6 +2868,269 @@ begin
       Titles[i] := Win[i]^.GetTitle(80);
   Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
     DeskW, DeskH);
+  RemoteLayoutHash := ComputeLayoutHash;
+end;
+
+// huella del estado visible (geometria+titulos+foco): si cambia respecto
+// a lo ultimo sincronizado, hay que empujar el layout al daemon
+function TSuperApp.ComputeLayoutHash: string;
+var
+  Geom: TPaneGeomArray;
+  DeskW, DeskH: integer;
+  i: integer;
+begin
+  Result := '';
+  if Lay = nil then
+    Exit;
+  CollectPaneGeom(Geom, DeskW, DeskH);
+  Result := IntToStr(Lay.PaneCount) + ':' + IntToStr(Lay.Focused) + ':' +
+    IntToStr(DeskW) + 'x' + IntToStr(DeskH);
+  for i := 0 to Length(Geom) - 1 do
+  begin
+    Result := Result + Format('|%d,%d,%d,%d,%d,%d',
+      [Geom[i].BX, Geom[i].BY, Geom[i].BW, Geom[i].BH,
+       Ord(Geom[i].Zoomed), Ord(Geom[i].Minimized)]);
+    if (i < MAX_PANES) and (Win[i] <> nil) then
+      Result := Result + ',' + Win[i]^.GetTitle(80);
+  end;
+end;
+
+// aplica un LAYOUT_EV difundido por el daemon (otro cliente movio,
+// minimizo o renombro ventanas): arbol, titulos, geometria y foco
+procedure TSuperApp.ApplyRemoteLayoutEv(const AData: TByteArray);
+var
+  Nodes: string;
+  Focused, DeskW, DeskH: Longint;
+  Titles: TStrArray;
+  Geom: TPaneGeomArray;
+  NewLay: TLayout;
+  I: integer;
+  GR: Objects.TRect;
+begin
+  if not DecodeLayoutBlob(AData, Nodes, Focused, Titles, Geom, DeskW,
+    DeskH) then
+    Exit;
+  if Length(Titles) <> Lay.PaneCount then
+    Exit;   // desincronizado: llegara otro evento tras converger
+  NewLay := nil;
+  if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
+  begin
+    if NewLay.PaneCount = Lay.PaneCount then
+    begin
+      Lay.Free;
+      Lay := NewLay;
+    end
+    else
+      NewLay.Free;
+  end;
+  for I := 0 to Lay.PaneCount - 1 do
+    if (I < MAX_PANES) and (Win[I] <> nil) and (Trim(Titles[I]) <> '') then
+      Win[I]^.SetTitle(' ' + Trim(Titles[I]));
+  if Desktop <> nil then
+  begin
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    // geometria solo si ambos escritorios miden igual
+    if (DeskW = GR.B.X - GR.A.X) and (DeskH = GR.B.Y - GR.A.Y) then
+    begin
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) then
+        begin
+          if Win[I]^.Minimized and (not Geom[I].Minimized) then
+            RestoreWindow(I);
+          if (Geom[I].BW > 0) and (Geom[I].BH > 0) and
+             (not Geom[I].Minimized) then
+          begin
+            GR.Assign(Geom[I].BX, Geom[I].BY, Geom[I].BX + Geom[I].BW,
+              Geom[I].BY + Geom[I].BH);
+            Win[I]^.Locate(GR);
+          end;
+          if Geom[I].Zoomed <> Win[I]^.Zoomed then
+            Win[I]^.Zoom;
+        end;
+      for I := 0 to Lay.PaneCount - 1 do
+        if (I < MAX_PANES) and (Win[I] <> nil) and Geom[I].Minimized and
+           (not Win[I]^.Minimized) then
+          MinimizeWindow(I);
+    end;
+  end;
+  if (Focused >= 0) and (Focused < Lay.PaneCount) then
+  begin
+    Lay.Focused := Focused;
+    FocusPane(Focused);
+  end;
+  ReDraw;
+  // lo aplicado ya es el estado comun: no re-empujarlo (evita rebotes)
+  RemoteLayoutHash := ComputeLayoutHash;
+end;
+
+// otro cliente (o la CLI) cerro un panel: compactar en espejo del daemon
+procedure TSuperApp.ApplyRemoteKillPane(APane: integer);
+var
+  j, OldFocused: integer;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
+     (PaneCount <= 1) then
+    Exit;
+  OldFocused := Lay.Focused;
+  Lay.ClosePane(APane);
+  KillPane(APane);
+  for j := APane to MAX_PANES - 2 do
+  begin
+    Panes[j] := Panes[j + 1];
+    Scr[j] := Scr[j + 1];
+    Win[j] := Win[j + 1];
+    PaneTerm[j] := PaneTerm[j + 1];
+    if Win[j] <> nil then
+    begin
+      Win[j]^.PaneIdx := j;
+      Win[j]^.Number := j + 1;
+      if Win[j]^.Term <> nil then
+        Win[j]^.Term^.PaneIdx := j;
+    end;
+  end;
+  Panes[MAX_PANES - 1] := nil;
+  Scr[MAX_PANES - 1] := nil;
+  Win[MAX_PANES - 1] := nil;
+  PaneTerm[MAX_PANES - 1] := -1;
+  if OldFocused > APane then
+    Lay.Focused := OldFocused - 1
+  else
+    Lay.Focused := OldFocused;
+  if Lay.Focused >= PaneCount then
+    Lay.Focused := PaneCount - 1;
+  if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
+     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+    Lay.Focused := FirstVisiblePane;
+  ReDraw;
+  FocusPane(Lay.Focused);
+  RemoteLayoutHash := ComputeLayoutHash;
+end;
+
+// el daemon creo un panel (pedido por este cliente, por otro o por la
+// CLI): repetir el split en local y darle ventana
+procedure TSuperApp.ApplyRemoteNewPane(const AData: TByteArray);
+var
+  At, NewIdx, PC, Cols, Rows: Longint;
+  Dir: byte;
+  TitleS, TermS: string;
+  OldCount, j: integer;
+  SDir: TSplitDir;
+begin
+  if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
+    TitleS, TermS) then
+    Exit;
+  if (Lay.PaneCount + 1 <> PC) or (At < 0) or (At >= Lay.PaneCount) or
+     (PC > MAX_PANES) then
+    Exit;   // desincronizado: mejor no tocar nada
+  OldCount := Lay.PaneCount;
+  if Dir = 1 then
+    SDir := sdH
+  else
+    SDir := sdV;
+  if not Lay.SplitPane(At, SDir) then
+    Exit;
+  if Lay.LastInsertedIndex <> NewIdx then
+  begin
+    // el arbol local no coincide con el del daemon: deshacer
+    Lay.ClosePane(Lay.LastInsertedIndex);
+    Exit;
+  end;
+  for j := OldCount downto NewIdx + 1 do
+  begin
+    Panes[j] := Panes[j - 1];
+    Scr[j] := Scr[j - 1];
+    Win[j] := Win[j - 1];
+    PaneTerm[j] := PaneTerm[j - 1];
+    if Win[j] <> nil then
+    begin
+      Win[j]^.PaneIdx := j;
+      Win[j]^.Number := j + 1;
+      if Win[j]^.Term <> nil then
+        Win[j]^.Term^.PaneIdx := j;
+    end;
+  end;
+  Panes[NewIdx] := nil;
+  PaneTerm[NewIdx] := FindWindowClass(TermS);
+  Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
+  if Trim(TitleS) = '' then
+    TitleS := UiText('session pane', 'panel de sesion');
+  CreateWindowForPane(NewIdx, Trim(TitleS));
+  if Win[NewIdx] = nil then
+  begin
+    FreeAndNil(Scr[NewIdx]);
+    Lay.ClosePane(NewIdx);
+    for j := NewIdx to OldCount - 1 do
+    begin
+      Panes[j] := Panes[j + 1];
+      Scr[j] := Scr[j + 1];
+      Win[j] := Win[j + 1];
+      PaneTerm[j] := PaneTerm[j + 1];
+      if Win[j] <> nil then
+      begin
+        Win[j]^.PaneIdx := j;
+        Win[j]^.Number := j + 1;
+        if Win[j]^.Term <> nil then
+          Win[j]^.Term^.PaneIdx := j;
+      end;
+    end;
+    Panes[OldCount] := nil;
+    Scr[OldCount] := nil;
+    Win[OldCount] := nil;
+    PaneTerm[OldCount] := -1;
+    Exit;
+  end;
+  RelayoutAll;
+  Lay.Focused := NewIdx;
+  FocusPane(NewIdx);
+  RemoteLayoutHash := ComputeLayoutHash;
+end;
+
+// tamano autoritativo del daemon (minimo comun entre clientes): ajustar
+// la TScreen sin reenviar peticion (supresion de eco)
+procedure TSuperApp.ApplyRemoteResize(APane: integer;
+  const AData: TByteArray);
+var
+  C, R: Longint;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or (Scr[APane] = nil) or
+     (Length(AData) < 2 * SizeOf(Longint)) then
+    Exit;
+  C := 0;
+  R := 0;
+  Move(AData[0], C, SizeOf(C));
+  Move(AData[SizeOf(C)], R, SizeOf(R));
+  if (C < 4) or (R < 2) then
+    Exit;
+  if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
+  begin
+    Scr[APane].Resize(C, R);
+    if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
+      Win[APane]^.Term^.DrawView;
+  end;
+end;
+
+procedure TSuperApp.ApplyRemoteTitle(APane: integer;
+  const AData: TByteArray);
+var
+  L: Longint;
+  S: string;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
+     (Length(AData) < SizeOf(Longint)) then
+    Exit;
+  L := 0;
+  Move(AData[0], L, SizeOf(L));
+  if (L <= 0) or (SizeOf(Longint) + L > Length(AData)) then
+    Exit;
+  S := '';
+  SetLength(S, L);
+  Move(AData[SizeOf(Longint)], S[1], L);
+  if Trim(S) = '' then
+    Exit;
+  Win[APane]^.SetTitle(' ' + Trim(S));
+  ReDraw;
+  RemoteLayoutHash := ComputeLayoutHash;
 end;
 
 // Window|Tile clasico: recalcular el mosaico y descartar geometria manual
@@ -3296,6 +3588,7 @@ var
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
+    LastLayoutSync: cardinal = 0;
   begin
     inherited Idle;
   Tick := GetTickCount64;
@@ -3308,8 +3601,12 @@ var
   end;
   if RemoteMode then
   begin
-    while (Remote <> nil) and Remote.Poll(RemoteEvent) do
-    begin
+    // con un modal abierto no se drena el socket: los eventos (cerrar o
+    // crear paneles, salida) esperan en orden a que el modal termine, y
+    // asi los indices de panel nunca se desincronizan a mitad de dialogo
+    if Current = PView(Desktop) then
+      while (Remote <> nil) and Remote.Poll(RemoteEvent) do
+      begin
       case RemoteEvent.Kind of
         sekOutput:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
@@ -3327,6 +3624,29 @@ var
             Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
         sekError:
           DebugLog('remote session error: ' + RemoteEvent.Text);
+        sekLayoutEv: ApplyRemoteLayoutEv(RemoteEvent.Data);
+        sekKillPaneEv: ApplyRemoteKillPane(RemoteEvent.Pane);
+        sekNewPaneEv: ApplyRemoteNewPane(RemoteEvent.Data);
+        sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
+        sekTitleEv: ApplyRemoteTitle(RemoteEvent.Pane, RemoteEvent.Data);
+        sekFocusEv:
+          if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
+             (Win[RemoteEvent.Pane] <> nil) then
+          begin
+            Lay.Focused := RemoteEvent.Pane;
+            FocusPane(RemoteEvent.Pane);
+            RemoteLayoutHash := ComputeLayoutHash;
+          end;
+        sekIgnore: ;
+        sekShutdown:
+          begin
+            RemoteLost := True;
+            RemoteMode := False;
+            SkipSave := True;
+            MessageBox(UiText('The session was closed.',
+              'La sesion se cerro.'), nil, mfInformation or mfOKButton);
+            Message(@Self, evCommand, cmQuit, nil);
+          end;
         sekLost:
           begin
             RemoteLost := True;
@@ -3340,6 +3660,18 @@ var
             Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
+      if not RemoteMode then
+        Break;   // shutdown/lost: no seguir drenando
+      end;
+    // empuje con debounce del layout: mover, minimizar o renombrar aqui
+    // se refleja en el daemon (y de ahi en los demas clientes) sin tocar
+    // cada accion de la UI una a una
+    if RemoteMode and (Current = PView(Desktop)) and
+       (Tick - LastLayoutSync >= 400) then
+    begin
+      LastLayoutSync := Tick;
+      if ComputeLayoutHash <> RemoteLayoutHash then
+        SyncRemoteLayout;
     end;
     if Tick - LastBlink >= 530 then
     begin

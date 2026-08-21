@@ -119,10 +119,11 @@ check('indices still aligned after close', 'STILL_OK' in r.stdout)
 c2 = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 c2.drain(2.5)
 check('reattach shows renamed title', 'Background Job' in c2.text())
-# ---- WINOP rechazada mientras hay cliente ----
+# ---- desde F4 la gestion funciona EN VIVO con un cliente enganchado ----
 r = run_cli(['minimize', SES + ':1'], HOME)
-check('winop refused while attached', r.returncode == 1)
-check('refusal message', 'attached' in r.stderr or 'conectada' in r.stderr)
+check('winop works while attached', r.returncode == 0)
+r = run_cli(['restore', SES + ':1'], HOME)
+check('restore works while attached', r.returncode == 0)
 # list/send/capture siguen funcionando enganchado
 r = run_cli(['capture', SES + ':1'], HOME)
 check('capture ok while attached', r.returncode == 0)
