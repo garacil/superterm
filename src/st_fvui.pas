@@ -42,6 +42,7 @@ const
   cmPaneList    = 2113;    // lista de paneles (Alt+0)
   cmRedrawAll   = 2114;    // refrescar pantalla
   cmPaneOrganize = 2115;   // rejilla NxM del vendor (TDeskTop.Tile)
+  cmRenameWindow = 2116;   // titulo propio de la ventana enfocada
   cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
   cmProfileBase = 2200;   // + indice de perfil (0..39)
   cmProfileSaveAs = 2250;  // guardar el area de trabajo como perfil
@@ -89,6 +90,7 @@ type
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
+    TitleFixed: boolean;       // titulo propio: no lo pisa el refresco por cwd
     SavedRect: Objects.TRect;  // bounds previos al icono de minimizado
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
     procedure InitFrame; virtual;
@@ -150,6 +152,7 @@ type
     procedure RestoreAllWindows;
     procedure SaveSessionNow;
     procedure ShowAbout;
+    procedure RenameFocusedWindow;
     procedure ArrangeIcons;
     procedure DoTilePanes;
     procedure DoCascadePanes;
@@ -394,6 +397,30 @@ begin
     $2717, $2718: Result := 'x';
     $E0B0, $E0B1: Result := '>';               // powerline
     $E0B2, $E0B3: Result := '<';
+    // circulos y puntos (bullets de CLIs modernas, p.ej. Claude Code ''),
+    // que antes caian a '?'
+    $25CF, $25CB, $25C9, $25CE, $2B24, $23FA, $26AB, $26AA: Result := #7;
+    $25E6, $2218, $2219, $2027, $30FB: Result := #250;
+    $25AB, $25FB, $25FD, $25A1, $2610: Result := #254;
+    // triangulos/flechas de reproduccion y navegacion
+    $23F5, $25B7, $2023: Result := #16;        // play / triangulo derecha
+    $23F4, $25C1: Result := #17;
+    $23F6: Result := #30;
+    $23F7: Result := #31;
+    // continuacion de arbol (Claude Code '', flechas de retorno)
+    $23BF, $2937, $21B3: Result := #192;
+    // asteriscos decorativos y estrellas (spinners) -> '*'
+    $2733, $2734, $273B, $273C, $273D, $2739, $2735,
+    $2724, $2725, $2726, $2727, $272F, $2730: Result := '*';
+    $2605, $2606, $2B50: Result := '*';        // estrellas
+    // simbolos varios frecuentes en TUIs
+    $2699: Result := '*';                      // engranaje
+    $26A0: Result := '!';                      // aviso
+    $2764, $2665: Result := #3;                // corazon
+    $221A: Result := 'v';                      // raiz -> check visual
+    $2261, $2263: Result := '=';
+    $2248: Result := '~';
+    $2260: Result := '#';
   else
     Result := '?';
   end;
@@ -1075,6 +1102,14 @@ begin
     else
       StartPane(i, '', '');
   end;
+  // reaplicar titulos propios (renombrados a mano) tal como se guardaron
+  for i := 0 to n - 1 do
+    if (i <= High(Pin)) and (Pin[i].Title <> '') and (i < MAX_PANES) and
+       (Win[i] <> nil) then
+    begin
+      Win[i]^.SetTitle(' ' + Pin[i].Title);
+      Win[i]^.TitleFixed := True;
+    end;
   if Lay.Focused >= n then
     Lay.Focused := 0;
   RelayoutAll;
@@ -1244,7 +1279,11 @@ begin
     if ACwd <> '' then
       CwdS := ACwd;
     ExtraS := '';
-    TitleS := WClasses[ASysIdx].Name;
+    // titulo por defecto de la clase (o su nombre si no tiene titulo)
+    if WClasses[ASysIdx].Title <> '' then
+      TitleS := WClasses[ASysIdx].Title
+    else
+      TitleS := WClasses[ASysIdx].Name;
     if AMaxSB <= 0 then
       AMaxSB := WClasses[ASysIdx].ScrollBack;
   end
@@ -1318,6 +1357,10 @@ begin
     end;
   end;
   CreateWindowForPane(i, TitleS);
+  // un panel de clase conserva su titulo (nombre/titulo de la clase); el
+  // refresco periodico por cwd no debe pisarlo
+  if (ASysIdx >= 0) and (Win[i] <> nil) then
+    Win[i]^.TitleFixed := True;
   DebugLog(Format('startpane i=%d sysidx=%d win=%p term=%p termidx=%d scr=%dx%d',
     [i, ASysIdx, Win[i], Win[i]^.Term, Win[i]^.Term^.PaneIdx, pw, ph]));
 end;
@@ -1511,7 +1554,8 @@ begin
   if NextPane = i then
     NextPane := -1;
   Win[i]^.Minimize;
-  RelayoutAll;
+  // NO re-tilear: las demas ventanas se quedan donde el usuario las dejo.
+  // Solo se recolocan los iconos de minimizadas al pie del escritorio.
   ArrangeIcons;
   if Lay.Focused = i then
   begin
@@ -1532,9 +1576,13 @@ begin
      (not Win[i]^.Minimized) then
     Exit;
   Win[i]^.Restore;
+  // volver EXACTAMENTE a donde estaba antes de minimizar, sin re-tilear ni
+  // tocar el resto de ventanas (el usuario manda sobre sus posiciones)
+  if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+     (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+    Win[i]^.Locate(Win[i]^.SavedRect);
   Lay.Focused := i;
-  RelayoutAll;
-  ArrangeIcons;
+  ArrangeIcons;   // recolocar los iconos que sigan minimizados
   FocusPane(i);
   RebuildMenu;
 end;
@@ -1547,6 +1595,7 @@ begin
     if Win[i] <> nil then
       Win[i]^.Minimize;
   Lay.Focused := -1;
+  ArrangeIcons;   // colocar todos los iconos al pie, sin re-tilear
   RebuildMenu;
 end;
 
@@ -1554,13 +1603,18 @@ procedure TSuperApp.RestoreAllWindows;
 var
   i: integer;
 begin
+  // cada ventana vuelve a su posicion previa a minimizar; nada se re-tila
   for i := 0 to MAX_PANES - 1 do
-    if Win[i] <> nil then
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
       Win[i]^.Restore;
+      if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+         (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+        Win[i]^.Locate(Win[i]^.SavedRect);
+    end;
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  RelayoutAll;
   FocusPane(Lay.Focused);
   RebuildMenu;
 end;
@@ -2091,6 +2145,12 @@ begin
       StartPaneEx(i, PS.Cwd, LocalCmd, -1, '', '', TitleS, PS.ScrollBack);
       PaneConnect[i] := PS.Connect;
     end;
+    // titulo propio guardado en el perfil: manda sobre clase/cwd
+    if (PS.Title <> '') and (Win[i] <> nil) then
+    begin
+      Win[i]^.SetTitle(' ' + PS.Title);
+      Win[i]^.TitleFixed := True;
+    end;
     if Win[i] = nil then
       Started := False;
   end;
@@ -2111,6 +2171,7 @@ end;
 function TSuperApp.CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
 var
   i, n: integer;
+  CurTitle, DefTitle: string;
 begin
   Result := Default(TProfileWindowSpec);
   Result.Name := AName;
@@ -2126,6 +2187,22 @@ begin
     Result.Panes[i] := Default(TProfilePaneSpec);
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
+    // titulo propio: se guarda solo si difiere del titulo por defecto de la
+    // clase (para no fijar en el perfil un titulo que la clase ya aporta)
+    if (Win[i] <> nil) and Win[i]^.TitleFixed and (Win[i]^.Title <> nil) then
+    begin
+      CurTitle := Trim(Win[i]^.Title^);
+      DefTitle := '';
+      if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+      begin
+        if WClasses[PaneTerm[i]].Title <> '' then
+          DefTitle := WClasses[PaneTerm[i]].Title
+        else
+          DefTitle := WClasses[PaneTerm[i]].Name;
+      end;
+      if CurTitle <> DefTitle then
+        Result.Panes[i].Title := CurTitle;
+    end;
     if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
       Result.Panes[i].WClass := WClasses[PaneTerm[i]].Name
     else if Panes[i] <> nil then
@@ -2441,6 +2518,31 @@ begin
     hcNoContext, bfDefault);
   Desktop^.ExecView(D);
   Dispose(D, Done);
+end;
+
+// renombra el titulo de la ventana enfocada; queda fijado (TitleFixed) para
+// que el refresco periodico no lo pise, y persiste en sesion y en perfil
+procedure TSuperApp.RenameFocusedWindow;
+var
+  i: integer;
+  Buf: ShortString;
+  Cur: string;
+begin
+  i := Lay.Focused;
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
+    Exit;
+  Cur := '';
+  if Win[i]^.Title <> nil then
+    Cur := Trim(Win[i]^.Title^);
+  Buf := Copy(Cur, 1, 40);
+  if InputBox(UiText('Rename window', 'Renombrar ventana'),
+    UiText('Window title:', 'Titulo de la ventana:'), Buf, 40) <> cmOK then
+    Exit;
+  Cur := Trim(Buf);
+  if Cur = '' then
+    Cur := UiText('shell', 'shell');
+  Win[i]^.SetTitle(' ' + Cur);
+  Win[i]^.TitleFixed := True;
 end;
 
 procedure TSuperApp.RebuildMenu;
@@ -2812,6 +2914,7 @@ begin
   begin
     Pin[i].Term := '';
     Pin[i].Args := nil;
+    Pin[i].Title := '';
     if Panes[i] <> nil then
     begin
       if PaneTerm[i] >= 0 then
@@ -2824,6 +2927,10 @@ begin
         Pin[i].Args := Panes[i].TitleArgs;
       end;
     end;
+    // titulo propio (renombrado a mano): guardarlo para restaurarlo tal cual
+    if (i < MAX_PANES) and (Win[i] <> nil) and Win[i]^.TitleFixed and
+       (Win[i]^.Title <> nil) then
+      Pin[i].Title := Trim(Win[i]^.Title^);
     // geometria y estado de la ventana: para una maximizada el rect real
     // es ZoomRect (el de restauracion); Minimize solo oculta, conserva bounds
     if (i < MAX_PANES) and (Win[i] <> nil) then
@@ -2976,6 +3083,7 @@ begin
       cmPanePrev: CyclePane(-1);
       cmWindowMinimize: MinimizeWindow(Lay.Focused);
       cmAbout: ShowAbout;
+      cmRenameWindow: RenameFocusedWindow;
       cmPaneTile: DoTilePanes;
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
@@ -3241,7 +3349,7 @@ var
     LastTitle := Tick;
     for i := 0 to MAX_PANES - 1 do
       if (Panes[i] <> nil) and Panes[i].Alive and (Win[i] <> nil) and
-          (PaneTerm[i] = -1) then
+          (PaneTerm[i] = -1) and (not Win[i]^.TitleFixed) then
       begin
         Panes[i].QueryState;
         if Panes[i].TitleCmd <> '' then
@@ -3279,6 +3387,9 @@ begin
 
   // ---- Paneles: operaciones de tile (split, foco, zoom, min, tamano) ----
   PaneItems := nil;
+  PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
+    '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #24,
     kbNoKey, cmShrinkH, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~T~aller', 'Mas a~l~to'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #25,

@@ -27,7 +27,14 @@ the classic Turbo Vision style.
   being held as an Alt prefix), with full CSI/SS3 keys and X10/SGR mouse.
 - SGR indexed 256-color and truecolor are approximated to the nearest
   ANSI-16 color instead of collapsing to the default; CP437 box, block,
-  arrow and accented glyphs render correctly.
+  arrow and accented glyphs render correctly, including the bullets and
+  spinner glyphs of modern CLIs so a remote tmux renders cleanly.
+
+### Window titles
+- Each window has a title under the user's control. Window classes carry a
+  default `title`; `Panes -> Rename title...` renames the focused window; a
+  custom title is never overwritten by the cwd/command refresh and is saved in
+  the session and written into a profile when saved.
 
 ### Interface (classic Turbo Pascal look)
 - Menu tree: Panes, Windows, Classes, Profiles, Sessions, Options, Help.

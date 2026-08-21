@@ -124,6 +124,10 @@ Fields:
 
 - `name` — canonical name; defaults to the section suffix.
 - `enabled` — `1`/`0` (also `true`/`yes`/`on`); default `1`.
+- `title` — default window title for panes opened from this class; empty
+  falls back to the class name. A pane's title can be changed at runtime with
+  `Panes -> Rename title...`; a renamed title is kept and is written into a
+  profile or session when it is saved.
 - `shell` — local shell for the pane; empty means the `[autologin]` shell.
 - `cmd` — command run when the pane opens (locally, or as the SSH remote
   command when there is no `postconnect`).
