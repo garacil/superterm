@@ -1,16 +1,16 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_cli - linea de comandos de control de sesiones
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_cli - session control command line
 
-  Subcomandos amables inspirados en tmux: listar sesiones y paneles con
-  detalles, enviar texto a cualquier panel, capturar pantalla o historial,
-  y gestionar la sesion. Todos los comandos y opciones se aceptan en ingles
-  Y en espanol (insensibles a mayusculas y acentos); los mensajes y la
-  ayuda salen en el idioma configurado en [ui] language.
+  Friendly subcommands inspired by tmux: list sessions and panes with
+  details, send text to any pane, capture the screen or the history,
+  and manage the session. All commands and options are accepted in
+  English AND in Spanish (case- and accent-insensitive); messages and
+  help come out in the language configured in [ui] language.
 
-  Codigos de salida: 0 ok, 1 no encontrado/ambiguo, 2 error de uso,
-  3 fallo de conexion o daemon antiguo sin soporte de control.
+  Exit codes: 0 ok, 1 not found/ambiguous, 2 usage error,
+  3 connection failure or old daemon without control support.
 *)
 
 unit st_cli;
@@ -23,7 +23,7 @@ uses
   Classes, SysUtils, st_config, st_server;
 
 type
-  // fila de panel del LIST de control (datos vivos que solo tiene el daemon)
+  // pane row of the control LIST (live data only the daemon has)
   TPaneRow = record
     Title, Term, Host, User, Cmd, Cwd: string;
     Kind: byte;
@@ -39,12 +39,12 @@ type
     Panes: TPaneRows;
   end;
 
-// procesa la linea de comandos; si era un comando de CLI, ejecuta y hace
-// Halt con su codigo; si no (arranque normal de la TUI o --attach), vuelve
+// processes the command line; if it was a CLI command, runs it and does
+// Halt with its code; otherwise (normal TUI startup or --attach), returns
 procedure RunCli;
 
-// consulta LIST/INFO de una sesion por su socket (tambien lo usa la UI
-// enganchada para capturar cmd/cwd vivos al guardar un perfil)
+// queries LIST/INFO of a session through its socket (also used by the
+// attached UI to capture live cmd/cwd when saving a profile)
 function FetchList(const ASocket: string; WithPanes: boolean;
   out L: TListInfo): boolean;
 
@@ -68,8 +68,8 @@ begin
     Result := AEn;
 end;
 
-// normaliza un token para comparar: minusculas, sin guiones iniciales y
-// sin acentos (secuencias UTF-8 de dos bytes -> ascii)
+// normalizes a token for comparison: lowercase, no leading dashes and
+// no accents (two-byte UTF-8 sequences -> ascii)
 function NormToken(const S: string): string;
 var
   i: integer;
@@ -85,13 +85,13 @@ begin
     begin
       b2 := byte(S[i + 1]);
       case b2 of
-        $A1, $81: R := R + 'a';   // á Á
-        $A9, $89: R := R + 'e';   // é É
-        $AD, $8D: R := R + 'i';   // í Í
-        $B3, $93: R := R + 'o';   // ó Ó
-        $BA, $9A: R := R + 'u';   // ú Ú
-        $BC, $9C: R := R + 'u';   // ü Ü
-        $B1, $91: R := R + 'n';   // ñ Ñ
+        $A1, $81: R := R + 'a';   // a-acute
+        $A9, $89: R := R + 'e';   // e-acute
+        $AD, $8D: R := R + 'i';   // i-acute
+        $B3, $93: R := R + 'o';   // o-acute
+        $BA, $9A: R := R + 'u';   // u-acute
+        $BC, $9C: R := R + 'u';   // u-diaeresis
+        $B1, $91: R := R + 'n';   // n-tilde
       else
         R := R + S[i] + S[i + 1];
       end;
@@ -103,7 +103,7 @@ begin
       Inc(i);
     end;
   end;
-  // sin guiones iniciales: '--lineas' y 'lineas' comparan igual
+  // no leading dashes: '--lineas' and 'lineas' compare as equal
   while (R <> '') and (R[1] = '-') do
     Delete(R, 1, 1);
   Result := R;
@@ -119,14 +119,14 @@ begin
   WriteLn(StdErr, S);
 end;
 
-// ---------------------------------------------------------------- destinos
+// ---------------------------------------------------------------- targets
 
 function ListLive(out Infos: TSessionInfoArray): boolean;
 begin
   Result := EnumerateSessions(Infos);
 end;
 
-// separa 'sesion:panel' / 'sesion.panel' / '.' / '.panel' / ':panel'
+// splits 'session:pane' / 'session.pane' / '.' / '.pane' / ':pane'
 procedure SplitTargetSpec(const Spec: string; out Ses, Pane: string);
 var
   i: integer;
@@ -152,10 +152,10 @@ begin
       Exit(False);
 end;
 
-// resuelve el nombre de sesion: exacto -> sanitizado -> case-insensitive ->
-// prefijo unico; '' o '.' = la unica viva
+// resolves the session name: exact -> sanitized -> case-insensitive ->
+// unique prefix; '' or '.' = the only live one
 function ResolveSession(const AName: string; ADefaultOk: boolean;
-  out AInfo: TSessionInfo): integer;   // 0 ok, 1 error (ya impreso)
+  out AInfo: TSessionInfo): integer;   // 0 ok, 1 error (already printed)
 var
   Infos: TSessionInfoArray;
   i, Hit, Matches: integer;
@@ -193,14 +193,14 @@ begin
       'superterm: hay varias sesiones activas; indica una: %s'), [Cand]));
     Exit;
   end;
-  // exacto
+  // exact
   for i := 0 to High(Infos) do
     if Infos[i].Name = AName then
     begin
       AInfo := Infos[i];
       Exit(0);
     end;
-  // sanitizado
+  // sanitized
   for i := 0 to High(Infos) do
     if Infos[i].Name = SanitizeSessionName(AName) then
     begin
@@ -221,7 +221,7 @@ begin
     AInfo := Infos[Hit];
     Exit(0);
   end;
-  // prefijo unico
+  // unique prefix
   Hit := -1;
   Matches := 0;
   Cand := '';
@@ -248,7 +248,7 @@ begin
       'superterm: no hay ninguna sesion llamada ''%s'''), [AName]));
 end;
 
-// ------------------------------------------------- lecturas de LIST/INFO
+// ------------------------------------------------- LIST/INFO reads
 
 type
   TBlobGrab = class
@@ -258,7 +258,7 @@ type
 
   TTextGrab = class
     Text: RawByteString;
-    Sink: TStream;   // si no es nil, va directo (fichero/stdout)
+    Sink: TStream;   // if not nil, goes straight through (file/stdout)
     procedure OnData(const AChunk: TByteArray);
   end;
 
@@ -377,8 +377,8 @@ begin
   end;
 end;
 
-// resuelve el panel dentro de una sesion: indice 1-based o subcadena de
-// titulo unica; '' = panel enfocado
+// resolves the pane inside a session: 1-based index or unique title
+// substring; '' = focused pane
 function ResolvePane(const ASocket, ASession, ASpec: string;
   out APane: integer): integer;
 var
@@ -440,7 +440,7 @@ begin
       [ASpec, ASession]));
 end;
 
-// ---------------------------------------------------------------- ayuda
+// ---------------------------------------------------------------- help
 
 procedure PrintLines(const L: array of THelpLine);
 var
@@ -680,7 +680,7 @@ begin
   PrintLines(L);
 end;
 
-// ---------------------------------------------------------------- teclas
+// ---------------------------------------------------------------- keys
 
 function KeyBytes(const AName: string): RawByteString;
 var
@@ -741,7 +741,7 @@ begin
   end;
 end;
 
-// ---------------------------------------------------------------- comandos
+// ---------------------------------------------------------------- commands
 
 function CmdList(const AArgs: array of string;
   ALegacy: boolean = False): integer;
@@ -753,7 +753,7 @@ var
   Ses, TypeS, Target, Flags, Att: string;
 begin
   L := Default(TListInfo);
-  // sin argumento: tabla de sesiones
+  // no argument: sessions table
   Ses := '';
   for i := 0 to High(AArgs) do
     if not IsFlag(AArgs[i]) then
@@ -767,7 +767,7 @@ begin
     begin
       WriteLn(T('superterm: no sessions are running',
         'superterm: no hay sesiones activas'));
-      // el alias legado --list-sessions siempre salia con 0
+      // the legacy --list-sessions alias always exited with 0
       if ALegacy then
         Exit(0);
       Exit(1);
@@ -787,7 +787,7 @@ begin
     end;
     Exit(0);
   end;
-  // con sesion: detalle de paneles
+  // with a session: pane details
   rc := ResolveSession(Ses, True, Info);
   if rc <> 0 then
     Exit(rc);
@@ -854,8 +854,8 @@ begin
   i := 0;
   while i <= High(AArgs) do
   begin
-    // los flags -n/-k se aceptan antes del destino Y despues (hasta que
-    // empiece el texto); '--' fuerza que el resto sea texto literal
+    // the -n/-k flags are accepted before the target AND after (until
+    // the text begins); '--' forces the rest to be literal text
     if not TextStarted then
     begin
       if AArgs[i] = '--' then
@@ -895,7 +895,7 @@ begin
       begin
         if TargetSeen then
         begin
-          // opcion desconocida tras el destino: empieza el texto literal
+          // unknown option after the target: the literal text begins
           TextStarted := True;
           continue;
         end;
@@ -934,7 +934,7 @@ begin
     Exit(rc);
   if Text = '-' then
   begin
-    // stdin crudo, sin Intro
+    // raw stdin, no Enter
     Text := '';
     repeat
       N := FileRead(StdInputHandle, Buf, SizeOf(Buf));
@@ -1106,7 +1106,7 @@ begin
   Exit(3);
 end;
 
-// ------------------------------------------------- gestion de ventanas
+// ------------------------------------------------- window management
 
 function PasStr(const S: string): TByteArray;
 var
@@ -1130,7 +1130,7 @@ begin
     Move(Src[0], Dst[Ofs], Length(Src));
 end;
 
-// ejecuta una WINOP sobre un destino ya resuelto; imprime errores
+// runs a WINOP on an already resolved target; prints errors
 function DoWinOp(const AInfo: TSessionInfo; APane: integer; AOp: byte;
   const AExtra: TByteArray; out AReply: string): integer;
 var
@@ -1159,7 +1159,7 @@ begin
   Exit(3);
 end;
 
-// resuelve TARGET (primera no-flag) de una lista de args
+// resolves TARGET (first non-flag) from a list of args
 function GrabTarget(const AArgs: array of string; ARequired: boolean;
   out AInfo: TSessionInfo; out APane: integer): integer;
 var
@@ -1211,7 +1211,7 @@ begin
   CmdS := '';
   CwdS := '';
   TitleS := '';
-  DirB := 0;   // abajo por defecto
+  DirB := 0;   // down by default
   Spec := '';
   i := 0;
   while i <= High(AArgs) do
@@ -1401,7 +1401,7 @@ begin
     'tile': HowB := 1;
     'cascade': HowB := 2;
   else
-    HowB := 0;   // rejilla
+    HowB := 0;   // grid
   end;
   Extra := nil;
   SetLength(Extra, 1);
@@ -1409,7 +1409,7 @@ begin
   Result := DoWinOp(Info, -1, WINOP_ORGANIZE, Extra, Reply);
 end;
 
-// ---------------------------------------------------------------- despacho
+// ---------------------------------------------------------------- dispatch
 
 function IsHelpToken(const S: string): boolean;
 var
@@ -1431,14 +1431,14 @@ begin
   for i := 1 to ParamCount do
     CliArgs[i - 1] := ParamStr(i);
   if Length(CliArgs) = 0 then
-    Exit;   // arranque normal de la TUI
+    Exit;   // normal TUI startup
 
   Cmd := CliArgs[0];
   N := NormToken(Cmd);
 
-  // legado: --attach y --list-sessions siguen su camino de siempre
+  // legacy: --attach and --list-sessions keep their usual path
   if Cmd = '--attach' then
-    Exit;   // lo procesa superterm.lpr como hasta ahora
+    Exit;   // superterm.lpr processes it as before
   if Cmd = '--list-sessions' then
   begin
     Halt(CmdList([], True));
@@ -1468,8 +1468,8 @@ begin
     'resize', 'tamano', 'redimensionar': CmdIdx := 13;
     'attach', 'conectar':
       begin
-        // resuelve el nombre aqui (mejor matching) y delega el enganche
-        // interactivo en el arranque normal de la TUI
+        // resolves the name here (better matching) and delegates the
+        // interactive attach to the normal TUI startup
         AttachRequested := True;
         if (Length(CliArgs) > 1) and (not IsFlag(CliArgs[1])) then
         begin
@@ -1505,16 +1505,16 @@ begin
       HelpGlobal;
       Halt(0);
     end;
-    // no es un comando de CLI: arranque normal (sin argumentos extra)
+    // not a CLI command: normal startup (no extra arguments)
     if IsFlag(Cmd) then
-      Exit;   // flags desconocidos: que los vea el arranque clasico
+      Exit;   // unknown flags: let the classic startup see them
     ErrLn(Format(T('superterm: unknown command ''%s''. Try ''superterm --help''.',
       'superterm: orden desconocida ''%s''. Prueba ''superterm --ayuda''.'),
       [Cmd]));
     Halt(2);
   end;
 
-  // ayuda por comando: superterm send --help
+  // per-command help: superterm send --help
   for i := 1 to High(CliArgs) do
     if IsHelpToken(CliArgs[i]) or (CliArgs[i] = '--help') or
        (CliArgs[i] = '--ayuda') then

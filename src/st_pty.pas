@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_pty - pseudoterminales (spawn, io, resize, estado)
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_pty - pseudoterminals (spawn, io, resize, state)
 *)
 
 unit st_pty;
@@ -31,8 +31,8 @@ type
       const AArgs: array of string; const ACwd: string;
       ACols, ARows: integer; const AExtraEnv, ASecret: string): boolean;
   public
-    TitleCmd: string;   // comando en curso (para titulo/sesion)
-    TitleCwd: string;   // cwd en curso
+    TitleCmd: string;   // command in progress (for title/session)
+    TitleCwd: string;   // current cwd
     TitleArgs: TStringArray;
     destructor Destroy; override;
     property Master: cint read FMaster;
@@ -47,8 +47,8 @@ type
     function WriteStr(const S: RawByteString): boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
-    // suelta el PTY sin tocar al hijo: el proceso pasa a ser propiedad
-    // del daemon de sesion (el padre cierra su copia del master)
+    // releases the PTY without touching the child: the process becomes
+    // property of the session daemon (the parent closes its master copy)
     procedure Abandon;
     procedure MarkDead;
     procedure MarkExited;
@@ -336,7 +336,7 @@ begin
   NewPid := fpFork;
   if NewPid = 0 then
   begin
-    // hijo
+    // child
     FpClose(ExecPipe[0]);
     if PassPipe[1] >= 0 then
       FpClose(PassPipe[1]);
@@ -628,7 +628,7 @@ begin
     FpClose(FMaster);
     FMaster := -1;
   end;
-  FPid := 0;   // KillPane/Destroy ya no senalan a nadie
+  FPid := 0;   // KillPane/Destroy no longer signal anyone
   FAlive := False;
 end;
 
@@ -953,8 +953,8 @@ begin
     cmdline := ProcCmdLine(FPid);
     TitleCwd := ProcCwd(FPid);
   end;
-  // si el "comando" es la propia shell de login, guardar vacio; comparar
-  // por basename: el cmdline puede traer la ruta completa (/bin/bash)
+  // if the "command" is the login shell itself, store empty; compare
+  // by basename: the cmdline may carry the full path (/bin/bash)
   base := ExtractFileName(FirstWordOf(cmdline));
   if (base <> '') and (base[1] = '-') then
     Delete(base, 1, 1);

@@ -54,8 +54,8 @@ class Session:
         os.write(self.fd, f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m'.encode())
         self.drain(0.5)
 
-    # espera activa: sondea hasta que se cumple pred (o timeout), para no
-    # comprobar antes de que la UI reaccione. Robustez bajo carga.
+    # active wait: polls until pred holds (or timeout), so nothing is
+    # checked before the UI has reacted. Robustness under load.
     def wait_until(self, pred, timeout=12.0):
         end = time.time() + timeout
         while time.time() < end:
@@ -86,7 +86,7 @@ def check(name, condition):
 
 s = Session()
 try:
-    # esperar a que el arranque dibuje la barra de menu antes de pinchar
+    # wait for startup to draw the menu bar before clicking
     s.wait_until(lambda: any('Panes' in ''.join(row) for row in s.screen.display))
     s.mouse(5, 1)
     s.wait_until(lambda: any('Split vertical' in ''.join(row)
@@ -94,7 +94,7 @@ try:
     check('mouse opens Panels menu',
           any('Split vertical' in ''.join(row) for row in s.screen.display))
 
-    # Paneles > Vertical, using global 1-based SGR coordinates.
+    # Panes > Vertical, using global 1-based SGR coordinates.
     s.mouse(5, 3)
     s.wait_until(lambda: any('│' in ''.join(row) for row in s.screen.display))
     check('menu click creates split',

@@ -18,7 +18,7 @@ class Session:
             os.environ['TERM'] = 'xterm'
             os.environ['SHELL'] = '/bin/bash'
             os.environ['HOME'] = HOME
-            os.environ['SUPERTERM_INI'] = HOME + '/no-sys.ini'  # sin config de sistema
+            os.environ['SUPERTERM_INI'] = HOME + '/no-sys.ini'  # no system config
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', H, W, 0, 0))
     def drain(self, t):
@@ -157,9 +157,9 @@ d = Session()
 d.drain(2.5)
 corner = d.screen.buffer[1 + BY][BX].data
 check("D: moved window at saved pos", corner == '╔')
-d.send(b'\x13', 1.0)  # Ctrl-S: guardar sesion
-d.send(b'\r', 0.5)    # cerrar el aviso "Session saved."
-d.send(b'\x1bq', 1.0) # Alt-Q: salir cerrando tambien el daemon de sesion
+d.send(b'\x13', 1.0)  # Ctrl-S: save session
+d.send(b'\r', 0.5)    # close the "Session saved." notice
+d.send(b'\x1bq', 1.0) # Alt-Q: exit closing the session daemon too
 d.close()
 time.sleep(0.6)
 txt = open(SESS).read()

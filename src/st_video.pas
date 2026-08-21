@@ -17,7 +17,7 @@ var
   SavedDriver: TVideoDriver;
   DriverInstalled: Boolean;
   OutputFailed: Boolean;
-  ConsoleRow, ConsoleCol: Integer; // posicion del cursor al arrancar (0 = desconocida)
+  ConsoleRow, ConsoleCol: Integer; // cursor position at startup (0 = unknown)
 
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
 var
@@ -168,7 +168,7 @@ begin
     203: Result := '╦';
     204: Result := '╠';
     205: Result := '═';
-    206: Result := '╬'; // CP437 canonico (0xCE es la cruz doble)
+    206: Result := '╬'; // canonical CP437 (0xCE is the double cross)
     207: Result := '╧';
     209: Result := '╤';
     217: Result := '┘';
@@ -300,13 +300,13 @@ begin
     DriverInstalled := True;
 end;
 
-// Lee la posicion real del cursor de la consola via DSR (ESC[6n). Debe
-// llamarse ANTES de InitVideo. Motivo: el guardado con ESC 7/ESC[s de
-// WideInitVideo no basta en terminales xterm reales (Konsole), porque el
-// driver RTL emite ESC[H y despues ?1049h, y en xterm ?1049h vuelve a
-// guardar el cursor -- ya en 1;1 -- en el mismo slot que DECSC, asi que
-// el ESC[u ESC 8 final restaura la primera linea. Preguntar la posicion
-// al terminal y recolocar explicitamente es inmune a ese solape de slots.
+// Reads the real console cursor position via DSR (ESC[6n). Must be
+// called BEFORE InitVideo. Reason: the ESC 7/ESC[s save done by
+// WideInitVideo is not enough on real xterm terminals (Konsole), since
+// the RTL driver emits ESC[H and then ?1049h, and in xterm ?1049h saves
+// the cursor again -- already at 1;1 -- into the same slot as DECSC, so
+// the final ESC[u ESC 8 restores the first line. Asking the terminal for
+// the position and repositioning explicitly is immune to that slot overlap.
 procedure CaptureConsoleCursor;
 var
   OldTio, RawTio: TermIOS;
@@ -326,7 +326,7 @@ begin
   RawTio := OldTio;
   RawTio.c_lflag := RawTio.c_lflag and (not (ICANON or ECHO));
   RawTio.c_cc[VMIN] := 0;
-  RawTio.c_cc[VTIME] := 2; // 0.2s de espera maxima por lectura
+  RawTio.c_cc[VTIME] := 2; // 0.2s maximum wait per read
   if TCSetAttr(StdInputHandle, TCSANOW, RawTio) <> 0 then
     Exit;
   WriteRaw(#27'[6n');
@@ -338,7 +338,7 @@ begin
     Resp := Resp + ch;
   until (ch = 'R') or (Length(Resp) >= 32);
   TCSetAttr(StdInputHandle, TCSANOW, OldTio);
-  // respuesta: ESC [ fila ; columna R (ignorar typeahead previo al ultimo ESC)
+  // response: ESC [ row ; column R (ignore typeahead before the last ESC)
   i := Length(Resp);
   while (i > 0) and (Resp[i] <> #27) do
     Dec(i);
@@ -356,10 +356,10 @@ begin
   ConsoleCol := StrToIntDef(Copy(Resp, j + 1, k - j - 1), 0);
 end;
 
-// Recoloca el cursor de la consola donde estaba al arrancar. Llamar al
-// final del todo (tras App.Done), porque los drivers RTL de video y
-// teclado emiten ESC[H durante el desmontaje. Si el terminal no contesto
-// al DSR queda el respaldo ESC[u ESC 8 de WideDoneVideo.
+// Puts the console cursor back where it was at startup. Call at the
+// very end (after App.Done), because the RTL video and keyboard
+// drivers emit ESC[H during teardown. If the terminal did not answer
+// the DSR, WideDoneVideo's ESC[u ESC 8 fallback remains.
 procedure RestoreConsoleCursor;
 begin
   if (ConsoleRow > 0) and (ConsoleCol > 0) then

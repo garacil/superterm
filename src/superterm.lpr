@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Programa principal: arranca la aplicacion FreeVision
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Main program: starts the FreeVision application
 *)
 
 program superterm;
@@ -23,8 +23,8 @@ var
 begin
   AttachRequested := False;
   AttachSocket := '';
-  // idioma resuelto ANTES de imprimir nada: la CLI habla el idioma del IDE
-  // (o el de LANG si aun no hay configuracion)
+  // language resolved BEFORE printing anything: the CLI speaks the IDE
+  // language (or the LANG one if there is no configuration yet)
   BootCfg := Default(TConfig);
   if FileExists(ConfigFile) then
   begin
@@ -33,8 +33,8 @@ begin
   end
   else if Copy(LowerCase(GetEnvironmentVariable('LANG')), 1, 2) = 'es' then
     CurrentLanguage := ulSpanish;
-  // comandos de CLI (list/send/capture/... en ingles o espanol): ejecutan y
-  // salen; el arranque de la TUI y --attach continuan por aqui
+  // CLI commands (list/send/capture/... in English or Spanish): they run
+  // and exit; the TUI startup and --attach continue through here
   RunCli;
   AttachName := '';
   ListOnly := False;
@@ -64,7 +64,7 @@ begin
   end;
   if ListOnly then
   begin
-    // tabla simple para scripts; tambien purga sockets huerfanos
+    // simple table for scripts; also purges orphaned sockets
     if EnumerateSessions(Infos) then
     begin
       WriteLn(Format('%-24s %-16s %5s  %s',
@@ -87,8 +87,8 @@ begin
     end;
     if AttachName <> '' then
     begin
-      // los nombres de sesion distinguen mayusculas: primero coincidencia
-      // exacta; solo si no hay, segunda pasada con el nombre saneado
+      // session names are case-sensitive: exact match first; only when
+      // there is none, second pass with the sanitized name
       for i := 0 to High(Infos) do
         if Infos[i].Name = AttachName then
         begin
@@ -110,25 +110,25 @@ begin
     end
     else if Length(Infos) = 1 then
       AttachSocket := Infos[0].SocketPath;
-    // con varias sesiones y sin nombre, el selector de la app decide
+    // with several sessions and no name, the app selector decides
   end;
-  // driver de teclado propio: ESC solitario funciona (timeout, no prefijo Alt)
+  // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
-  // guardar la posicion del cursor de la consola antes de tocar el video
+  // save the console cursor position before touching the video
   CaptureConsoleCursor;
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
-  // attach cancelado o fallido durante Init: no arrancar el bucle de
-  // eventos (un cmQuit posteado en Init se perderia al entrar en Run)
+  // attach cancelled or failed during Init: do not start the event
+  // loop (a cmQuit posted in Init would be lost when entering Run)
   if not STApp^.AbortRun then
   begin
-    // servidor-siempre: el workspace recien construido pasa a un daemon
-    // y esta instancia queda de cliente (config [session] server=always)
+    // server-always: the freshly built workspace moves to a daemon
+    // and this instance becomes a client (config [session] server=always)
     STApp^.PromoteToServer;
     if not STApp^.AbortRun then
       STApp^.Run;
   end;
   Dispose(STApp, Done);
-  // dejar el cursor donde estaba al lanzar el programa (cierre o detach)
+  // leave the cursor where it was at program launch (quit or detach)
   RestoreConsoleCursor;
 end.

@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_screen - pantalla virtual + parser VT100/ANSI
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_screen - virtual screen + VT100/ANSI parser
 *)
 
 unit st_screen;
@@ -15,7 +15,7 @@ uses
 
 const
   MAX_SCREEN_SCROLLBACK = 100000;
-  // bits de atributo
+  // attribute bits
   A_BOLD = $0100;
   A_UNDER = $0200;
   A_REVERSE = $0400;
@@ -27,13 +27,13 @@ type
     Txt: array[0..7] of AnsiChar;
     Len: byte;
     Attr: word;
-    Cont: boolean; // celda de continuacion de caracter ancho
+    Cont: boolean; // continuation cell of a wide character
   end;
 
   TRow = array of TCell;
   TGridArray = array of TRow;
   TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
-  TCharBuf = array[0..7] of AnsiChar; // buffer de un codepoint UTF-8
+  TCharBuf = array[0..7] of AnsiChar; // buffer for one UTF-8 codepoint
 
   TScreen = class
   private
@@ -45,7 +45,7 @@ type
     FSBRing: array of TRow;
     FSBCount: integer;
     FSBHead: integer;
-    FViewTop: integer;         // 0 = vivo; >0 = lineas hacia atras
+    FViewTop: integer;         // 0 = live; >0 = lines back
     // parser
     FPState: TParserState;
     FPParams: array[0..15] of integer;
@@ -56,7 +56,7 @@ type
     FUtfNeed: byte;
     FOscBuf: RawByteString;
     FSaveX, FSaveY: integer;
-    FInterm: AnsiChar;      // byte intermedio CSI (ej. ' ' de DECSCUSR)
+    FInterm: AnsiChar;      // CSI intermediate byte (e.g. ' ' of DECSCUSR)
     FAutoWrap: boolean;     // DECAWM ?7 (default on)
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
@@ -81,21 +81,21 @@ type
     ScrollTop, ScrollBot: integer;
     CursorVisible: boolean;
     CursorStyle: integer;   // DECSCUSR: 0 def | 1/2 block | 3/4 under | 5/6 bar
-    Attr: word; // attr actual del stream
+    Attr: word; // current attr of the stream
     Dirty: boolean;
-    MaxScrollBack: integer;    // capacidad del historial (0 = sin historial)
+    MaxScrollBack: integer;    // history capacity (0 = no history)
     constructor Create(AWidth, AHeight: integer; AMaxScrollBack: integer = 10000);
     destructor Destroy; override;
     procedure Resize(AWidth, AHeight: integer);
     procedure WriteBytes(const Buf; Count: integer);
     procedure ResetSoft;
     function ViewOffset: integer;
-    procedure ScrollViewport(ADelta: integer);  // + atras, - adelante
+    procedure ScrollViewport(ADelta: integer);  // + back, - forward
     function DisplayRow(y: integer): TRow;
     procedure SaveToStream(Stream: TStream);
     function LoadFromStream(Stream: TStream): boolean;
-    // captura a texto: filas absolutas 0..HistoryRows-1 = historial (la mas
-    // antigua primero) y HistoryRows..HistoryRows+Height-1 = pantalla viva
+    // text capture: absolute rows 0..HistoryRows-1 = history (the oldest
+    // first) and HistoryRows..HistoryRows+Height-1 = live screen
     function HistoryRows: integer;
     function AbsRow(AIndex: integer): TRow;
     procedure RenderTextRange(AFrom, ACount: integer; AOut: TStream);
@@ -215,7 +215,7 @@ begin
   end;
   if FGrid <> nil then
   begin
-    // al encoger: las lineas superiores que se pierden van al historial
+    // when shrinking: the top lines that are lost go to the history
     Lost := OldHeight - ch;
     if Lost < 0 then
       Lost := 0;
@@ -366,7 +366,7 @@ begin
     Exit;
   if AIndex < FSBCount then
   begin
-    // misma formula de ring que SaveToStream/DisplayRow
+    // same ring formula as SaveToStream/DisplayRow
     Slot := (FSBHead - FSBCount + AIndex + MaxScrollBack) mod MaxScrollBack;
     Result := FSBRing[Slot];
   end
@@ -374,9 +374,9 @@ begin
     Result := FGrid[AIndex - FSBCount];
 end;
 
-// una fila de celdas a texto UTF-8 plano: los bytes crudos de cada celda
-// (Txt[0..Len-1]), espacio para celdas vacias, se saltan las continuaciones
-// de caracteres anchos, y se recortan los blancos finales
+// one row of cells to plain UTF-8 text: the raw bytes of each cell
+// (Txt[0..Len-1]), a space for empty cells, wide-character continuations
+// are skipped, and trailing blanks are trimmed
 function RowToUtf8(const R: TRow): RawByteString;
 var
   x, i, LastNonBlank: integer;
@@ -595,7 +595,7 @@ begin
     cp := ((b and $07) shl 18) or ((byte(S[2]) and $3F) shl 12) or
       ((byte(S[3]) and $3F) shl 6) or (byte(S[4]) and $3F);
   end;
-  // rangos CJK/ancho completo aproximados
+  // approximate CJK/fullwidth ranges
   if ((cp >= $1100) and (cp <= $115F)) or
      ((cp >= $2E80) and (cp <= $A4CF)) or
      ((cp >= $AC00) and (cp <= $D7A3)) or
@@ -764,7 +764,7 @@ begin
   end
   else
   begin
-    // secuencia rota: emitir tal cual y reprocesar
+    // broken sequence: emit as-is and reprocess
     for i := 0 to FUtfLen - 1 do
     begin
       arr[0] := AnsiChar(FUtfBuf[i]);
@@ -802,8 +802,8 @@ begin
   Dirty := True;
 end;
 
-// distancia minima al cuadrado contra la paleta xterm de 16 colores; el
-// indice devuelto usa orden ANSI (0 negro, 1 rojo, ... 7 blanco, +8 brillo)
+// minimum squared distance against the 16-color xterm palette; the
+// returned index uses ANSI order (0 black, 1 red, ... 7 white, +8 bright)
 function Ansi16FromRgb(R, G, B: integer): integer;
 const
   PAL: array[0..15, 0..2] of integer = (
@@ -814,7 +814,7 @@ const
 var
   i, d, bestd, dr, dg, db: integer;
 begin
-  // los parametros CSI llegan sin limite: acotar a canal valido
+  // CSI parameters arrive unbounded: clamp to a valid channel
   if R < 0 then R := 0;
   if R > 255 then R := 255;
   if G < 0 then G := 0;
@@ -837,8 +837,8 @@ begin
   end;
 end;
 
-// indice xterm-256 -> ANSI 16 (cubo 6x6x6 y rampa de grises aproximados);
-// -1 = indice invalido, el llamante usa el color por defecto
+// xterm-256 index -> ANSI 16 (approximated 6x6x6 cube and gray ramp);
+// -1 = invalid index, the caller uses the default color
 function Ansi16From256(N: integer): integer;
 const
   CUBE: array[0..5] of integer = (0, 95, 135, 175, 215, 255);
@@ -964,7 +964,7 @@ begin
               BlankRow(i, Attr);
           3:
             begin
-              // xterm/tmux: 3J = limpiar pantalla + historial
+              // xterm/tmux: 3J = clear screen + history
               for i := 0 to Height - 1 do
                 BlankRow(i, Attr);
               FSBCount := 0;
@@ -1075,8 +1075,8 @@ begin
               (word(n - 92) shl 4);
             38, 48:
               begin
-                // 38/48;5;N (indexado) consume 2 extra; 38/48;2;r;g;b
-                // (truecolor) consume 4; ambos se aproximan a ANSI 16
+                // 38/48;5;N (indexed) consumes 2 extra; 38/48;2;r;g;b
+                // (truecolor) consumes 4; both approximate to ANSI 16
                 p2 := GetParam(i + 1, -1);
                 if p2 = 5 then
                 begin
@@ -1090,7 +1090,7 @@ begin
                   Inc(i, 4);
                 end
                 else
-                  p1 := -1; // forma desconocida: color por defecto
+                  p1 := -1; // unknown form: default color
                 if n = 38 then
                 begin
                   if p1 < 0 then
@@ -1141,7 +1141,7 @@ begin
       end;
     'q':
       begin
-        // DECSCUSR: CSI Ps SP q  (estilo de cursor)
+        // DECSCUSR: CSI Ps SP q  (cursor style)
         if FInterm = ' ' then
           CursorStyle := GetParam(0, 0);
       end;
@@ -1255,7 +1255,7 @@ begin
       end;
     'c': ResetSoft;
   else
-    ; // =, >, etc: ignorar
+    ; // =, >, etc: ignore
   end;
   if FPState <> psCsi then
     FPState := psGround;
@@ -1332,8 +1332,8 @@ begin
           end
           else if (b = Ord(';')) or (b = Ord(':')) then
           begin
-            // ':' separa subparametros (38:5:196m de emisores modernos);
-            // tratarlo como ';' evita imprimir el resto como texto
+            // ':' separates subparameters (38:5:196m from modern emitters);
+            // treating it as ';' avoids printing the rest as text
             Inc(FPCount);
             if FPCount > 15 then FPCount := 15;
           end
@@ -1341,7 +1341,7 @@ begin
             FPPriv := True
           else if (b >= $20) and (b <= $2F) then
           begin
-            FInterm := AnsiChar(b);   // intermedio: ' ' de DECSCUSR etc.
+            FInterm := AnsiChar(b);   // intermediate: ' ' of DECSCUSR etc.
           end
           else if (b >= $40) and (b <= $7E) then
           begin
@@ -1359,7 +1359,7 @@ begin
       psOsc:
         begin
           if b = 7 then
-            FPState := psGround // BEL fin de OSC
+            FPState := psGround // BEL ends OSC
           else if b = 27 then
             FPState := psOscEsc
           else

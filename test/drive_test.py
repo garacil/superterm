@@ -19,7 +19,7 @@ class Session:
             os.environ['TERM'] = 'xterm'
             os.environ['SHELL'] = '/bin/bash'
             os.environ['HOME'] = HOME
-            os.environ['SUPERTERM_INI'] = HOME + '/no-sys.ini'  # sin config de sistema
+            os.environ['SUPERTERM_INI'] = HOME + '/no-sys.ini'  # no system config
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', H, W, 0, 0))
 
@@ -44,9 +44,9 @@ class Session:
     def text(self):
         return "\n".join(row.rstrip() for row in self.screen.display)
 
-    # espera activa: sondea la pantalla hasta que se cumple pred (o timeout).
-    # Hace la bateria robusta bajo carga: no se comprueba antes de que la UI
-    # este dibujada, en vez de confiar en un drain fijo demasiado corto.
+    # active wait: polls the screen until pred holds (or timeout).
+    # Makes the suite robust under load: nothing is checked before the UI
+    # has been drawn, instead of trusting a fixed drain that is too short.
     def wait_until(self, pred, timeout=12.0):
         end = time.time() + timeout
         while time.time() < end:
@@ -75,7 +75,7 @@ if os.path.exists(SESS):
     os.remove(SESS)
 
 s = Session()
-# esperar a que el arranque dibuje menu + linea de estado + primer marco
+# wait for startup to draw menu + status line + first frame
 s.wait_until(lambda t: ("Panes" in t) and ("F2 Split" in t) and (t.count("╔") >= 1))
 scr = s.text()
 check("menubar Panels", "Panes" in scr)
@@ -89,7 +89,7 @@ s.wait_until(lambda t: ("ST_A=1" in t) and ("ST_B=2" in t))
 scr = s.text()
 check("cmd output visible", "ST_A=1" in scr and "ST_B=2" in scr)
 
-# split vertical: F2 (xterm: ESC OQ)
+# vertical split: F2 (xterm: ESC OQ)
 s.send(b'\x1bOQ', 1.0)
 s.wait_until(lambda t: t.count("╔") + t.count("┌") >= 2)
 scr = s.text()
@@ -112,7 +112,7 @@ check("pane closed", "ST_SPLIT_OK" not in scr)
 s.send(b'\x1bx', 0.8)
 s.drain(0.5)
 s.close()
-# esperar a que se escriba la sesion (hasta 3s) en vez de un sleep fijo
+# wait for the session to be written (up to 3s) instead of a fixed sleep
 for _ in range(30):
     if os.path.exists(SESS):
         break

@@ -1,9 +1,9 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_dialogs - dialogos FreeVision para las clases de ventana:
-  gestor (lista + alta/edicion/duplicado/borrado) y selector rapido para
-  abrir una clase en un panel nuevo.
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_dialogs - FreeVision dialogs for the window classes:
+  manager (list + create/edit/duplicate/delete) and quick picker to
+  open a class in a new pane.
 *)
 
 unit st_dialogs;
@@ -16,46 +16,46 @@ uses
   Objects, Drivers, Views, Dialogs, MsgBox, App, SysUtils,
   st_config, st_wclass, st_profiles, st_server;
 
-// gestor de clases: lista + New/Edit/Duplicate/Delete/Close. Edita SOLO las
-// de origen usuario; las de sistema se muestran '(sistema)' y solo permiten
-// Duplicate. Devuelve True si hubo cambios (ya persistidos con
-// SaveWindowClasses(ConfigFile, AClasses) dentro).
+// class manager: list + New/Edit/Duplicate/Delete/Close. Edits ONLY the
+// user-origin ones; system ones show '(system)' and only allow
+// Duplicate. Returns True if there were changes (already persisted via
+// SaveWindowClasses(ConfigFile, AClasses) inside).
 function RunClassManager(var AClasses: TWindowClassArray): boolean;
 
-// selector simple para "abrir clase en panel nuevo": lista con
-// '1 Local shell' primero y las clases habilitadas despues.
-// AIndex: -1 = shell local, si no indice en AClasses. False = cancelado.
+// simple picker for "open class in new pane": list with
+// '1 Local shell' first and the enabled classes afterwards.
+// AIndex: -1 = local shell, else index into AClasses. False = canceled.
 function RunClassPicker(const AClasses: TWindowClassArray;
   out AIndex: integer): boolean;
 
 type
-  // accion que el gestor de perfiles devuelve al llamador; el dialogo no
-  // toca el runtime: activar, capturar el area de trabajo o fijar el
-  // perfil por defecto las ejecuta quien llama
+  // action the profile manager returns to the caller; the dialog does
+  // not touch the runtime: activating, capturing the workspace or
+  // setting the default profile is executed by the caller
   TProfileAction = (paNone, paActivate, paSaveCurrent, paSetDefault);
 
-// gestor de perfiles: lista + Activate/Save current/Rename/Set default/
-// Delete/Close. Rename y Delete solo sobre perfiles de usuario y persisten
-// con SaveProfiles(ConfigFile, AProfiles) dentro; Activate/Save current/
-// Set default devuelven True inmediatamente con AAction/ATarget para que
-// el llamador actue. AActive = fila con marca de activo (-1 ninguna),
-// ADefault = perfil por defecto (-1 ninguno). False = cerrado sin cambios
-// ni accion; True con AAction=paNone = solo hubo ediciones persistidas.
+// profile manager: list + Activate/Save current/Rename/Set default/
+// Delete/Close. Rename and Delete act only on user profiles and persist
+// via SaveProfiles(ConfigFile, AProfiles) inside; Activate/Save current/
+// Set default return True immediately with AAction/ATarget so that
+// the caller acts. AActive = row with the active mark (-1 none),
+// ADefault = default profile (-1 none). False = closed with no changes
+// or action; True with AAction=paNone = only persisted edits happened.
 function RunProfileManager(var AProfiles: TProfileArray;
   AActive, ADefault: integer; out AAction: TProfileAction;
   out ATarget: integer): boolean;
 
 type
-  // resultado del selector de sesiones separadas
+  // result of the detached session picker
   TSessionPickAction = (spCancel, spAttach, spStartNew);
 
-// selector de sesiones separadas. Enumera y re-enumera EL MISMO las
-// sesiones (st_server.EnumerateSessions) en cada pasada del bucle de
-// reconstruccion. AllowStartNew=True anade el boton 'Start new'/'Nueva
-// sesion' (arranque normal); con False ese boton es 'Cancel'/'Cancelar'.
-// spAttach -> ASocketPath = socket elegido.
-// lista de paneles Alt+0 (como el Window|List del IDE clasico): devuelve
-// True y el indice elegido; el llamante enfoca o restaura
+// detached session picker. Enumerates and re-enumerates the sessions
+// ITSELF (st_server.EnumerateSessions) on each pass of the rebuild
+// loop. AllowStartNew=True adds the 'Start new'/'Nueva
+// sesion' button (normal start); with False that button is
+// 'Cancel'/'Cancelar'. spAttach -> ASocketPath = chosen socket.
+// Alt+0 pane list (like the classic IDE's Window|List): returns
+// True and the chosen index; the caller focuses or restores
 function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
   out ASelected: integer): boolean;
 
@@ -65,8 +65,8 @@ function RunSessionPicker(AllowStartNew: boolean;
 implementation
 
 const
-  // comandos locales de los botones de los gestores (>255: siempre
-  // habilitados); cada gestor usa un rango contiguo propio
+  // local commands for the manager buttons (>255: always
+  // enabled); each manager uses its own contiguous range
   cmClsNew  = 3300;
   cmClsEdit = 3301;
   cmClsDup  = 3302;
@@ -83,9 +83,9 @@ type
   TNameArray = array of string;
   PNameArray = ^TNameArray;
 
-  // gestor generico: los botones de accion terminan el dialogo con su
-  // comando (rango CmdLo..CmdHi) y el bucle del llamador decide; doble
-  // click o espacio en la lista equivale al comando SelectCmd
+  // generic manager: the action buttons end the dialog with their
+  // command (range CmdLo..CmdHi) and the caller's loop decides; double
+  // click or space on the list is equivalent to the SelectCmd command
   PManagerDialog = ^TManagerDialog;
   TManagerDialog = object(TDialog)
     CmdLo, CmdHi: word;
@@ -93,15 +93,15 @@ type
     procedure HandleEvent(var Event: TEvent); virtual;
   end;
 
-  // selector: doble click en la lista equivale al boton Abrir
+  // picker: double click on the list is equivalent to the Open button
   PPickerDialog = ^TPickerDialog;
   TPickerDialog = object(TDialog)
     procedure HandleEvent(var Event: TEvent); virtual;
   end;
 
-  // editor de una clase; Valid(cmOK) valida y muestra el error sin cerrar.
-  // OtherNames apunta a una variable local del llamador (solo vive durante
-  // el ExecView modal): nombres del resto de clases para la unicidad.
+  // one-class editor; Valid(cmOK) validates and shows the error without
+  // closing. OtherNames points to a local variable of the caller (only
+  // alive during the modal ExecView): other class names for uniqueness.
   PClassEditDialog = ^TClassEditDialog;
   TClassEditDialog = object(TDialog)
     NameLine: PInputLine;
@@ -123,9 +123,9 @@ type
     function Valid(Command: Word): Boolean; virtual;
   end;
 
-{ ------------------------------ utilidades ------------------------------ }
+{ ------------------------------ utilities ------------------------------ }
 
-// lectura directa del buffer del TInputLine (Data^ es ShortString)
+// direct read of the TInputLine buffer (Data^ is a ShortString)
 function LineText(P: PInputLine): string;
 begin
   Result := '';
@@ -133,16 +133,16 @@ begin
     Result := P^.Data^;
 end;
 
-// escritura truncada a MaxLen: el buffer interno mide MaxLen+1 bytes y la
-// asignacion de ShortString copiaria hasta 255 sin este recorte
+// write truncated to MaxLen: the internal buffer is MaxLen+1 bytes and
+// the ShortString assignment would copy up to 255 without this cut
 procedure SetLineText(P: PInputLine; const S: string);
 begin
   if (P <> nil) and (P^.Data <> nil) then
     P^.Data^ := Copy(S, 1, P^.MaxLen);
 end;
 
-// MessageBox pasa el texto por FormatStr, que interpreta '%': doblarlo para
-// que los nombres de clase con '%' no descuadren (o cuelguen) el formateo
+// MessageBox runs the text through FormatStr, which interprets '%':
+// double it so class names with '%' do not break (or hang) formatting
 function EscPercent(const S: string): string;
 var
   i: integer;
@@ -173,7 +173,7 @@ begin
     mfConfirmation or mfYesButton or mfNoButton) = cmYes;
 end;
 
-// rectangulo centrado en el escritorio, recortado si no cabe
+// rectangle centered on the desktop, clipped if it does not fit
 function CenteredRect(W, H: integer): TRect;
 var
   D: TRect;
@@ -188,7 +188,7 @@ begin
   Result.Move((D.B.X - W) div 2, (D.B.Y - H) div 2);
 end;
 
-// espejo del DeriveKind privado de st_wclass: connect gana a host
+// mirror of st_wclass's private DeriveKind: connect wins over host
 function DerivedKind(const C: TWindowClass): TWClassKind;
 begin
   if C.Connect <> '' then
@@ -199,7 +199,7 @@ begin
     Result := wcLocal;
 end;
 
-// texto de tipo de la lista, fijo en ambos idiomas (no traducir)
+// type text for the list, fixed in both languages (do not translate)
 function KindText(AKind: TWClassKind): string;
 begin
   case AKind of
@@ -241,7 +241,7 @@ begin
       Exit(True);
 end;
 
-// nombre libre para el duplicado: base-2, base-3, ...
+// free name for the duplicate: base-2, base-3, ...
 function UniqueCopyName(const A: TWindowClassArray; const Base: string): string;
 var
   n: integer;
@@ -319,9 +319,9 @@ begin
   end;
 end;
 
-// editor modal de una clase; SkipIndex = indice de C en AllClasses para
-// excluirlo de la unicidad (-1 si es nueva). True si el usuario acepto y
-// C quedo actualizada (con Kind rederivado).
+// modal editor for one class; SkipIndex = index of C in AllClasses to
+// exclude it from uniqueness (-1 if new). True if the user accepted and
+// C was updated (with Kind re-derived).
 function EditWindowClass(var C: TWindowClass;
   const AllClasses: TWindowClassArray; SkipIndex: integer): boolean;
 var
@@ -350,11 +350,11 @@ begin
   with D^ do
   begin
     OtherNames := @Names;
-    // orden de insercion = orden inverso de foco inicial: en este fork el
-    // ultimo control seleccionable insertado recibe el foco al ejecutar
-    // (NUNCA llamar Select antes de ExecView: envenena la cadena de foco
-    // de la app si el dialogo corre durante el Init). Botones primero y
-    // el campo Nombre al final para que arranque enfocado.
+    // insertion order = reverse order of initial focus: in this fork
+    // the last selectable control inserted gets focus on execution
+    // (NEVER call Select before ExecView: it poisons the app's focus
+    // chain if the dialog runs during Init). Buttons first and
+    // the Name field last so it starts focused.
     NewButton(20, 15, 10, 2, 'OK', cmOK, hcNoContext, bfDefault);
     NewButton(34, 15, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
       hcNoContext, bfNormal);
@@ -396,12 +396,12 @@ begin
     Insert(New(PStaticText, Init(R, Format('(0..%d)', [MAX_SCROLLBACK]))));
     TitleLine := NewInputLine(22, 13, 41, 40, hcNoContext, nil);
     NewLabel(2, 13, UiText('Default title', 'Titulo por defecto'), TitleLine);
-    // Nombre el ultimo: foco inicial (las coordenadas son absolutas, el
-    // orden de insercion no cambia el layout)
+    // Name last: initial focus (coordinates are absolute, the
+    // insertion order does not change the layout)
     NameLine := NewInputLine(22, 1, 25, 40, hcNoContext, nil);
     NewLabel(2, 1, UiText('Name', 'Nombre'), NameLine);
 
-    // valores iniciales
+    // initial values
     SetLineText(NameLine, C.Name);
     SetLineText(HostLine, C.Host);
     if C.Port > 0 then
@@ -416,7 +416,7 @@ begin
     SetLineText(ShellLine, C.Shell);
     SetLineText(ScrollLine, IntToStr(C.ScrollBack));
     SetLineText(TitleLine, C.Title);
-    W := Sw_Word(Ord(C.Kind));   // preseleccion del tipo derivado
+    W := Sw_Word(Ord(C.Kind));   // preselection of the derived type
     TypeRadio^.SetData(W);
     W := 0;
     if C.Enabled then
@@ -426,12 +426,12 @@ begin
 
   if Desktop^.ExecView(D) = cmOK then
   begin
-    // leer los campos antes del Dispose (los buffers viven en las vistas)
+    // read the fields before Dispose (the buffers live in the views)
     C.Name := Trim(LineText(D^.NameLine));
     C.Host := Trim(LineText(D^.HostLine));
     C.Port := StrToIntDef(Trim(LineText(D^.PortLine)), 0);
     C.User := Trim(LineText(D^.UserLine));
-    C.Password := LineText(D^.PassLine);   // sin Trim: puede llevar espacios
+    C.Password := LineText(D^.PassLine);   // no Trim: may contain spaces
     C.KeyFile := Trim(LineText(D^.KeyLine));
     C.Connect := Trim(LineText(D^.ConnectLine));
     C.PostConnect := Trim(LineText(D^.PostLine));
@@ -449,8 +449,8 @@ begin
     C.Enabled := (W and 1) <> 0;
     W := 0;
     D^.TypeRadio^.GetData(W);
-    // coherencia con el tipo elegido: comando conserva connect y limpia
-    // host; ssh limpia connect; local limpia ambos (Kind se deriva de ahi)
+    // consistency with the chosen type: command keeps connect and clears
+    // host; ssh clears connect; local clears both (Kind derives from it)
     case W of
       1: C.Connect := '';
       2: C.Host := '';
@@ -466,7 +466,7 @@ begin
   Dispose(D, Done);
 end;
 
-{ ------------------------------ gestor ------------------------------ }
+{ ------------------------------ manager ------------------------------ }
 
 procedure TManagerDialog.HandleEvent(var Event: TEvent);
 begin
@@ -481,7 +481,7 @@ begin
     evBroadcast:
       if Event.Command = cmListItemSelected then
       begin
-        EndModal(SelectCmd);   // doble click / espacio
+        EndModal(SelectCmd);   // double click / space
         ClearEvent(Event);
       end;
   end;
@@ -499,9 +499,9 @@ begin
     [Copy(C.Name, 1, 18), KindText(C.Kind), Copy(TargetText(C), 1, 24), Tag]);
 end;
 
-// construye y ejecuta el dialogo del gestor; devuelve el comando final.
-// FocusRow entra como fila a enfocar y sale con la fila enfocada al cerrar
-// (-1 si la lista esta vacia), para conservar la seleccion entre pasadas.
+// builds and runs the manager dialog; returns the final command.
+// FocusRow comes in as the row to focus and leaves with the row focused
+// at close (-1 if the list is empty), to keep selection across passes.
 function ExecClassManager(const AClasses: TWindowClassArray;
   var FocusRow: integer): word;
 var
@@ -512,8 +512,8 @@ var
   R: TRect;
   i: integer;
 begin
-  // la coleccion es TSortedCollection: AtInsert al final respeta el orden
-  // del array (Insert ordenaria alfabeticamente y descartaria duplicados)
+  // the collection is a TSortedCollection: AtInsert at the end keeps the
+  // array order (Insert would sort alphabetically and drop duplicates)
   Coll := New(PStringCollection, Init(Length(AClasses) + 1, 8));
   for i := 0 to High(AClasses) do
     Coll^.AtInsert(Coll^.Count, Objects.NewStr(ManagerRow(AClasses[i])));
@@ -525,17 +525,17 @@ begin
   begin
     CmdLo := cmClsNew;
     CmdHi := cmClsDel;
-    SelectCmd := cmClsEdit;   // doble click = editar
+    SelectCmd := cmClsEdit;   // double click = edit
     R.Assign(3, 1, 67, 2);
     Insert(New(PStaticText, Init(R, Format('%-18s %-8s %-24s',
       [UiText('Name', 'Nombre'), UiText('Type', 'Tipo'),
        UiText('Target', 'Destino')]))));
-    // botones ANTES del listbox: el ultimo control seleccionable insertado
-    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    // buttons BEFORE the listbox: the last selectable control inserted
+    // gets the initial focus (fork rule: no Select before ExecView)
     NewButton(3, 14, 10, 2, UiText('New', 'Nuevo'), cmClsNew,
       hcNoContext, bfNormal);
     NewButton(14, 14, 10, 2, UiText('Edit', 'Editar'), cmClsEdit,
-      hcNoContext, bfDefault);   // Enter = editar
+      hcNoContext, bfDefault);   // Enter = edit
     NewButton(25, 14, 13, 2, UiText('Duplicate', 'Duplicar'), cmClsDup,
       hcNoContext, bfNormal);
     NewButton(39, 14, 10, 2, UiText('Delete', 'Borrar'), cmClsDel,
@@ -558,8 +558,8 @@ begin
   else
     FocusRow := -1;
   Dispose(D, Done);
-  // el listbox NO libera la coleccion en Done (solo NewList libera la
-  // anterior): liberarla aqui tras destruir el dialogo
+  // the listbox does NOT free the collection in Done (only NewList frees
+  // the previous one): free it here after destroying the dialog
   Dispose(Coll, Done);
 end;
 
@@ -573,7 +573,7 @@ begin
   FocusRow := 0;
   repeat
     Cmd := ExecClassManager(AClasses, FocusRow);
-    Idx := FocusRow;   // las filas van 1:1 con AClasses
+    Idx := FocusRow;   // rows map 1:1 to AClasses
     case Cmd of
       cmClsNew:
         begin
@@ -639,7 +639,7 @@ begin
   until (Cmd = cmCancel) or (Cmd = cmOK);
 end;
 
-{ ------------------------------ selector ------------------------------ }
+{ ------------------------------ picker ------------------------------ }
 
 procedure TPickerDialog.HandleEvent(var Event: TEvent);
 begin
@@ -647,7 +647,7 @@ begin
   if (Event.What = evBroadcast) and
      (Event.Command = cmListItemSelected) then
   begin
-    EndModal(cmOK);   // doble click / espacio = abrir
+    EndModal(cmOK);   // double click / space = open
     ClearEvent(Event);
   end;
 end;
@@ -670,7 +670,7 @@ begin
   for i := 0 to High(AClasses) do
     if AClasses[i].Enabled then
     begin
-      n := Coll^.Count + 1;      // numero visible de la fila (1..9, luego nada)
+      n := Coll^.Count + 1;      // visible row number (1..9, then none)
       if n <= 9 then
         Prefix := IntToStr(n) + ' '
       else
@@ -683,8 +683,8 @@ begin
     UiText('Open class in new pane', 'Abrir clase en panel nuevo')));
   with D^ do
   begin
-    // botones ANTES del listbox: el ultimo control seleccionable insertado
-    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    // buttons BEFORE the listbox: the last selectable control inserted
+    // gets the initial focus (fork rule: no Select before ExecView)
     NewButton(8, 10, 12, 2, UiText('Open', 'Abrir'), cmOK,
       hcNoContext, bfDefault);
     NewButton(24, 10, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
@@ -703,12 +703,12 @@ begin
     Row := LB^.Focused;
     if Row = 0 then
     begin
-      AIndex := -1;              // shell local
+      AIndex := -1;              // local shell
       Result := True;
     end
     else
     begin
-      // fila k -> k-esima clase habilitada (las deshabilitadas no listan)
+      // row k -> k-th enabled class (disabled ones are not listed)
       n := 0;
       for i := 0 to High(AClasses) do
         if AClasses[i].Enabled then
@@ -727,7 +727,7 @@ begin
   Dispose(Coll, Done);
 end;
 
-{ -------------------------- gestor de perfiles -------------------------- }
+{ -------------------------- profile manager -------------------------- }
 
 procedure InfoProfileReadOnly;
 begin
@@ -747,8 +747,8 @@ begin
       Exit(True);
 end;
 
-// fila del gestor: marca de activo + nombre + numero de ventanas +
-// etiqueta del perfil por defecto
+// manager row: active mark + name + number of windows +
+// default profile tag
 function ProfileRow(const P: TProfileSpec;
   IsActive, IsDefault: boolean): string;
 var
@@ -762,11 +762,11 @@ begin
     [Copy(P.Name, 1, 24), Length(P.Windows), Tag]);
 end;
 
-// construye y ejecuta el dialogo del gestor de perfiles; devuelve el
-// comando final. Con la lista vacia muestra una fila informativa y
-// deshabilita todos los botones salvo Cerrar (crear perfiles corresponde
-// al menu 'Guardar como perfil', no a este dialogo). FocusRow como en
-// ExecClassManager: entra fila a enfocar, sale fila enfocada (-1 si vacia).
+// builds and runs the profile manager dialog; returns the final
+// command. With an empty list it shows an informational row and
+// disables every button except Close (creating profiles belongs to
+// the 'Save as profile' menu, not to this dialog). FocusRow as in
+// ExecClassManager: row to focus in, focused row out (-1 if empty).
 function ExecProfileManager(const AProfiles: TProfileArray;
   AActive, ADefault: integer; var FocusRow: integer): word;
 var
@@ -792,11 +792,11 @@ begin
   begin
     CmdLo := cmPrfActivate;
     CmdHi := cmPrfDelete;
-    SelectCmd := cmPrfActivate;   // doble click = activar
-    // botones ANTES del listbox: el ultimo control seleccionable insertado
-    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    SelectCmd := cmPrfActivate;   // double click = activate
+    // buttons BEFORE the listbox: the last selectable control inserted
+    // gets the initial focus (fork rule: no Select before ExecView)
     Btn[0] := NewButton(3, 9, 12, 2, UiText('Activate', 'Activar'),
-      cmPrfActivate, hcNoContext, bfDefault);   // Enter = activar
+      cmPrfActivate, hcNoContext, bfDefault);   // Enter = activate
     Btn[1] := NewButton(16, 9, 18, 2,
       UiText('Save current', 'Guardar actual'), cmPrfSave,
       hcNoContext, bfNormal);
@@ -828,17 +828,17 @@ begin
   else
     FocusRow := -1;
   Dispose(D, Done);
-  // misma propiedad que en el gestor de clases: la coleccion no es del
-  // listbox, liberarla tras destruir el dialogo
+  // same ownership as in the class manager: the collection is not the
+  // listbox's, free it after destroying the dialog
   Dispose(Coll, Done);
 end;
 
-// renombrar con InputBox prellenado; valida no-vacio y unicidad sin
-// distinguir mayusculas; persiste al aceptar. False = cancelado o sin
-// cambio efectivo.
+// rename with a prefilled InputBox; validates non-empty and uniqueness
+// case-insensitively; persists on accept. False = canceled or no
+// effective change.
 function RenameProfile(var AProfiles: TProfileArray; Idx: integer): boolean;
 var
-  Buf: ShortString;   // InputBox exige var ShortString (unidad msgbox)
+  Buf: ShortString;   // InputBox requires var ShortString (msgbox unit)
   N: string;
 begin
   Result := False;
@@ -859,7 +859,7 @@ begin
     end;
   until N <> '';
   if N = AProfiles[Idx].Name then
-    Exit;   // sin cambio: no persistir ni contar como edicion
+    Exit;   // no change: do not persist or count as an edit
   AProfiles[Idx].Name := N;
   SaveProfiles(ConfigFile, AProfiles);
   Result := True;
@@ -877,15 +877,15 @@ begin
   Result := False;
   FocusRow := 0;
   if (AActive >= 0) and (AActive <= High(AProfiles)) then
-    FocusRow := AActive;   // arrancar sobre el perfil activo
+    FocusRow := AActive;   // start on the active profile
   repeat
     Cmd := ExecProfileManager(AProfiles, AActive, ADefault, FocusRow);
-    Idx := FocusRow;   // las filas van 1:1 con AProfiles
+    Idx := FocusRow;   // rows map 1:1 to AProfiles
     if (Idx >= 0) and (Idx <= High(AProfiles)) then
       case Cmd of
         cmPrfActivate:
           begin
-            // la activacion la ejecuta el llamador
+            // activation is executed by the caller
             AAction := paActivate;
             ATarget := Idx;
             Exit(True);
@@ -896,15 +896,15 @@ begin
             'Sobrescribir el perfil "%s" con el area de trabajo actual?'),
             [AProfiles[Idx].Name])) then
           begin
-            // la captura y el guardado los ejecuta el llamador
+            // capture and save are executed by the caller
             AAction := paSaveCurrent;
             ATarget := Idx;
             Exit(True);
           end;
         cmPrfDefault:
           begin
-            // el por-defecto vive en la config, no en el array: lo
-            // actualiza el llamador (Cfg.DefaultProfile + SaveConfig)
+            // the default lives in the config, not in the array: the
+            // caller updates it (Cfg.DefaultProfile + SaveConfig)
             AAction := paSetDefault;
             ATarget := Idx;
             Exit(True);
@@ -923,8 +923,8 @@ begin
             Delete(AProfiles, Idx, 1);
             SaveProfiles(ConfigFile, AProfiles);
             Result := True;
-            // reajustar las marcas de activo/por-defecto para las
-            // siguientes pasadas del dialogo (solo efecto visual)
+            // readjust the active/default marks for the next
+            // passes of the dialog (visual effect only)
             if AActive = Idx then
               AActive := -1
             else if AActive > Idx then
@@ -940,20 +940,20 @@ begin
           end;
       end;
   until (Cmd = cmCancel) or (Cmd = cmOK);
-  // cerrado sin accion: Result queda True solo si hubo ediciones (paNone)
+  // closed with no action: Result is True only if there were edits (paNone)
 end;
 
-{ ------------------ selector de sesiones separadas ------------------ }
+{ ------------------ detached session picker ------------------ }
 
 function SessionRow(const S: TSessionInfo): string;
 begin
-  // la fila legada ya trae Name='(sin nombre)' y perfil vacio del servidor
+  // legacy rows: the server sends Name='(sin nombre)' and empty profile
   Result := Format('%-20s %-14s %5d  %s',
     [Copy(S.Name, 1, 20), Copy(S.Profile, 1, 14), S.PaneCount, S.Created]);
 end;
 
-// construye y ejecuta una pasada del dialogo; devuelve el comando final.
-// FocusRow como en los gestores: entra fila a enfocar, sale fila enfocada.
+// builds and runs one pass of the dialog; returns the final command.
+// FocusRow as in the managers: row to focus in, focused row out.
 function ExecSessionPicker(const Infos: TSessionInfoArray;
   AllowStartNew: boolean; var FocusRow: integer): word;
 var
@@ -976,7 +976,7 @@ begin
   begin
     CmdLo := cmSesAttach;
     CmdHi := cmSesDelete;
-    SelectCmd := cmSesAttach;   // doble click = conectar
+    SelectCmd := cmSesAttach;   // double click = attach
     R.Assign(3, 1, 63, 2);
     Insert(New(PStaticText, Init(R, Format('%-20s %-14s %5s  %s',
       [UiText('Name', 'Nombre'), UiText('Profile', 'Perfil'),
@@ -985,13 +985,13 @@ begin
       ThirdCaption := UiText('Start new', 'Nueva sesion')
     else
       ThirdCaption := UiText('Cancel', 'Cancelar');
-    // botones ANTES del listbox: el ultimo control seleccionable insertado
-    // recibe el foco inicial (regla del fork: nada de Select pre-ExecView)
+    // buttons BEFORE the listbox: the last selectable control inserted
+    // gets the initial focus (fork rule: no Select before ExecView)
     NewButton(3, 12, 12, 2, UiText('Attach', 'Conectar'), cmSesAttach,
-      hcNoContext, bfDefault);   // Enter = conectar
+      hcNoContext, bfDefault);   // Enter = attach
     NewButton(17, 12, 12, 2, UiText('Delete', 'Eliminar'), cmSesDelete,
       hcNoContext, bfNormal);
-    // Esc entrega cmCancel: siempre equivale a este tercer boton
+    // Esc delivers cmCancel: always equivalent to this third button
     NewButton(31, 12, 16, 2, ThirdCaption, cmCancel, hcNoContext, bfNormal);
     R.Assign(62, 2, 63, 10);
     SB := New(PScrollBar, Init(R));
@@ -1009,12 +1009,12 @@ begin
   else
     FocusRow := -1;
   Dispose(D, Done);
-  // la coleccion no es del listbox: liberarla tras destruir el dialogo
+  // the collection is not the listbox's: free after destroying the dialog
   Dispose(Coll, Done);
 end;
 
 type
-  // Enter/espacio/doble clic sobre la lista de paneles equivalen a 'Ir a'
+  // Enter/space/double click on the pane list are equivalent to 'Go to'
   PPaneListDialog = ^TPaneListDialog;
   TPaneListDialog = object(TDialog)
     procedure HandleEvent(var Event: TEvent); virtual;
@@ -1031,7 +1031,7 @@ begin
   end;
 end;
 
-// lista de paneles Alt+0: seleccion simple sobre titulos ya formateados
+// Alt+0 pane list: simple selection over already formatted titles
 function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
   out ASelected: integer): boolean;
 var
@@ -1053,7 +1053,7 @@ begin
   D^.Options := D^.Options or ofCentered;
   with D^ do
   begin
-    // botones primero: el ultimo control insertado (la lista) recibe foco
+    // buttons first: the last control inserted (the list) gets focus
     NewButton(8, Size.Y - 3, 12, 2, UiText('~G~o to', '~I~r a'), cmOK,
       hcNoContext, bfDefault);
     NewButton(26, Size.Y - 3, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
@@ -1077,7 +1077,7 @@ begin
     ASelected := LB^.Focused;
     Result := (ASelected >= 0) and (ASelected < Length(ATitles));
   end;
-  LB^.NewList(nil); // NewList(nil) libera la coleccion anterior
+  LB^.NewList(nil); // NewList(nil) frees the previous collection
   Dispose(D, Done);
 end;
 
@@ -1096,12 +1096,12 @@ begin
   Infos := Default(TSessionInfoArray);
   FocusRow := 0;
   repeat
-    // re-enumerar en cada pasada: purga huerfanas y refleja los cierres;
-    // sin sesiones no se muestra dialogo (accion del tercer boton)
+    // re-enumerate on each pass: purges orphans and reflects closures;
+    // with no sessions no dialog is shown (third button action)
     if (not EnumerateSessions(Infos)) or (Length(Infos) = 0) then
       Exit;
     Cmd := ExecSessionPicker(Infos, AllowStartNew, FocusRow);
-    Idx := FocusRow;   // las filas van 1:1 con Infos
+    Idx := FocusRow;   // rows map 1:1 to Infos
     case Cmd of
       cmSesAttach:
         if (Idx >= 0) and (Idx <= High(Infos)) then
@@ -1117,8 +1117,8 @@ begin
             [Infos[Idx].Name])) then
           begin
             CloseSessionAt(Infos[Idx].SocketPath);
-            // espera breve a que el servidor muera; la re-enumeracion de
-            // la siguiente pasada purga el socket y su sidecar
+            // brief wait for the server to die; the re-enumeration of
+            // the next pass purges the socket and its sidecar
             for i := 1 to 10 do
             begin
               if not SessionIsLive(Infos[Idx].SocketPath) then
@@ -1129,7 +1129,7 @@ begin
               Dec(FocusRow);
           end;
     else
-      Exit;   // Esc o tercer boton (cmCancel): accion por defecto
+      Exit;   // Esc or third button (cmCancel): default action
     end;
   until False;
 end;

@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_keys - traduccion de keycodes FreeVision a secuencias de terminal
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_keys - translation of FreeVision keycodes to terminal sequences
 *)
 
 unit st_keys;

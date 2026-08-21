@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""superterm test: servidor-siempre (toda sesion nace con daemon).
+"""superterm test: always-server (every session is born with a daemon).
 
-Cubre: socket y sidecar al lanzar, control por CLI desde el arranque,
-nombres automaticos y --session, Alt-Q mata sin guardar, Alt-X mata y
-guarda, detach sin dialogo, cliente muerto a tiros deja el daemon vivo,
-autolimpieza con todos los paneles muertos y la via de escape
-[session] server=detach (modo clasico).
+Covers: socket and sidecar at launch, CLI control from startup,
+automatic names and --session, Alt-Q kills without saving, Alt-X kills
+and saves, detach with no dialog, a hard-killed client leaves the daemon
+alive, self-cleanup once all panes are dead, and the escape hatch
+[session] server=detach (classic mode).
 """
 import os
 import signal
@@ -33,7 +33,7 @@ def wait_for(pred, timeout=8.0):
     return pred()
 
 
-# ---- 1: al lanzar ya hay servidor y la CLI puede gobernarlo ----
+# ---- 1: a server already exists at launch and the CLI can drive it ----
 a = stlib.Client(HOME, w=100, h=28)
 a.drain(2.0)
 check('socket exists at launch', wait_for(lambda: len(socks()) == 1))
@@ -48,7 +48,7 @@ check('client shows CLI text', 'LIVE_FROM_CLI' in a.text())
 r = run_cli(['capture', '.'], HOME)
 check('capture works from launch', 'LIVE_FROM_CLI' in r.stdout)
 
-# ---- 2: Alt-Q mata el daemon sin guardar ----
+# ---- 2: Alt-Q kills the daemon without saving ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
 a.send(b'\x1bq', 1.0)
@@ -57,14 +57,14 @@ a.close()
 check('Alt-Q kills the daemon', wait_for(lambda: socks() == []))
 check('Alt-Q does not save', not os.path.exists(SESS_INI))
 
-# ---- 3: --session NombreLibre y colision -> sufijo ----
+# ---- 3: --session FreeFormName and collision -> suffix ----
 b = stlib.Client(HOME, args=['--session', 'Trabajo Uno'], w=100, h=28)
 b.drain(2.0)
 check('named session sanitized', wait_for(
     lambda: any('Trabajo' in s for s in socks())))
 c = stlib.Client(HOME, args=['--session', 'Trabajo Uno'], w=100, h=28)
 c.drain(2.5)
-c.send(b'\x1b', 0.6)   # el selector aparece (hay sesion viva): Esc = nueva
+c.send(b'\x1b', 0.6)   # the selector appears (a live session exists): Esc = new
 c.drain(1.5)
 check('collision gets suffix', wait_for(
     lambda: len([s for s in socks() if 'Trabajo' in s]) == 2))
@@ -72,7 +72,7 @@ c.send(b'\x1bq', 1.0)
 c.wait_exit(timeout=8.0)
 c.close()
 
-# ---- 4: detach sin dialogo; matar el cliente a tiros deja el daemon ----
+# ---- 4: detach with no dialog; hard-killing the client leaves the daemon ----
 b.send(b'\x11', 0.4)
 b.send(b'd', 1.0)
 check('detach exits with no prompt', b.wait_exit(timeout=8.0) is not None)
@@ -81,7 +81,7 @@ check('daemon survives detach', any('Trabajo' in s for s in socks()))
 
 d = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 d.drain(2.0)
-os.kill(d.pid, signal.SIGKILL)   # cliente asesinado: la sesion no debe caer
+os.kill(d.pid, signal.SIGKILL)   # murdered client: the session must not fall
 time.sleep(1.0)
 d.close()
 check('daemon survives killed client', any('Trabajo' in s for s in socks()))
@@ -90,7 +90,7 @@ e.drain(2.0)
 e.send(b'echo BACK_AGAIN\r', 1.0)
 check('reattach after kill works', 'BACK_AGAIN' in e.text())
 
-# ---- 5: Alt-X mata y guarda session.ini daemon-side ----
+# ---- 5: Alt-X kills and saves session.ini daemon-side ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
 e.send(b'\x1bx', 1.0)
@@ -100,17 +100,17 @@ check('Alt-X kills the daemon', wait_for(lambda: socks() == []))
 check('Alt-X saves session.ini', wait_for(
     lambda: os.path.exists(SESS_INI), timeout=4.0))
 
-# ---- 6: autolimpieza: paneles muertos y sin clientes -> se cierra sola ----
+# ---- 6: self-cleanup: dead panes and no clients -> shuts itself down ----
 f = stlib.Client(HOME, env={'SUPERTERM_REAP_MS': '2500'}, w=100, h=28)
 f.drain(2.0)
-f.send(b'exit\r', 1.2)           # muere el unico shell
-f.send(b'\x11', 0.4)             # separar dejando el panel muerto
+f.send(b'exit\r', 1.2)           # the only shell dies
+f.send(b'\x11', 0.4)             # detach leaving the dead pane behind
 f.send(b'd', 1.0)
 f.wait_exit(timeout=8.0)
 f.close()
 check('dead session self-reaps', wait_for(lambda: socks() == [], timeout=15.0))
 
-# ---- 7: via de escape: server=detach = comportamiento clasico ----
+# ---- 7: escape hatch: server=detach = classic behavior ----
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as fh:
     fh.write('[session]\nserver=detach\n')
@@ -121,7 +121,7 @@ g.send(b'\x11', 0.4)
 g.send(b'd', 0.9)
 check('server=detach: detach asks name', 'Session name' in g.text() or
       'Nombre' in g.text())
-g.send(b'\r', 1.5)               # aceptar el nombre sugerido
+g.send(b'\r', 1.5)               # accept the suggested name
 g.wait_exit(timeout=8.0)
 g.close()
 check('server=detach: detach creates daemon', wait_for(

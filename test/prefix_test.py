@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""superterm test: tecla prefijo configurable y migracion.
+"""superterm test: configurable prefix key and migration.
 
-Cubre ParsePrefixKey de extremo a extremo: el default es Ctrl-Q (0x11), el
-prefix=2 numerico antiguo migra a Ctrl-Q, un ctrl-b textual explicito se
-respeta, y el nombre de sesion del detach se sanea ([A-Za-z0-9._-]).
+Covers ParsePrefixKey end to end: the default is Ctrl-Q (0x11), the old
+numeric prefix=2 migrates to Ctrl-Q, an explicit textual ctrl-b is
+honored, and the detach session name is sanitized ([A-Za-z0-9._-]).
 """
 import os, pty, time, select, fcntl, termios, struct, shutil, glob, sys
 
@@ -83,8 +83,8 @@ def client_exited(c, timeout=3.0):
     return False
 
 def detach_works(prefix_byte):
-    """Arranca, manda prefijo+d y devuelve si el cliente separo (salio
-    dejando el socket vivo); en servidor-siempre no hay dialogo de nombre."""
+    """Starts, sends prefix+d and returns whether the client detached (exited
+    leaving the socket alive); with always-server there is no name dialog."""
     c = Client()
     c.drain(2.0)
     try:
@@ -99,9 +99,9 @@ def detach_works(prefix_byte):
     ok = client_exited(c) and bool(
         glob.glob(HOME + '/.superterm/sessions/*.sock'))
     if not ok:
-        c.send(b'\x1bq', 0.8)     # no era prefijo: salir sin guardar
+        c.send(b'\x1bq', 0.8)     # it was not a prefix: exit without saving
     c.close()
-    # limpiar la sesion que quedo viva para la siguiente ronda
+    # clean up the session left alive for the next round
     for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
         try:
             s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
@@ -114,26 +114,26 @@ def detach_works(prefix_byte):
     time.sleep(0.4)
     return ok
 
-# ---- 1: default sin ini = Ctrl-Q ----
+# ---- 1: default with no ini = Ctrl-Q ----
 reset_home()
 check("default Ctrl-Q separa", detach_works(b'\x11'))
 
-# ---- 2: prefix=2 numerico antiguo migra a Ctrl-Q ----
+# ---- 2: old numeric prefix=2 migrates to Ctrl-Q ----
 reset_home()
 write_ini('prefix=2')
 check("prefix=2 migra a Ctrl-Q", detach_works(b'\x11'))
 
-# ---- 3: ctrl-b textual explicito se respeta ----
+# ---- 3: explicit textual ctrl-b is honored ----
 reset_home()
 write_ini('prefix=ctrl-b')
 check("prefix=ctrl-b respeta Ctrl-B", detach_works(b'\x02'))
 
-# ---- 4: con ctrl-b explicito, Ctrl-Q NO es prefijo ----
+# ---- 4: with explicit ctrl-b, Ctrl-Q is NOT a prefix ----
 reset_home()
 write_ini('prefix=ctrl-b')
 check("ctrl-b: Ctrl-Q no es prefijo", not detach_works(b'\x11'))
 
-# ---- 5: prefijo-s abre el selector de sesiones ----
+# ---- 5: prefix-s opens the session picker ----
 reset_home()
 c = Client()
 c.drain(2.0)
@@ -145,7 +145,7 @@ c.send(b'\x1b', 0.6)
 c.send(b'\x1bq', 0.8)
 c.close()
 
-# ---- 6: el nombre de sesion se sanea (sin ../ ni espacios) ----
+# ---- 6: the session name is sanitized (no ../ nor spaces) ----
 reset_home()
 c = Client(['--session', '../evil name!'])
 c.drain(2.5)
@@ -157,7 +157,7 @@ ok_name = len(socks) == 1 and all(ch.isalnum() or ch in '._-' for ch in socks[0]
 check("nombre saneado dentro del dir", ok_name and '..' not in socks[0])
 check("sin sockets fuera del dir", not inside)
 
-# limpieza: cerrar el daemon que quedo vivo
+# cleanup: close the daemon left alive
 for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
     try:
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)

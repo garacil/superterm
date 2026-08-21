@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""superterm test: window classes ([class.*] y legadas [t-*]) de INI usuario+sistema."""
+"""superterm test: window classes ([class.*] and legacy [t-*]) from user+system INI."""
 import os, pty, time, select, sys, fcntl, termios, struct, shutil
 import pyte
 
@@ -13,7 +13,7 @@ W, H = 110, 35
 TOKENS = ('CLASS_USER_TOKEN', 'LEGACY_TOKEN', 'SHADOW_USER_TOKEN',
           'SHADOW_SYS_TOKEN', 'FREECONN_TOKEN', 'POSTONLY_TOKEN')
 
-# entorno aislado: HOME propio e INI de sistema propio, limpios al empezar
+# isolated environment: own HOME and own system INI, clean at start
 shutil.rmtree(HOME, ignore_errors=True)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 
@@ -59,15 +59,15 @@ def check(name, cond):
     if not cond:
         fails.append(name)
 
-# ---- fase 0: sesion de 1 panel para que las clases no auto-arranquen ----
+# ---- phase 0: 1-pane session so the classes do not autostart ----
 s = Session()
 s.drain(2.0)
-s.send(b'\x1bx', 1.0)          # Alt-X: guardar y salir
+s.send(b'\x1bx', 1.0)          # Alt-X: save and exit
 s.close()
 time.sleep(0.4)
 check("bootstrap session saved", os.path.exists(SESS))
 
-# ---- clases: [class.*] en INI de usuario, [t-*] y colision en el de sistema ----
+# ---- classes: [class.*] in the user INI, [t-*] and a collision in the system one ----
 with open(USERINI, 'w') as f:
     f.write("""[class.local-echo]
 name=local-echo
@@ -103,14 +103,14 @@ enabled=1
 cmd=echo SHADOW_SYS_TOKEN; exec /bin/bash -i
 """)
 
-# menu Clases (Alt-C): '1 Local shell', luego clases con digitos 2..9 en orden
-# usuario-primero: 2 local-echo, 3 shadowme, 4 freeconn, 5 postonly, 6 syslegacy
+# Classes menu (Alt-C): '1 Local shell', then classes with digits 2..9 in
+# user-first order: 2 local-echo, 3 shadowme, 4 freeconn, 5 postonly, 6 syslegacy
 def open_class(sess, digit, t=1.5):
-    sess.send(b'\x1bc', 0.6)   # Alt-C abre el menu
-    sess.send(digit, t)        # digito con el menu abierto = abrir clase
+    sess.send(b'\x1bc', 0.6)   # Alt-C opens the menu
+    sess.send(digit, t)        # digit with the menu open = open class
 
 def close_pane(sess):
-    sess.send(b'\x1bp', 0.5)   # Alt-P: menu Panes
+    sess.send(b'\x1bp', 0.5)   # Alt-P: Panes menu
     sess.send(b'c', 1.0)       # Close pane
 
 s = Session()
@@ -119,7 +119,7 @@ scr = s.text()
 check("menu Classes visible", "Classes" in scr)
 check("no class autostart", all(t not in scr for t in TOKENS))
 
-# contenido del menu con Alt-C abierto
+# menu contents with Alt-C open
 s.send(b'\x1bc', 0.6)
 scr = s.text()
 check("menu: Local shell row", "Local shell" in scr)
@@ -129,33 +129,33 @@ check("menu: shadowme user name", "shadowme" in scr)
 check("menu: sys dup suppressed", "SHADOWME" not in scr)
 check("menu: freeconn+postonly", ("freeconn" in scr) and ("postonly" in scr))
 
-# 1: clase [class.*] del INI de usuario abre panel con su cmd
+# 1: a [class.*] class from the user INI opens a pane with its cmd
 s.send(b'2', 1.5)
 scr = s.text()
 check("user class opens pane", "CLASS_USER_TOKEN" in scr)
 close_pane(s)
 check("user class pane closed", "CLASS_USER_TOKEN" not in s.text())
 
-# 2: clase legada [t-*] del INI de sistema
+# 2: legacy [t-*] class from the system INI
 open_class(s, b'6')
 scr = s.text()
 check("legacy class opens pane", "LEGACY_TOKEN" in scr)
 close_pane(s)
 
-# 3: shadowing: la clase de usuario tapa a la de sistema homonima
+# 3: shadowing: the user class hides the same-named system one
 open_class(s, b'3')
 scr = s.text()
 check("shadow: user token wins", "SHADOW_USER_TOKEN" in scr)
 check("shadow: sys token hidden", "SHADOW_SYS_TOKEN" not in scr)
 close_pane(s)
 
-# 4: connect= libre con postconnect por stdin (pipe)
+# 4: free-form connect= with postconnect via stdin (pipe)
 open_class(s, b'4')
 scr = s.text()
 check("connect+post via stdin", "FREECONN_TOKEN" in scr)
 close_pane(s)
 
-# 5: solo postconnect: ejecuta y deja una shell interactiva viva
+# 5: postconnect only: runs and leaves a live interactive shell
 open_class(s, b'5')
 scr = s.text()
 check("postonly token printed", "POSTONLY_TOKEN" in scr)
@@ -163,7 +163,7 @@ s.send(b'echo STILL_$((41+1))_ALIVE\r', 1.2)
 scr = s.text()
 check("postonly shell alive", "STILL_42_ALIVE" in scr)
 
-s.send(b'\x1bq', 1.0)          # Alt-Q: salir sin guardar
+s.send(b'\x1bq', 1.0)          # Alt-Q: exit without saving
 s.close()
 
 sys.exit(1 if fails else 0)

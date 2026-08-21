@@ -1,10 +1,10 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_profiles - perfiles: colecciones nombradas de ventanas, cada
-  ventana con su layout de paneles que referencian clases de ventana.
-  Absorben las plantillas [template.*] antiguas (aplanando su nivel de
-  "sesion": una plantilla multi-sesion se convierte en varios perfiles).
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_profiles - profiles: named collections of windows, each
+  window with its pane layout referencing window classes.
+  They absorb the old [template.*] templates (flattening their
+  "session" level: a multi-session template becomes several profiles).
 *)
 
 unit st_profiles;
@@ -20,16 +20,16 @@ type
   TProfilePaneSpec = record
     Name: string;
     Enabled: boolean;
-    WClass: string;         // referencia a clase de ventana ('' = ad-hoc)
-    Title: string;          // titulo propio de la ventana ('' = usa clase/cwd)
-    Cmd: string;            // overrides por panel (pisan a la clase)
+    WClass: string;         // window class reference ('' = ad-hoc)
+    Title: string;          // window's own title ('' = uses class/cwd)
+    Cmd: string;            // per-pane overrides (override the class)
     Cwd: string;
-    Connect: string;        // conexion libre ad-hoc (paneles del asistente)
+    Connect: string;        // free ad-hoc connection (wizard panes)
     PostConnect: string;
     ScrollBack: integer;
-    // geometria exacta de la ventana del panel (BW<=0 = sin datos, se tila):
-    // posicion/tamano manuales, minimizada y maximizada, para restaurar el
-    // perfil dejando TODO como estaba al guardarlo
+    // exact geometry of the pane window (BW<=0 = no data, gets tiled):
+    // manual position/size, minimized and maximized, to restore the
+    // profile leaving EVERYTHING as it was when saved
     BX, BY, BW, BH: integer;
     Minimized: boolean;
     Zoomed: boolean;
@@ -39,9 +39,9 @@ type
   TProfileWindowSpec = record
     Name: string;
     Enabled: boolean;
-    Layout: string;         // misma gramatica que session.ini (L, V:500;L;L)
+    Layout: string;         // same grammar as session.ini (L, V:500;L;L)
     FocusedPane: integer;
-    DeskW, DeskH: integer;  // tamano del escritorio al guardar (bounds absolutos)
+    DeskW, DeskH: integer;  // desktop size at save time (absolute bounds)
     Panes: TProfilePaneArray;
   end;
   TProfileWindowArray = array of TProfileWindowSpec;
@@ -49,22 +49,22 @@ type
   TProfileSpec = record
     Name: string;
     Enabled: boolean;
-    Origin: TWClassOrigin;  // user = editable/persistible
+    Origin: TWClassOrigin;  // user = editable/persistable
     FocusedWindow: integer;
     Windows: TProfileWindowArray;
   end;
   TProfileArray = array of TProfileSpec;
 
-// carga [profile.*] del fichero de usuario y del de sistema (gana user) y
-// aplana las plantillas [template.*] legadas (incluido el backend SQLite)
+// loads [profile.*] from the user file and the system file (user wins) and
+// flattens the legacy [template.*] templates (including the SQLite backend)
 function LoadProfiles(const UserFile, SystemFile: string;
   out Profiles: TProfileArray): boolean;
 
-// escribe los perfiles de origen usuario en FileName de forma atomica,
-// preservando secciones ajenas; absorbe [template.*] del usuario al guardar
+// writes the user-origin profiles to FileName atomically, preserving
+// unrelated sections; absorbs the user's [template.*] on save
 procedure SaveProfiles(const FileName: string; const AProfiles: TProfileArray);
 
-// busca por nombre (insensible a mayusculas); -1 si no esta
+// searches by name (case-insensitive); -1 if not found
 function FindProfileByName(const A: TProfileArray; const AName: string): integer;
 
 implementation
@@ -79,9 +79,9 @@ begin
       Exit(i);
 end;
 
-// TIniFile recorta un par de comillas exteriores al leer: si el valor
-// empieza y termina con la misma comilla, se envuelve con otra capa igual
-// para que la relectura devuelva el valor exacto
+// TIniFile strips one pair of outer quotes when reading: if the value
+// starts and ends with the same quote, it is wrapped in one more equal
+// layer so that re-reading returns the exact value
 function IniQuoteGuard(const S: string): string;
 begin
   Result := S;
@@ -99,7 +99,7 @@ begin
       SameText(V, 'yes') or SameText(V, 'on');
 end;
 
-// divide una lista separada por comas en nombres limpios no vacios
+// splits a comma-separated list into clean non-empty names
 procedure SplitNames(const S: string; SL: TStringList);
 var
   i, Start: integer;
@@ -119,7 +119,7 @@ end;
 
 function IsProfileSection(const Sec: string): boolean;
 begin
-  // solo la cabecera [profile.NOMBRE], sin mas puntos tras el nombre
+  // only the [profile.NAME] header, no more dots after the name
   Result := (LowerCase(Copy(Sec, 1, Length('profile.'))) = 'profile.') and
     (Pos('.', Copy(Sec, Length('profile.') + 1, MaxInt)) = 0);
 end;
@@ -154,7 +154,7 @@ begin
         Copy(Sec, Length('profile.') + 1, MaxInt));
       if Trim(Prof.Name) = '' then
         continue;
-      // el primero gana dentro de la carga combinada (user antes que system)
+      // the first one wins within the combined load (user before system)
       if FindProfileByName(Profiles, Prof.Name) >= 0 then
         continue;
       Prof.Enabled := ParseBoolStr(Ini.ReadString(Sec, 'enabled', '1'), True);
@@ -180,7 +180,7 @@ begin
           PSpec.Name := PName;
           PSpec.Enabled := ParseBoolStr(Ini.ReadString(PSec, 'enabled', '1'),
             True);
-          // 'class' canonico; 'terminal' aceptado como sinonimo legado
+          // canonical 'class'; 'terminal' accepted as a legacy synonym
           PSpec.WClass := Ini.ReadString(PSec, 'class',
             Ini.ReadString(PSec, 'terminal', ''));
           PSpec.Title := Ini.ReadString(PSec, 'title', '');
@@ -193,7 +193,7 @@ begin
             PSpec.ScrollBack := 0;
           if PSpec.ScrollBack > MAX_SCROLLBACK then
             PSpec.ScrollBack := MAX_SCROLLBACK;
-          // geometria exacta de la ventana del panel
+          // exact geometry of the pane window
           PSpec.BX := Ini.ReadInteger(PSec, 'bx', 0);
           PSpec.BY := Ini.ReadInteger(PSec, 'by', 0);
           PSpec.BW := Ini.ReadInteger(PSec, 'bw', 0);
@@ -217,8 +217,8 @@ begin
   end;
 end;
 
-// una plantilla legada se aplana: 1 sesion -> perfil con su nombre;
-// N sesiones -> un perfil 'plantilla/sesion' por cada una
+// a legacy template is flattened: 1 session -> profile with its name;
+// N sessions -> one 'template/session' profile for each one
 procedure FlattenTemplates(const Templates: TTemplateArray;
   AOrigin: TWClassOrigin; var Profiles: TProfileArray);
 var
@@ -242,7 +242,7 @@ begin
       else
         Prof.Name := Templates[t].Name + '/' + Templates[t].Sessions[s].Name;
       if FindProfileByName(Profiles, Prof.Name) >= 0 then
-        continue;   // un [profile.*] explicito gana a la plantilla aplanada
+        continue;   // an explicit [profile.*] beats the flattened template
       Prof.Enabled := True;
       Prof.FocusedWindow := Templates[t].Sessions[s].FocusedWindow;
       for w := 0 to High(Templates[t].Sessions[s].Windows) do
@@ -282,11 +282,11 @@ var
   Templates: TTemplateArray;
 begin
   Profiles := nil;
-  // [profile.*]: primero usuario, luego sistema (el primero por nombre gana)
+  // [profile.*]: user first, then system (the first one per name wins)
   LoadProfilesFromFile(UserFile, coUser, Profiles);
   if not SameFileName(UserFile, SystemFile) then
     LoadProfilesFromFile(SystemFile, coSystem, Profiles);
-  // plantillas legadas (INI o SQLite segun [storage]) aplanadas detras
+  // legacy templates (INI or SQLite per [storage]) flattened afterwards
   Templates := nil;
   LoadTemplates(UserFile, Templates);
   FlattenTemplates(Templates, coUser, Profiles);
@@ -309,7 +309,7 @@ begin
   TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
   if FileExists(TempName) then
     DeleteFile(TempName);
-  // copia del contenido actual para preservar las secciones ajenas
+  // copy of the current content to preserve unrelated sections
   SL := TStringList.Create;
   try
     if FileExists(FileName) then
@@ -322,8 +322,8 @@ begin
   SL := TStringList.Create;
   Names := TStringList.Create;
   try
-    // borrar lo nuestro: [profile.*] (todas las subsecciones) y las
-    // [template.*] legadas (absorcion al primer guardado)
+    // delete what is ours: [profile.*] (all subsections) and the
+    // legacy [template.*] (absorbed at the first save)
     Ini.ReadSections(SL);
     for i := 0 to SL.Count - 1 do
       if (LowerCase(Copy(SL[i], 1, Length('profile.'))) = 'profile.') or
@@ -385,7 +385,7 @@ begin
           if AProfiles[i].Windows[w].Panes[p].ScrollBack > 0 then
             Ini.WriteInteger(PSec, 'scrollback',
               AProfiles[i].Windows[w].Panes[p].ScrollBack);
-          // geometria exacta de la ventana del panel
+          // exact geometry of the pane window
           if AProfiles[i].Windows[w].Panes[p].BW > 0 then
           begin
             Ini.WriteInteger(PSec, 'bx', AProfiles[i].Windows[w].Panes[p].BX);

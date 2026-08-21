@@ -94,11 +94,11 @@ first.drain(1.5)
 check('detach menu is visible', 'Detach' in first.text())
 first.send(f'echo $$ > {PIDFILE}; sleep 1; echo DETACHED_OUTPUT\r'.encode(), 0.3)
 first.send(b'\x11', 0.4)
-first.send(b'd', 0.8)     # servidor-siempre: separa sin dialogo de nombre
+first.send(b'd', 0.8)     # always-server: detaches with no name dialog
 first_status = first.wait()
 check('client exits after Ctrl-Q d', first_status is not None and
       os.WIFEXITED(first_status) and os.WEXITSTATUS(first_status) == 0)
-first.drain(0.6)          # consumir la restauracion del cursor ya en cola
+first.drain(0.6)          # consume the cursor restore already queued
 check('cursor restored after detach',
       first.screen.cursor.x == 19 and first.screen.cursor.y == 9)
 check('server socket remains', os.path.exists(SOCKET))
@@ -134,8 +134,8 @@ check('permanent close exits client', second_status is not None and
 
 
 def _wait_gone(path, timeout=4.0):
-    # el daemon guarda session.ini y mata sus paneles antes de retirar el
-    # socket: darle un margen en vez de mirar en el mismo instante
+    # the daemon saves session.ini and kills its panes before removing the
+    # socket: give it some slack instead of checking at that very instant
     end = time.time() + timeout
     while time.time() < end:
         if not os.path.exists(path):

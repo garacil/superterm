@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_fvui - interfaz FreeVision (estilo Turbo Pascal)
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_fvui - FreeVision interface (Turbo Pascal style)
 *)
 
 unit st_fvui;
@@ -17,15 +17,15 @@ uses
   st_layout, st_session, st_debug, st_server, st_video, st_cli;
 
 const
-  // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenClass,
+  // Command range INVARIANT: each dynamic base (cmOpenClass,
   // cmProfileBase, cmSessionBase, cmWindowBase, cmWindowRestoreBase,
-  // cmLanguageBase) posee un rango reservado y NINGUN case directo puede
-  // caer dentro de un rango dinamico. Antes cmOpenClass=2111 chocaba con
-  // cmSessionWizard=2112 y cmDetach=2113: pulsar el 2o terminal del menu
-  // lanzaba el asistente y el 3o hacia detach.
-  // Rangos: 2100-2199 paneles/app · 2200-2259 plantillas · 2300-2349
-  // terminales (cmOpenClass+i) · 2400-2439 ventanas · 2500-2539 minimizados
-  // · 2550-2569 sesion (detach/asistente) · 2600 ayuda · 2700 idioma.
+  // cmLanguageBase) owns a reserved range and NO direct case may fall
+  // inside a dynamic range. Before, cmOpenClass=2111 collided with
+  // cmSessionWizard=2112 and cmDetach=2113: pressing the 2nd terminal
+  // in the menu launched the wizard and the 3rd one detached.
+  // Ranges: 2100-2199 panes/app - 2200-2259 templates - 2300-2349
+  // terminals (cmOpenClass+i) - 2400-2439 windows - 2500-2539 minimized
+  // - 2550-2569 session (detach/wizard) - 2600 help - 2700 language.
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -37,28 +37,28 @@ const
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
   cmQuitNoSave = 2110;
-  cmPaneTile    = 2111;    // recolocar en mosaico (Window|Tile clasico)
+  cmPaneTile    = 2111;    // retile as a mosaic (classic Window|Tile)
   cmPaneCascade = 2112;
-  cmPaneList    = 2113;    // lista de paneles (Alt+0)
-  cmRedrawAll   = 2114;    // refrescar pantalla
-  cmPaneOrganize = 2115;   // rejilla NxM del vendor (TDeskTop.Tile)
-  cmRenameWindow = 2116;   // titulo propio de la ventana enfocada
-  cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
-  cmProfileBase = 2200;   // + indice de perfil (0..39)
-  cmProfileSaveAs = 2250;  // guardar el area de trabajo como perfil
-  cmProfileManage = 2251;  // gestor de perfiles
-  cmOpenClass   = 2320;     // + indice en WClasses (0..29)
+  cmPaneList    = 2113;    // pane list (Alt+0)
+  cmRedrawAll   = 2114;    // refresh the screen
+  cmPaneOrganize = 2115;   // vendor NxM grid (TDeskTop.Tile)
+  cmRenameWindow = 2116;   // custom title of the focused window
+  cmInfoRow    = 2199;     // informational menu rows, always disabled
+  cmProfileBase = 2200;   // + profile index (0..39)
+  cmProfileSaveAs = 2250;  // save the workspace as a profile
+  cmProfileManage = 2251;  // profile manager
+  cmOpenClass   = 2320;     // + index into WClasses (0..29)
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
-  cmWindowBase   = 2410;   // + indice de ventana (0..15)
-  cmClassPick    = 2340;   // selector de clase para panel nuevo
-  cmClassManage  = 2341;   // gestor de clases
+  cmWindowBase   = 2410;   // + window index (0..15)
+  cmClassPick    = 2340;   // class picker for a new pane
+  cmClassManage  = 2341;   // class manager
   cmWindowMinimize = 2500;
   cmWindowMinimizeAll = 2501;
   cmWindowRestoreAll = 2502;
-  cmWindowRestoreBase = 2520;  // + indice de panel (0..15)
+  cmWindowRestoreBase = 2520;  // + pane index (0..15)
   cmDetach        = 2550;
-  cmSessionPick   = 2551;   // selector/gestor de sesiones separadas
+  cmSessionPick   = 2551;   // picker/manager of detached sessions
   cmSessionWizard = 2560;
   cmHelp        = 2600;
   cmAbout       = 2601;
@@ -90,8 +90,8 @@ type
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
-    TitleFixed: boolean;       // titulo propio: no lo pisa el refresco por cwd
-    SavedRect: Objects.TRect;  // bounds previos al icono de minimizado
+    TitleFixed: boolean;       // custom title: cwd refresh must not touch it
+    SavedRect: Objects.TRect;  // bounds before the minimized icon
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
     procedure InitFrame; virtual;
     procedure HandleEvent(var Event: TEvent); virtual;
@@ -110,8 +110,8 @@ type
     Panes: array[0..MAX_PANES - 1] of TPty;
     Scr: array[0..MAX_PANES - 1] of TScreen;
     Win: array[0..MAX_PANES - 1] of PTermWindow;
-    PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en WClasses o -1
-    PaneConnect: array[0..MAX_PANES - 1] of string; // conexion libre ad-hoc
+    PaneTerm: array[0..MAX_PANES - 1] of integer;  // index in WClasses or -1
+    PaneConnect: array[0..MAX_PANES - 1] of string; // ad-hoc free connection
     WClasses: TWindowClassArray;
     Profiles: TProfileArray;
     ActiveProfile: integer;
@@ -125,11 +125,11 @@ type
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
-    RemoteLayoutHash: string;   // ultima geometria empujada/aplicada
-    CurrentSessionSocket: string;  // socket de la sesion enganchada
-    // attach en construccion: las ventanas pasan por bounds intermedios
-    // (tile -> geometria final) y NO deben pedir tamanos transitorios al
-    // daemon ni redimensionar la pantalla del snapshot a cada paso
+    RemoteLayoutHash: string;   // last geometry pushed/applied
+    CurrentSessionSocket: string;  // socket of the attached session
+    // attach under construction: windows pass through intermediate
+    // bounds (tile -> final geometry) and must NOT request transient
+    // sizes from the daemon nor resize the snapshot screen every step
     RemoteAttachSettling: boolean;
     constructor Init;
     destructor Done; virtual;
@@ -187,10 +187,10 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
-    // servidor-siempre: convierte el workspace local recien construido en
-    // una sesion con daemon y se engancha a ella como cliente
+    // server-always: converts the freshly built local workspace into a
+    // daemon session and attaches to it as a client
     procedure PromoteToServer;
-    // suelta la sesion remota actual matando su daemon (cambio de perfil)
+    // drops the current remote session by killing its daemon (profile swap)
     procedure LeaveRemoteSession;
     function PickSessionSocketUI(AForAttach: boolean): string;
     function PromptAttachOnStart: boolean;
@@ -226,8 +226,8 @@ begin
     Result := Copy(Result, 1, i - 1);
 end;
 
-// cita solo cuando hace falta: los valores INI que empiezan por comilla
-// pierden las comillas exteriores al releerse (TIniFile las recorta)
+// quote only when needed: INI values that start with a quote lose
+// their outer quotes when read back (TIniFile trims them)
 function NeedsShellQuote(const S: string): boolean;
 var
   i: integer;
@@ -255,8 +255,8 @@ begin
   end;
 end;
 
-// True si el proceso observado es simplemente una shell interactiva/login:
-// capturarlo como comando seria redundante (y fragil); mejor cmd vacio
+// True if the observed process is just an interactive/login shell:
+// capturing it as a command would be redundant (and fragile); empty cmd
 function IsPlainShell(const Args: TStringArray; const ACmd: string): boolean;
 var
   Base: string;
@@ -267,7 +267,7 @@ begin
     Base := ExtractFileName(Args[0])
   else
     Base := ExtractFileName(ACmd);
-  // '-bash' (shell de login) y variantes
+  // '-bash' (login shell) and variants
   if (Base <> '') and (Base[1] = '-') then
     Delete(Base, 1, 1);
   if (Base <> 'bash') and (Base <> 'sh') and (Base <> 'zsh') and
@@ -280,8 +280,8 @@ begin
   Result := True;
 end;
 
-// CommandWithInteractiveShell y WizardCommand viven ahora en st_wclass,
-// compartidos con la composicion de comandos de las clases de ventana.
+// CommandWithInteractiveShell and WizardCommand now live in st_wclass,
+// shared with the command composition of the window classes.
 
 function ReadTerminalSize(out ACols, ARows: integer): boolean;
 var
@@ -322,7 +322,7 @@ begin
   b := byte(C.Txt[0]);
   if (C.Len = 1) and (b < $80) then
     Exit(AnsiChar(b));
-  // decodificar UTF-8
+  // decode UTF-8
   case C.Len of
     2: cp := ((b and $1F) shl 6) or (byte(C.Txt[1]) and $3F);
     3: cp := ((b and $0F) shl 12) or ((byte(C.Txt[1]) and $3F) shl 6) or
@@ -367,41 +367,41 @@ begin
     $201C, $201D: Result := '"';
     $2010, $2011, $2012, $2013, $2014, $2212: Result := '-';
     $2026: Result := '.';
-    // caja y bloques: bytes CP437, el driver los pinta como glifos reales
-    $2022: Result := #7;                       // punto gordo
-    $2800..$28FF: Result := #250;              // braille (spinners CLI)
-    $2500, $2501: Result := #196;              // linea horizontal
-    $2502, $2503: Result := #179;              // linea vertical
-    $250C, $250F, $256D: Result := #218;       // esquinas
+    // box drawing and blocks: CP437 bytes, the driver draws real glyphs
+    $2022: Result := #7;                       // bullet
+    $2800..$28FF: Result := #250;              // braille (CLI spinners)
+    $2500, $2501: Result := #196;              // horizontal line
+    $2502, $2503: Result := #179;              // vertical line
+    $250C, $250F, $256D: Result := #218;       // corners
     $2510, $2513, $256E: Result := #191;
     $2514, $2517, $2570: Result := #192;
     $2518, $251B, $256F: Result := #217;
-    $251C, $2523: Result := #195;              // cruces en T
+    $251C, $2523: Result := #195;              // T junctions
     $2524, $252B: Result := #180;
     $252C, $2533: Result := #194;
     $2534, $253B: Result := #193;
-    $253C, $254B: Result := #197;              // cruz completa
-    $2550: Result := #205;                     // dobles
+    $253C, $254B: Result := #197;              // full cross
+    $2550: Result := #205;                     // double lines
     $2551: Result := #186;
     $2554: Result := #201;
     $2557: Result := #187;
     $255A: Result := #200;
     $255D: Result := #188;
-    $2560: Result := #204;                     // uniones dobles
+    $2560: Result := #204;                     // double junctions
     $2563: Result := #185;
     $2566: Result := #203;
     $2569: Result := #202;
     $256C, $256A, $256B: Result := #206;
     $2564: Result := #209;
     $2567: Result := #207;
-    $2580: Result := #223;                     // medios bloques y sombras
+    $2580: Result := #223;                     // half blocks and shades
     $2584: Result := #220;
     $2588: Result := #219;
     $2591: Result := #176;
     $2592: Result := #177;
     $2593: Result := #178;
     $25A0, $25AA, $25FC, $25FE: Result := #254;
-    $2190: Result := #27;                      // flechas
+    $2190: Result := #27;                      // arrows
     $2191: Result := #24;
     $2192: Result := #26;
     $2193: Result := #25;
@@ -415,27 +415,27 @@ begin
     $2717, $2718: Result := 'x';
     $E0B0, $E0B1: Result := '>';               // powerline
     $E0B2, $E0B3: Result := '<';
-    // circulos y puntos (bullets de CLIs y TUIs modernas), que antes
-    // caian a '?'
+    // circles and dots (bullets from modern CLIs and TUIs) that used
+    // to fall back to '?'
     $25CF, $25CB, $25C9, $25CE, $2B24, $23FA, $26AB, $26AA: Result := #7;
     $25E6, $2218, $2219, $2027, $30FB: Result := #250;
     $25AB, $25FB, $25FD, $25A1, $2610: Result := #254;
-    // triangulos/flechas de reproduccion y navegacion
-    $23F5, $25B7, $2023: Result := #16;        // play / triangulo derecha
+    // playback and navigation triangles/arrows
+    $23F5, $25B7, $2023: Result := #16;        // play / right triangle
     $23F4, $25C1: Result := #17;
     $23F6: Result := #30;
     $23F7: Result := #31;
-    // continuacion de arbol (ramas de arbol, flechas de retorno)
+    // tree continuation (tree branches, return arrows)
     $23BF, $2937, $21B3: Result := #192;
-    // asteriscos decorativos y estrellas (spinners) -> '*'
+    // decorative asterisks and stars (spinners) -> '*'
     $2733, $2734, $273B, $273C, $273D, $2739, $2735,
     $2724, $2725, $2726, $2727, $272F, $2730: Result := '*';
-    $2605, $2606, $2B50: Result := '*';        // estrellas
-    // simbolos varios frecuentes en TUIs
-    $2699: Result := '*';                      // engranaje
-    $26A0: Result := '!';                      // aviso
-    $2764, $2665: Result := #3;                // corazon
-    $221A: Result := 'v';                      // raiz -> check visual
+    $2605, $2606, $2B50: Result := '*';        // stars
+    // misc symbols frequent in TUIs
+    $2699: Result := '*';                      // gear
+    $26A0: Result := '!';                      // warning
+    $2764, $2665: Result := #3;                // heart
+    $221A: Result := 'v';                      // square root -> visual check
     $2261, $2263: Result := '=';
     $2248: Result := '~';
     $2260: Result := '#';
@@ -530,7 +530,7 @@ begin
   Scrolled := App^.Scr[PaneIdx].ViewOffset > 0;
   cx := App^.Scr[PaneIdx].CursorX;
   cy := App^.Scr[PaneIdx].CursorY;
-  // DECSCUSR 2/4/6 = estilo fijo (sin parpadeo); 0/1/3/5 parpadea
+  // DECSCUSR 2/4/6 = steady style (no blink); 0/1/3/5 blinks
   ShowBlk := GetState(sfSelected) and (not Scrolled) and
     App^.Scr[PaneIdx].CursorVisible and
     (CursorPhase or (App^.Scr[PaneIdx].CursorStyle in [2, 4, 6]));
@@ -591,7 +591,7 @@ begin
   else
     DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d',
       [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height]));
-  // cursor del terminal en el panel enfocado
+  // terminal cursor in the focused pane
   if (cx >= w) then cx := w - 1;
   if (cy >= h) then cy := h - 1;
   if Scrolled then
@@ -692,8 +692,8 @@ var
   T: string;
 begin
   B := Default(TDrawBuffer);
-  // icono de minimizada: marco y titulo en negro (el gris pasivo no se
-  // lee sobre el azul claro); dibujo propio de las dos filas
+  // minimized icon: frame and title in black (the passive gray is
+  // unreadable on light blue); custom drawing of the two rows
   if (Owner <> nil) and PTermWindow(Owner)^.Minimized then
   begin
     W := Size.X;
@@ -779,7 +779,7 @@ begin
   PaneIdx := APane;
   Minimized := False;
   Zoomed := False;
-  State := State and (not sfShadow);     // sin sombra: tiling exacto
+  State := State and (not sfShadow);     // no shadow: exact tiling
   R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
   Term := New(PTermView, Init(R, APane));
   Insert(Term);
@@ -789,8 +789,8 @@ procedure TTermWindow.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
 begin
-  // un clic sobre el icono minimizado lo restaura, antes de que la
-  // seleccion de ventana del vendor se trague el evento
+  // a click on the minimized icon restores it, before the vendor
+  // window selection swallows the event
   if Minimized and (Event.What = evMouseDown) then
   begin
     App := PSuperApp(Application);
@@ -809,7 +809,7 @@ begin
   inherited SizeLimits(Min, Max);
   if Minimized then
   begin
-    // el icono de minimizada es una barrita de 2 filas
+    // the minimized icon is a small 2-row bar
     Min.X := 10;
     Min.Y := 2;
   end;
@@ -839,7 +839,7 @@ begin
   end;
   App := PSuperApp(Application);
   if (App <> nil) and App^.RemoteMode and App^.RemoteAttachSettling then
-    Exit;   // el attach hara UNA pasada final con la geometria definitiva
+    Exit;   // attach does ONE final pass with the definitive geometry
   if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
@@ -889,13 +889,13 @@ procedure TTermWindow.Minimize;
 begin
   if not Minimized then
   begin
-    // icono estilo Turbo Vision: la ventana queda visible como barrita;
-    // la aplicacion la coloca abajo con ArrangeIcons
+    // Turbo Vision style icon: the window stays visible as a small bar;
+    // the application places it at the bottom with ArrangeIcons
     GetBounds(SavedRect);
     Minimized := True;
-    Options := Options and (not ofTileable); // fuera del Tile del vendor
+    Options := Options and (not ofTileable); // out of the vendor Tile
     if Term <> nil then
-      Term^.Hide; // el icono es solo marco y titulo
+      Term^.Hide; // the icon is only frame and title
   end;
 end;
 
@@ -903,7 +903,7 @@ procedure TTermWindow.Restore;
 begin
   if Minimized then
   begin
-    Minimized := False; // el llamante recoloca con RelayoutAll
+    Minimized := False; // the caller relocates via RelayoutAll
     Options := Options or ofTileable;
     if Term <> nil then
       Term^.Show;
@@ -942,16 +942,16 @@ begin
     AppPalette := apColor;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
-  // clases de ventana: fichero de usuario + fichero de sistema (gana user);
-  // si SUPERTERM_INI apunta al fichero de usuario, la mezcla deduplica
+  // window classes: user file + system file (user wins); if
+  // SUPERTERM_INI points to the user file, the merge deduplicates
   LoadWindowClasses(ConfigFile, coUser, WClasses);
   LoadWindowClasses(SystemConfigFile, coSystem, SysClassesTmp);
   MergeWindowClasses(WClasses, SysClassesTmp);
-  // perfiles: [profile.*] de usuario+sistema mas plantillas legadas aplanadas
+  // profiles: user+system [profile.*] plus flattened legacy templates
   LoadProfiles(ConfigFile, SystemConfigFile, Profiles);
   DebugLog(Format('init: sysini=%s shell=%s classes=%d profiles=%d',
     [SystemConfigFile, Cfg.Shell, Length(WClasses), Length(Profiles)]));
-  // inherited Init llamo a InitMenuBar con WClasses vacio: reconstruir
+  // inherited Init called InitMenuBar with empty WClasses: rebuild
   if MenuBar <> nil then
   begin
     Dispose(MenuBar, Done);
@@ -997,10 +997,10 @@ begin
     end;
     if (AttachSocket <> '') and AttachRemoteSession(AttachSocket) then
       Exit;
-    // seleccion cancelada o attach fallido: salir limpio sin guardar.
-    // Un cmQuit posteado aqui se perderia (TGroup.Execute pone EndState
-    // a 0 al entrar en Run), asi que se marca AbortRun y el programa
-    // principal se salta Run; no se construye ningun workspace
+    // selection cancelled or attach failed: exit cleanly without saving.
+    // A cmQuit posted here would be lost (TGroup.Execute sets EndState
+    // to 0 when entering Run), so AbortRun is flagged and the main
+    // program skips Run; no workspace is built
     SkipSave := True;
     AbortRun := True;
     Exit;
@@ -1010,8 +1010,8 @@ begin
 
   if ProfileMode then
   begin
-    // resolucion del perfil por defecto: default_profile nuevo, con
-    // retro-compatibilidad para default_template [+ /default_session]
+    // default profile resolution: new default_profile, with backwards
+    // compatibility for default_template [+ /default_session]
     ActiveProfile := FindProfile(Cfg.DefaultProfile);
     if ActiveProfile < 0 then
       ActiveProfile := FindProfile(Cfg.DefaultTemplate);
@@ -1070,7 +1070,7 @@ begin
     Lay.Free;
     Lay := TLayout.Create;
     Pin := nil;
-    // terminales definidos en /etc/superterm/superterm.ini
+    // terminals defined in /etc/superterm/superterm.ini
     n := 0;
     for i := 0 to Length(WClasses) - 1 do
       if WClasses[i].Enabled then
@@ -1125,7 +1125,7 @@ begin
     else
       StartPane(i, '', '');
   end;
-  // reaplicar titulos propios (renombrados a mano) tal como se guardaron
+  // reapply custom titles (renamed by hand) exactly as they were saved
   for i := 0 to n - 1 do
     if (i <= High(Pin)) and (Pin[i].Title <> '') and (i < MAX_PANES) and
        (Win[i] <> nil) then
@@ -1136,10 +1136,10 @@ begin
   if Lay.Focused >= n then
     Lay.Focused := 0;
   RelayoutAll;
-  // reaplicar geometria/estado manuales de las ventanas (movidas o
-  // redimensionadas con Ctrl-F5, maximizadas, minimizadas) guardados en
-  // session.ini; solo si el escritorio mide lo mismo que al guardar,
-  // porque los bounds son absolutos
+  // reapply manual window geometry/state (moved or resized with
+  // Ctrl-F5, maximized, minimized) saved in session.ini; only if the
+  // desktop has the same size as when saving, because the bounds
+  // are absolute
   RD := Default(Objects.TRect);
   Desktop^.GetExtent(RD);
   if Ok and (DeskW = RD.B.X - RD.A.X) and (DeskH = RD.B.Y - RD.A.Y) then
@@ -1157,7 +1157,7 @@ begin
         if Pin[i].Zoomed and (not Win[i]^.Zoomed) then
           Win[i]^.Zoom;
       end;
-    // los minimizados al final: MinimizeWindow gestiona el foco
+    // minimized ones last: MinimizeWindow manages the focus
     for i := 0 to n - 1 do
       if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) and
          Pin[i].Minimized then
@@ -1180,8 +1180,8 @@ begin
   begin
     if (Remote <> nil) and Remote.Connected then
     begin
-      // empujar la geometria final y pedir al daemon que guarde (Alt-X);
-      // con Alt-Q SkipSave manda y muere sin guardar, como en local
+      // push the final geometry and ask the daemon to save (Alt-X);
+      // with Alt-Q SkipSave rules and it dies without saving, as locally
       SyncRemoteLayout;
       Remote.CloseSession(Cfg.AutoSave and (not SkipSave));
     end;
@@ -1195,9 +1195,9 @@ begin
       SaveConfig(Cfg);
     end;
   end
-  // SkipSave tambien protege este ramal: tras un attach abortado o una
-  // conexion remota perdida, Lay puede ser el layout remoto (con Panes=nil)
-  // y guardarlo machacaria el session.ini local con paneles vacios
+  // SkipSave also guards this branch: after an aborted attach or a
+  // lost remote connection, Lay may be the remote layout (Panes=nil)
+  // and saving it would clobber the local session.ini with empty panes
   else if Cfg.AutoSave and (not SkipSave) then
     SaveSessionNow;
   finally
@@ -1296,8 +1296,8 @@ begin
       ShellS := WClasses[ASysIdx].Shell
     else
       ShellS := Cfg.Shell;
-    // wcLocal/wcCommand: comando compuesto con la semantica unificada
-    // (para wcSSH el camino es el argv estructurado de mas abajo)
+    // wcLocal/wcCommand: command composed with the unified semantics
+    // (for wcSSH the path is the structured argv further below)
     CmdS := ComposePaneCommand(WClasses[ASysIdx], ACmd, '', '', ShellS,
       Cfg.LoginShell);
     if WClasses[ASysIdx].Kind <> wcSSH then
@@ -1307,7 +1307,7 @@ begin
     if ACwd <> '' then
       CwdS := ACwd;
     ExtraS := '';
-    // titulo por defecto de la clase (o su nombre si no tiene titulo)
+    // default title of the class (or its name if it has no title)
     if WClasses[ASysIdx].Title <> '' then
       TitleS := WClasses[ASysIdx].Title
     else
@@ -1336,7 +1336,7 @@ begin
     CmdS := ACommandOverride;
   CwdS := ExpandUserPath(CwdS);
   PaneTerm[i] := ASysIdx;
-  PaneConnect[i] := ''; // los llamantes con conexion libre lo fijan despues
+  PaneConnect[i] := ''; // callers with a free connection set it afterwards
   Scr[i] := TScreen.Create(pw, ph, AMaxSB);
   Panes[i] := TPty.Create;
   ExecArgs := TStringList.Create;
@@ -1385,8 +1385,8 @@ begin
     end;
   end;
   CreateWindowForPane(i, TitleS);
-  // un panel de clase conserva su titulo (nombre/titulo de la clase); el
-  // refresco periodico por cwd no debe pisarlo
+  // a class pane keeps its title (class name/title); the periodic
+  // cwd refresh must not overwrite it
   if (ASysIdx >= 0) and (Win[i] <> nil) then
     Win[i]^.TitleFixed := True;
   DebugLog(Format('startpane i=%d sysidx=%d win=%p term=%p termidx=%d scr=%dx%d',
@@ -1459,7 +1459,7 @@ var
 begin
   R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
-  // con minimizadas, el mosaico reserva la franja inferior de iconos
+  // with minimized windows, the tile reserves the bottom icon strip
   HasIcons := False;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
@@ -1471,7 +1471,7 @@ begin
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
-      Rects[i].W := Rects[i].W - 2;  // hueco entre marcos
+      Rects[i].W := Rects[i].W - 2;  // gap between frames
       Rects[i].H := Rects[i].H - 1;
       if Rects[i].W < 8 then Rects[i].W := 8;
       if Rects[i].H < 5 then Rects[i].H := 5;
@@ -1541,7 +1541,7 @@ begin
   end;
 end;
 
-// agrupa los iconos de minimizadas en filas al pie del escritorio
+// groups the minimized icons into rows at the bottom of the desktop
 procedure TSuperApp.ArrangeIcons;
 const
   ICON_W = 26;
@@ -1582,8 +1582,8 @@ begin
   if NextPane = i then
     NextPane := -1;
   Win[i]^.Minimize;
-  // NO re-tilear: las demas ventanas se quedan donde el usuario las dejo.
-  // Solo se recolocan los iconos de minimizadas al pie del escritorio.
+  // do NOT re-tile: the other windows stay where the user left them.
+  // Only the minimized icons are re-placed at the desktop bottom.
   ArrangeIcons;
   if Lay.Focused = i then
   begin
@@ -1604,13 +1604,13 @@ begin
      (not Win[i]^.Minimized) then
     Exit;
   Win[i]^.Restore;
-  // volver EXACTAMENTE a donde estaba antes de minimizar, sin re-tilear ni
-  // tocar el resto de ventanas (el usuario manda sobre sus posiciones)
+  // go back EXACTLY to where it was before minimizing, without
+  // re-tiling or touching other windows (the user rules positions)
   if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
      (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
     Win[i]^.Locate(Win[i]^.SavedRect);
   Lay.Focused := i;
-  ArrangeIcons;   // recolocar los iconos que sigan minimizados
+  ArrangeIcons;   // re-place the icons that remain minimized
   FocusPane(i);
   RebuildMenu;
 end;
@@ -1623,7 +1623,7 @@ begin
     if Win[i] <> nil then
       Win[i]^.Minimize;
   Lay.Focused := -1;
-  ArrangeIcons;   // colocar todos los iconos al pie, sin re-tilear
+  ArrangeIcons;   // place all icons at the bottom, without re-tiling
   RebuildMenu;
 end;
 
@@ -1631,7 +1631,7 @@ procedure TSuperApp.RestoreAllWindows;
 var
   i: integer;
 begin
-  // cada ventana vuelve a su posicion previa a minimizar; nada se re-tila
+  // each window returns to its pre-minimize position; nothing re-tiles
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
@@ -1659,8 +1659,8 @@ begin
     Exit;
   if RemoteMode then
   begin
-    // el panel vive en el daemon: pedirlo alli; la ventana llega para
-    // todos los clientes con el evento NEWPANE_EV
+    // the pane lives in the daemon: request it there; the window
+    // arrives for all clients with the NEWPANE_EV event
     if (Remote <> nil) and Remote.Connected and
        (Remote.ServerProto >= 2) then
     begin
@@ -1867,8 +1867,8 @@ begin
     Remote := nil;
     Exit;
   end;
-  // guardar el estado previo: la carga por panel aun puede fallar (blob de
-  // pantalla corrupto o ventana no creada) y hay que poder restaurarlo
+  // save the previous state: per-pane loading can still fail (corrupt
+  // screen blob or window not created) and it must be restorable
   OldLay := Lay;
   OldProfileMode := ProfileMode;
   OldActiveProfile := ActiveProfile;
@@ -1916,8 +1916,8 @@ begin
   end;
   if not Loaded then
   begin
-    // deshacer toda la mutacion: el arranque debe continuar como si el
-    // attach nunca se hubiera intentado (perfil incluido)
+    // undo the whole mutation: startup must continue as if the attach
+    // had never been attempted (profile included)
     RemoteMode := False;
     RemoteAttachSettling := False;
     ReleaseRuntime;
@@ -1933,8 +1933,8 @@ begin
   end;
   OldLay.Free;
   RelayoutAll;
-  // geometria de ventanas que el daemon conserva (movidas, maximizadas,
-  // minimizadas); solo aplicable si el escritorio mide igual que al guardar
+  // window geometry the daemon keeps (moved, maximized, minimized);
+  // only applicable if the desktop size matches the one at save time
   if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
   begin
     GR := Default(Objects.TRect);
@@ -1961,9 +1961,9 @@ begin
           MinimizeWindow(I);
     end;
   end;
-  // las ventanas ya estan en su sitio definitivo: UNA peticion de tamano
-  // por panel (espejo exacto de ChangeBounds); sin transitorios, el daemon
-  // no rebota tamanos hacia los demas clientes al engancharse este
+  // the windows are already in their final place: ONE size request
+  // per pane (exact mirror of ChangeBounds); with no transients the
+  // daemon does not bounce sizes to other clients as this one attaches
   RemoteAttachSettling := False;
   for I := 0 to Lay.PaneCount - 1 do
     if (I < MAX_PANES) and (Win[I] <> nil) and
@@ -1988,9 +1988,9 @@ begin
   Result := True;
 end;
 
-// arranque servidor-siempre: el workspace local (paneles ya vivos) pasa a
-// un daemon hijo y este proceso queda como su primer cliente interactivo;
-// si el fork o el attach fallan se sigue en modo local (degradacion)
+// server-always startup: the local workspace (panes already alive)
+// moves to a child daemon and this process becomes its first
+// interactive client; if fork or attach fails, stay local (degrade)
 procedure TSuperApp.PromoteToServer;
 var
   N, I: integer;
@@ -2011,7 +2011,7 @@ begin
   N := Lay.PaneCount;
   if (N < 1) or (N > MAX_PANES) then
     Exit;
-  // nombre automatico, sin dialogos: --session > perfil activo > session
+  // automatic name, no dialogs: --session > active profile > session
   ProfName := '';
   if ProfileMode and (ActiveProfile >= 0) and
      (ActiveProfile < Length(Profiles)) then
@@ -2044,15 +2044,15 @@ begin
     if (PaneTerm[I] >= 0) and (PaneTerm[I] < Length(WClasses)) then
       Terms[I] := WClasses[PaneTerm[I]].Name;
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
-      Exit;   // panel sin terminal vivo: quedarse en modo local
+      Exit;   // pane without a live terminal: stay in local mode
   end;
   CollectPaneGeom(DGeom, DW, DH);
   if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
     Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
-    Exit;   // sin daemon: modo local clasico
+    Exit;   // no daemon: classic local mode
   Sock := SessionSocketPathFor(SessName);
-  // el daemon es ahora el dueno de los procesos: soltar los PTY del
-  // padre sin senalar a nadie y sustituir el workspace por el remoto
+  // the daemon now owns the processes: release the parent's PTYs
+  // without signalling anyone and swap the workspace for the remote
   for I := 0 to MAX_PANES - 1 do
     if Panes[I] <> nil then
     begin
@@ -2061,15 +2061,15 @@ begin
       Panes[I] := nil;
     end;
   ReleaseRuntime;
-  // el attach resetea el estado de perfil (esta pensado para engancharse a
-  // sesiones ajenas); aqui la sesion ES el perfil activo: conservarlo
+  // attach resets the profile state (it is meant for attaching to
+  // foreign sessions); here the session IS the active profile: keep it
   WasProfile := ProfileMode;
   OldActiveProfile := ActiveProfile;
   OldActiveWindow := ActiveWindow;
   if not AttachRemoteSession(Sock) then
   begin
-    // rarisimo (daemon recien nacido): no dejarlo huerfano ni fingir
-    // que hay workspace; cerrar ordenadamente
+    // very rare (newborn daemon): do not orphan it nor pretend there
+    // is a workspace; shut down in an orderly fashion
     CloseSessionAt(Sock);
     SkipSave := True;
     AbortRun := True;
@@ -2083,8 +2083,8 @@ begin
     RebuildMenu;
 end;
 
-// deja la sesion remota actual cerrando su daemon: el cambio de perfil o
-// el asistente reconstruyen el workspace en local y re-promocionan
+// leaves the current remote session closing its daemon: the profile
+// switch or the wizard rebuild the workspace locally and re-promote
 procedure TSuperApp.LeaveRemoteSession;
 begin
   if not RemoteMode then
@@ -2102,7 +2102,7 @@ begin
   ReleaseRuntime;
 end;
 
-// selector de sesiones para --attach (o arranque con sesiones vivas)
+// session picker for --attach (or startup with live sessions)
 function TSuperApp.PickSessionSocketUI(AForAttach: boolean): string;
 var
   Act: TSessionPickAction;
@@ -2115,8 +2115,8 @@ begin
     Result := Path;
 end;
 
-// arranque normal con sesiones vivas: ofrecer engancharse antes de crear
-// un workspace nuevo; Esc o "Nueva sesion" siguen el arranque normal
+// normal startup with live sessions: offer attaching before creating
+// a new workspace; Esc or "New session" continue the normal startup
 function TSuperApp.PromptAttachOnStart: boolean;
 var
   Infos: TSessionInfoArray;
@@ -2132,8 +2132,8 @@ begin
     Result := AttachRemoteSession(Path);
 end;
 
-// gestor de sesiones dentro de la app: listar, purgar y cerrar; el cambio
-// de sesion en caliente llegara mas adelante (separar primero)
+// session manager inside the app: list, purge and close; hot session
+// switching will come later (detach first)
 procedure TSuperApp.DoSessionPick;
 var
   Act: TSessionPickAction;
@@ -2166,8 +2166,8 @@ begin
     Exit;
   if RemoteMode then
   begin
-    // cliente ya enganchado: el daemon conserva su nombre, sin prompt;
-    // empujar antes el layout para que el proximo attach lo restaure
+    // client already attached: the daemon keeps its name, no prompt;
+    // push the layout first so the next attach restores it
     SyncRemoteLayout;
     if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
     begin
@@ -2183,8 +2183,8 @@ begin
   N := Lay.PaneCount;
   if (N < 1) or (N > MAX_PANES) then
     Exit;
-  // nombre de la sesion: por defecto el perfil activo (o sesion-N libre);
-  // colision con una sesion viva -> sugerir nombre-2 y volver a preguntar
+  // session name: defaults to the active profile (or a free sesion-N);
+  // collision with a live session -> suggest name-2 and ask again
   ProfName := '';
   if ProfileMode and (ActiveProfile >= 0) and
      (ActiveProfile < Length(Profiles)) then
@@ -2233,8 +2233,8 @@ begin
         Terms[I] := WClasses[PaneTerm[I]].Name;
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
     begin
-      // avisar en vez de abortar en silencio: el usuario ya confirmo un
-      // nombre y debe saber que la sesion NO se ha separado
+      // warn instead of silently aborting: the user already confirmed a
+      // name and must know that the session has NOT been detached
       MessageBox(UiText(
         'Cannot detach: a pane has no live terminal.',
         'No se puede separar: un panel no tiene terminal vivo.'), nil,
@@ -2242,7 +2242,7 @@ begin
       Exit;
     end;
   end;
-  // el daemon nace conociendo la geometria actual de las ventanas
+  // the daemon is born knowing the current window geometry
   CollectPaneGeom(DGeom, DW, DH);
   if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
     Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
@@ -2274,8 +2274,8 @@ begin
   if (AWindow < 0) or (AWindow >= Length(Profiles[AProfile].Windows)) or
      (not Profiles[AProfile].Windows[AWindow].Enabled) then
     Exit;
-  // cambiar de perfil estando enganchado: se cierra la sesion remota y
-  // el workspace nuevo se construye en local (y se re-promociona al final)
+  // switching profiles while attached: the remote session is closed
+  // and the new workspace is built locally (re-promoted at the end)
   WasRemote := RemoteMode;
   if RemoteMode then
     LeaveRemoteSession;
@@ -2315,8 +2315,8 @@ begin
       StartPane(i, '', '')
     else if (SysIdx >= 0) and (WClasses[SysIdx].Kind = wcSSH) then
     begin
-      // ssh: la precedencia pane.post > class.post > pane.cmd > class.cmd
-      // se resuelve entre el override y BuildWindowClassExec
+      // ssh: the pane.post > class.post > pane.cmd > class.cmd precedence
+      // is resolved between the override and BuildWindowClassExec
       CommandOverride := PS.PostConnect;
       if CommandOverride = '' then
         CommandOverride := PS.Cmd;
@@ -2325,7 +2325,7 @@ begin
     end
     else if SysIdx >= 0 then
     begin
-      // clase local o de comando libre con overrides del panel
+      // local or free-command class with pane overrides
       if WClasses[SysIdx].Shell <> '' then
         ShellFor := WClasses[SysIdx].Shell
       else
@@ -2337,14 +2337,14 @@ begin
     end
     else
     begin
-      // panel ad-hoc sin clase (incluye los del asistente persistidos)
+      // ad-hoc pane without a class (includes persisted wizard ones)
       AdHoc := DefaultWindowClass;
       LocalCmd := ComposePaneCommand(AdHoc, PS.Cmd, PS.PostConnect,
         PS.Connect, Cfg.Shell, Cfg.LoginShell);
       StartPaneEx(i, PS.Cwd, LocalCmd, -1, '', '', TitleS, PS.ScrollBack);
       PaneConnect[i] := PS.Connect;
     end;
-    // titulo propio guardado en el perfil: manda sobre clase/cwd
+    // custom title saved in the profile: wins over class/cwd
     if (PS.Title <> '') and (Win[i] <> nil) then
     begin
       Win[i]^.SetTitle(' ' + PS.Title);
@@ -2367,12 +2367,12 @@ begin
   RebuildMenu;
   Result := True;
   if WasRemote then
-    PromoteToServer;   // la sesion nueva tambien nace con servidor
+    PromoteToServer;   // the new session is also born with a server
 end;
 
-// reaplica la geometria EXACTA guardada en el perfil (posicion/tamano
-// manuales, maximizadas y minimizadas), dejando todo como al guardarlo;
-// solo si el escritorio mide igual (los bounds son absolutos)
+// reapplies the EXACT geometry saved in the profile (manual
+// position/size, maximized and minimized), leaving everything as
+// saved; only if the desktop size matches (bounds are absolute)
 procedure TSuperApp.ApplyWindowGeometry(const WS: TProfileWindowSpec);
 var
   RD, WR: Objects.TRect;
@@ -2398,7 +2398,7 @@ begin
       if WS.Panes[i].Zoomed and (not Win[i]^.Zoomed) then
         Win[i]^.Zoom;
     end;
-  // los minimizados al final (MinimizeWindow gestiona el foco e iconos)
+  // minimized ones last (MinimizeWindow manages focus and icons)
   for i := 0 to n - 1 do
     if (i <= High(WS.Panes)) and (i < MAX_PANES) and (Win[i] <> nil) and
        WS.Panes[i].Minimized then
@@ -2414,7 +2414,7 @@ var
   HaveRL: boolean;
   NoArgs: TStringArray;
 begin
-  // en modo servidor los PTY viven en el daemon: pedirle cmd/cwd vivos
+  // in server mode the PTYs live in the daemon: ask it for live cmd/cwd
   RL := Default(TListInfo);
   HaveRL := RemoteMode and (CurrentSessionSocket <> '') and
     FetchList(CurrentSessionSocket, True, RL);
@@ -2424,8 +2424,8 @@ begin
   Result.Enabled := True;
   Result.Layout := SaveLayoutString(Lay);
   Result.FocusedPane := Lay.Focused;
-  // tamano del escritorio: los bounds guardados son absolutos y solo se
-  // reaplican si el escritorio mide igual al restaurar el perfil
+  // desktop size: the saved bounds are absolute and are reapplied
+  // only if the desktop size matches when restoring the profile
   RD := Default(Objects.TRect);
   if Desktop <> nil then
   begin
@@ -2442,8 +2442,8 @@ begin
     Result.Panes[i] := Default(TProfilePaneSpec);
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
-    // geometria EXACTA de la ventana: maximizada aporta su ZoomRect,
-    // minimizada su SavedRect, el resto sus bounds actuales
+    // EXACT window geometry: a maximized one contributes its ZoomRect,
+    // a minimized one its SavedRect, the rest their current bounds
     if (Win[i] <> nil) then
     begin
       if Win[i]^.Zoomed then
@@ -2462,8 +2462,8 @@ begin
       Result.Panes[i].Minimized := Win[i]^.Minimized;
       Result.Panes[i].Zoomed := Win[i]^.Zoomed;
     end;
-    // titulo propio: se guarda solo si difiere del titulo por defecto de la
-    // clase (para no fijar en el perfil un titulo que la clase ya aporta)
+    // custom title: saved only if it differs from the class default
+    // title (so the profile does not pin a title the class provides)
     if (Win[i] <> nil) and Win[i]^.TitleFixed and (Win[i]^.Title <> nil) then
     begin
       CurTitle := Trim(Win[i]^.Title^);
@@ -2487,7 +2487,7 @@ begin
       else
       begin
         Panes[i].QueryState;
-        // una shell interactiva se captura como cmd vacio (= shell normal)
+        // an interactive shell is captured as an empty cmd (= plain shell)
         if not IsPlainShell(Panes[i].TitleArgs, Panes[i].TitleCmd) then
         begin
           if Length(Panes[i].TitleArgs) > 0 then
@@ -2547,7 +2547,7 @@ begin
   if NameS = '' then
     Exit;
   SaveWorkspaceAsProfile(NameS);
-  // sin FormatStr: el nombre podria contener '%'
+  // no FormatStr: the name could contain '%'
   MessageBox(UiText('Profile saved: ', 'Perfil guardado: ') + NameS, nil,
     mfInformation or mfOKButton);
 end;
@@ -2568,8 +2568,8 @@ begin
       begin
         if ProfileMode and (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
            (ActiveWindow < Length(Profiles[Tgt].Windows)) then
-          // guardar el area actual SOLO en la ventana activa del perfil,
-          // conservando sus demas ventanas
+          // save the current workspace ONLY into the active window of the
+          // profile, preserving its other windows
           Profiles[Tgt].Windows[ActiveWindow] :=
             CaptureCurrentAsWindow(Profiles[Tgt].Windows[ActiveWindow].Name)
         else
@@ -2653,9 +2653,9 @@ begin
     if Choice = cmCancel then
       Exit;
   end;
-  // con todo confirmado: si estabamos enganchados a una sesion (modo
-  // servidor-siempre), cerrarla; el workspace nuevo nace en local y se
-  // re-promociona al final
+  // everything confirmed: if we were attached to a session (server-
+  // always mode), close it; the new workspace is born locally and
+  // re-promoted at the end
   if RemoteMode then
     LeaveRemoteSession;
 
@@ -2689,7 +2689,7 @@ begin
     StartPaneEx(I, GetEnvironmentVariable('HOME'),
       WizardCommand(ConnectCmd[I], PostConnectCmd[I]), -1, '', '',
       UiText('wizard ', 'asistente ') + IntToStr(I + 1), DEFAULT_SCROLLBACK);
-    // recordar la conexion libre para poder guardar esto como perfil
+    // remember the free-form connection to save this as a profile
     PaneConnect[I] := Trim(ConnectCmd[I]);
     if Win[I] = nil then
       Started := False;
@@ -2713,7 +2713,7 @@ begin
     ResetVideoSurface;
     ReDraw;
     FocusPane(Lay.Focused);
-    PromoteToServer;   // la sesion del asistente tambien nace con servidor
+    PromoteToServer;   // the wizard session is also born with a server
   end;
   RebuildMenu;
 end;
@@ -2725,8 +2725,8 @@ var
   Lines: array[0..6] of string;
   I: integer;
 begin
-  // dialogo estandar: paleta de dialogo con contraste correcto (el antiguo
-  // THelpDialog pintaba con GetColor(1), el color del marco pasivo)
+  // standard dialog: dialog palette with proper contrast (the old
+  // THelpDialog painted with GetColor(1), the passive frame color)
   Lines[0] := UiText(
     'F2/F3 split panes; F6/F7 next/prev pane; Alt-1..9 go to pane N',
     'F2/F3 dividen paneles; F6/F7 panel sig./ant.; Alt-1..9 ir al panel N');
@@ -2807,8 +2807,8 @@ begin
   Dispose(D, Done);
 end;
 
-// renombra el titulo de la ventana enfocada; queda fijado (TitleFixed) para
-// que el refresco periodico no lo pise, y persiste en sesion y en perfil
+// renames the focused window's title; it stays fixed (TitleFixed) so
+// the periodic refresh cannot overwrite it; persists in session/profile
 procedure TSuperApp.RenameFocusedWindow;
 var
   i: integer;
@@ -2830,8 +2830,8 @@ begin
     Cur := UiText('shell', 'shell');
   Win[i]^.SetTitle(' ' + Cur);
   Win[i]^.TitleFixed := True;
-  // en remoto el titulo fijado debe vivir en el daemon (se difunde a los
-  // demas clientes y sobrevive al guardado daemon-side)
+  // in remote mode the fixed title must live in the daemon (it is
+  // broadcast to other clients and survives the daemon-side save)
   if RemoteMode and (Remote <> nil) and Remote.Connected then
     Remote.SendRename(i, Cur);
 end;
@@ -2959,8 +2959,8 @@ begin
     Exit;
   end;
   OldFocused := Lay.Focused;
-  // en remoto el panel vive en el daemon: matarlo alli y compactar en
-  // espejo (mismos indices); en local KillPane hace el trabajo
+  // in remote mode the pane lives in the daemon: kill it there and
+  // compact mirroring it (same indexes); locally KillPane does the job
   if RemoteMode and (Remote <> nil) and Remote.Connected then
     Remote.SendKillPane(i);
   Lay.ClosePane(i);
@@ -2992,15 +2992,15 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  // NO re-tilear: las ventanas que quedan conservan su tamano y posicion.
-  // KillPane ya quito la cerrada del escritorio; solo repintar.
+  // do NOT re-tile: remaining windows keep their size and position.
+  // KillPane already removed the closed one from the desktop; repaint.
   ReDraw;
   FocusPane(Lay.Focused);
-  SyncRemoteLayout; // el arbol cambio: reflejarlo en el daemon
+  SyncRemoteLayout; // the tree changed: mirror it in the daemon
 end;
 
-// geometria actual de todas las ventanas (mismas reglas que el guardado
-// local: una maximizada aporta su ZoomRect, una minimizada sus bounds)
+// current geometry of all windows (same rules as the local save: a
+// maximized one contributes its ZoomRect, a minimized one its bounds)
 procedure TSuperApp.CollectPaneGeom(out AGeom: TPaneGeomArray;
   out ADeskW, ADeskH: integer);
 var
@@ -3039,8 +3039,8 @@ begin
     end;
 end;
 
-// estando enganchado, empuja el estado del cliente al daemon para que el
-// proximo attach restaure exactamente lo que se ve ahora
+// while attached, pushes the client state to the daemon so the next
+// attach restores exactly what is on screen now
 procedure TSuperApp.SyncRemoteLayout;
 var
   Geom: TPaneGeomArray;
@@ -3066,8 +3066,8 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// huella del estado visible (geometria+titulos+foco): si cambia respecto
-// a lo ultimo sincronizado, hay que empujar el layout al daemon
+// fingerprint of the visible state (geometry+titles+focus): if it
+// differs from the last sync, the layout must be pushed to the daemon
 function TSuperApp.ComputeLayoutHash: string;
 var
   Geom: TPaneGeomArray;
@@ -3090,8 +3090,8 @@ begin
   end;
 end;
 
-// aplica un LAYOUT_EV difundido por el daemon (otro cliente movio,
-// minimizo o renombro ventanas): arbol, titulos, geometria y foco
+// applies a LAYOUT_EV broadcast by the daemon (another client moved,
+// minimized or renamed windows): tree, titles, geometry and focus
 procedure TSuperApp.ApplyRemoteLayoutEv(const AData: TByteArray);
 var
   Nodes: string;
@@ -3106,7 +3106,7 @@ begin
     DeskH) then
     Exit;
   if Length(Titles) <> Lay.PaneCount then
-    Exit;   // desincronizado: llegara otro evento tras converger
+    Exit;   // out of sync: another event will arrive after convergence
   NewLay := nil;
   if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
   begin
@@ -3125,7 +3125,7 @@ begin
   begin
     GR := Default(Objects.TRect);
     Desktop^.GetExtent(GR);
-    // geometria solo si ambos escritorios miden igual
+    // geometry only if both desktops have the same size
     if (DeskW = GR.B.X - GR.A.X) and (DeskH = GR.B.Y - GR.A.Y) then
     begin
       for I := 0 to Lay.PaneCount - 1 do
@@ -3155,11 +3155,11 @@ begin
     FocusPane(Focused);
   end;
   ReDraw;
-  // lo aplicado ya es el estado comun: no re-empujarlo (evita rebotes)
+  // what was applied is the common state: do not re-push (no bounces)
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// otro cliente (o la CLI) cerro un panel: compactar en espejo del daemon
+// another client (or the CLI) closed a pane: compact in daemon mirror
 procedure TSuperApp.ApplyRemoteKillPane(APane: integer);
 var
   j, OldFocused: integer;
@@ -3202,8 +3202,8 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// el daemon creo un panel (pedido por este cliente, por otro o por la
-// CLI): repetir el split en local y darle ventana
+// the daemon created a pane (requested by this client, another one
+// or the CLI): repeat the split locally and give it a window
 procedure TSuperApp.ApplyRemoteNewPane(const AData: TByteArray);
 var
   At, NewIdx, PC, Cols, Rows: Longint;
@@ -3217,7 +3217,7 @@ begin
     Exit;
   if (Lay.PaneCount + 1 <> PC) or (At < 0) or (At >= Lay.PaneCount) or
      (PC > MAX_PANES) then
-    Exit;   // desincronizado: mejor no tocar nada
+    Exit;   // out of sync: better not to touch anything
   OldCount := Lay.PaneCount;
   if Dir = 1 then
     SDir := sdH
@@ -3227,7 +3227,7 @@ begin
     Exit;
   if Lay.LastInsertedIndex <> NewIdx then
   begin
-    // el arbol local no coincide con el del daemon: deshacer
+    // the local tree does not match the daemon's: undo
     Lay.ClosePane(Lay.LastInsertedIndex);
     Exit;
   end;
@@ -3281,8 +3281,8 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// tamano autoritativo del daemon (minimo comun entre clientes): ajustar
-// la TScreen sin reenviar peticion (supresion de eco)
+// authoritative daemon size (common minimum among clients): adjust
+// the TScreen without resending a request (echo suppression)
 procedure TSuperApp.ApplyRemoteResize(APane: integer;
   const AData: TByteArray);
 var
@@ -3328,7 +3328,7 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// Window|Tile clasico: recalcular el mosaico y descartar geometria manual
+// classic Window|Tile: recompute the mosaic, drop manual geometry
 procedure TSuperApp.DoTilePanes;
 var
   i: integer;
@@ -3343,7 +3343,7 @@ begin
   SyncRemoteLayout;
 end;
 
-// Window|Cascade clasico: ventanas escalonadas de 2/3 del escritorio
+// classic Window|Cascade: staggered windows at 2/3 of the desktop
 procedure TSuperApp.DoCascadePanes;
 var
   RD, R: Objects.TRect;
@@ -3376,8 +3376,8 @@ begin
   SyncRemoteLayout;
 end;
 
-// rejilla del vendor: reparte todas las visibles en filas y columnas
-// que quepan en pantalla (TDeskTop.Tile sobre las vistas ofTileable)
+// vendor grid: spreads all visible windows into rows and columns
+// that fit the screen (TDeskTop.Tile over the ofTileable views)
 procedure TSuperApp.DoOrganizePanes;
 var
   R: Objects.TRect;
@@ -3393,7 +3393,7 @@ begin
     if (Win[i] <> nil) and Win[i]^.Minimized then
       HasIcons := True;
   if HasIcons then
-    Dec(R.B.Y, 2); // respetar la franja de iconos
+    Dec(R.B.Y, 2); // respect the icon strip
   Desktop^.Tile(R);
   ResetVideoSurface;
   ReDraw;
@@ -3401,7 +3401,7 @@ begin
   SyncRemoteLayout;
 end;
 
-// Window|List clasico (Alt+0): elegir panel, restaurando si esta minimizado
+// classic Window|List (Alt+0): pick a pane, restoring if minimized
 procedure TSuperApp.DoPaneList;
 var
   Titles: TStrArray;
@@ -3436,7 +3436,7 @@ begin
     end;
 end;
 
-// cambio de paleta en vivo + persistencia en superterm.ini
+// live palette switch + persistence in superterm.ini
 procedure TSuperApp.ApplyPalette(AKind: integer);
 begin
   if (AKind < apColor) or (AKind > apMonochrome) then
@@ -3483,12 +3483,12 @@ begin
         Pin[i].Args := Panes[i].TitleArgs;
       end;
     end;
-    // titulo propio (renombrado a mano): guardarlo para restaurarlo tal cual
+    // custom title (renamed by hand): save it to restore it verbatim
     if (i < MAX_PANES) and (Win[i] <> nil) and Win[i]^.TitleFixed and
        (Win[i]^.Title <> nil) then
       Pin[i].Title := Trim(Win[i]^.Title^);
-    // geometria y estado de la ventana: para una maximizada el rect real
-    // es ZoomRect (el de restauracion); Minimize solo oculta, conserva bounds
+    // window geometry and state: for a maximized one the real rect is
+    // ZoomRect (the restore one); Minimize only hides, keeps bounds
     if (i < MAX_PANES) and (Win[i] <> nil) then
     begin
       if Win[i]^.Zoomed then
@@ -3532,8 +3532,8 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
-      // chords del prefijo (estilo tmux): d=detach, n/p=ventana +-,
-      // 1..9=ventana N, flechas=tamano del panel, prefijo doble=literal
+      // prefix chords (tmux style): d=detach, n/p=window +-,
+      // 1..9=window N, arrows=pane size, double prefix=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
@@ -3596,7 +3596,7 @@ begin
       end;
       if PrefixByte = byte(Cfg.PrefixKey) then
       begin
-        // prefijo doble: enviar UN prefijo literal al panel (como tmux)
+        // double prefix: send ONE literal prefix to the pane (like tmux)
         WritePaneInput(Lay.Focused, AnsiChar(Chr(Cfg.PrefixKey)));
         ClearEvent(Event);
         Exit;
@@ -3615,9 +3615,9 @@ begin
       Exit;
     end;
   end;
-  // Alt-1..9 ya NO se intercepta: cae al TProgram nativo, que selecciona
-  // el panel N (cmSelectWindowNum); abrir clases vive en el menu Clases
-  // sincronizar foco del layout con la ventana seleccionada
+  // Alt-1..9 NO longer intercepted: falls through to native TProgram,
+  // which selects pane N (cmSelectWindowNum); open class = Classes menu
+  // sync the layout focus with the selected window
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
       Lay.Focused := i;
@@ -3667,7 +3667,7 @@ begin
       cmWindowRestoreAll: RestoreAllWindows;
       cmSaveSess:
         begin
-          // toast contextual: cada modo dice exactamente que se guardo
+          // contextual toast: each mode states exactly what was saved
           if ProfileMode then
           begin
             RememberProfileSelection;
@@ -3809,9 +3809,9 @@ var
   end;
   if RemoteMode then
   begin
-    // con un modal abierto no se drena el socket: los eventos (cerrar o
-    // crear paneles, salida) esperan en orden a que el modal termine, y
-    // asi los indices de panel nunca se desincronizan a mitad de dialogo
+    // with a modal open the socket is not drained: events (closing or
+    // creating panes, output) wait in order for the modal to finish,
+    // so pane indexes never desync in the middle of a dialog
     if Current = PView(Desktop) then
       while (Remote <> nil) and Remote.Poll(RemoteEvent) do
       begin
@@ -3859,8 +3859,8 @@ var
           begin
             RemoteLost := True;
             RemoteMode := False;
-            // marcar antes del MessageBox: nada de esta instancia debe
-            // guardarse (el layout es el de la sesion remota perdida)
+            // flag before the MessageBox: nothing from this instance must
+            // be saved (the layout belongs to the lost remote session)
             SkipSave := True;
             MessageBox(UiText('Connection to the session was lost.',
               'Se perdio la conexion con la sesion.'), nil,
@@ -3869,11 +3869,11 @@ var
           end;
       end;
       if not RemoteMode then
-        Break;   // shutdown/lost: no seguir drenando
+        Break;   // shutdown/lost: stop draining
       end;
-    // empuje con debounce del layout: mover, minimizar o renombrar aqui
-    // se refleja en el daemon (y de ahi en los demas clientes) sin tocar
-    // cada accion de la UI una a una
+    // debounced layout push: moving, minimizing or renaming here gets
+    // mirrored in the daemon (and from there to the other clients)
+    // without hooking every single UI action
     if RemoteMode and (Current = PView(Desktop)) and
        (Tick - LastLayoutSync >= 400) then
     begin
@@ -3892,7 +3892,7 @@ var
     end;
     Exit;
   end;
-  // poll de ptys
+  // poll ptys
   maxfd := -1;
   fpFD_ZERO(fdset);
   for i := 0 to MAX_PANES - 1 do
@@ -3925,7 +3925,7 @@ var
   end
   else
     Sleep(8);
-  // hijos muertos
+  // dead children
   st2 := Default(cint);
   repeat
     p := fpWaitPid(-1, st2, WNOHANG);
@@ -3942,7 +3942,7 @@ var
             Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
         end;
   until p <= 0;
-  // cursor parpadeante del panel enfocado
+  // blinking cursor of the focused pane
   if Tick - LastBlink >= 530 then
   begin
     LastBlink := Tick;
@@ -3952,7 +3952,7 @@ var
        (Win[i]^.Term <> nil) then
       Win[i]^.Term^.DrawView;
   end;
-  // titulos periodicos
+  // periodic titles
   if Tick - LastTitle > 1500 then
   begin
     LastTitle := Tick;
@@ -3969,8 +3969,8 @@ var
   end;
 end;
 
-// fila informativa de menu: siempre en gris, nunca despachable (los sets
-// de comandos de TV solo cubren 0..255, asi que se marca el item directo)
+// informational menu row: always gray, never dispatchable (TV
+// command sets only cover 0..255, so the item is marked directly)
 function NewInfoItem(const AText, AParam: string; ANext: PMenuItem): PMenuItem;
 begin
   Result := NewItem(AText, AParam, kbNoKey, cmInfoRow, hcNoContext, ANext);
@@ -3994,7 +3994,7 @@ begin
   GetExtent(R);
   R.B.Y := R.A.Y + 1;
 
-  // ---- Paneles: operaciones de tile (split, foco, zoom, min, tamano) ----
+  // ---- Panes: tile operations (split, focus, zoom, min, size) ----
   PaneItems := nil;
   PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
     '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
@@ -4046,7 +4046,7 @@ begin
     'F2', kbF2, cmSplitV, hcNoContext, PaneItems);
   MPanes := NewMenu(PaneItems);
 
-  // ---- Ventanas: solo navegacion de workspaces del perfil activo ----
+  // ---- Windows: only workspace navigation of the active profile ----
   WindowItems := nil;
   if ProfileMode and (ActiveProfile >= 0) and
      (ActiveProfile < Length(Profiles)) then
@@ -4071,7 +4071,7 @@ begin
   else
     WindowItems := NewInfoItem(UiText('(no profile active)',
       '(sin perfil activo)'), '', nil);
-  // organizacion de ventanas en pantalla (como Window del IDE clasico)
+  // window arrangement on screen (like the classic IDE's Window menu)
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
     '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
@@ -4085,7 +4085,7 @@ begin
     cmPaneTile, hcNoContext, WindowItems);
   MWindows := NewMenu(WindowItems);
 
-  // ---- Clases: abre un panel nuevo de cada clase configurada ----
+  // ---- Classes: opens a new pane of each configured class ----
   ClassItems := nil;
   Num := 0;
   for i := 0 to Length(WClasses) - 1 do
@@ -4107,7 +4107,7 @@ begin
   end;
   ClassItems := NewItem(UiText('~1~ Local shell', '~1~ Shell local'), '',
     kbNoKey, cmSplitV, hcNoContext, ClassItems);
-  // gestion al final del menu, separada de la lista de apertura
+  // management at the end of the menu, separate from the open list
   Chain := ClassItems;
   while (Chain <> nil) and (Chain^.Next <> nil) do
     Chain := Chain^.Next;
@@ -4120,7 +4120,7 @@ begin
         kbNoKey, cmClassManage, hcNoContext, nil)));
   MClasses := NewMenu(ClassItems);
 
-  // ---- Perfiles: activar y gestionar ----
+  // ---- Profiles: activate and manage ----
   ProfileItems := NewLine(
     NewItem(UiText('~S~ave current as profile...',
       '~G~uardar actual como perfil...'), '', kbNoKey, cmProfileSaveAs,
@@ -4143,7 +4143,7 @@ begin
       '(aun no hay perfiles)'), '', ProfileItems);
   MProfiles := NewMenu(ProfileItems);
 
-  // ---- Sesiones: detach y ciclo de vida de la aplicacion ----
+  // ---- Sessions: detach and application life cycle ----
   SessItems := nil;
   SessItems := NewItem(UiText('~Q~uit without saving', 'Salir si~n~ guardar'),
     'Alt-Q', kbAltQ, cmQuitNoSave, hcNoContext, SessItems);
@@ -4161,7 +4161,7 @@ begin
     cmSessionPick, hcNoContext, SessItems);
   SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' d',
     kbNoKey, cmDetach, hcNoContext, SessItems);
-  // enganchado a una sesion con nombre: mostrarlo como fila informativa
+  // attached to a named session: show it as an informational row
   if RemoteMode and (CurrentSessionName <> '') then
   begin
     SessItems := NewLine(SessItems);
@@ -4170,7 +4170,7 @@ begin
   end;
   MSessMenu := NewMenu(SessItems);
 
-  // ---- Opciones: idioma en orden fijo, nombres sin traducir ----
+  // ---- Options: languages in fixed order, untranslated names ----
   LanguageItems := nil;
   LanguageItems := NewItem(ActiveMark(CurrentLanguage = ulSpanish) +
     'E~s~pa'#164'ol', '', kbNoKey, cmLanguageBase + Ord(ulSpanish),
@@ -4229,7 +4229,7 @@ begin
   GetExtent(R);
   R.A.Y := R.B.Y - 1;
   Items := nil;
-  // teclas invisibles: despachan sin ocupar sitio en la linea de estado
+  // invisible keys: dispatch without taking room in the status line
   Items := NewStatusKey('', kbAltQ, cmQuitNoSave, Items);
   Items := NewStatusKey('', kbCtrlS, cmSaveSess, Items);
   Items := NewStatusKey('', kbCtrlF5, cmResize, Items);
@@ -4239,7 +4239,7 @@ begin
   Items := NewStatusKey('', kbF9, cmWindowPrev, Items);
   Items := NewStatusKey('', kbF7, cmPanePrev, Items);
   Items := NewStatusKey('', kbF3, cmSplitH, Items);
-  // visibles: lo critico para un novato, cabiendo en 80 columnas
+  // visible: what a novice needs most, fitting in 80 columns
   Items := NewStatusKey(UiText('~Alt-X~ Exit', '~Alt-X~ Salir'), kbAltX,
     cmQuit, Items);
   Items := NewStatusKey(UiText(

@@ -55,7 +55,7 @@ def check(name, cond):
 def pgrep(pat):
     return subprocess.run(['pgrep', '-f', pat], capture_output=True, text=True).stdout.strip()
 
-# ---- parte 1: terminales definidos en sysini ----
+# ---- part 1: terminals defined in sysini ----
 with open(SYSINI, 'w') as f:
     f.write("""[t1]
 name=uno
@@ -90,13 +90,13 @@ check("t2 arrancado", pgrep('sleep 555') != '')
 time.sleep(0.3)
 check("t3 disabled no arranca", pgrep('sleep 777') == '')
 
-# salir SIN guardar: Alt-Q
+# exit WITHOUT saving: Alt-Q
 s.send(b'\x1bq', 1.0)
 s.close()
 time.sleep(0.4)
 check("Alt-Q no guarda sesion", not os.path.exists(SESS))
 
-# ---- parte 2: scrollback con terminal unico ----
+# ---- part 2: scrollback with a single terminal ----
 with open(SYSINI, 'w') as f:
     f.write("""[t1]
 name=solo
@@ -115,17 +115,17 @@ scr = s.text()
 check("live: ultimos numeros", re.search(r'\b19[0-9]\b', scr) is not None)
 check("live: primeros no visibles", re.search(r'\b1[0-4][0-9]\b', scr) is None)
 
-# Alt-PgUp (ESC + PgUp) = scroll atras una pagina
+# Alt-PgUp (ESC + PgUp) = scroll back one page
 s.send(b'\x1b\x1b[5~', 1.0)
 scr = s.text()
 check("scrolled: muestra historial", re.search(r'\b1[0-4][0-9]\b', scr) is not None)
 
-# Alt-PgDn = volver al presente
+# Alt-PgDn = back to the present
 s.send(b'\x1b\x1b[6~', 1.0)
 scr = s.text()
 check("scroll fwd: de nuevo vivo", re.search(r'\b19[0-9]\b', scr) is not None)
 
-# Alt-Home / Alt-End (secuencias que el RTL traduce a kbAltHome/kbAltEnd)
+# Alt-Home / Alt-End (sequences the RTL translates to kbAltHome/kbAltEnd)
 s.send(b'\x1b\x1b[1~', 0.8)
 scr = s.text()
 check("alt-home: top historial", re.search(r'\b[1-9]\b', scr) is not None and re.search(r'\b19[0-9]\b', scr) is None)
@@ -133,15 +133,15 @@ s.send(b'\x1b\x1b[4~', 0.8)
 scr = s.text()
 check("alt-end: bottom", re.search(r'\b19[0-9]\b', scr) is not None)
 
-s.send(b'\x1bq', 0.8)   # sin guardar
+s.send(b'\x1bq', 0.8)   # without saving
 s.close()
 time.sleep(0.3)
 check("sin sesion tras Alt-Q", not os.path.exists(SESS))
 
-# ---- parte 3: guardar con Alt-X restaura terminal definido ----
+# ---- part 3: saving with Alt-X restores the defined terminal ----
 s = Session()
 s.drain(2.0)
-s.send(b'\x1bx', 1.0)   # salir guardando
+s.send(b'\x1bx', 1.0)   # exit saving
 s.close()
 time.sleep(0.4)
 check("Alt-X guarda sesion", os.path.exists(SESS))

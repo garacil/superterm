@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""superterm test: perfiles [profile.*], plantillas legadas aplanadas y guardado."""
+"""superterm test: [profile.*] profiles, flattened legacy templates and saving."""
 import os, pty, time, select, sys, fcntl, termios, struct, shutil
 import pyte
 
@@ -9,12 +9,12 @@ USERINI = HOME + '/.superterm/superterm.ini'
 SYSINI = HOME + '/system.ini'
 W, H = 110, 35
 
-# entorno aislado: HOME propio e INI de sistema propio, limpios al empezar
+# isolated environment: own HOME and own system INI, clean at start
 shutil.rmtree(HOME, ignore_errors=True)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 
-# INI de usuario: perfil dev (2 paneles), plantilla legada a absorber,
-# y secciones ajenas ([session], [class.*]) que deben sobrevivir al guardado
+# user INI: dev profile (2 panes), legacy template to absorb,
+# and unrelated sections ([session], [class.*]) that must survive saving
 with open(USERINI, 'w') as f:
     f.write("""[session]
 default_profile=dev
@@ -63,7 +63,7 @@ enabled=1
 cmd=echo OLDTPL_TOKEN; exec /bin/bash -i
 """)
 
-# INI de sistema: plantilla legada de una sola sesion -> perfil 'legacy1'
+# system INI: single-session legacy template -> profile 'legacy1'
 with open(SYSINI, 'w') as f:
     f.write("""[template.legacy1]
 name=legacy1
@@ -126,7 +126,7 @@ def check(name, cond):
     if not cond:
         fails.append(name)
 
-# ---- 1: default_profile=dev activa el perfil escrito a mano al arrancar ----
+# ---- 1: default_profile=dev activates the hand-written profile at startup ----
 s = Session()
 s.drain(2.0)
 scr = s.text()
@@ -134,13 +134,13 @@ check("dev pane a token", "PROF_PANE_A" in scr)
 check("dev pane b token", "PROF_PANE_B" in scr)
 check("dev two panes", scr.count("╔") + scr.count("┌") >= 2)
 
-# menu Windows (Alt-W) lista las ventanas del perfil activo
+# Windows menu (Alt-W) lists the windows of the active profile
 s.send(b'\x1bw', 0.5)
 scr = s.text()
 check("windows menu lists web", "(*) web" in scr)
-s.send(b'\x1b', 0.4)               # cerrar el menu
+s.send(b'\x1b', 0.4)               # close the menu
 
-# ---- 2: menu Profiles (Alt-R) con marca (*) en el activo ----
+# ---- 2: Profiles menu (Alt-R) with the (*) mark on the active one ----
 s.send(b'\x1br', 0.5)
 scr = s.text()
 check("profiles menu open", "Save current as profile" in scr)
@@ -148,7 +148,7 @@ check("dev has active mark", "(*) dev" in scr)
 check("menu lists oldtpl", "oldtpl" in scr)
 check("menu lists legacy1", "legacy1" in scr)
 
-# ---- 3: activar la plantilla legada aplanada (fila 3: dev, oldtpl, legacy1) ----
+# ---- 3: activate the flattened legacy template (row 3: dev, oldtpl, legacy1) ----
 s.send(b'\x1b[B', 0.2)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\r', 1.5)
@@ -156,21 +156,21 @@ scr = s.text()
 check("legacy profile token", "LEGACY_PROF_TOKEN" in scr)
 check("workspace switched", "PROF_PANE_A" not in scr)
 
-# ---- 4: guardar el area de trabajo como perfil 'captured' ----
-# marcadores capturables: cwd del panel y comando en primer plano de una sola
-# palabra (python3), que sobrevive al ciclo escribir/releer del INI
+# ---- 4: save the workspace as profile 'captured' ----
+# capturable markers: the pane's cwd and a single-word foreground
+# command (python3), which survives the INI write/re-read cycle
 s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
 s.send(b'python3\r', 1.0)
 s.send(b'\x1br', 0.5)
 s.send(b's', 0.6)
 scr = s.text()
 check("save-as input box", "Profile name:" in scr)
-s.send(b'\x1b[3~' * 40, 0.3)       # Supr: vaciar el nombre prellenado (cursor al inicio)
+s.send(b'\x1b[3~' * 40, 0.3)       # Delete: empty the prefilled name (cursor at start)
 s.send(b'captured', 0.3)
 s.send(b'\r', 1.5)
 scr = s.text()
 check("save-as toast", "Profile saved: captured" in scr)
-s.send(b'\r', 0.5)                 # cerrar el toast
+s.send(b'\r', 0.5)                 # close the toast
 
 txt = open(USERINI).read()
 check("ini has profile.captured", "[profile.captured]" in txt)
@@ -183,15 +183,15 @@ check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
 check("ini keeps default_profile", "default_profile=dev" in txt)
 check("ini keeps class section", "[class.keepme]" in txt)
 
-# ---- 5: absorcion de [template.*] del usuario al guardar ----
+# ---- 5: absorption of the user's [template.*] when saving ----
 check("template absorbed", "[template.oldtpl]" not in txt)
 check("oldtpl now a profile", "[profile.oldtpl]" in txt)
 
-s.send(b'\x1bq', 1.0)              # salir sin guardar
+s.send(b'\x1bq', 1.0)              # exit without saving
 s.close()
 time.sleep(0.4)
 
-# ---- 6: reinicio: captured y oldtpl listados y activables ----
+# ---- 6: restart: captured and oldtpl listed and activatable ----
 s = Session()
 s.drain(2.0)
 scr = s.text()
@@ -201,13 +201,13 @@ scr = s.text()
 check("restart menu: oldtpl", "oldtpl" in scr)
 check("restart menu: captured", "captured" in scr)
 
-# activar oldtpl (fila 2: dev, oldtpl, captured, legacy1)
+# activate oldtpl (row 2: dev, oldtpl, captured, legacy1)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\r', 1.5)
 scr = s.text()
 check("oldtpl activates", "OLDTPL_TOKEN" in scr)
 
-# activar captured (fila 3): su panel relanza el python3 capturado
+# activate captured (row 3): its pane relaunches the captured python3
 s.send(b'\x1br', 0.5)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\x1b[B', 0.2)
@@ -219,7 +219,7 @@ s.send(b'print(40600+2)\r', 0.8)
 scr = s.text()
 check("captured activates", "40602" in scr)
 
-s.send(b'\x1bq', 1.0)              # salir sin guardar
+s.send(b'\x1bq', 1.0)              # exit without saving
 s.close()
 
 sys.exit(1 if fails else 0)

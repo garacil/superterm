@@ -10,7 +10,7 @@ from stlib import check, run_cli
 
 HOME = stlib.fresh_home('cli')
 
-# ---- ayuda y errores de uso (sin sesiones) ----
+# ---- help and usage errors (no sessions) ----
 r = run_cli(['--help'], HOME, env={'LANG': 'C'})
 check('--help exits 0', r.returncode == 0)
 check('--help is English by default', 'Usage:' in r.stdout)
@@ -28,7 +28,7 @@ check('send without target exit 2', r.returncode == 2)
 r = run_cli(['capture'], HOME)
 check('capture without target exit 2', r.returncode == 2)
 
-# ---- espanol por config ----
+# ---- Spanish via config ----
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as f:
     f.write('[ui]\nlanguage=es\n')
@@ -39,13 +39,13 @@ check('spanish command accepted', r.returncode == 1)
 check('spanish error message', 'sesiones' in r.stderr or 'sesiones' in r.stdout)
 os.remove(HOME + '/.superterm/superterm.ini')
 
-# ---- fallback por LANG sin config ----
+# ---- fallback via LANG with no config ----
 r = run_cli(['--help'], HOME, env={'LANG': 'es_ES.UTF-8'})
 check('LANG=es fallback', 'Uso:' in r.stdout)
 r = run_cli(['--help'], HOME, env={'LANG': 'C'})
 check('LANG=C stays English', 'Usage:' in r.stdout)
 
-# ---- montar una sesion separada de verdad ----
+# ---- set up a genuinely detached session ----
 c = stlib.Client(HOME, w=100, h=28)
 c.drain(2.0)
 c.send(b'seq 1 120\r', 1.2)
@@ -71,7 +71,7 @@ check('list panes has size', 'x' in r.stdout)
 r = run_cli(['listar', SES], HOME, env={'LANG': 'es_ES.UTF-8'})
 check('listar panes in Spanish', 'TITULO' in r.stdout or 'PANEL' in r.stdout)
 
-# ---- send + capture (ciclo completo por CLI) ----
+# ---- send + capture (full round trip via CLI) ----
 r = run_cli(['send', '.', 'echo', 'CLI_TOKEN_7'], HOME)
 check('send exit 0', r.returncode == 0)
 time.sleep(0.8)
@@ -89,7 +89,7 @@ check('capture -o writes file', r.returncode == 0 and
       os.path.exists(out) and 'CLI_TOKEN_7' in open(out).read())
 check('capture -o keeps stdout clean', r.stdout == '')
 
-# ---- send con teclas y sin intro ----
+# ---- send with keys and without newline ----
 r = run_cli(['send', '-n', '.', 'partial'], HOME)
 check('send -n exit 0', r.returncode == 0)
 r = run_cli(['send', '.', '-k', 'C-c'], HOME)
@@ -97,14 +97,14 @@ check('send -k C-c exit 0', r.returncode == 0)
 r = run_cli(['send', '.', '-k', 'NoSuchKey'], HOME)
 check('unknown key exit 2', r.returncode == 2)
 
-# ---- stdin crudo ----
+# ---- raw stdin ----
 r = run_cli(['send', SES + ':1', '-'], HOME, stdin='echo VIA_STDIN\r')
 check('send stdin exit 0', r.returncode == 0)
 time.sleep(0.8)
 r = run_cli(['capture', '.'], HOME)
 check('stdin text arrived', 'VIA_STDIN' in r.stdout)
 
-# ---- destinos malos ----
+# ---- bad targets ----
 r = run_cli(['send', 'nada:1', 'x'], HOME)
 check('bad session exit 1', r.returncode == 1)
 r = run_cli(['send', SES + ':9', 'x'], HOME)

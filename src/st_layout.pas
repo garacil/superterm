@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_layout - arbol de splits (vertical/horizontal, max 16 paneles)
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_layout - split tree (vertical/horizontal, max 16 panes)
 *)
 
 unit st_layout;
@@ -17,7 +17,7 @@ const
   MAX_PANES = 16;
 
 type
-  TSplitDir = (sdV, sdH); // sdV: lado a lado | sdH: arriba/abajo
+  TSplitDir = (sdV, sdH); // sdV: side by side | sdH: top/bottom
 
   TRect = record
     X, Y, W, H: integer;
@@ -27,10 +27,10 @@ type
   public
     IsSplit: boolean;
     Dir: TSplitDir;
-    Ratio: double;           // 0.15..0.85 tamaño relativo del hijo A
-    A, B: TNode;             // hijos si split
-    LeafIndex: integer;      // indice de panel si hoja
-    Parent: TObject;         // TNode padre o nil
+    Ratio: double;           // 0.15..0.85 relative size of child A
+    A, B: TNode;             // children if split
+    LeafIndex: integer;      // pane index if leaf
+    Parent: TObject;         // parent TNode or nil
     constructor CreateLeaf(AIndex: integer);
     constructor CreateSplit(ADir: TSplitDir; AA, AB: TNode);
     destructor Destroy; override;
@@ -48,12 +48,12 @@ type
     Root: TNode;
     Focused: integer;
     LastInsertedIndex: integer;
-    DividerList: array of TRect; // rects de lineas separadoras (1 de grosor)
+    DividerList: array of TRect; // divider line rects (1 cell thick)
     constructor Create;
     destructor Destroy; override;
     function PaneCount: integer;
     function SplitPane(AIndex: integer; ADir: TSplitDir): boolean;
-    function ClosePane(AIndex: integer): boolean; // false si se quedo vacio
+    function ClosePane(AIndex: integer): boolean; // false if it became empty
     procedure ResizeFocused(ADir: TSplitDir; ADelta: integer);
     procedure FocusNext(ADelta: integer);
     procedure ComputeRects(AW, AH: integer; out Rects: array of TRect);
@@ -175,7 +175,7 @@ begin
   L := TList.Create;
   try
     CollectLeaves(Root, L);
-    // nuevo indice de hoja: al final
+    // new leaf index: at the end
     NewLeaf := TNode.CreateLeaf(L.Count);
   finally
     L.Free;
@@ -189,7 +189,7 @@ begin
   Par := FindLeafParent(Root, Leaf);
   if Par = nil then
   begin
-    // es la raiz
+    // it is the root
     Root.Free;
     Root := NewSplit;
     NewSplit.Parent := nil;
@@ -221,7 +221,7 @@ begin
   Par := FindLeafParent(Root, Leaf);
   if Par = nil then
   begin
-    // unico panel: raiz hoja
+    // only pane: leaf root
     FreeAndNil(Root);
     Focused := -1;
     Exit(False);
@@ -277,7 +277,7 @@ begin
   if Leaf = nil then
     Exit;
   N := FindLeafParent(Root, Leaf);
-  // buscar el split mas cercano en el eje pedido
+  // find the nearest split on the requested axis
   while (N <> nil) do
   begin
     if TNode(N).Dir = ADir then
@@ -311,7 +311,7 @@ begin
   if ANode = nil then
     Exit;
   if not ANode.IsSplit then
-    Exit; // ya asignado por ComputeRects
+    Exit; // already assigned by ComputeRects
   if ANode.Dir = sdV then
   begin
     a := Round(R.W * ANode.Ratio);

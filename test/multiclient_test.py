@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""superterm test: varios clientes interactivos sobre una misma sesion.
+"""superterm test: several interactive clients on the same session.
 
-Cubre: adhesion versionada (v2) y exclusividad del cliente legado,
-difusion de salida a todos los clientes, gestion de ventanas en vivo
-(rename/new/close por CLI con clientes enganchados), negociacion de
-tamano minimo, desconexion del cliente rezagado y aviso de cierre.
+Covers: versioned attach (v2) and legacy client exclusivity, output
+broadcast to all clients, live window management (rename/new/close via
+CLI with clients attached), minimum size negotiation, laggard client
+disconnection and the shutdown notice.
 """
 import os
 import socket
@@ -25,7 +25,7 @@ HOME = stlib.fresh_home('multiclient')
 
 
 def clients_column(home):
-    """CLIENTS de la fila de sesion: el token antes de la fecha CREATED."""
+    """CLIENTS from the session row: the token before the CREATED date."""
     r = run_cli(['list'], home, env={'LANG': 'C'})
     for line in r.stdout.splitlines():
         toks = line.split()
@@ -38,7 +38,7 @@ def clients_column(home):
 
 
 def attach_raw(sock_path, payload):
-    """ATTACH crudo; devuelve (socket, ok_snapshot)."""
+    """Raw ATTACH; returns (socket, ok_snapshot)."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(8.0)
     s.connect(sock_path)
@@ -61,7 +61,7 @@ def attach_raw(sock_path, payload):
     return s, ok
 
 
-# ---- sesion separada con 1 panel ----
+# ---- detached session with 1 pane ----
 c = stlib.Client(HOME, w=100, h=28)
 c.drain(2.0)
 c.send(b'\x11', 0.4)
@@ -74,13 +74,13 @@ check('detached session exists', len(socks) == 1)
 SOCK = socks[0]
 SES = os.path.basename(SOCK)[:-5]
 
-# ---- cliente legado (ATTACH sin payload) solo, aun funciona ----
+# ---- legacy client (ATTACH with no payload) alone, still works ----
 s, ok = attach_raw(SOCK, b'')
 check('legacy attach alone still served', ok)
 s.close()
 time.sleep(0.8)
 
-# ---- dos clientes interactivos reales ----
+# ---- two real interactive clients ----
 a = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 a.drain(2.5)
 b = stlib.Client(HOME, args=['--attach'], w=80, h=24)
@@ -89,23 +89,23 @@ check('client A attached', a.alive())
 check('client B attached', b.alive())
 check('two clients listed', clients_column(HOME) == 2)
 
-# ---- la entrada de A la ven A y B (merge + difusion) ----
+# ---- input from A is seen by both A and B (merge + broadcast) ----
 a.send(b'echo MC_TOKEN_77\r', 0.5)
 a.wait_until(lambda t: 'MC_TOKEN_77' in t)
 b.wait_until(lambda t: 'MC_TOKEN_77' in t)
 check('client A sees its own input', 'MC_TOKEN_77' in a.text())
 check('client B sees broadcast output', 'MC_TOKEN_77' in b.text())
 
-# ---- control efimero sigue funcionando con 2 enganchados ----
+# ---- ephemeral control keeps working with 2 attached ----
 r = run_cli(['capture', '.'], HOME)
 check('capture with 2 clients', r.returncode == 0 and 'MC_TOKEN_77' in r.stdout)
 
-# ---- un cliente legado es rechazado mientras hay clientes v2 ----
+# ---- a legacy client is rejected while v2 clients exist ----
 s, ok = attach_raw(SOCK, b'')
 check('legacy attach rejected while shared', not ok)
 s.close()
 
-# ---- gestion de ventanas EN VIVO (la guardia de F3 ya no existe) ----
+# ---- LIVE window management (the F3 guard no longer exists) ----
 r = run_cli(['rename', SES + ':1', 'Panel Compartido'], HOME)
 check('rename while attached exit 0', r.returncode == 0)
 a.wait_until(lambda t: 'Panel Compartido' in t)
@@ -123,7 +123,7 @@ b.wait_until(lambda t: 'Trabajo Largo' in t)
 check('client A gained the window', 'Trabajo Largo' in a.text())
 check('client B gained the window', 'Trabajo Largo' in b.text())
 
-# ---- negociacion de tamano: la pantalla del panel 1 cabe en B (80 col) ----
+# ---- size negotiation: pane 1's screen fits in B (80 cols) ----
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
 row1 = [l for l in r.stdout.splitlines() if l.startswith('1 ')]
 size_ok = False
@@ -135,10 +135,10 @@ if row1:
             break
 check('pane 1 sized to smallest client', size_ok)
 
-# ---- 3.0.1: un attach con otra geometria no rebota tamanos ----
-# antes, las peticiones transitorias del attach (tile -> geometria final)
-# encogian y re-agrandaban las pantallas de TODOS y el contenido visible
-# se iba al historial; ahora el attach hace una unica peticion final
+# ---- 3.0.1: an attach with a different geometry does not bounce sizes ----
+# previously, the attach's transient requests (tile -> final geometry)
+# shrank and re-grew EVERYONE's screens and the visible content
+# went into the history; now the attach makes a single final request
 run_cli(['send', SES + ':1', 'echo GEOM_TOKEN_31'], HOME)
 a.wait_until(lambda t: 'GEOM_TOKEN_31' in t)
 b.wait_until(lambda t: 'GEOM_TOKEN_31' in t)
@@ -155,7 +155,7 @@ c3.send(b'd', 1.0)
 c3.wait_exit(timeout=8.0)
 c3.close()
 
-# ---- cerrar el panel nuevo por CLI: ambos clientes compactan ----
+# ---- close the new pane via CLI: both clients compact ----
 r = run_cli(['close', SES + ':2'], HOME)
 check('close while attached exit 0', r.returncode == 0)
 a.wait_until(lambda t: 'Trabajo Largo' not in t)
@@ -168,14 +168,14 @@ b.wait_until(lambda t: 'AFTER_CLOSE_OK' in t)
 check('panes still aligned in A', 'AFTER_CLOSE_OK' in a.text())
 check('panes still aligned in B', 'AFTER_CLOSE_OK' in b.text())
 
-# ---- cliente rezagado: enganchado v2 que no lee no bloquea al daemon ----
+# ---- laggard client: an attached v2 that never reads does not block the daemon ----
 lag, ok = attach_raw(SOCK, struct.pack('<iiii', 2, 0, 0, 1))
 check('laggard attached', ok)
 check('three clients listed', clients_column(HOME) == 3)
 run_cli(['send', SES + ':1',
          'yes LAGGARD_FLOOD | head -c 10000000; echo PUMP_DONE'], HOME)
-# drenar A y B mientras esperamos: son lectores vivos y no deben caer;
-# el rezagado no progresa y el daemon lo corta pasado el periodo de gracia
+# drain A and B while we wait: they are live readers and must not drop;
+# the laggard makes no progress and the daemon cuts it after the grace period
 deadline = time.time() + 45
 while time.time() < deadline:
     a.drain(0.3)
@@ -184,8 +184,8 @@ while time.time() < deadline:
         break
 check('laggard dropped, live clients kept', clients_column(HOME) == 2)
 lag.close()
-# drenar a la vez: si solo se atiende a uno, el otro acabaria cortado
-# por la misma regla de rezagados que acabamos de comprobar
+# drain both at once: if only one is serviced, the other would end up cut
+# off by the same laggard rule we just verified
 deadline = time.time() + 90
 while time.time() < deadline:
     a.drain(0.2)
@@ -197,11 +197,11 @@ check('client B survived the flood', 'PUMP_DONE' in b.text())
 r = run_cli(['list'], HOME, env={'LANG': 'C'})
 check('daemon alive after flood', r.returncode == 0 and SES in r.stdout)
 
-# ---- matar la sesion: ambos clientes reciben el aviso y salen ----
+# ---- kill the session: both clients get the notice and exit ----
 r = run_cli(['kill', SES], HOME)
 check('kill with clients attached exit 0', r.returncode == 0)
 time.sleep(1.5)
-a.send(b'\r', 0.5)   # aceptar el aviso "la sesion se cerro"
+a.send(b'\r', 0.5)   # accept the "session was closed" notice
 b.send(b'\r', 0.5)
 check('client A exited after shutdown', a.wait_exit(timeout=8.0) is not None)
 check('client B exited after shutdown', b.wait_exit(timeout=8.0) is not None)

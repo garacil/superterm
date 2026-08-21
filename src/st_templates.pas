@@ -1,6 +1,6 @@
 (*
-  Unidad: st_templates - definiciones persistentes de templates, sesiones,
-  ventanas y terminales.
+  Unit: st_templates - persistent definitions of templates, sessions,
+  windows and terminals.
  *)
 
 unit st_templates;
@@ -16,11 +16,11 @@ type
   TTemplatePaneSpec = record
     Name: string;
     Enabled: boolean;
-    Terminal: string;       // nombre de TTerminalDef, vacio = terminal local
+    Terminal: string;       // TTerminalDef name, empty = local terminal
     Cmd: string;
     Cwd: string;
-    PostConnect: string;    // comando opcional despues de conectar
-    ScrollBack: integer;    // 0 = usar el terminal referenciado
+    PostConnect: string;    // optional command after connecting
+    ScrollBack: integer;    // 0 = use the referenced terminal
   end;
 
   TTemplatePaneArray = array of TTemplatePaneSpec;

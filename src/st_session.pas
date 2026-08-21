@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_session - guardar/restaurar sesion (layout + comando + cwd por panel)
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_session - save/restore session (layout + command + cwd per pane)
 *)
 
 unit st_session;
@@ -17,12 +17,12 @@ type
   TPaneInfo = record
     Cmd: string;
     Cwd: string;
-    Term: string;   // nombre del terminal de /etc/superterm ('' = ad-hoc)
-    Title: string;  // titulo propio de la ventana ('' = derivado de cwd/cmd)
-    Args: TStringArray; // argumentos observados, para restauracion segura
-    // geometria/estado de la ventana del panel (BW<=0 = sin datos, tiling):
-    // las ventanas movidas o redimensionadas a mano con Ctrl-F5 deben
-    // volver exactamente donde estaban al restaurar la sesion
+    Term: string;   // terminal name from /etc/superterm ('' = ad-hoc)
+    Title: string;  // window's own title ('' = derived from cwd/cmd)
+    Args: TStringArray; // observed arguments, for safe restoration
+    // geometry/state of the pane window (BW<=0 = no data, tiling):
+    // windows moved or resized by hand with Ctrl-F5 must return
+    // exactly where they were when the session is restored
     BX, BY, BW, BH: integer;
     Minimized: boolean;
     Zoomed: boolean;
@@ -120,8 +120,8 @@ begin
     Ini.WriteString('layout', 'nodes', SL.DelimitedText);
     Ini.WriteInteger('layout', 'count', Length(Panes));
     Ini.WriteInteger('layout', 'focused', Lay.Focused);
-    // tamano del escritorio al guardar: los bounds absolutos solo se
-    // reaplican al restaurar si el escritorio mide lo mismo
+    // desktop size at save time: absolute bounds are only reapplied
+    // on restore if the desktop has the same dimensions
     if (ADeskW > 0) and (ADeskH > 0) then
     begin
       Ini.WriteInteger('layout', 'deskw', ADeskW);

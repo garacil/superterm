@@ -19,8 +19,8 @@ BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'supe
 HOME = '/tmp/opencode/sthome-cursor'
 SOCK = HOME + '/.superterm/sessions/session.sock'
 
-# autosanado: una ejecucion fallida anterior puede dejar un daemon vivo y su
-# socket; matarlo y limpiar el directorio de sesiones antes de empezar
+# self-healing: a previously failed run can leave a live daemon and its
+# socket behind; kill it and clean the sessions directory before starting
 import glob as _glob, shutil as _shutil, socket as _socket, struct as _struct
 def _purge_sessions():
     d = HOME + '/.superterm/sessions'
@@ -29,7 +29,7 @@ def _purge_sessions():
             s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             s.settimeout(1.0)
             s.connect(sock)
-            # FRAME_CLOSE (kind=5, longitud 0) al daemon zombi
+            # FRAME_CLOSE (kind=5, length 0) to the zombie daemon
             s.sendall(_struct.pack('<BBhI', 5, 0, -1, 0))
             s.close()
         except OSError:
@@ -103,18 +103,18 @@ def final_position_ok(name, out, row, col):
         ok = b'\x1b[H' not in tail[1:]
     check(name, ok)
 
-# 1. salida normal sin guardar: Alt-Q
+# 1. normal exit without saving: Alt-Q
 answered, out = run_session([], 23, 7, b'\x1bq')
 check("DSR consultado (Alt-Q)", answered)
 final_position_ok("cursor tras salir con Alt-Q", out, 23, 7)
 
-# 2. detach dejando todo en ejecucion: Ctrl-Q d (+\r acepta el nombre)
+# 2. detach leaving everything running: Ctrl-Q d (+\r accepts the name)
 answered, out = run_session([], 11, 5, b'\x11d\r')
 check("DSR consultado (detach)", answered)
 final_position_ok("cursor tras detach Ctrl-Q d", out, 11, 5)
 check("servidor sigue vivo tras detach", os.path.exists(SOCK))
 
-# 3. reattach y cierre definitivo: superterm --attach + Alt-X
+# 3. reattach and final close: superterm --attach + Alt-X
 answered, out = run_session(['--attach'], 17, 3, b'\x1bx')
 check("DSR consultado (--attach)", answered)
 final_position_ok("cursor tras cierre definitivo", out, 17, 3)

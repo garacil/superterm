@@ -86,14 +86,14 @@ try:
     check('Spanish config selects Spanish UI',
           'Paneles' in s.text() and 'Opciones' in s.text())
 
-    s.send(b'\x1bs', 0.5)  # Sesiones
-    s.send(b'a')  # -> Asistente de sesion rapida
+    s.send(b'\x1bs', 0.5)  # "Sesiones" menu
+    s.send(b'a')  # -> "Asistente de sesion rapida" (quick session wizard)
     check('Spanish input dialog is localized',
           'Aceptar' in s.text() and 'Cancelar' in s.text())
     s.send(b'\t\t\r')
 
-    s.send(b'\x1bo', 0.5)  # Opciones
-    s.send(b'i', 0.5)  # Idioma
+    s.send(b'\x1bo', 0.5)  # "Opciones" menu
+    s.send(b'i', 0.5)  # "Idioma" (Language)
     check('Spanish language menu offers English', 'English' in s.text())
     s.send(b'e')
     check('English switch updates the UI',
@@ -105,11 +105,11 @@ try:
     s.send(b's')
     check('Spanish switch updates the UI',
           'Paneles' in s.text() and 'Opciones' in s.text())
-    s.send(b'\x1ba\r')  # Ayuda -> Ayuda y atajos
+    s.send(b'\x1ba\r')  # "Ayuda" -> "Ayuda y atajos" (Help -> Help and shortcuts)
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
-    s.send(b'\x1b', 0.5)  # cerrar el dialogo de ayuda
-    s.send(b'\x1b', 0.5)  # y cualquier menu que quedara abierto
-    s.send(b'\x1bq', 1.5)  # Alt-Q: cierra cliente y daemon de sesion
+    s.send(b'\x1b', 0.5)  # close the help dialog
+    s.send(b'\x1b', 0.5)  # and any menu still left open
+    s.send(b'\x1bq', 1.5)  # Alt-Q: closes client and session daemon
 finally:
     s.close()
 

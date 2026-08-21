@@ -247,7 +247,7 @@ class Client:
         try:
             os.write(self.fd, data)
         except OSError:
-            pass   # el cliente ya salio (p. ej. tras un detach inmediato)
+            pass   # the client already exited (e.g. after an immediate detach)
         self.drain(seconds)
 
     def text(self):

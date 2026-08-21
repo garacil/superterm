@@ -1,7 +1,7 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_config - configuración y rutas
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_config - configuration and paths
 *)
 
 unit st_config;
@@ -17,28 +17,28 @@ type
   TUiLanguage = (ulEnglish, ulSpanish);
 
   TConfig = record
-    Shell: string;         // shell para autologin
-    LoginShell: boolean;   // argv0 = -bash (lee .profile)
-    User: string;          // usuario del autologin (informativo, ya logueado)
-    PrefixKey: integer;    // tecla prefijo (17 = Ctrl-Q; 1..26 = Ctrl-A..Z)
-    AutoSave: boolean;     // guardar sesion al salir
-    AutoRestore: boolean;  // restaurar sesion al arrancar
-    DefaultProfile: string;  // perfil por defecto (nuevo modelo)
-    DefaultTemplate: string; // legado: para derivar DefaultProfile
-    DefaultSession: string;  // legado
+    Shell: string;         // shell for autologin
+    LoginShell: boolean;   // argv0 = -bash (reads .profile)
+    User: string;          // autologin user (informative, already logged in)
+    PrefixKey: integer;    // prefix key (17 = Ctrl-Q; 1..26 = Ctrl-A..Z)
+    AutoSave: boolean;     // save session on exit
+    AutoRestore: boolean;  // restore session on startup
+    DefaultProfile: string;  // default profile (new model)
+    DefaultTemplate: string; // legacy: used to derive DefaultProfile
+    DefaultSession: string;  // legacy
     DefaultWindow: string;
     Language: TUiLanguage;
-    Palette: string;       // 'color' (TP clasico) | 'bw' | 'mono'
-    // 'always': toda sesion nace con servidor y el terminal es un cliente
-    // (controlable por CLI desde el arranque); 'detach': modo clasico,
-    // el servidor solo existe tras separar con el prefijo + d
+    Palette: string;       // 'color' (classic TP) | 'bw' | 'mono'
+    // 'always': every session is born with a server and the terminal is a
+    // client (controllable via CLI from startup); 'detach': classic mode,
+    // the server only exists after detaching with prefix + d
     ServerMode: string;
   end;
 
 function ConfigDir: string;
 function ConfigFile: string;
 function SessionFile: string;
-function SystemConfigFile: string;   // /etc/superterm/superterm.ini (o $SUPERTERM_INI)
+function SystemConfigFile: string;   // /etc/superterm/superterm.ini (or $SUPERTERM_INI)
 function ExpandUserPath(const S: string): string;
 function ParseUiLanguage(const S: string): TUiLanguage;
 function UiLanguageCode(ALanguage: TUiLanguage): string;
@@ -55,18 +55,18 @@ procedure LoadConfig(out Cfg: TConfig);
 procedure SaveConfig(const Cfg: TConfig);
 
 var
-  // idioma efectivo de la interfaz, compartido por todas las unidades de UI
+  // effective UI language, shared by all the UI units
   CurrentLanguage: TUiLanguage = ulEnglish;
 
-// devuelve el texto del idioma activo (todas las cadenas de UI van en pares)
+// returns the text for the active language (all UI strings come in pairs)
 function UiText(const EnglishText, SpanishText: string): string;
 
-// marca uniforme de elemento activo en listas tipo radio: '(*) ' / '( ) '
+// uniform active-item mark in radio-style lists: '(*) ' / '( ) '
 function ActiveMark(AActive: boolean): string;
 
-// tecla prefijo: parseo ('ctrl-q', 'q' o numero; el 2 numerico del default
-// antiguo migra a 17/Ctrl-Q para no chocar con el tmux remoto), codigo de
-// guardado y etiqueta para la interfaz
+// prefix key: parsing ('ctrl-q', 'q' or a number; the numeric 2 of the old
+// default migrates to 17/Ctrl-Q to avoid clashing with remote tmux), saved
+// code and label for the interface
 function ParsePrefixKey(const S: string): integer;
 function PrefixKeyCode(AKey: integer): string;   // 'ctrl-q'
 function PrefixKeyLabel(AKey: integer): string;  // 'Ctrl-Q'
@@ -135,7 +135,7 @@ var
   T: string;
   V, Code: integer;
 begin
-  Result := 17; // Ctrl-Q: no colisiona con el Ctrl-B del tmux remoto
+  Result := 17; // Ctrl-Q: does not collide with the remote tmux's Ctrl-B
   T := LowerCase(Trim(S));
   if T = '' then
     Exit;
@@ -144,8 +144,8 @@ begin
   Val(T, V, Code);
   if Code = 0 then
   begin
-    // numerico: el 2 era el default antiguo (Ctrl-B) y ningun usuario lo
-    // eligio a proposito; un valor explicito se respeta via 'ctrl-b'
+    // numeric: 2 was the old default (Ctrl-B) and no user chose it on
+    // purpose; an explicit value is honored via 'ctrl-b'
     if (V >= 1) and (V <= 26) and (V <> 2) then
       Result := V;
     Exit;
@@ -192,7 +192,7 @@ begin
   Cfg.Shell := Sh;
   Cfg.LoginShell := True;
   Cfg.User := GetEnvironmentVariable('USER');
-  Cfg.PrefixKey := 17; // Ctrl-Q (no colisiona con tmux/screen remotos)
+  Cfg.PrefixKey := 17; // Ctrl-Q (does not collide with remote tmux/screen)
   Cfg.AutoSave := True;
   Cfg.AutoRestore := True;
   Cfg.DefaultProfile := '';

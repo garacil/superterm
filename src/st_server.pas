@@ -1,5 +1,5 @@
 (*
-  Unidad: st_server - servidor persistente de sesiones desprendibles
+  Unit: st_server - persistent server for detachable sessions
 
   The server owns the PTY masters and terminal parsers.  The FreeVision
   process is only a client, so closing or losing that client cannot close a
@@ -22,19 +22,19 @@ const
   FRAME_RESIZE = 3;
   FRAME_DETACH = 4;
   FRAME_CLOSE = 5;
-  FRAME_KILLPANE = 6;   // cliente enganchado cierra un panel
-  FRAME_LAYOUT = 7;     // cliente enganchado sincroniza arbol/geometria
-  FRAME_NEWPANE = 8;    // panel nuevo daemon-side: byte Dir; Class,Cmd,Cwd,Title
-  FRAME_FOCUS = 9;      // cambia el panel enfocado (panel en cabecera)
-  FRAME_RENAME = 10;    // string NuevoTitulo (panel en cabecera)
+  FRAME_KILLPANE = 6;   // attached client closes a pane
+  FRAME_LAYOUT = 7;     // attached client syncs tree/geometry
+  FRAME_NEWPANE = 8;    // new daemon-side pane: byte Dir; Class,Cmd,Cwd,Title
+  FRAME_FOCUS = 9;      // changes the focused pane (pane in header)
+  FRAME_RENAME = 10;    // string NewTitle (pane in header)
 
-  // control efimero: una conexion, un frame de peticion, respuesta y cierre;
-  // nunca ocupa el slot de cliente interactivo (patron de FRAME_CLOSE)
-  FRAME_CTL_LIST = 11;     // detalles de sesion y paneles
-  FRAME_CTL_SEND = 12;     // texto crudo a un panel
-  FRAME_CTL_CAPTURE = 13;  // captura de pantalla/historial como texto
-  FRAME_CTL_WINOP = 14;    // gestion de ventanas (reservado)
-  FRAME_CTL_INFO = 15;     // solo cabecera de sesion
+  // ephemeral control: one connection, one request frame, reply and close;
+  // never occupies an interactive client slot (FRAME_CLOSE pattern)
+  FRAME_CTL_LIST = 11;     // session and pane details
+  FRAME_CTL_SEND = 12;     // raw text to a pane
+  FRAME_CTL_CAPTURE = 13;  // screen/history capture as text
+  FRAME_CTL_WINOP = 14;    // window management (reserved)
+  FRAME_CTL_INFO = 15;     // session header only
 
   FRAME_SESSION = 20;
   FRAME_SCREEN = 21;
@@ -43,56 +43,56 @@ const
   FRAME_EXIT = 24;
   FRAME_ERROR = 25;
 
-  // eventos servidor->cliente (solo a clientes que declaran la capacidad;
-  // un cliente antiguo trata cualquier frame desconocido como conexion
-  // perdida, asi que jamas se le envian)
-  FRAME_LAYOUT_EV = 26;    // mismo payload que FRAME_LAYOUT
-  FRAME_KILLPANE_EV = 27;  // panel cerrado (panel en cabecera)
+  // server->client events (only to clients that declare the capability;
+  // an old client treats any unknown frame as a lost connection,
+  // so they are never sent to it)
+  FRAME_LAYOUT_EV = 26;    // same payload as FRAME_LAYOUT
+  FRAME_KILLPANE_EV = 27;  // pane closed (pane in header)
   FRAME_NEWPANE_EV = 28;   // At,NewIdx,PaneCount,Dir,Cols,Rows,Title,Term
-  FRAME_RESIZE_EV = 29;    // Longint Cols,Rows (panel en cabecera)
-  FRAME_TITLE_EV = 30;     // string Titulo (panel en cabecera)
-  FRAME_FOCUS_EV = 31;     // panel enfocado (panel en cabecera)
-  FRAME_SHUTDOWN_EV = 32;  // la sesion se cierra
+  FRAME_RESIZE_EV = 29;    // Longint Cols,Rows (pane in header)
+  FRAME_TITLE_EV = 30;     // string Title (pane in header)
+  FRAME_FOCUS_EV = 31;     // focused pane (pane in header)
+  FRAME_SHUTDOWN_EV = 32;  // the session is shutting down
 
-  // respuestas de control
+  // control replies
   FRAME_CTL_OK = 40;
   FRAME_CTL_ERR = 41;
-  FRAME_CTL_DATA = 42;     // trozo de datos (texto o registros)
-  FRAME_CTL_END = 43;      // fin de la respuesta
+  FRAME_CTL_DATA = 42;     // data chunk (text or records)
+  FRAME_CTL_END = 43;      // end of the reply
 
-  // modos de captura (payload de FRAME_CTL_CAPTURE)
+  // capture modes (FRAME_CTL_CAPTURE payload)
   CAPTURE_VISIBLE = 0;
   CAPTURE_ALL = 1;
   CAPTURE_LAST_N = 2;
 
-  // sub-operaciones de FRAME_CTL_WINOP (byte Op al inicio del payload)
+  // FRAME_CTL_WINOP sub-operations (byte Op at start of payload)
   WINOP_NEWPANE = 1;    // byte Dir(0=V,1=H); strings Class,Cmd,Cwd,Title
-  WINOP_KILL = 2;       // panel en la cabecera
+  WINOP_KILL = 2;       // pane in the header
   WINOP_FOCUS = 3;
   WINOP_MINIMIZE = 4;
-  WINOP_RESTORE = 5;    // deshace minimizar y zoom
+  WINOP_RESTORE = 5;    // undoes minimize and zoom
   WINOP_ZOOM = 6;
-  WINOP_ORGANIZE = 8;   // byte How: 0 rejilla, 1 mosaico, 2 cascada
+  WINOP_ORGANIZE = 8;   // byte How: 0 grid, 1 tile, 2 cascade
   WINOP_RENAME = 9;     // string NewTitle
-  WINOP_RESIZE = 10;    // Longint Cols, Rows (tamano del terminal)
-  WINOP_SAVE = 11;      // guarda session.ini con el estado del daemon
+  WINOP_RESIZE = 10;    // Longint Cols, Rows (terminal size)
+  WINOP_SAVE = 11;      // saves session.ini with the daemon state
 
   MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
-  // adhesion versionada (cola tolerante del payload de FRAME_ATTACH):
-  // ProtoVer, DeskW, DeskH, Caps; sin payload = cliente legado exclusivo
+  // versioned attach (tolerant tail of the FRAME_ATTACH payload):
+  // ProtoVer, DeskW, DeskH, Caps; no payload = exclusive legacy client
   ATTACH_PROTO_VER = 2;
-  ATTACH_CAP_EVENTS = 1;   // bit0 de Caps: entiende los eventos 26+
+  ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
   MAX_CLIENTS = 8;
-  // tope duro del buffer de salida por cliente (corte inmediato)
+  // hard cap on the per-client output buffer (immediate disconnect)
   MAX_EGRESS = 8 * 1024 * 1024;
-  // control de flujo: con esta cantidad pendiente hacia algun cliente se
-  // deja de leer de los PTY (el productor se frena solo en su buffer);
-  // asi un lector lento pausa la sesion en vez de perder salida
+  // flow control: with this much pending toward some client we stop
+  // reading from the PTYs (the producer throttles itself in its buffer);
+  // thus a slow reader pauses the session instead of losing output
   FLOW_STOP = 2 * 1024 * 1024;
-  // cliente rezagado: pendiente alto sin ningun progreso durante el
-  // periodo de gracia -> desconectar para que la sesion siga viva
+  // lagging client: high pending with no progress at all during the
+  // grace period -> disconnect so the session stays alive
   LAG_MIN_PENDING = 512 * 1024;
   LAG_GRACE_MS = 10000;
 
@@ -105,14 +105,14 @@ const
 type
   TByteArray = array of byte;
 
-  // arrays tipados: los open arrays const disparan un hint espurio de
-  // "assigned but never used" cuando -Cr (checks de rango) esta activo
+  // typed arrays: const open arrays trigger a spurious hint of
+  // "assigned but never used" when -Cr (range checks) is active
   TPtyArray = array of TPty;
   TScreenArray = array of TScreen;
   TStrArray = array of string;
   TBoolArray = array of boolean;
 
-  // geometria de una ventana del cliente (bounds absolutos del escritorio)
+  // geometry of a client window (absolute desktop bounds)
   TPaneGeom = record
     BX, BY, BW, BH: Longint;
     Zoomed: boolean;
@@ -130,14 +130,14 @@ type
     LayoutNodes: string;
     Focused: integer;
     PaneCount: integer;
-    Name: string;      // nombre de la sesion (cola tolerante del payload)
-    Profile: string;   // perfil de origen ('' = ad-hoc)
-    // geometria de ventanas (cola tolerante 2; vacia si el daemon es viejo
-    // o nunca recibio un FRAME_LAYOUT); bounds absolutos para DeskW x DeskH
+    Name: string;      // session name (tolerant tail of the payload)
+    Profile: string;   // source profile ('' = ad-hoc)
+    // window geometry (tolerant tail 2; empty if the daemon is old or
+    // never received a FRAME_LAYOUT); absolute bounds for DeskW x DeskH
     Geom: TPaneGeomArray;
     DeskW, DeskH: Longint;
-    // version del daemon (cola tolerante 3; 0 = daemon anterior a los
-    // eventos: no enviarle frames nuevos)
+    // daemon version (tolerant tail 3; 0 = daemon predating the
+    // events: do not send it new frames)
     ProtoVer: Longint;
     Panes: array[0..MAX_PANES - 1] of TSessionPaneSnapshot;
   end;
@@ -172,26 +172,26 @@ type
     function SendInput(APane: integer; const S: RawByteString): boolean;
     function SendResize(APane, ACols, ARows: integer): boolean;
     function Detach: boolean;
-    // cierra la sesion; con ASave el daemon guarda antes session.ini
+    // closes the session; with ASave the daemon saves session.ini first
     function CloseSession(ASave: boolean = False): boolean;
-    // cierre de un panel del daemon (el cliente compacta en espejo)
+    // closes a daemon pane (the client compacts in mirror)
     function SendKillPane(APane: integer): boolean;
-    // sincroniza arbol de splits, foco, titulos y geometria de ventanas
+    // syncs split tree, focus, titles and window geometry
     function SendLayout(const ANodes: string; AFocused: integer;
       const ATitles: TStrArray; const AGeom: TPaneGeomArray;
       ADeskW, ADeskH: integer): boolean;
-    // panel nuevo creado por el daemon; la ventana llega por NEWPANE_EV
+    // new pane created by the daemon; the window arrives via NEWPANE_EV
     function SendNewPane(APane: integer; ADir: byte;
       const AClass, ACmd, ACwd, ATitle: string): boolean;
     function SendFocus(APane: integer): boolean;
     function SendRename(APane: integer; const ATitle: string): boolean;
     property Connected: boolean read FConnected;
-    // version del daemon al que estamos enganchados (0 = anterior a v2)
+    // version of the daemon we are attached to (0 = pre-v2)
     property ServerProto: Longint read FServerProto;
   end;
 
 type
-  // sesion separada descubierta en disco (socket + sidecar de metadatos)
+  // detached session discovered on disk (socket + metadata sidecar)
   TSessionInfo = record
     Name: string;
     Profile: string;
@@ -199,36 +199,36 @@ type
     Pid: integer;
     Created: string;
     SocketPath: string;
-    Legacy: boolean;   // socket unico antiguo ~/.superterm/session.sock
+    Legacy: boolean;   // old single socket ~/.superterm/session.sock
   end;
   TSessionInfoArray = array of TSessionInfo;
 
-function SessionSocketPath: string;      // ruta legada (un solo socket)
-function SessionSocketIsLive: boolean;   // sonda de la ruta legada
+function SessionSocketPath: string;      // legacy path (single socket)
+function SessionSocketIsLive: boolean;   // probe of the legacy path
 function SessionsDir: string;            // ~/.superterm/sessions (0700)
 function SanitizeSessionName(const S: string): string;
 function SessionSocketPathFor(const AName: string): string;
 function SessionIsLive(const APath: string): boolean;
-// enumera sesiones vivas (sondea cada socket; purga huerfanos y sidecars;
-// incluye el socket legado como '(sin nombre)')
+// enumerates live sessions (probes each socket; purges orphans and
+// sidecars; includes the legacy socket as '(sin nombre)')
 function EnumerateSessions(out Infos: TSessionInfoArray): boolean;
-// nombre libre a partir de una base: base, base-2, base-3...
+// free name derived from a base: base, base-2, base-3...
 function SuggestSessionName(const ABase: string): string;
-// cierre permanente de una sesion separada por su socket (FRAME_CLOSE);
-// espera brevemente y solo devuelve True si el daemon murio de verdad
+// permanent close of a detached session via its socket (FRAME_CLOSE);
+// waits briefly and returns True only if the daemon really died
 function CloseSessionAt(const APath: string): boolean;
 
 type
-  // callback de datos para peticiones de control con respuesta en trozos
+  // data callback for control requests with chunked replies
   TCtlDataProc = procedure(const AChunk: TByteArray) of object;
 
-// peticion de control simple (OK/ERR): conecta, envia un frame, espera la
-// respuesta y cierra; AReply lleva el mensaje de error si lo hay
+// simple control request (OK/ERR): connects, sends one frame, waits for
+// the reply and closes; AReply carries the error message if any
 function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
   const APayload: TByteArray; out AReply: string): boolean;
 
-// peticion de control con datos (LIST/CAPTURE/INFO): igual pero entregando
-// cada FRAME_CTL_DATA por el callback hasta FRAME_CTL_END
+// control request with data (LIST/CAPTURE/INFO): same but delivering
+// each FRAME_CTL_DATA through the callback until FRAME_CTL_END
 function CtlStream(const ASocket: string; AKind: byte; APane: integer;
   const APayload: TByteArray; AOnData: TCtlDataProc): boolean;
 
@@ -239,20 +239,20 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   ADeskW, ADeskH: integer;
   const ATitleFixed: TBoolArray = nil): boolean;
 
-// decodifica el payload de FRAME_LAYOUT / FRAME_LAYOUT_EV
+// decodes the FRAME_LAYOUT / FRAME_LAYOUT_EV payload
 function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
   out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
   out ADeskW, ADeskH: Longint): boolean;
 
-// decodifica el payload de FRAME_NEWPANE_EV
+// decodes the FRAME_NEWPANE_EV payload
 function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
   APaneCount: Longint; out ADir: byte; out ACols, ARows: Longint;
   out ATitle, ATerm: string): boolean;
 
 var
   AttachRequested: boolean = False;
-  AttachSocket: string = '';   // socket resuelto por la CLI ('' = selector)
-  CliSessionName: string = ''; // nombre pedido con --session/--sesion
+  AttachSocket: string = '';   // socket resolved by the CLI ('' = selector)
+  CliSessionName: string = ''; // name requested with --session/--sesion
 
 implementation
 
@@ -264,15 +264,15 @@ type
     Size: LongWord;
   end;
 
-  // un cliente interactivo enganchado: fd, capacidades, buffer de egreso y
-  // ultima peticion de tamano por panel (para el minimo comun)
+  // an attached interactive client: fd, capabilities, egress buffer and
+  // last size request per pane (for the common minimum)
   TClientConn = record
     Fd: cint;
     Caps: Longint;
-    Legacy: boolean;         // ATTACH sin payload: protocolo v1, exclusivo
+    Legacy: boolean;         // ATTACH without payload: protocol v1, exclusive
     DeskW, DeskH: Longint;
     OutBuf: RawByteString;
-    LastProgress: QWord;     // ultimo tick con bytes aceptados por su socket
+    LastProgress: QWord;     // last tick with bytes accepted by its socket
     ReqCols: array[0..MAX_PANES - 1] of Longint;
     ReqRows: array[0..MAX_PANES - 1] of Longint;
   end;
@@ -285,7 +285,7 @@ type
     FPanes: array[0..MAX_PANES - 1] of TPty;
     FScreens: array[0..MAX_PANES - 1] of TScreen;
     FTitles: array[0..MAX_PANES - 1] of string;
-    FTitleFixed: array[0..MAX_PANES - 1] of boolean;  // renombrado a mano
+    FTitleFixed: array[0..MAX_PANES - 1] of boolean;  // renamed by hand
     FTerms: array[0..MAX_PANES - 1] of string;
     FSocketPath: string;
     FMetaPath: string;
@@ -297,11 +297,11 @@ type
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
     FDeskW, FDeskH: Longint;
-    FCtlClasses: TWindowClassArray;   // clases resueltas para LIST (lazy)
+    FCtlClasses: TWindowClassArray;   // classes resolved for LIST (lazy)
     FCtlClassesLoaded: boolean;
-    FCtlCfg: TConfig;                 // config para spawns daemon-side
-    FEmptySince: QWord;               // tick sin clientes ni paneles vivos
-    FLastTitleTick: QWord;            // derivacion periodica de titulos
+    FCtlCfg: TConfig;                 // config for daemon-side spawns
+    FEmptySince: QWord;               // tick with no clients or live panes
+    FLastTitleTick: QWord;            // periodic title derivation
     function CreateListener: boolean;
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
@@ -378,9 +378,9 @@ begin
   Result := True;
 end;
 
-// escritura completa con plazo total: select de escribibilidad por tramo y
-// deadline acumulado; si el receptor no consume a tiempo, se aborta (un
-// cliente de control muerto no debe colgar el bucle del daemon)
+// full write with a total deadline: writability select per segment and
+// a cumulative deadline; if the receiver does not consume in time, abort
+// (a dead control client must not hang the daemon loop)
 function WriteFullTimeout(AFd: cint; const Buffer; ASize: integer;
   ATotalMs: integer): boolean;
 var
@@ -419,7 +419,7 @@ begin
   Result := True;
 end;
 
-// frame completo (cabecera + payload) con el mismo plazo total
+// full frame (header + payload) with the same total deadline
 function WriteFrameToTimeout(AFd: cint; AKind: byte; APane: integer;
   const Data: TByteArray; ATotalMs: integer): boolean;
 var
@@ -491,10 +491,10 @@ begin
   Result := True;
 end;
 
-// lectura tolerante de la cola del snapshot: valida que el prefijo de
-// longitud Y el cuerpo de la cadena quepan en lo que queda del stream;
-// ante cualquier violacion deja S en '' y devuelve False sin lanzar
-// excepciones (ReadBuffer lanzaria EReadError con una cola truncada)
+// tolerant read of the snapshot tail: validates that the length prefix
+// AND the string body fit in what remains of the stream; on any
+// violation it leaves S as '' and returns False without raising
+// exceptions (ReadBuffer would raise EReadError on a truncated tail)
 function ReadTailString(Stream: TStream; out S: string): boolean;
 var
   L: Longint;
@@ -608,12 +608,12 @@ begin
 end;
 
 type
-  // resultado de sondear un socket de sesion: vivo, rechazo duro
-  // (candidato a purga) o timeout/saturacion (no vivo, nunca purgable)
+  // result of probing a session socket: live, hard refusal (purge
+  // candidate) or timeout/saturation (not live, never purgeable)
   TSocketProbe = (spLive, spDead, spTimeout);
 
-// sonda con connect no bloqueante y espera acotada (~300 ms): un daemon
-// colgado o con el backlog lleno no debe congelar la enumeracion
+// probe with non-blocking connect and bounded wait (~300 ms): a hung
+// daemon or one with a full backlog must not freeze the enumeration
 function ProbeSocket(const APath: string): TSocketProbe;
 var
   Addr: TUnixSockAddr;
@@ -638,7 +638,7 @@ begin
     case fpgeterrno of
       ESysEINPROGRESS:
         begin
-          // conexion en curso: esperar el desenlace con timeout
+          // connection in progress: await the outcome with a timeout
           fpFD_ZERO(SetWrite);
           fpFD_SET(Fd, SetWrite);
           TV.tv_sec := 0;
@@ -655,14 +655,14 @@ begin
           end;
         end;
       ESysEAGAIN:
-        // backlog lleno en AF_UNIX: el daemon existe pero no atiende
+        // AF_UNIX backlog full: the daemon exists but is not serving
         Result := spTimeout;
     end;
   FpClose(Fd);
 end;
 
-// un .sock recien creado puede estar en la ventana bind->listen de un
-// daemon arrancando: nunca purgar si su mtime es de hace <= 5 segundos
+// a freshly created .sock may be in the bind->listen window of a
+// starting daemon: never purge if its mtime is <= 5 seconds old
 function SocketIsRecent(const APath: string): boolean;
 var
   St: Stat;
@@ -724,9 +724,9 @@ begin
   Result := SessionsDir + '/' + SanitizeSessionName(AName) + '.ini';
 end;
 
-// TIniFile recorta un par de comillas exteriores al leer: si el valor
-// empieza y termina con la misma comilla, se envuelve con otra capa igual
-// para que la relectura devuelva el valor exacto (misma guarda que en
+// TIniFile strips one pair of outer quotes when reading: if the value
+// starts and ends with the same quote, wrap it in one more equal layer
+// so that re-reading returns the exact value (same guard as in
 // st_profiles/st_wclass)
 function IniQuoteGuard(const S: string): string;
 begin
@@ -756,10 +756,10 @@ begin
       Probe := ProbeSocket(Info.SocketPath);
       if Probe <> spLive then
       begin
-        // huerfana: purgar socket y sidecar, pero solo ante un rechazo
-        // duro y con un socket que no sea reciente (un daemon arrancando
-        // esta en la ventana bind->listen); en timeout no purgar nunca;
-        // el sidecar solo cae si el socket se borro de verdad
+        // orphan: purge socket and sidecar, but only on a hard refusal
+        // and with a socket that is not recent (a starting daemon is
+        // in the bind->listen window); on timeout never purge; the
+        // sidecar only falls if the socket was really deleted
         if (Probe = spDead) and (not SocketIsRecent(Info.SocketPath)) then
           if DeleteFile(Info.SocketPath) and FileExists(MetaPath) then
             DeleteFile(MetaPath);
@@ -783,7 +783,7 @@ begin
     until FindNext(SR) <> 0;
     FindClose(SR);
   end;
-  // transicion: el socket unico de una version anterior
+  // transition: the single socket of a previous version
   if FileExists(SessionSocketPath) then
   begin
     Probe := ProbeSocket(SessionSocketPath);
@@ -819,8 +819,8 @@ begin
     Exit;
   end;
   FpClose(Fd);
-  // booleano honesto: True solo cuando el daemon deja de responder de
-  // verdad (un daemon antiguo ignora el FRAME_CLOSE y sigue vivo)
+  // honest boolean: True only when the daemon really stops responding
+  // (an old daemon ignores the FRAME_CLOSE and stays alive)
   for I := 1 to 20 do
   begin
     if not SessionIsLive(APath) then
@@ -873,7 +873,7 @@ begin
       Exit;
     repeat
       if not ReadFrameFrom(Fd, RKind, RPane, RData) then
-        Exit;   // daemon viejo cierra sin responder -> False
+        Exit;   // old daemon closes without replying -> False
       case RKind of
         FRAME_CTL_DATA:
           if Assigned(AOnData) then
@@ -1038,8 +1038,8 @@ begin
   Result := FConnected and ReadFrameFrom(FSocket, AKind, APane, Data);
 end;
 
-// cola tolerante 2 del snapshot: geometria de ventanas; ante cualquier
-// violacion de tamano deja Snapshot.Geom vacia sin lanzar excepciones
+// snapshot tolerant tail 2: window geometry; on any size violation
+// it leaves Snapshot.Geom empty without raising exceptions
 procedure ReadSnapshotGeom(Stream: TMemoryStream; var Snapshot: TSessionSnapshot);
 var
   Cnt, I: Longint;
@@ -1101,13 +1101,13 @@ begin
   if FSocket < 0 then
     Exit;
   FConnected := True;
-  // cola tolerante del ATTACH: version, escritorio y capacidades; un
-  // daemon antiguo ignora el payload y sirve el protocolo v1 de siempre
+  // tolerant tail of the ATTACH: version, desktop and capabilities; an
+  // old daemon ignores the payload and serves the usual v1 protocol
   Data := nil;
   SetLength(Data, 4 * SizeOf(Longint));
   L := ATTACH_PROTO_VER;
   Move(L, Data[0], SizeOf(L));
-  L := 0;   // DeskW/DeskH: aun sin escritorio en el arranque
+  L := 0;   // DeskW/DeskH: no desktop yet at startup
   Move(L, Data[SizeOf(Longint)], SizeOf(L));
   Move(L, Data[2 * SizeOf(Longint)], SizeOf(L));
   L := ATTACH_CAP_EVENTS;
@@ -1140,13 +1140,13 @@ begin
       if not ReadString(Stream, Snapshot.Panes[I].Term) then
         Exit;
     end;
-    // cola tolerante: un daemon de una version anterior no la envia;
-    // ante una cola truncada el campo queda en '' y no se sigue leyendo
+    // tolerant tail: a daemon from a previous version does not send it;
+    // on a truncated tail the field stays '' and reading stops there
     if ReadTailString(Stream, Snapshot.Name) then
       if ReadTailString(Stream, Snapshot.Profile) then
       begin
         ReadSnapshotGeom(Stream, Snapshot);
-        // cola tolerante 3: version del daemon (ausente en los antiguos)
+        // tolerant tail 3: daemon version (absent in old daemons)
         if Stream.Position + SizeOf(Longint) <= Stream.Size then
           Stream.ReadBuffer(Snapshot.ProtoVer, SizeOf(Longint));
       end;
@@ -1222,7 +1222,7 @@ begin
     FRAME_FOCUS_EV: Event.Kind := sekFocusEv;
     FRAME_SHUTDOWN_EV: Event.Kind := sekShutdown;
   else
-    // frame futuro: ignorar en vez de darlo por conexion perdida
+    // future frame: ignore instead of treating it as a lost connection
     Event.Kind := sekIgnore;
     Event.Data := nil;
   end;
@@ -1264,7 +1264,7 @@ function TSessionClient.CloseSession(ASave: boolean): boolean;
 var
   Data: TByteArray;
 begin
-  // byte tolerante: un daemon antiguo lo ignora (cierra sin guardar)
+  // tolerant byte: an old daemon ignores it (closes without saving)
   Data := nil;
   SetLength(Data, 1);
   if ASave then
@@ -1424,7 +1424,7 @@ begin
     FClients[I].Fd := -1;
   end;
   FStop := False;
-  // geometria inicial de las ventanas tal como estaban al separar
+  // initial window geometry exactly as it was when detaching
   FGeomValid := Length(AGeom) = FPaneCount;
   FDeskW := ADeskW;
   FDeskH := ADeskH;
@@ -1525,15 +1525,15 @@ begin
   FpClose(FClients[AIdx].Fd);
   FClients[AIdx] := Default(TClientConn);
   FClients[AIdx].Fd := -1;
-  // al soltar un cliente el minimo comun de tamanos puede crecer
+  // dropping a client may let the common minimum of sizes grow
   for P := 0 to FPaneCount - 1 do
     NegotiateResize(P);
   WriteSidecar;
 end;
 
-// encola bytes hacia un cliente sin bloquear jamas al daemon: primero un
-// envio directo no bloqueante y el resto al buffer de egreso; si el buffer
-// supera el tope el cliente esta muerto o parado y se le desconecta
+// queues bytes toward a client without ever blocking the daemon: first
+// a direct non-blocking send and the rest to the egress buffer; if the
+// buffer exceeds the cap the client is dead or stalled and gets dropped
 function TDetachedSession.QueueOut(AIdx: integer; const Buffer;
   ASize: integer): boolean;
 var
@@ -1634,9 +1634,9 @@ begin
     DropClient(AIdx);
 end;
 
-// tamano efectivo de un panel = minimo comun de lo pedido por los clientes
-// (asi todos parsean los mismos bytes); el resultado se difunde y cada
-// cliente ajusta su TScreen al recibirlo
+// effective pane size = common minimum of what the clients requested
+// (so all parse the same bytes); the result is broadcast and each
+// client adjusts its TScreen upon receiving it
 procedure TDetachedSession.NegotiateResize(APane: integer);
 var
   I: integer;
@@ -1668,7 +1668,7 @@ begin
   Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
 end;
 
-// serializa el estado de layout con el mismo formato que FRAME_LAYOUT
+// serializes the layout state with the same format as FRAME_LAYOUT
 function TDetachedSession.BuildLayoutBlob(out AData: TByteArray): boolean;
 var
   Meta: TMemoryStream;
@@ -1773,10 +1773,10 @@ begin
       WriteString(Meta, FTitles[I]);
       WriteString(Meta, FTerms[I]);
     end;
-    // cola tolerante (los clientes antiguos la ignoran al no leerla)
+    // tolerant tail (old clients ignore it by not reading it)
     WriteString(Meta, FName);
     WriteString(Meta, FProfile);
-    // cola tolerante 2: geometria de ventanas (0 paneles = sin datos)
+    // tolerant tail 2: window geometry (0 panes = no data)
     if FGeomValid then
       GeomCnt := FPaneCount
     else
@@ -1801,8 +1801,8 @@ begin
         Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
     end;
-    // cola tolerante 3: version del protocolo del daemon (un cliente
-    // nuevo la usa para no enviar frames v2 a un daemon antiguo)
+    // tolerant tail 3: daemon protocol version (a new client uses it
+    // to avoid sending v2 frames to an old daemon)
     GeomCnt := ATTACH_PROTO_VER;
     Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
     SetLength(Data, Meta.Size);
@@ -1838,8 +1838,8 @@ begin
   Result := WriteFrameTo(AFd, FRAME_READY, -1, Data);
 end;
 
-// lee el primer frame de una conexion recien aceptada con espera acotada:
-// un par que conecta y no escribe nada no debe dejar colgado al daemon
+// reads the first frame of a freshly accepted connection with bounded
+// wait: a peer that connects and writes nothing must not hang the daemon
 function TDetachedSession.ReadFirstFrame(AFd: cint; out AKind: byte;
   out APane: integer; out AData: TByteArray): boolean;
 var
@@ -1861,9 +1861,9 @@ begin
   Result := ReadFrame(AFd, AKind, APane, AData);
 end;
 
-// atiende una adhesion cuyo primer frame ya fue leido en Run; el payload
-// versionado decide el slot: vacio = cliente legado (protocolo v1), que
-// exige exclusividad porque no entiende los eventos de compartir sesion
+// serves an attach whose first frame was already read in Run; the
+// versioned payload decides the slot: empty = legacy client (protocol
+// v1), which demands exclusivity as it lacks the session-sharing events
 function TDetachedSession.HandleAttach(AFd: cint; AFirstKind: byte;
   const AFirstData: TByteArray): boolean;
 var
@@ -1913,8 +1913,8 @@ begin
   Result := True;
 end;
 
-// el cliente cerro un panel: matar el proceso y compactar en espejo del
-// cliente (mismos desplazamientos de indices para que INPUT siga alineado)
+// the client closed a pane: kill the process and compact mirroring the
+// client (same index shifts so that INPUT stays aligned)
 procedure TDetachedSession.DoKillPane(APane: integer);
 var
   I, C: integer;
@@ -1955,11 +1955,11 @@ begin
     FFocused := FPaneCount - 1;
   if FFocused < 0 then
     FFocused := 0;
-  WriteSidecar; // el numero de paneles del sidecar cambio
+  WriteSidecar; // the sidecar pane count changed
 end;
 
-// el cliente sincroniza arbol de splits, foco, titulos y geometria; solo
-// se acepta si el numero de paneles coincide con el estado vivo del daemon
+// the client syncs split tree, focus, titles and geometry; accepted
+// only if the pane count matches the daemon's live state
 procedure TDetachedSession.ApplyLayoutFrame(const Data: TByteArray);
 var
   Nodes: string;
@@ -2007,7 +2007,7 @@ begin
   WriteFrameToTimeout(AFd, FRAME_CTL_ERR, -1, Data, 5000);
 end;
 
-// carga perezosa de las clases de ventana para resolver kind/host en LIST
+// lazy load of the window classes to resolve kind/host in LIST
 procedure TDetachedSession.EnsureCtlConfig;
 var
   SysClasses: TWindowClassArray;
@@ -2032,7 +2032,7 @@ begin
   WriteFrameToTimeout(AFd, FRAME_CTL_OK, -1, Data, 5000);
 end;
 
-// recoge hijos del daemon (paneles creados daemon-side) sin bloquear
+// reaps daemon children (panes created daemon-side) without blocking
 procedure TDetachedSession.ReapChildren;
 var
   St: cint;
@@ -2042,8 +2042,8 @@ begin
     ;
 end;
 
-// crea un PTY para una clase de ventana o un comando, como StartPaneEx
-// pero sin FreeVision: wcSSH -> argv estructurado; resto -> comando compuesto
+// creates a PTY for a window class or a command, like StartPaneEx but
+// without FreeVision: wcSSH -> structured argv; rest -> composed command
 function TDetachedSession.SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
   ACols, ARows: integer; out APty: TPty; out ATerm: string;
   out ADefTitle: string): boolean;
@@ -2065,7 +2065,7 @@ begin
     if CIdx < 0 then
       Exit;
     ATerm := FCtlClasses[CIdx].Name;
-    // titulo por defecto de la clase (espejo de StartPaneEx en la UI)
+    // default title of the class (mirror of StartPaneEx in the UI)
     if FCtlClasses[CIdx].Title <> '' then
       ADefTitle := FCtlClasses[CIdx].Title
     else
@@ -2112,9 +2112,9 @@ begin
     FreeAndNil(APty);
 end;
 
-// crea un panel nuevo en el daemon (split del arbol + spawn + arrays en
-// espejo del cliente) y difunde NEWPANE_EV a todos los clientes capaces:
-// el resultado del daemon es el autoritativo y alli nace cada ventana
+// creates a new pane in the daemon (tree split + spawn + arrays in
+// client mirror) and broadcasts NEWPANE_EV to all capable clients:
+// the daemon's result is authoritative and each window is born there
 function TDetachedSession.DoNewPane(AAt: integer; ADir: byte;
   const AClass, ACmd, ACwd, ATitle: string; out ANewIdx: integer;
   out AErr: string): boolean;
@@ -2175,7 +2175,7 @@ begin
       AErr := 'spawn failed';
     Exit;
   end;
-  // desplazar los arrays en espejo del cliente (DoSplit)
+  // shift the arrays mirroring the client (DoSplit)
   for j := OldCount downto ANewIdx + 1 do
   begin
     FPanes[j] := FPanes[j - 1];
@@ -2236,8 +2236,8 @@ begin
   Result := True;
 end;
 
-// plazo de autolimpieza; SUPERTERM_REAP_MS solo existe para que los tests
-// no tengan que esperar el minuto de produccion
+// self-cleanup deadline; SUPERTERM_REAP_MS only exists so the tests
+// do not have to wait out the production minute
 function ReapGraceMs: QWord;
 var
   S: string;
@@ -2253,8 +2253,8 @@ begin
   end;
 end;
 
-// guardado daemon-side de session.ini: espejo de SaveSessionNow con el
-// estado vivo del daemon (Alt-X y Ctrl-S remotos guardan aqui)
+// daemon-side save of session.ini: mirror of SaveSessionNow with the
+// daemon's live state (remote Alt-X and Ctrl-S save here)
 procedure TDetachedSession.DaemonSaveSession;
 var
   Pin: TPaneArray;
@@ -2291,8 +2291,8 @@ begin
   SaveSession(SessionFile, FLayout, Pin, FDeskW, FDeskH);
 end;
 
-// gestion de ventanas por control; con clientes enganchados cada cambio
-// se difunde como evento para que lo apliquen en vivo
+// window management via control; with attached clients each change is
+// broadcast as an event so they apply it live
 procedure TDetachedSession.HandleWinOp(AFd: cint; APane: integer;
   const AData: TByteArray);
 var
@@ -2376,7 +2376,7 @@ begin
           Exit;
         end;
         FFocused := APane;
-        // enfocar restaura si estaba minimizada
+        // focusing restores if it was minimized
         FGeom[APane].Minimized := False;
         FGeomValid := True;
         Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
@@ -2399,7 +2399,7 @@ begin
             end;
           WINOP_ZOOM:
             begin
-              // solo una maximizada a la vez (espejo de la UI)
+              // only one zoomed at a time (mirror of the UI)
               for j := 0 to FPaneCount - 1 do
                 FGeom[j].Zoomed := False;
               FGeom[APane].Zoomed := True;
@@ -2422,7 +2422,7 @@ begin
           HowB := AData[Ofs];
         N := FPaneCount;
         case HowB of
-          2:  // cascada
+          2:  // cascade
             begin
               CW := FDeskW * 2 div 3;
               CH := FDeskH * 2 div 3;
@@ -2442,18 +2442,18 @@ begin
                 Inc(k);
               end;
             end;
-          1:  // mosaico segun el arbol de splits
+          1:  // tile according to the split tree
             begin
               for i := 0 to N - 1 do
               begin
-                FGeom[i].BW := 0;  // sin bounds manuales: re-tila al attach
+                FGeom[i].BW := 0;  // no manual bounds: re-tiles on attach
                 FGeom[i].BH := 0;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
               end;
             end;
         else
-          // rejilla NxM lo mas cuadrada posible
+          // NxM grid as square as possible
           GC := 1;
           while GC * GC < N do
             Inc(GC);
@@ -2513,8 +2513,8 @@ begin
         FScreens[APane].Resize(Cols, Rows);
         if FPanes[APane] <> nil then
           FPanes[APane].Resize(Cols, Rows);
-        // anular las peticiones de los clientes para que la negociacion
-        // del minimo comun no deshaga el tamano pedido por control
+        // void the clients' requests so the common-minimum negotiation
+        // does not undo the size requested via control
         for j := 0 to MAX_CLIENTS - 1 do
         begin
           FClients[j].ReqCols[APane] := 0;
@@ -2535,8 +2535,8 @@ begin
   end;
 end;
 
-// peticion de control efimera: un frame de peticion ya leido, responder por
-// el mismo fd y volver (el llamante cierra la conexion)
+// ephemeral control request: one request frame already read, reply on
+// the same fd and return (the caller closes the connection)
 procedure TDetachedSession.HandleControlFrame(AFd: cint; AKind: byte;
   APane: integer; const AData: TByteArray);
 const
@@ -2558,19 +2558,19 @@ begin
         EnsureCtlConfig;
         Meta := TMemoryStream.Create;
         try
-          // cabecera de sesion
+          // session header
           WriteString(Meta, FName);
           WriteString(Meta, FProfile);
           Meta.WriteBuffer(FPaneCount, SizeOf(FPaneCount));
           Meta.WriteBuffer(FFocused, SizeOf(FFocused));
           I := AttachedCount;
-          Meta.WriteBuffer(I, SizeOf(I));   // clientes enganchados
+          Meta.WriteBuffer(I, SizeOf(I));   // attached clients
           Meta.WriteBuffer(FDeskW, SizeOf(FDeskW));
           Meta.WriteBuffer(FDeskH, SizeOf(FDeskH));
           if AKind = FRAME_CTL_LIST then
             for I := 0 to FPaneCount - 1 do
             begin
-              // tipo y destino resueltos desde la clase por nombre
+              // kind and target resolved from the class by name
               KindB := 255;
               Host := '';
               User := '';
@@ -2583,7 +2583,7 @@ begin
                 Host := FCtlClasses[CIdx].Host;
                 User := FCtlClasses[CIdx].User;
               end;
-              // comando/cwd vivos desde el proceso real
+              // live command/cwd from the real process
               LiveCmd := '';
               LiveCwd := '';
               if (FPanes[I] <> nil) and FPanes[I].Alive then
@@ -2611,7 +2611,7 @@ begin
                 Meta.WriteBuffer(N, SizeOf(N));
                 Meta.WriteBuffer(N, SizeOf(N));
               end;
-              Meta.WriteBuffer(N, SizeOf(N));   // lineas de historial
+              Meta.WriteBuffer(N, SizeOf(N));   // history lines
               Meta.WriteBuffer(FGeom[I].BX, SizeOf(Longint));
               Meta.WriteBuffer(FGeom[I].BY, SizeOf(Longint));
               Meta.WriteBuffer(FGeom[I].BW, SizeOf(Longint));
@@ -2694,13 +2694,13 @@ begin
           From := Scr.HistoryRows;
           Count := Scr.Height;
         end;
-        // render por lotes: un CTL_DATA cada ~256KB, nunca el total en RAM
+        // batched render: one CTL_DATA per ~256KB, never all of it in RAM
         Meta := TMemoryStream.Create;
         try
           Sent := 0;
           while Sent < Count do
           begin
-            Take := 512;   // filas por lote
+            Take := 512;   // rows per batch
             if Sent + Take > Count then
               Take := Count - Sent;
             Meta.Clear;
@@ -2786,7 +2786,7 @@ begin
         begin
           if FClients[AIdx].Legacy then
           begin
-            // protocolo v1: un unico cliente manda, aplicar directamente
+            // protocol v1: a single client rules, apply directly
             if FScreens[Pane] <> nil then
               FScreens[Pane].Resize(Cols, Rows);
             if FPanes[Pane] <> nil then
@@ -2804,7 +2804,7 @@ begin
       DropClient(AIdx);
     FRAME_CLOSE:
       begin
-        // byte tolerante: 1 = guardar session.ini antes de morir
+        // tolerant byte: 1 = save session.ini before dying
         if (Length(Data) > 0) and (Data[0] = 1) then
           DaemonSaveSession;
         DropClient(AIdx);
@@ -2887,8 +2887,8 @@ begin
   end;
 end;
 
-// sidecar de metadatos: permite al selector mostrar nombre/perfil/paneles
-// sin consumir el unico slot de cliente del socket
+// metadata sidecar: lets the selector show name/profile/panes
+// without consuming the socket's single client slot
 procedure TDetachedSession.WriteSidecar;
 var
   Ini: TIniFile;
@@ -2945,9 +2945,9 @@ begin
   SignalReady(AReadyFd, True);
   while not FStop do
   begin
-    // rezagados: mucho pendiente y ningun progreso en el periodo de
-    // gracia -> desconectar ANTES de armar los fd_set (un fd cerrado
-    // dentro del set haria fallar el select con EBADF)
+    // laggards: lots pending and no progress at all during the grace
+    // period -> disconnect BEFORE building the fd_sets (a closed fd
+    // inside the set would make select fail with EBADF)
     for I := 0 to MAX_CLIENTS - 1 do
       if (FClients[I].Fd >= 0) and
          (Length(FClients[I].OutBuf) > LAG_MIN_PENDING) and
@@ -2965,8 +2965,8 @@ begin
           fpFD_SET(FClients[I].Fd, WriteSet);
         if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
       end;
-    // control de flujo: con demasiado pendiente hacia algun cliente no se
-    // lee de los PTY; el productor se frena en el buffer del terminal
+    // flow control: with too much pending toward some client we do not
+    // read from the PTYs; the producer throttles in the terminal buffer
     FlowBlocked := False;
     for I := 0 to MAX_CLIENTS - 1 do
       if (FClients[I].Fd >= 0) and
@@ -2999,10 +2999,10 @@ begin
       NewClient := fpAccept(FListener, @Addr, @AddrLen);
       if NewClient >= 0 then
       begin
-        // el primer frame decide: FRAME_CLOSE apaga el daemon aunque
-        // llegue por una conexion nueva (CloseSessionAt); FRAME_ATTACH
-        // ocupa un slot si el payload versionado lo permite; cualquier
-        // otra cosa cierra la conexion
+        // the first frame decides: FRAME_CLOSE shuts the daemon down
+        // even on a brand-new connection (CloseSessionAt); FRAME_ATTACH
+        // takes a slot if the versioned payload allows it; anything
+        // else closes the connection
         if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
           FpClose(NewClient)
         else if Kind = FRAME_CLOSE then
@@ -3014,7 +3014,7 @@ begin
         end
         else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
         begin
-          // peticion de control efimera: responder y cerrar; no ocupa slot
+          // ephemeral control request: reply and close; takes no slot
           HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
           FpClose(NewClient);
         end
@@ -3037,8 +3037,8 @@ begin
            (FPanes[I].Master >= 0) and
            (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
           HandlePaneOutput(I);
-    // titulos vivos: los paneles ad-hoc sin titulo fijado muestran el
-    // comando o el directorio actual, igual que hace la UI en local
+    // live titles: ad-hoc panes without a fixed title show the command
+    // or the current directory, just as the UI does locally
     if GetTickCount64 - FLastTitleTick > 1500 then
     begin
       FLastTitleTick := GetTickCount64;
@@ -3061,8 +3061,8 @@ begin
           end;
         end;
     end;
-    // autolimpieza: todos los paneles muertos y nadie enganchado durante
-    // un minuto -> la sesion ya no sirve a nadie, cerrarla sola
+    // self-cleanup: all panes dead and nobody attached for a minute
+    // -> the session no longer serves anyone, close it on its own
     FlowBlocked := False;
     for I := 0 to FPaneCount - 1 do
       if (FPanes[I] <> nil) and FPanes[I].Alive then
@@ -3077,8 +3077,8 @@ begin
     else if GetTickCount64 - FEmptySince > ReapGraceMs then
       FStop := True;
   end;
-  // aviso ordenado de cierre a los clientes capaces; los legados ven el
-  // EOF y reaccionan como hoy (conexion perdida)
+  // orderly shutdown notice to capable clients; legacy ones see the
+  // EOF and react as they do today (lost connection)
   B0 := 0;
   Broadcast(FRAME_SHUTDOWN_EV, -1, B0, 0, True, -1);
 end;

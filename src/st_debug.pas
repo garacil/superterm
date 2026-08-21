@@ -1,5 +1,5 @@
 (*
-  Unidad: st_debug - log de depuracion opcional (SUPERTERM_DEBUG=fichero)
+  Unit: st_debug - optional debug log (SUPERTERM_DEBUG=file)
 *)
 
 unit st_debug;
@@ -41,8 +41,8 @@ begin
 end;
 
 initialization
-  // preajuste reconocido por el analisis de flujo; InitCriticalSection
-  // rellena la estructura de todos modos
+  // preset recognized by the flow analysis; InitCriticalSection
+  // fills in the structure anyway
   Lock := Default(TRTLCriticalSection);
   InitCriticalSection(Lock);
 

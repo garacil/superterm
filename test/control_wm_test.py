@@ -10,12 +10,12 @@ from stlib import check, run_cli
 
 HOME = stlib.fresh_home('ctlwm')
 
-# clase local con titulo para probar new --class
+# local class with a title to exercise new --class
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as f:
     f.write('[class.demo]\nname=demo\nenabled=1\ntitle=Demo Pane\ncmd=\n')
 
-# sesion separada con 1 panel
+# detached session with 1 pane
 c = stlib.Client(HOME, w=100, h=28)
 c.drain(2.0)
 c.send(b'\x11', 0.4)
@@ -25,7 +25,7 @@ time.sleep(0.6)
 c.close()
 SES = os.path.basename(stlib.session_sockets(HOME)[0])[:-5]
 
-# ---- destino/sesion obligatorios en gestion de ventanas ----
+# ---- target/session are mandatory in window management ----
 r = run_cli(['new'], HOME)
 check('new without session exit 2', r.returncode == 2)
 r = run_cli(['close'], HOME)
@@ -35,20 +35,20 @@ check('minimize without target exit 2', r.returncode == 2)
 r = run_cli(['organize'], HOME)
 check('organize without session exit 2', r.returncode == 2)
 
-# ---- new: panel ad-hoc con comando ----
+# ---- new: ad-hoc pane with a command ----
 r = run_cli(['new', SES, '--cmd', 'sleep 600', '--right'], HOME)
 check('new pane exit 0', r.returncode == 0)
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
 check('two panes listed', ' sleep' in r.stdout or r.stdout.count('local') >= 2)
 
-# ---- new: panel desde clase (titulo por defecto de la clase) ----
+# ---- new: pane from a class (class default title) ----
 r = run_cli(['nueva', SES, '--clase', 'demo'], HOME)
 check('new class pane exit 0', r.returncode == 0)
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
 check('class pane listed with title', 'Demo Pane' in r.stdout)
 check('three panes now', r.stdout.count('\n') >= 4)
 
-# ---- cwd heredado y TERM correcto en panel nuevo ----
+# ---- inherited cwd and correct TERM in a new pane ----
 r = run_cli(['new', SES, '--cwd', '/etc'], HOME)
 check('new pane with cwd exit 0', r.returncode == 0)
 time.sleep(0.8)
@@ -70,7 +70,7 @@ r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
 focus_line = [l for l in r.stdout.splitlines() if l.startswith('2 ')]
 check('focused flag moved', bool(focus_line) and '*' in focus_line[0])
 
-# ---- '.' apunta al panel enfocado tras focus ----
+# ---- '.' points at the focused pane after focus ----
 r = run_cli(['send', '.', 'echo FOCUSED_HERE'], HOME)
 check('send to focused pane', r.returncode == 0)
 time.sleep(0.8)
@@ -90,7 +90,7 @@ check('restaurar exit 0', r.returncode == 0)
 r = run_cli(['restore', SES + ':3'], HOME)
 check('restore minimized exit 0', r.returncode == 0)
 
-# ---- resize del terminal ----
+# ---- terminal resize ----
 r = run_cli(['resize', SES + ':1', '90x20'], HOME)
 check('resize exit 0', r.returncode == 0)
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
@@ -104,7 +104,7 @@ check('organize grid exit 0', r.returncode == 0)
 r = run_cli(['organizar', SES, 'cascada'], HOME)
 check('organizar cascada exit 0', r.returncode == 0)
 
-# ---- close compacta indices ----
+# ---- close compacts indices ----
 r = run_cli(['close', SES + ':4'], HOME)
 check('close pane exit 0', r.returncode == 0)
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
@@ -115,16 +115,16 @@ time.sleep(0.8)
 r = run_cli(['capture', SES + ':1'], HOME)
 check('indices still aligned after close', 'STILL_OK' in r.stdout)
 
-# ---- el rename sobrevive a un reattach ----
+# ---- the rename survives a reattach ----
 c2 = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 c2.drain(2.5)
 check('reattach shows renamed title', 'Background Job' in c2.text())
-# ---- desde F4 la gestion funciona EN VIVO con un cliente enganchado ----
+# ---- as of F4 management works LIVE with an attached client ----
 r = run_cli(['minimize', SES + ':1'], HOME)
 check('winop works while attached', r.returncode == 0)
 r = run_cli(['restore', SES + ':1'], HOME)
 check('restore works while attached', r.returncode == 0)
-# list/send/capture siguen funcionando enganchado
+# list/send/capture keep working while attached
 r = run_cli(['capture', SES + ':1'], HOME)
 check('capture ok while attached', r.returncode == 0)
 c2.send(b'\x1bx', 1.0)

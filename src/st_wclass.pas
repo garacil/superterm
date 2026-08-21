@@ -1,9 +1,9 @@
 (*
-  Autor: Germán Luis Aracil Boned
-  Proyecto: superterm - terminal con autologin, splits y sesiones
-  Unidad: st_wclass - clases de ventana: definicion reutilizable con nombre
-  (comando al abrir, destino de conexion ssh o comando libre, comando
-  post-conexion). Absorben las definiciones de terminal [t-*] antiguas.
+  Author: German Luis Aracil Boned
+  Project: superterm - terminal with autologin, splits and sessions
+  Unit: st_wclass - window classes: reusable named definition
+  (open command, ssh connection target or free command, post-connect
+  command). They absorb the old [t-*] terminal definitions.
 *)
 
 unit st_wclass;
@@ -16,70 +16,70 @@ uses
   Classes, SysUtils, IniFiles, BaseUnix, st_config;
 
 type
-  // el tipo se deriva al cargar y nunca se persiste:
-  // connect presente -> wcCommand; host presente -> wcSSH; si no -> wcLocal
+  // the kind is derived on load and never persisted:
+  // connect present -> wcCommand; host present -> wcSSH; else -> wcLocal
   TWClassKind = (wcLocal, wcSSH, wcCommand);
   TWClassOrigin = (coUser, coSystem);
 
   TWindowClass = record
-    Name: string;          // nombre canonico (sufijo de la seccion)
+    Name: string;          // canonical name (section suffix)
     Enabled: boolean;
-    Kind: TWClassKind;     // derivado, no persistido
-    Origin: TWClassOrigin; // solo en memoria: user = editable
-    Title: string;         // titulo por defecto de la ventana ('' = usa Name)
-    Shell: string;         // local: shell a lanzar ('' = shell de la config)
-    Cmd: string;           // comando al abrir (local o remoto ssh)
-    Cwd: string;           // directorio de trabajo
-    Host: string;          // ssh estructurado
+    Kind: TWClassKind;     // derived, not persisted
+    Origin: TWClassOrigin; // in memory only: user = editable
+    Title: string;         // default window title ('' = use Name)
+    Shell: string;         // local: shell to launch ('' = config shell)
+    Cmd: string;           // command on open (local or remote ssh)
+    Cwd: string;           // working directory
+    Host: string;          // structured ssh
     User: string;
     Port: integer;
     KeyFile: string;
-    Password: string;      // en INI va en base64
-    Connect: string;       // conexion por comando libre (gana a host)
-    PostConnect: string;   // comando tras conectar
+    Password: string;      // stored in the INI as base64
+    Connect: string;       // free-command connection (wins over host)
+    PostConnect: string;   // command after connecting
     ScrollBack: integer;
   end;
   TWindowClassArray = array of TWindowClass;
 
 function DefaultWindowClass: TWindowClass;
 
-// predicado UNICO de secciones legadas [t-*]: lo comparten el lector y el
-// escritor; si divergieran, el escritor podria borrar secciones ajenas
+// the SINGLE predicate for legacy [t-*] sections: shared by the reader
+// and the writer; if they diverged, the writer could erase foreign ones
 function IsLegacyTermSection(const Sec: string): boolean;
 
-// carga [class.*] y las legadas [t-*] de un fichero; deriva Kind
+// loads [class.*] and the legacy [t-*] from a file; derives Kind
 procedure LoadWindowClasses(const FileName: string; AOrigin: TWClassOrigin;
   out AClasses: TWindowClassArray);
 
-// mezcla por nombre (insensible a mayusculas); Target gana en colision
+// merge by name (case-insensitive); Target wins on collision
 procedure MergeWindowClasses(var Target: TWindowClassArray;
   const Extra: TWindowClassArray);
 
-// busca una clase por nombre (insensible a mayusculas); -1 si no esta
+// finds a class by name (case-insensitive); -1 if not present
 function FindClassByName(const A: TWindowClassArray;
   const AName: string): integer;
 
-// escribe las clases de origen usuario en FileName de forma atomica,
-// preservando las secciones ajenas; absorbe [t-*] legadas al guardar
+// writes the user-origin classes to FileName atomically,
+// preserving foreign sections; absorbs legacy [t-*] on save
 procedure SaveWindowClasses(const FileName: string;
   const AClasses: TWindowClassArray);
 
-// argv estructurado para ssh (wcSSH); con sshpass si hay contrasena
+// structured argv for ssh (wcSSH); with sshpass if there is a password
 procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;
   Args: TStringList; out Secret: string; const CommandOverride: string = '');
 
-// comando efectivo para wcLocal/wcCommand combinando clase y overrides de
-// panel segun la semantica unificada:
-//   wcCommand -> conexion + post por stdin (pipe)
-//   wcLocal   -> cmd (+post por stdin); solo post -> post; exec shell
+// effective command for wcLocal/wcCommand combining class and pane
+// overrides according to the unified semantics:
+//   wcCommand -> connection + post via stdin (pipe)
+//   wcLocal   -> cmd (+post via stdin); post only -> post; exec shell
 function ComposePaneCommand(const C: TWindowClass;
   const PaneCmd, PanePost, PaneConnect, AShell: string;
   ALoginShell: boolean): string;
 
-// entrega el comando post-conexion por la entrada estandar de la conexion
+// delivers the post-connect command via the connection's standard input
 function WizardCommand(const AConnect, APostConnect: string): string;
 
-// ejecuta un comando y deja despues una shell interactiva en el mismo PTY
+// runs a command and then leaves an interactive shell on the same PTY
 function CommandWithInteractiveShell(const Command, AShell: string;
   LoginShell: boolean): string;
 
@@ -99,14 +99,14 @@ end;
 
 function IsLegacyTermSection(const Sec: string): boolean;
 begin
-  // historico: cualquier seccion que empiece por 't' salvo [template.*];
-  // las nuevas [class.*]/[profile.*] y las de config no empiezan por 't'
+  // historical: any section starting with 't' except [template.*];
+  // the new [class.*]/[profile.*] and config ones do not start with 't'
   Result := (Sec <> '') and (Sec[1] = 't') and
     (LowerCase(Copy(Sec, 1, Length('template.'))) <> 'template.');
 end;
 
-// TIniFile recorta un par de comillas exteriores al leer: envolver con
-// otra capa igual cuando el valor empieza y termina con la misma comilla
+// TIniFile strips one pair of outer quotes on read: wrap with another
+// identical layer when the value starts and ends with the same quote
 function IniQuoteGuard(const S: string): string;
 begin
   Result := S;
@@ -188,7 +188,7 @@ begin
         try
           C.Password := DecodeStringBase64(S);
         except
-          C.Password := S;   // sin codificar
+          C.Password := S;   // not encoded
         end;
       end;
       C.Kind := DeriveKind(C);
@@ -235,7 +235,7 @@ begin
   TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
   if FileExists(TempName) then
     DeleteFile(TempName);
-  // copia del contenido actual para preservar las secciones ajenas
+  // copy of the current content to preserve foreign sections
   SL := TStringList.Create;
   try
     if FileExists(FileName) then
@@ -247,8 +247,8 @@ begin
   Ini := TIniFile.Create(TempName);
   SL := TStringList.Create;
   try
-    // borrar todo lo que es nuestro: [class.*] y las legadas [t-*]
-    // (asi el primer guardado absorbe y migra las [t-*] del usuario)
+    // erase everything of ours: [class.*] and the legacy [t-*]
+    // (so the first save absorbs and migrates the user's [t-*])
     Ini.ReadSections(SL);
     for i := 0 to SL.Count - 1 do
       if IsLegacyTermSection(SL[i]) or
@@ -290,7 +290,7 @@ begin
         Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
     end;
     Ini.UpdateFile;
-    // el fichero puede contener contrasenas
+    // the file may contain passwords
     FpChmod(PAnsiChar(TempName), &600);
   finally
     SL.Free;
@@ -312,8 +312,8 @@ begin
   Args.Clear;
   if (not C.Enabled) or (C.Kind <> wcSSH) then
     Exit;
-  // Los argumentos ssh van estructurados. El comando remoto es un unico
-  // argumento porque el servidor SSH lo pasa a su shell de login.
+  // The ssh arguments are structured. The remote command is a single
+  // argument because the SSH server passes it to its login shell.
   HaveSshPass := False;
   if C.Password <> '' then
   begin
@@ -342,8 +342,8 @@ begin
     Args.Add('sshpass');
     Args.Add('-d');
     Args.Add('3');
-    // el comando que sshpass ejecuta: sin este 'ssh', el '-tt' de abajo se
-    // lo comeria sshpass ("invalid option -- 't'") en vez de pasarlo a ssh
+    // the command sshpass executes: without this 'ssh', sshpass would
+    // eat the '-tt' below ("invalid option -- 't'") instead of ssh
     Args.Add('ssh');
   end
   else
@@ -406,7 +406,7 @@ function ComposePaneCommand(const C: TWindowClass;
 var
   EffCmd, EffPost, EffConnect: string;
 begin
-  // los campos del panel pisan a los de la clase
+  // the pane fields override the class ones
   EffCmd := PaneCmd;
   if EffCmd = '' then
     EffCmd := C.Cmd;
@@ -418,7 +418,7 @@ begin
     EffConnect := C.Connect;
   if EffConnect <> '' then
   begin
-    // conexion por comando libre: el post va por stdin de la conexion
+    // free-command connection: post goes via the connection's stdin
     Result := WizardCommand(EffConnect, EffPost);
     Exit;
   end;
@@ -433,8 +433,8 @@ begin
   end;
   if EffPost <> '' then
   begin
-    // solo post-conexion: ejecutarlo y quedarse en una shell interactiva
-    // (un pipe a la shell moriria al cerrarse stdin)
+    // post-connect only: run it and stay in an interactive shell
+    // (a pipe to the shell would die when stdin closes)
     Result := CommandWithInteractiveShell(EffPost, AShell, ALoginShell);
     Exit;
   end;
