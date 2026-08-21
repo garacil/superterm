@@ -672,7 +672,8 @@ end;
 
 // ---------------------------------------------------------------- comandos
 
-function CmdList(const AArgs: array of string): integer;
+function CmdList(const AArgs: array of string;
+  ALegacy: boolean = False): integer;
 var
   Infos: TSessionInfoArray;
   Info: TSessionInfo;
@@ -695,6 +696,9 @@ begin
     begin
       WriteLn(T('superterm: no sessions are running',
         'superterm: no hay sesiones activas'));
+      // el alias legado --list-sessions siempre salia con 0
+      if ALegacy then
+        Exit(0);
       Exit(1);
     end;
     WriteLn(Format('%-24s %-16s %5s %8s  %s',
@@ -1056,7 +1060,9 @@ begin
   if Cmd = '--attach' then
     Exit;   // lo procesa superterm.lpr como hasta ahora
   if Cmd = '--list-sessions' then
-    N := 'list';
+  begin
+    Halt(CmdList([], True));
+  end;
 
   if (N = 'version') or (Cmd = '-V') then
   begin

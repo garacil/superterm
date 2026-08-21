@@ -133,7 +133,8 @@ check("list exit 0", res.returncode == 0)
 check("list shows alfa+beta", ('alfa' in res.stdout) and ('beta' in res.stdout))
 lines = [l for l in res.stdout.splitlines() if l.strip()]
 check("list header columns", len(lines) >= 3 and all(
-    col in lines[0] for col in ('NAME', 'PROFILE', 'PANES', 'CREATED')))
+    col in lines[0] for col in ('NAME', 'PROFILE', 'PANES', 'CREATED'))
+    and ('CLIENTS' in lines[0] or 'CLIENTES' in lines[0]))
 rows = {l.split()[0]: l for l in lines[1:]}
 check("list row panes numeric", all(
     any(tok.isdigit() for tok in rows[n].split()[1:]) for n in ('alfa', 'beta')
