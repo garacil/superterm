@@ -27,6 +27,12 @@ type
     Connect: string;        // conexion libre ad-hoc (paneles del asistente)
     PostConnect: string;
     ScrollBack: integer;
+    // geometria exacta de la ventana del panel (BW<=0 = sin datos, se tila):
+    // posicion/tamano manuales, minimizada y maximizada, para restaurar el
+    // perfil dejando TODO como estaba al guardarlo
+    BX, BY, BW, BH: integer;
+    Minimized: boolean;
+    Zoomed: boolean;
   end;
   TProfilePaneArray = array of TProfilePaneSpec;
 
@@ -35,6 +41,7 @@ type
     Enabled: boolean;
     Layout: string;         // misma gramatica que session.ini (L, V:500;L;L)
     FocusedPane: integer;
+    DeskW, DeskH: integer;  // tamano del escritorio al guardar (bounds absolutos)
     Panes: TProfilePaneArray;
   end;
   TProfileWindowArray = array of TProfileWindowSpec;
@@ -162,6 +169,8 @@ begin
           True);
         WSpec.Layout := Ini.ReadString(WSec, 'layout', 'L');
         WSpec.FocusedPane := Ini.ReadInteger(WSec, 'focused_pane', 0);
+        WSpec.DeskW := Ini.ReadInteger(WSec, 'deskw', 0);
+        WSpec.DeskH := Ini.ReadInteger(WSec, 'deskh', 0);
         SplitNames(Ini.ReadString(WSec, 'panes', ''), PaneNames);
         for p := 0 to PaneNames.Count - 1 do
         begin
@@ -184,6 +193,13 @@ begin
             PSpec.ScrollBack := 0;
           if PSpec.ScrollBack > MAX_SCROLLBACK then
             PSpec.ScrollBack := MAX_SCROLLBACK;
+          // geometria exacta de la ventana del panel
+          PSpec.BX := Ini.ReadInteger(PSec, 'bx', 0);
+          PSpec.BY := Ini.ReadInteger(PSec, 'by', 0);
+          PSpec.BW := Ini.ReadInteger(PSec, 'bw', 0);
+          PSpec.BH := Ini.ReadInteger(PSec, 'bh', 0);
+          PSpec.Minimized := Ini.ReadInteger(PSec, 'min', 0) <> 0;
+          PSpec.Zoomed := Ini.ReadInteger(PSec, 'zoom', 0) <> 0;
           SetLength(WSpec.Panes, Length(WSpec.Panes) + 1);
           WSpec.Panes[High(WSpec.Panes)] := PSpec;
         end;
@@ -335,6 +351,10 @@ begin
         Ini.WriteString(WSec, 'layout', AProfiles[i].Windows[w].Layout);
         Ini.WriteInteger(WSec, 'focused_pane',
           AProfiles[i].Windows[w].FocusedPane);
+        if AProfiles[i].Windows[w].DeskW > 0 then
+          Ini.WriteInteger(WSec, 'deskw', AProfiles[i].Windows[w].DeskW);
+        if AProfiles[i].Windows[w].DeskH > 0 then
+          Ini.WriteInteger(WSec, 'deskh', AProfiles[i].Windows[w].DeskH);
         Names.Clear;
         for p := 0 to High(AProfiles[i].Windows[w].Panes) do
           Names.Add(AProfiles[i].Windows[w].Panes[p].Name);
@@ -365,6 +385,18 @@ begin
           if AProfiles[i].Windows[w].Panes[p].ScrollBack > 0 then
             Ini.WriteInteger(PSec, 'scrollback',
               AProfiles[i].Windows[w].Panes[p].ScrollBack);
+          // geometria exacta de la ventana del panel
+          if AProfiles[i].Windows[w].Panes[p].BW > 0 then
+          begin
+            Ini.WriteInteger(PSec, 'bx', AProfiles[i].Windows[w].Panes[p].BX);
+            Ini.WriteInteger(PSec, 'by', AProfiles[i].Windows[w].Panes[p].BY);
+            Ini.WriteInteger(PSec, 'bw', AProfiles[i].Windows[w].Panes[p].BW);
+            Ini.WriteInteger(PSec, 'bh', AProfiles[i].Windows[w].Panes[p].BH);
+          end;
+          if AProfiles[i].Windows[w].Panes[p].Minimized then
+            Ini.WriteInteger(PSec, 'min', 1);
+          if AProfiles[i].Windows[w].Panes[p].Zoomed then
+            Ini.WriteInteger(PSec, 'zoom', 1);
         end;
       end;
     end;

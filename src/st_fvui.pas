@@ -165,6 +165,7 @@ type
     function FindWindowClass(const AName: string): integer;
     function FindProfile(const AName: string): integer;
     function ActivateProfile(AProfile, AWindow: integer): boolean;
+    procedure ApplyWindowGeometry(const WS: TProfileWindowSpec);
     function CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
     procedure SaveWorkspaceAsProfile(const AName: string);
     procedure RunProfileSaveAs;
@@ -397,8 +398,8 @@ begin
     $2717, $2718: Result := 'x';
     $E0B0, $E0B1: Result := '>';               // powerline
     $E0B2, $E0B3: Result := '<';
-    // circulos y puntos (bullets de CLIs modernas, p.ej. Claude Code ''),
-    // que antes caian a '?'
+    // circulos y puntos (bullets de CLIs y TUIs modernas), que antes
+    // caian a '?'
     $25CF, $25CB, $25C9, $25CE, $2B24, $23FA, $26AB, $26AA: Result := #7;
     $25E6, $2218, $2219, $2027, $30FB: Result := #250;
     $25AB, $25FB, $25FD, $25A1, $2610: Result := #254;
@@ -407,7 +408,7 @@ begin
     $23F4, $25C1: Result := #17;
     $23F6: Result := #30;
     $23F7: Result := #31;
-    // continuacion de arbol (Claude Code '', flechas de retorno)
+    // continuacion de arbol (ramas de arbol, flechas de retorno)
     $23BF, $2937, $21B3: Result := #192;
     // asteriscos decorativos y estrellas (spinners) -> '*'
     $2733, $2734, $273B, $273C, $273D, $2739, $2735,
@@ -2163,21 +2164,67 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= n) or (Win[Lay.Focused] = nil) then
     Lay.Focused := 0;
   RelayoutAll;
+  ApplyWindowGeometry(WS);
   FocusPane(Lay.Focused);
   RebuildMenu;
   Result := True;
+end;
+
+// reaplica la geometria EXACTA guardada en el perfil (posicion/tamano
+// manuales, maximizadas y minimizadas), dejando todo como al guardarlo;
+// solo si el escritorio mide igual (los bounds son absolutos)
+procedure TSuperApp.ApplyWindowGeometry(const WS: TProfileWindowSpec);
+var
+  RD, WR: Objects.TRect;
+  i, n: integer;
+begin
+  if (Desktop = nil) or (WS.DeskW <= 0) or (WS.DeskH <= 0) then
+    Exit;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  if (WS.DeskW <> RD.B.X - RD.A.X) or (WS.DeskH <> RD.B.Y - RD.A.Y) then
+    Exit;
+  n := Lay.PaneCount;
+  for i := 0 to n - 1 do
+    if (i <= High(WS.Panes)) and (i < MAX_PANES) and (Win[i] <> nil) then
+    begin
+      if (WS.Panes[i].BW > 0) and (WS.Panes[i].BH > 0) then
+      begin
+        WR := Default(Objects.TRect);
+        WR.Assign(WS.Panes[i].BX, WS.Panes[i].BY,
+          WS.Panes[i].BX + WS.Panes[i].BW, WS.Panes[i].BY + WS.Panes[i].BH);
+        Win[i]^.Locate(WR);
+      end;
+      if WS.Panes[i].Zoomed and (not Win[i]^.Zoomed) then
+        Win[i]^.Zoom;
+    end;
+  // los minimizados al final (MinimizeWindow gestiona el foco e iconos)
+  for i := 0 to n - 1 do
+    if (i <= High(WS.Panes)) and (i < MAX_PANES) and (Win[i] <> nil) and
+       WS.Panes[i].Minimized then
+      MinimizeWindow(i);
 end;
 
 function TSuperApp.CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
 var
   i, n: integer;
   CurTitle, DefTitle: string;
+  WR, RD: Objects.TRect;
 begin
   Result := Default(TProfileWindowSpec);
   Result.Name := AName;
   Result.Enabled := True;
   Result.Layout := SaveLayoutString(Lay);
   Result.FocusedPane := Lay.Focused;
+  // tamano del escritorio: los bounds guardados son absolutos y solo se
+  // reaplican si el escritorio mide igual al restaurar el perfil
+  RD := Default(Objects.TRect);
+  if Desktop <> nil then
+  begin
+    Desktop^.GetExtent(RD);
+    Result.DeskW := RD.B.X - RD.A.X;
+    Result.DeskH := RD.B.Y - RD.A.Y;
+  end;
   n := Lay.PaneCount;
   if n > MAX_PANES then
     n := MAX_PANES;
@@ -2187,6 +2234,26 @@ begin
     Result.Panes[i] := Default(TProfilePaneSpec);
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
+    // geometria EXACTA de la ventana: maximizada aporta su ZoomRect,
+    // minimizada su SavedRect, el resto sus bounds actuales
+    if (Win[i] <> nil) then
+    begin
+      if Win[i]^.Zoomed then
+        WR := Win[i]^.ZoomRect
+      else if Win[i]^.Minimized then
+        WR := Win[i]^.SavedRect
+      else
+      begin
+        WR := Default(Objects.TRect);
+        Win[i]^.GetBounds(WR);
+      end;
+      Result.Panes[i].BX := WR.A.X;
+      Result.Panes[i].BY := WR.A.Y;
+      Result.Panes[i].BW := WR.B.X - WR.A.X;
+      Result.Panes[i].BH := WR.B.Y - WR.A.Y;
+      Result.Panes[i].Minimized := Win[i]^.Minimized;
+      Result.Panes[i].Zoomed := Win[i]^.Zoomed;
+    end;
     // titulo propio: se guarda solo si difiere del titulo por defecto de la
     // clase (para no fijar en el perfil un titulo que la clase ya aporta)
     if (Win[i] <> nil) and Win[i]^.TitleFixed and (Win[i]^.Title <> nil) then
@@ -2701,7 +2768,9 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  RelayoutAll;
+  // NO re-tilear: las ventanas que quedan conservan su tamano y posicion.
+  // KillPane ya quito la cerrada del escritorio; solo repintar.
+  ReDraw;
   FocusPane(Lay.Focused);
   SyncRemoteLayout; // el arbol cambio: reflejarlo en el daemon
 end;

@@ -36,6 +36,16 @@ the classic Turbo Vision style.
   custom title is never overwritten by the cwd/command refresh and is saved in
   the session and written into a profile when saved.
 
+### Fixes
+- SSH window classes with a password now connect: the `ssh` command word was
+  missing before `-tt`, so `sshpass` rejected `-tt` as its own option
+  (`invalid option -- 't'`) and the pane failed. The argv is now
+  `sshpass -d 3 ssh -tt ... host`.
+- Minimizing, restoring or closing a window no longer re-tiles the others.
+  Every window keeps the size and position the user gave it; a restored
+  window returns to its own previous bounds. Geometry changes only on
+  explicit actions (Tile/Cascade/Organize or the move/resize keys).
+
 ### Interface (classic Turbo Pascal look)
 - Menu tree: Panes, Windows, Classes, Profiles, Sessions, Options, Help.
 - Windows menu: Tile, Cascade, Organize, List (Alt-0) and Refresh display.
