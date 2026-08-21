@@ -1,0 +1,1 @@
+const SUPERTERM_VERSION = '2.1';
