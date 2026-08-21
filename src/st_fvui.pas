@@ -17,14 +17,14 @@ uses
   st_layout, st_session, st_debug, st_server, st_video;
 
 const
-  // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenTerm,
-  // cmTemplateBase, cmSessionBase, cmWindowBase, cmWindowRestoreBase,
+  // INVARIANTE de rangos de comandos: cada base dinamica (cmOpenClass,
+  // cmProfileBase, cmSessionBase, cmWindowBase, cmWindowRestoreBase,
   // cmLanguageBase) posee un rango reservado y NINGUN case directo puede
-  // caer dentro de un rango dinamico. Antes cmOpenTerm=2111 chocaba con
+  // caer dentro de un rango dinamico. Antes cmOpenClass=2111 chocaba con
   // cmSessionWizard=2112 y cmDetach=2113: pulsar el 2o terminal del menu
   // lanzaba el asistente y el 3o hacia detach.
   // Rangos: 2100-2199 paneles/app · 2200-2259 plantillas · 2300-2349
-  // terminales (cmOpenTerm+i) · 2400-2439 ventanas · 2500-2539 minimizados
+  // terminales (cmOpenClass+i) · 2400-2439 ventanas · 2500-2539 minimizados
   // · 2550-2569 sesion (detach/asistente) · 2600 ayuda · 2700 idioma.
   cmSplitV     = 2100;
   cmSplitH     = 2101;
@@ -43,10 +43,10 @@ const
   cmRedrawAll   = 2114;    // refrescar pantalla
   cmPaneOrganize = 2115;   // rejilla NxM del vendor (TDeskTop.Tile)
   cmInfoRow    = 2199;     // filas informativas de menu, siempre deshabilitado
-  cmTemplateBase = 2200;   // + indice de perfil (0..39)
+  cmProfileBase = 2200;   // + indice de perfil (0..39)
   cmProfileSaveAs = 2250;  // guardar el area de trabajo como perfil
   cmProfileManage = 2251;  // gestor de perfiles
-  cmOpenTerm   = 2320;     // + indice en SysTerms (0..29)
+  cmOpenClass   = 2320;     // + indice en WClasses (0..29)
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
   cmWindowBase   = 2410;   // + indice de ventana (0..15)
@@ -108,9 +108,9 @@ type
     Panes: array[0..MAX_PANES - 1] of TPty;
     Scr: array[0..MAX_PANES - 1] of TScreen;
     Win: array[0..MAX_PANES - 1] of PTermWindow;
-    PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en SysTerms o -1
+    PaneTerm: array[0..MAX_PANES - 1] of integer;  // indice en WClasses o -1
     PaneConnect: array[0..MAX_PANES - 1] of string; // conexion libre ad-hoc
-    SysTerms: TWindowClassArray;
+    WClasses: TWindowClassArray;
     Profiles: TProfileArray;
     ActiveProfile: integer;
     ActiveWindow: integer;
@@ -138,7 +138,7 @@ type
     procedure FallbackPane(i: integer);
     procedure DoSplit(ADir: TSplitDir; ASysIdx: integer);
     procedure DoClosePane(i: integer);
-    procedure DoOpenSysTerm(ASysIdx: integer);
+    procedure DoOpenClassPane(ASysIdx: integer);
     procedure RelayoutAll;
     procedure FocusPane(i: integer);
     procedure CyclePane(ADelta: integer);
@@ -159,7 +159,7 @@ type
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
-    function FindSysTerm(const AName: string): integer;
+    function FindWindowClass(const AName: string): integer;
     function FindProfile(const AName: string): integer;
     function ActivateProfile(AProfile, AWindow: integer): boolean;
     function CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
@@ -897,14 +897,14 @@ begin
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
   // clases de ventana: fichero de usuario + fichero de sistema (gana user);
   // si SUPERTERM_INI apunta al fichero de usuario, la mezcla deduplica
-  LoadWindowClasses(ConfigFile, coUser, SysTerms);
+  LoadWindowClasses(ConfigFile, coUser, WClasses);
   LoadWindowClasses(SystemConfigFile, coSystem, SysClassesTmp);
-  MergeWindowClasses(SysTerms, SysClassesTmp);
+  MergeWindowClasses(WClasses, SysClassesTmp);
   // perfiles: [profile.*] de usuario+sistema mas plantillas legadas aplanadas
   LoadProfiles(ConfigFile, SystemConfigFile, Profiles);
   DebugLog(Format('init: sysini=%s shell=%s classes=%d profiles=%d',
-    [SystemConfigFile, Cfg.Shell, Length(SysTerms), Length(Profiles)]));
-  // inherited Init llamo a InitMenuBar con SysTerms vacio: reconstruir
+    [SystemConfigFile, Cfg.Shell, Length(WClasses), Length(Profiles)]));
+  // inherited Init llamo a InitMenuBar con WClasses vacio: reconstruir
   if MenuBar <> nil then
   begin
     Dispose(MenuBar, Done);
@@ -1022,25 +1022,25 @@ begin
     Pin := nil;
     // terminales definidos en /etc/superterm/superterm.ini
     n := 0;
-    for i := 0 to Length(SysTerms) - 1 do
-      if SysTerms[i].Enabled then
+    for i := 0 to Length(WClasses) - 1 do
+      if WClasses[i].Enabled then
         Inc(n);
     if n > MAX_PANES then
       n := MAX_PANES;
     if n > 0 then
     begin
       k := 0;
-      for i := 0 to Length(SysTerms) - 1 do
+      for i := 0 to Length(WClasses) - 1 do
       begin
-        if (not SysTerms[i].Enabled) or (k >= MAX_PANES) then
+        if (not WClasses[i].Enabled) or (k >= MAX_PANES) then
           continue;
         if k > 0 then
         begin
           if Odd(k) then Dir := sdV else Dir := sdH;
           Lay.SplitPane(Lay.PaneCount - 1, Dir);
         end;
-        StartPaneEx(k, SysTerms[i].Cwd, '', i, '', '', SysTerms[i].Name,
-          SysTerms[i].ScrollBack);
+        StartPaneEx(k, WClasses[i].Cwd, '', i, '', '', WClasses[i].Name,
+          WClasses[i].ScrollBack);
         Inc(k);
       end;
       Lay.Focused := 0;
@@ -1059,10 +1059,10 @@ begin
   begin
     SysIdx := -1;
     if i <= High(Pin) then
-      SysIdx := FindSysTerm(Pin[i].Term);
+      SysIdx := FindWindowClass(Pin[i].Term);
     if SysIdx >= 0 then
-      StartPaneEx(i, '', '', SysIdx, '', '', SysTerms[SysIdx].Name,
-        SysTerms[SysIdx].ScrollBack)
+      StartPaneEx(i, '', '', SysIdx, '', '', WClasses[SysIdx].Name,
+        WClasses[SysIdx].ScrollBack)
     else if (i <= High(Pin)) and (Length(Pin[i].Args) > 0) then
       StartPane(i, Pin[i].Cwd,
         CommandWithInteractiveShell(ArgsAsShell(Pin[i].Args), Cfg.Shell,
@@ -1229,24 +1229,24 @@ begin
   if ph < 2 then ph := 2;
   if ASysIdx >= 0 then
   begin
-    if SysTerms[ASysIdx].Shell <> '' then
-      ShellS := SysTerms[ASysIdx].Shell
+    if WClasses[ASysIdx].Shell <> '' then
+      ShellS := WClasses[ASysIdx].Shell
     else
       ShellS := Cfg.Shell;
     // wcLocal/wcCommand: comando compuesto con la semantica unificada
     // (para wcSSH el camino es el argv estructurado de mas abajo)
-    CmdS := ComposePaneCommand(SysTerms[ASysIdx], ACmd, '', '', ShellS,
+    CmdS := ComposePaneCommand(WClasses[ASysIdx], ACmd, '', '', ShellS,
       Cfg.LoginShell);
-    if SysTerms[ASysIdx].Kind <> wcSSH then
-      CwdS := SysTerms[ASysIdx].Cwd
+    if WClasses[ASysIdx].Kind <> wcSSH then
+      CwdS := WClasses[ASysIdx].Cwd
     else
       CwdS := '';
     if ACwd <> '' then
       CwdS := ACwd;
     ExtraS := '';
-    TitleS := SysTerms[ASysIdx].Name;
+    TitleS := WClasses[ASysIdx].Name;
     if AMaxSB <= 0 then
-      AMaxSB := SysTerms[ASysIdx].ScrollBack;
+      AMaxSB := WClasses[ASysIdx].ScrollBack;
   end
   else
   begin
@@ -1276,9 +1276,9 @@ begin
   try
     ExecProgram := '';
     ExecSecret := '';
-    if (ASysIdx >= 0) and (SysTerms[ASysIdx].Kind = wcSSH) then
+    if (ASysIdx >= 0) and (WClasses[ASysIdx].Kind = wcSSH) then
     begin
-      BuildWindowClassExec(SysTerms[ASysIdx], ExecProgram, ExecArgs,
+      BuildWindowClassExec(WClasses[ASysIdx], ExecProgram, ExecArgs,
         ExecSecret, ACommandOverride);
       SpawnOK := Panes[i].SpawnArgv(ExecProgram, ExecArgs.ToStringArray,
         CwdS, pw, ph, ExtraS, ExecSecret);
@@ -1359,7 +1359,7 @@ begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (Scr[i] = nil) then
     Exit;
-  TitleS := SysTerms[PaneTerm[i]].Name;
+  TitleS := WClasses[PaneTerm[i]].Name;
   Cmd := 'printf ' + ShellQuote(
     UiText('superterm: remote terminal unavailable: ',
       'superterm: terminal remoto no disponible: ') + TitleS + #10) +
@@ -1639,7 +1639,7 @@ begin
   FocusPane(Lay.Focused);
 end;
 
-procedure TSuperApp.DoOpenSysTerm(ASysIdx: integer);
+procedure TSuperApp.DoOpenClassPane(ASysIdx: integer);
 var
   Dir: TSplitDir;
 begin
@@ -1653,15 +1653,15 @@ begin
   DoSplit(Dir, ASysIdx);
 end;
 
-function TSuperApp.FindSysTerm(const AName: string): integer;
+function TSuperApp.FindWindowClass(const AName: string): integer;
 var
   i: integer;
 begin
   Result := -1;
   if AName = '' then
     Exit;
-  for i := 0 to Length(SysTerms) - 1 do
-    if SameText(SysTerms[i].Name, AName) then
+  for i := 0 to Length(WClasses) - 1 do
+    if SameText(WClasses[i].Name, AName) then
       Exit(i);
 end;
 
@@ -1782,7 +1782,7 @@ begin
   for I := 0 to N - 1 do
   begin
     PaneTerm[I] := -1;
-    SysIdx := FindSysTerm(Snapshot.Panes[I].Term);
+    SysIdx := FindWindowClass(Snapshot.Panes[I].Term);
     if SysIdx >= 0 then
       PaneTerm[I] := SysIdx;
     Stream := TMemoryStream.Create;
@@ -1982,8 +1982,8 @@ begin
     if Win[I] <> nil then
       Titles[I] := Trim(Win[I]^.GetTitle(80));
     if PaneTerm[I] >= 0 then
-      if PaneTerm[I] < Length(SysTerms) then
-        Terms[I] := SysTerms[PaneTerm[I]].Name;
+      if PaneTerm[I] < Length(WClasses) then
+        Terms[I] := WClasses[PaneTerm[I]].Name;
     if (PtyRefs[I] = nil) or (ScreenRefs[I] = nil) then
     begin
       // avisar en vez de abortar en silencio: el usuario ya confirmo un
@@ -2054,13 +2054,13 @@ begin
     PS.Enabled := True;
     if i <= High(WS.Panes) then
       PS := WS.Panes[i];
-    SysIdx := FindSysTerm(PS.WClass);
+    SysIdx := FindWindowClass(PS.WClass);
     TitleS := Profiles[AProfile].Name + '/' + WS.Name;
     DebugLog(Format('profile pane=%d enabled=%d class=%s cmd=%s post=%s sysidx=%d',
       [i, Ord(PS.Enabled), PS.WClass, PS.Cmd, PS.PostConnect, SysIdx]));
     if not PS.Enabled then
       StartPane(i, '', '')
-    else if (SysIdx >= 0) and (SysTerms[SysIdx].Kind = wcSSH) then
+    else if (SysIdx >= 0) and (WClasses[SysIdx].Kind = wcSSH) then
     begin
       // ssh: la precedencia pane.post > class.post > pane.cmd > class.cmd
       // se resuelve entre el override y BuildWindowClassExec
@@ -2073,11 +2073,11 @@ begin
     else if SysIdx >= 0 then
     begin
       // clase local o de comando libre con overrides del panel
-      if SysTerms[SysIdx].Shell <> '' then
-        ShellFor := SysTerms[SysIdx].Shell
+      if WClasses[SysIdx].Shell <> '' then
+        ShellFor := WClasses[SysIdx].Shell
       else
         ShellFor := Cfg.Shell;
-      LocalCmd := ComposePaneCommand(SysTerms[SysIdx], PS.Cmd, PS.PostConnect,
+      LocalCmd := ComposePaneCommand(WClasses[SysIdx], PS.Cmd, PS.PostConnect,
         PS.Connect, ShellFor, Cfg.LoginShell);
       StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
         LocalCmd);
@@ -2126,8 +2126,8 @@ begin
     Result.Panes[i] := Default(TProfilePaneSpec);
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
-    if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(SysTerms)) then
-      Result.Panes[i].WClass := SysTerms[PaneTerm[i]].Name
+    if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+      Result.Panes[i].WClass := WClasses[PaneTerm[i]].Name
     else if Panes[i] <> nil then
     begin
       if PaneConnect[i] <> '' then
@@ -2409,26 +2409,35 @@ var
   R: Objects.TRect;
   D: PDialog;
 begin
-  R.Assign(0, 0, 52, 12);
+  R.Assign(0, 0, 54, 17);
   D := New(PDialog, Init(R, UiText('About', 'Acerca de')));
   D^.Options := D^.Options or ofCentered;
-  R.Assign(2, 2, 50, 3);
+  R.Assign(2, 2, 52, 3);
   D^.Insert(New(PStaticText, Init(R,
-    #3'superterm')));
-  R.Assign(2, 3, 50, 4);
+    #3'superterm ' + SUPERTERM_VERSION)));
+  R.Assign(2, 3, 52, 4);
   D^.Insert(New(PStaticText, Init(R,
     #3 + UiText('The productive terminal manager',
       'El gestor de terminales productivo'))));
-  R.Assign(2, 5, 50, 6);
+  R.Assign(2, 5, 52, 6);
   D^.Insert(New(PStaticText, Init(R,
     #3'Germ'#160'n Luis Aracil Boned')));
-  R.Assign(2, 6, 50, 7);
+  R.Assign(2, 6, 52, 7);
   D^.Insert(New(PStaticText, Init(R,
-    #3 + UiText('August 2026', 'Agosto 2026'))));
-  R.Assign(2, 8, 50, 9);
+    #3 + UiText('August 2026 - License: GNU GPL v3',
+      'Agosto 2026 - Licencia: GNU GPL v3'))));
+  R.Assign(2, 8, 52, 11);
   D^.Insert(New(PStaticText, Init(R,
-    #3 + UiText('License: GNU GPL v3', 'Licencia: GNU GPL v3'))));
-  D^.NewButton(20, 9, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+    #3 + UiText('Dedicated to Richard Stallman and his GNU',
+      'Dedicado a Richard Stallman y a su proyecto') + #13 +
+    #3 + UiText('project, with thanks for his drive to make',
+      'GNU, con las gracias por su af'#160'n en conseguir') + #13 +
+    #3 + UiText('software free for everyone.',
+      'un software libre para todos.'))));
+  R.Assign(2, 12, 52, 13);
+  D^.Insert(New(PStaticText, Init(R,
+    #3'https://www.gnu.org')));
+  D^.NewButton(21, 14, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
     hcNoContext, bfDefault);
   Desktop^.ExecView(D);
   Dispose(D, Done);
@@ -2806,7 +2815,7 @@ begin
     if Panes[i] <> nil then
     begin
       if PaneTerm[i] >= 0 then
-        Pin[i].Term := SysTerms[PaneTerm[i]].Name
+        Pin[i].Term := WClasses[PaneTerm[i]].Name
       else
       begin
         Panes[i].QueryState;
@@ -3021,17 +3030,17 @@ begin
       cmSessionPick: DoSessionPick;
       cmClassPick:
         begin
-          if RunClassPicker(SysTerms, i) then
+          if RunClassPicker(WClasses, i) then
           begin
             if i < 0 then
               DoSplit(sdV, -1)
             else
-              DoOpenSysTerm(i);
+              DoOpenClassPane(i);
           end;
         end;
       cmClassManage:
         begin
-          if RunClassManager(SysTerms) then
+          if RunClassManager(WClasses) then
             RebuildMenu;
         end;
       cmHelp: ShowHelp;
@@ -3056,9 +3065,9 @@ begin
         RebuildMenu;
         RebuildStatusLine;
       end
-      else if (Event.Command >= cmTemplateBase) and
-         (Event.Command < cmTemplateBase + Length(Profiles)) then
-        DoSwitchProfile(Event.Command - cmTemplateBase)
+      else if (Event.Command >= cmProfileBase) and
+         (Event.Command < cmProfileBase + Length(Profiles)) then
+        DoSwitchProfile(Event.Command - cmProfileBase)
       else if Event.Command = cmProfileSaveAs then
         RunProfileSaveAs
       else if Event.Command = cmProfileManage then
@@ -3085,9 +3094,9 @@ begin
        else if (Event.Command >= cmPaletteBase) and
           (Event.Command <= cmPaletteBase + apMonochrome) then
          ApplyPalette(Event.Command - cmPaletteBase)
-       else if (Event.Command >= cmOpenTerm) and
-         (Event.Command < cmOpenTerm + Length(SysTerms)) then
-        DoOpenSysTerm(Event.Command - cmOpenTerm)
+       else if (Event.Command >= cmOpenClass) and
+         (Event.Command < cmOpenClass + Length(WClasses)) then
+        DoOpenClassPane(Event.Command - cmOpenClass)
       else
         Exit;
     end;
@@ -3209,8 +3218,8 @@ var
         begin
           Panes[i].MarkExited;
           if (PaneTerm[i] >= 0) and
-             (PaneTerm[i] < Length(SysTerms)) and
-             (SysTerms[PaneTerm[i]].Kind = wcSSH) then
+             (PaneTerm[i] < Length(WClasses)) and
+             (WClasses[PaneTerm[i]].Kind = wcSSH) then
             FallbackPane(i)
           else if Win[i] <> nil then
             Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
@@ -3359,19 +3368,19 @@ begin
   // ---- Clases: abre un panel nuevo de cada clase configurada ----
   ClassItems := nil;
   Num := 0;
-  for i := 0 to Length(SysTerms) - 1 do
-    if SysTerms[i].Enabled then
+  for i := 0 to Length(WClasses) - 1 do
+    if WClasses[i].Enabled then
       Inc(Num);
-  for i := Length(SysTerms) - 1 downto 0 do
+  for i := Length(WClasses) - 1 downto 0 do
   begin
-    if not SysTerms[i].Enabled then
+    if not WClasses[i].Enabled then
       continue;
     if Num <= 8 then
-      TitleS := Format('~%d~ %s', [Num + 1, Copy(SysTerms[i].Name, 1, 20)])
+      TitleS := Format('~%d~ %s', [Num + 1, Copy(WClasses[i].Name, 1, 20)])
     else
-      TitleS := '  ' + Copy(SysTerms[i].Name, 1, 20);
+      TitleS := '  ' + Copy(WClasses[i].Name, 1, 20);
     Dec(Num);
-    Chain := NewItem(TitleS, '', kbNoKey, cmOpenTerm + i, hcNoContext,
+    Chain := NewItem(TitleS, '', kbNoKey, cmOpenClass + i, hcNoContext,
       ClassItems);
     if Chain <> nil then
       ClassItems := Chain;
@@ -3405,7 +3414,7 @@ begin
       HasProfiles := True;
       Chain := NewItem(ActiveMark(ProfileMode and (i = ActiveProfile)) +
         Copy(Profiles[i].Name, 1, 24), '', kbNoKey,
-        cmTemplateBase + i, hcNoContext, ProfileItems);
+        cmProfileBase + i, hcNoContext, ProfileItems);
       if Chain <> nil then
         ProfileItems := Chain;
     end;

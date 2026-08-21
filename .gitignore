@@ -3,3 +3,4 @@
 /build/
 /Makefile
 /config.status
+src/st_version.inc

@@ -42,7 +42,12 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES) $(PROJECT_DIR)/config.status
+# la version se toma del fichero VERSION y se inyecta como include
+$(PROJECT_DIR)/src/st_version.inc: $(PROJECT_DIR)/VERSION
+	printf "const SUPERTERM_VERSION = '%s';\n" "$$(cat $(PROJECT_DIR)/VERSION)" \
+		> $(PROJECT_DIR)/src/st_version.inc
+
+$(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(PROJECT_DIR)/config.status
 	@mkdir -p "$(UNITDIR)" "$(PROJECT_DIR)/bin"
 	$(FPC) $(BASE_FLAGS) $(MODE_FLAGS) $(FPCFLAGS_EXTRA) \
 		-o$(TARGET) $(PROJECT_DIR)/src/superterm.lpr

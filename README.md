@@ -5,7 +5,7 @@ Turbo Vision-style window and pane interface inside one terminal, while every
 visible pane remains a real PTY-backed terminal.
 
 It is designed for working with several local shells and remote SSH sessions
-at once. Sessions can be restored automatically, named templates can describe
+at once. Sessions can be restored automatically, named profiles can describe
 repeatable workspaces, and the session wizard can launch a small ad-hoc
 workspace without editing a configuration file.
 
@@ -247,7 +247,7 @@ toggles. In Spanish mode the menus are `Paneles`, `Ventanas`, `Clases`,
 
 ## Session Wizard
 
-Open `Session -> New session wizard`. In Spanish mode use
+Open `Sessions -> Quick session wizard`. In Spanish mode use
 `Sesion -> Asistente nueva sesion`.
 
 The wizard asks for one to four panes. For each pane enter:
@@ -396,14 +396,20 @@ default profile must create fresh daily connections.
 
 ```text
 src/
-├── superterm.lpr   Program entry point.
+├── superterm.lpr   Program entry point and CLI (--attach, --list-sessions).
 ├── st_fvui.pas     FreeVision application, menus, panes, focus, and polling.
+├── st_dialogs.pas  Class/profile managers, session picker, pane list.
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
 ├── st_pty.pas      POSIX PTYs, fork/exec, I/O, resize, and process cleanup.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
-├── st_session.pas  Fallback session serialization and restore.
-├── st_config.pas   User settings, terminal definitions, and paths.
-├── st_templates.pas INI and SQLite template loading.
+├── st_server.pas   Detached session daemon, protocol and enumeration.
+├── st_session.pas  Session serialization and restore.
+├── st_wclass.pas   Window classes ([class.*], legacy [t-*] reader).
+├── st_profiles.pas Profiles ([profile.*], legacy template flattening).
+├── st_config.pas   User settings, prefix key, palette, and paths.
+├── st_templates.pas Legacy INI and SQLite template loading.
+├── st_kbd.pas      Custom keyboard driver (ESC timeout, CSI/SS3, mouse).
+├── st_video.pas    Wide video output, CP437 glyph mapping, cursor restore.
 ├── st_keys.pas     FreeVision key codes to terminal escape sequences.
 └── st_debug.pas    Optional runtime logging.
 ```
@@ -443,8 +449,8 @@ Current limitations:
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.
-- Switching templates recreates PTYs instead of using a separate persistent
-  server.
+- Activating a profile recreates local PTYs; only detached sessions keep
+  processes alive across a switch.
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 

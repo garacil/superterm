@@ -43,6 +43,8 @@ const
   DEFAULT_SCROLLBACK = 10000;
   MAX_SCROLLBACK = 100000;
 
+{$I st_version.inc}
+
 function ShellQuote(const S: string): string;
 
 procedure LoadConfig(out Cfg: TConfig);
