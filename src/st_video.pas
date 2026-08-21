@@ -8,6 +8,16 @@ procedure InstallWideVideoOutput;
 procedure CaptureConsoleCursor;
 procedure RestoreConsoleCursor;
 
+// Passthrough: while active the FreeVision screen driver stays silent and the
+// client writes a pane's raw PTY bytes straight to the host terminal, so a
+// full-fidelity TUI (truecolor, emoji, wide glyphs) renders untouched.
+procedure PassthroughRaw(const Data; ALen: LongInt);
+// Raw escape/string writer to the host terminal (respects OutputFailed).
+procedure WriteRaw(const S: AnsiString);
+
+var
+  PassthroughActive: Boolean = False;
+
 implementation
 
 uses
@@ -18,6 +28,29 @@ var
   DriverInstalled: Boolean;
   OutputFailed: Boolean;
   ConsoleRow, ConsoleCol: Integer; // cursor position at startup (0 = unknown)
+
+procedure PassthroughRaw(const Data; ALen: LongInt);
+var
+  P: PByte;
+  Left: LongInt;
+  Written: Int64;
+begin
+  if (ALen <= 0) or OutputFailed then
+    Exit;
+  P := @Data;
+  Left := ALen;
+  while Left > 0 do
+  begin
+    Written := FileWrite(StdOutputHandle, P^, Left);
+    if Written > 0 then
+    begin
+      Inc(P, Written);
+      Dec(Left, LongInt(Written));
+    end
+    else
+      Exit;   // EINTR is retried by FileWrite; anything else = give up on this chunk
+  end;
+end;
 
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
 var
@@ -188,35 +221,34 @@ begin
   Result := #27'[' + IntToStr(AY + 1) + ';' + IntToStr(AX + 1) + 'H';
 end;
 
-procedure WriteCells(AStart, AStop: LongInt);
+function CellsToStr(AStart, AStop: LongInt): AnsiString;
 var
   I: LongInt;
-  Text: AnsiString;
 begin
-  Text := '';
+  Result := '';
   for I := AStart to AStop - 1 do
-  begin
-    Text := Text + VgaChar(Byte(VideoCellAt(VideoBuf, I)));
-    if Length(Text) >= 512 then
-    begin
-      WriteRaw(Text);
-      Text := '';
-    end;
-  end;
-  WriteRaw(Text);
+    Result := Result + VgaChar(Byte(VideoCellAt(VideoBuf, I)));
 end;
 
+// Builds the whole frame in one buffer and emits it with a SINGLE write,
+// wrapped in DECSET 2026 synchronized output. Over SSH this collapses the
+// hundreds of tiny writes the per-run approach produced into one segment,
+// which is what made moving/resizing windows feel laggy; the terminal also
+// paints the frame atomically (no tearing). Terminals without 2026 ignore it.
 procedure WideUpdateScreen(Force: Boolean);
 var
   X, Y, Index, RunStart, RunStop: LongInt;
   Attr: Byte;
   OutCursorX, OutCursorY: Word;
+  Body, Frame: AnsiString;
 begin
+  if PassthroughActive then
+    Exit;   // the pane owns the terminal; FreeVision must not write over it
   if (VideoBuf = nil) or (OldVideoBuf = nil) or
      (ScreenWidth = 0) or (ScreenHeight = 0) then
     Exit;
 
-  WriteRaw(#27'[0;40;37m'#27'[?7l');
+  Body := '';
   for Y := 0 to ScreenHeight - 1 do
   begin
     X := 0;
@@ -244,10 +276,8 @@ begin
         Inc(X);
       end;
       RunStop := X;
-      WriteRaw(CursorPosition(RunStart, Y));
-      WriteRaw(AttrSequence(Attr));
-      WriteCells(Y * ScreenWidth + RunStart,
-        Y * ScreenWidth + RunStop);
+      Body := Body + CursorPosition(RunStart, Y) + AttrSequence(Attr) +
+        CellsToStr(Y * ScreenWidth + RunStart, Y * ScreenWidth + RunStop);
     end;
   end;
 
@@ -259,7 +289,15 @@ begin
     OutCursorY := ScreenHeight - 1
   else
     OutCursorY := CursorY;
-  WriteRaw(CursorPosition(OutCursorX, OutCursorY));
+
+  if (Body <> '') or Force then
+    // synchronized begin + SGR reset + autowrap off + body + cursor + sync end
+    Frame := #27'[?2026h'#27'[0;40;37m'#27'[?7l' + Body +
+      CursorPosition(OutCursorX, OutCursorY) + #27'[?2026l'
+  else
+    // nothing changed: only keep the hardware cursor in sync (cheap)
+    Frame := CursorPosition(OutCursorX, OutCursorY);
+  WriteRaw(Frame);
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
 end;
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.1 - 2026-08
+
+### Full-fidelity passthrough for maximized panes
+- Maximizing a pane (F5) now hands it the **whole host terminal** and writes
+  its raw PTY bytes straight through, bypassing the CP437/16-color grid. A
+  rich TUI (Claude Code and the like) renders untouched: truecolor, emoji,
+  wide glyphs and box drawing exactly as the app intended, instead of
+  collapsed to `?` and 16 colors. F5 again un-maximizes and the window
+  manager reclaims the screen. Every window operation (restore, minimize,
+  switch, close, split) leaves passthrough automatically. While a pane is
+  passed through, every key reaches it except the prefix (still detaches)
+  and F5 (the way out). Assumes a single attached client.
+
+### Smoother window manager over SSH
+- The screen driver now emits each frame as a **single write wrapped in
+  synchronized output (DECSET 2026)** instead of hundreds of tiny writes.
+  Over SSH this collapses the per-frame TCP segments into one and lets the
+  terminal paint atomically, so moving and resizing windows is noticeably
+  faster and no longer tears.
+
 ## 3.0.1 - 2026-08
 
 - Attaching a client no longer bounces pane sizes across the session.

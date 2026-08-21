@@ -131,6 +131,11 @@ type
     // bounds (tile -> final geometry) and must NOT request transient
     // sizes from the daemon nor resize the snapshot screen every step
     RemoteAttachSettling: boolean;
+    // passthrough: when a pane is maximized it owns the whole host
+    // terminal and its raw PTY bytes are written straight through, so a
+    // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
+    PassPane: integer;
+    PassReqW, PassReqH: integer;  // full size requested on enter
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -168,6 +173,10 @@ type
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
+    // passthrough of a maximized pane straight to the host terminal
+    procedure EnterPassthrough(i: integer);
+    procedure ExitPassthrough;
+    procedure UpdatePassthrough;
     function ComputeLayoutHash: string;
     procedure ApplyRemoteLayoutEv(const AData: TByteArray);
     procedure ApplyRemoteKillPane(APane: integer);
@@ -840,6 +849,8 @@ begin
   App := PSuperApp(Application);
   if (App <> nil) and App^.RemoteMode and App^.RemoteAttachSettling then
     Exit;   // attach does ONE final pass with the definitive geometry
+  if (App <> nil) and (App^.PassPane = PaneIdx) then
+    Exit;   // passthrough owns the full terminal; keep the pane at that size
   if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
@@ -985,6 +996,9 @@ begin
   RemoteLayoutHash := '';
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
+  PassPane := -1;
+  PassReqW := 0;
+  PassReqH := 0;
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -1170,6 +1184,11 @@ end;
 
 destructor TSuperApp.Done;
 begin
+  // must clear passthrough before teardown: while it is active every
+  // FreeVision screen write (incl. Drivers.DoneVideo's ClearScreen) is
+  // suppressed, which would leave the alternate screen unblanked on exit
+  PassthroughActive := False;
+  PassPane := -1;
   try
   if DetachRequested then
   begin
@@ -3066,6 +3085,91 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
+// give a pane the WHOLE host terminal and start writing its raw PTY bytes
+// straight through; the SIGWINCH from the resize makes the app repaint at
+// full fidelity (truecolor, emoji, wide glyphs) with no CP437 grid in the
+// way. Only valid while the pane is maximized and owns the screen alone.
+procedure TSuperApp.EnterPassthrough(i: integer);
+begin
+  if PassthroughActive or (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
+    Exit;
+  PassPane := i;
+  PassReqW := ScreenWidth;
+  PassReqH := ScreenHeight;
+  PassthroughActive := True;   // silences all FreeVision screen writes
+  // hand a clean surface to the app: show cursor, reset attrs, clear
+  WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H');
+  // resize the pane's PTY to the full terminal (menu + desktop + status
+  // rows included). Single client => the daemon applies it as-is; the
+  // RESIZE_EV round-trip in ApplyRemoteResize aborts if another client
+  // constrains the size (falls back to grid rendering).
+  if Scr[i] <> nil then
+    Scr[i].Resize(ScreenWidth, ScreenHeight);
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, ScreenWidth, ScreenHeight);
+  end
+  else if Panes[i] <> nil then
+    Panes[i].Resize(ScreenWidth, ScreenHeight);
+end;
+
+// reclaim the terminal for the window manager: reset the modes the app may
+// have set, restore the pane's windowed size, and force one clean full
+// repaint so menus, status line and window frames come back.
+procedure TSuperApp.ExitPassthrough;
+begin
+  if not PassthroughActive then
+    Exit;
+  PassthroughActive := False;   // must precede any repaint
+  PassPane := -1;
+  PassReqW := 0;
+  PassReqH := 0;
+  // undo modes a full-screen app commonly leaves set, and make sure we are
+  // on superterm's (alternate) screen with sane defaults before repainting
+  WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
+    #27'[?1000l'#27'[?1002l'#27'[?1006l'#27'[?2004l');
+  RelayoutAll;         // re-derives each pane's windowed size (SendResize back)
+  ResetVideoSurface;   // blank both buffers
+  ReDraw;              // full repaint of menu, desktop, windows and status
+  if (Lay.Focused >= 0) and (Lay.Focused < MAX_PANES) then
+    FocusPane(Lay.Focused);
+end;
+
+// derive passthrough purely from the maximized state, once per Idle tick,
+// so any window-management action (restore, minimize, switch, close, split)
+// leaves it automatically without wiring every command.
+procedure TSuperApp.UpdatePassthrough;
+var
+  f: integer;
+  want: boolean;
+begin
+  f := Lay.Focused;
+  want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
+    Win[f]^.Zoomed and (Current = PView(Desktop));
+  if want and (not PassthroughActive) then
+    EnterPassthrough(f)
+  else if PassthroughActive and (not want) then
+    ExitPassthrough
+  else if PassthroughActive and
+    ((ScreenWidth <> PassReqW) or (ScreenHeight <> PassReqH)) then
+  begin
+    // host terminal was resized while passthrough was on: re-request the
+    // new full size so the app repaints to fit
+    PassReqW := ScreenWidth;
+    PassReqH := ScreenHeight;
+    if Scr[PassPane] <> nil then
+      Scr[PassPane].Resize(ScreenWidth, ScreenHeight);
+    if RemoteMode then
+    begin
+      if (Remote <> nil) and Remote.Connected then
+        Remote.SendResize(PassPane, ScreenWidth, ScreenHeight);
+    end
+    else if Panes[PassPane] <> nil then
+      Panes[PassPane].Resize(ScreenWidth, ScreenHeight);
+  end;
+end;
+
 // fingerprint of the visible state (geometry+titles+focus): if it
 // differs from the last sync, the layout must be pushed to the daemon
 function TSuperApp.ComputeLayoutHash: string;
@@ -3296,6 +3400,12 @@ begin
   Move(AData[0], C, SizeOf(C));
   Move(AData[SizeOf(C)], R, SizeOf(R));
   if (C < 4) or (R < 2) then
+    Exit;
+  // while a pane is drawn raw its size is owned by EnterPassthrough; ignore
+  // resize echoes for it (incl. the stale desktop-size echo from the zoom
+  // that preceded passthrough). Passthrough assumes a single attached
+  // client -- see EnterPassthrough.
+  if PassthroughActive and (APane = PassPane) then
     Exit;
   if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
   begin
@@ -3614,6 +3724,19 @@ begin
       ClearEvent(Event);
       Exit;
     end;
+    // passthrough: the maximized pane owns the screen, so every key goes to
+    // it -- bypass menu/status/Alt-1..9 which would otherwise steal F-keys,
+    // Alt-letters and Ctrl-S. Two escapes are kept for superterm: the prefix
+    // (handled above, detaches) and F5, which un-maximizes and is therefore
+    // the way OUT of passthrough -- so F5 falls through to the zoom handler.
+    if PassthroughActive and (Event.KeyCode <> kbF5) then
+    begin
+      PrefixSeq := TranslateKey(Event.KeyCode);
+      if PrefixSeq <> '' then
+        WritePaneInput(Lay.Focused, PrefixSeq);
+      ClearEvent(Event);
+      Exit;
+    end;
   end;
   // Alt-1..9 NO longer intercepted: falls through to native TProgram,
   // which selects pane N (cmSelectWindowNum); open class = Classes menu
@@ -3807,6 +3930,8 @@ var
     LastSizeCheck := Tick;
     SyncTerminalSize;
   end;
+  // enter/leave passthrough purely from the focused pane's maximized state
+  UpdatePassthrough;
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
@@ -3818,18 +3943,27 @@ var
       case RemoteEvent.Kind of
         sekOutput:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
-             (Scr[RemoteEvent.Pane] <> nil) and
              (Length(RemoteEvent.Data) > 0) then
           begin
-            Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
-              Length(RemoteEvent.Data));
-            if Win[RemoteEvent.Pane] <> nil then
-              Win[RemoteEvent.Pane]^.Term^.DrawView;
+            if PassthroughActive and (RemoteEvent.Pane = PassPane) then
+              // no parsing: the pane owns the terminal, write bytes verbatim
+              PassthroughRaw(RemoteEvent.Data[0], Length(RemoteEvent.Data))
+            else if Scr[RemoteEvent.Pane] <> nil then
+            begin
+              Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
+                Length(RemoteEvent.Data));
+              if Win[RemoteEvent.Pane] <> nil then
+                Win[RemoteEvent.Pane]^.Term^.DrawView;
+            end;
           end;
         sekExit:
-          if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
-             (Win[RemoteEvent.Pane] <> nil) then
-            Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+          begin
+            if PassthroughActive and (RemoteEvent.Pane = PassPane) then
+              ExitPassthrough;   // the app died: reclaim the screen
+            if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
+               (Win[RemoteEvent.Pane] <> nil) then
+              Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+          end;
         sekError:
           DebugLog('remote session error: ' + RemoteEvent.Text);
         sekLayoutEv: ApplyRemoteLayoutEv(RemoteEvent.Data);
@@ -3915,12 +4049,21 @@ var
           DebugLog(Format('poll pane=%d master=%d n=%d', [i, Panes[i].Master, n]));
           if n > 0 then
           begin
-            Scr[i].WriteBytes(Buf, n);
-            if Win[i] <> nil then
-              Win[i]^.Term^.DrawView;
+            if PassthroughActive and (i = PassPane) then
+              PassthroughRaw(Buf[0], n)
+            else
+            begin
+              Scr[i].WriteBytes(Buf, n);
+              if Win[i] <> nil then
+                Win[i]^.Term^.DrawView;
+            end;
           end
           else if (n = 0) or (fpgeterrno <> ESysEAGAIN) then
+          begin
+            if PassthroughActive and (i = PassPane) then
+              ExitPassthrough;
             Panes[i].MarkDead;
+          end;
         end;
   end
   else

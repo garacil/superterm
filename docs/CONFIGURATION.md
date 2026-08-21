@@ -105,6 +105,14 @@ saved when changed.
   flattening). `default_window` selects the starting window of the profile
   by name.
 
+## Full-screen passthrough
+
+Maximizing a pane (F5) makes it own the whole terminal and streams its raw
+output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
+at full fidelity instead of being approximated to the CP437 grid. Press F5
+again to un-maximize and bring the window manager back. This assumes a single
+client is attached to the session.
+
 ## Window classes
 
 A window class is a reusable, named pane definition: what to run, where to
