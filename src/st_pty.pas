@@ -844,6 +844,7 @@ begin
     Exit;
   if sz < SizeOf(cint) then
     Exit;
+  argc := 0;
   Move(buf[0], argc, SizeOf(cint));
   if argc <= 0 then
     Exit;
@@ -866,14 +867,16 @@ begin
 end;
 
 function DarwinProcCwd(Pid: TPid): string;
+type
+  TVNPBuf = array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
 var
-  buf: array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
+  buf: TVNPBuf;
   ret: cint;
 begin
   Result := '';
   if Pid <= 0 then
     Exit;
-  FillChar(buf, SizeOf(buf), 0);
+  buf := Default(TVNPBuf);
   ret := proc_pidinfo(Pid, PROC_PIDVNODEPATHINFO_, 0, @buf[0], SizeOf(buf));
   if ret <= VNODE_INFO_PATH_OFFSET_ then
     Exit;

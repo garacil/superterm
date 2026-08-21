@@ -13,10 +13,18 @@ TARGET ?= $(PROJECT_DIR)/bin/superterm
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 
-BASE_FLAGS := -Mobjfpc -Sh -vewnh \
+BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm6058,11030,11031 \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
+
+# macOS: FPC 3.2.4 invokes Xcode's ld64 with a duplicate -lc; pass -w to the
+# linker to silence that warning. (Linux uses GNU ld, which lacks -w, so guard
+# it.) The "-macosx_version_min renamed" note ld prints is an FPC 3.2.4 artifact
+# and is not suppressible without upgrading FPC.
+ifeq ($(shell uname -s),Darwin)
+BASE_FLAGS += -k-w
+endif
 
 ifeq ($(MODE),debug)
 # -Crtoi explicito: /etc/fpc.cfg lo activa via su rama "#IFDEF DEBUG", pero
