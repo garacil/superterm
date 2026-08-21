@@ -25,6 +25,8 @@ r = run_cli(['list'], HOME)
 check('list with no sessions exit 1', r.returncode == 1)
 r = run_cli(['send'], HOME)
 check('send without target exit 2', r.returncode == 2)
+r = run_cli(['capture'], HOME)
+check('capture without target exit 2', r.returncode == 2)
 
 # ---- espanol por config ----
 os.makedirs(HOME + '/.superterm', exist_ok=True)

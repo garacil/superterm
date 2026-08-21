@@ -445,7 +445,7 @@ end;
 
 procedure HelpGlobal;
 const
-  L: array[0..33] of THelpLine = (
+  L: array[0..42] of THelpLine = (
     (En: 'superterm %V - detachable terminal sessions for GNU/Linux and macOS';
      Es: 'superterm %V - sesiones de terminal separables para GNU/Linux y macOS'),
     (En: ''; Es: ''),
@@ -473,8 +473,24 @@ const
     (En: 'Panes:'; Es: 'Paneles:'),
     (En: '  send      TARGET TEXT...   type into a pane (adds Enter; -n raw)';
      Es: '  enviar    DESTINO TEXTO... escribe en un panel (anade Intro; -n no)'),
-    (En: '  capture   [TARGET]         print a pane (screen, -H history, -l N)';
-     Es: '  capturar  [DESTINO]        vuelca un panel (pantalla, -H todo, -l N)'),
+    (En: '  capture   TARGET           print a pane (screen, -H history, -l N)';
+     Es: '  capturar  DESTINO          vuelca un panel (pantalla, -H todo, -l N)'),
+    (En: ''; Es: ''),
+    (En: 'Windows (on detached sessions):'; Es: 'Ventanas (en sesiones separadas):'),
+    (En: '  new       SESSION          open a pane (-c CLASS, --cmd, --cwd, -t)';
+     Es: '  nueva     SESION           abre un panel (-c CLASE, --cmd, --cwd, -t)'),
+    (En: '  close     TARGET           close a pane';
+     Es: '  cerrar    DESTINO          cierra un panel'),
+    (En: '  focus     TARGET           give a pane the focus (''.'' points here)';
+     Es: '  foco      DESTINO          enfoca un panel (''.'' apunta a el)'),
+    (En: '  rename    TARGET NAME      change a pane title';
+     Es: '  renombrar DESTINO NOMBRE   cambia el titulo de un panel'),
+    (En: '  resize    TARGET WxH       resize a pane terminal (e.g. 100x30)';
+     Es: '  tamano    DESTINO WxH      redimensiona un panel (ej. 100x30)'),
+    (En: '  minimize / restore / zoom  TARGET';
+     Es: '  minimizar / restaurar / ampliar  DESTINO'),
+    (En: '  organize  SESSION [grid|tile|cascade]';
+     Es: '  organizar SESION [rejilla|mosaico|cascada]'),
     (En: ''; Es: ''),
     (En: 'General:'; Es: 'General:'),
     (En: '  help [command]   version   (also --help/--ayuda, --version)';
@@ -549,11 +565,11 @@ const
     (En: 'superterm capture - print a pane as plain UTF-8 text';
      Es: 'superterm capturar - vuelca un panel como texto plano UTF-8'),
     (En: ''; Es: ''),
-    (En: 'Usage:  superterm capture [TARGET] [options]';
-     Es: 'Uso:    superterm capturar [DESTINO] [opciones]'),
+    (En: 'Usage:  superterm capture TARGET [options]';
+     Es: 'Uso:    superterm capturar DESTINO [opciones]'),
     (En: ''; Es: ''),
-    (En: 'By default prints the visible screen of the focused pane.';
-     Es: 'Por defecto vuelca la pantalla visible del panel enfocado.'),
+    (En: 'TARGET is required; ''.'' = the only session (its focused pane).';
+     Es: 'El DESTINO es obligatorio; ''.'' = la unica sesion (panel enfocado).'),
     (En: ''; Es: ''),
     (En: 'Options:'; Es: 'Opciones:'),
     (En: '  -H, --history    (es: --historico)   the whole scrollback + screen';
@@ -605,6 +621,52 @@ const
     (En: ''; Es: ''),
     (En: 'Example:  superterm kill prod'; Es: 'Ejemplo:  superterm matar prod'),
     (En: ''; Es: ''));
+begin
+  PrintLines(L);
+end;
+
+procedure HelpWindows;
+const
+  L: array[0..21] of THelpLine = (
+    (En: 'superterm windows - manage the panes of a detached session';
+     Es: 'superterm ventanas - gestiona los paneles de una sesion separada'),
+    (En: ''; Es: ''),
+    (En: 'These commands work on sessions with no client attached.';
+     Es: 'Estas ordenes actuan sobre sesiones sin cliente conectado.'),
+    (En: ''; Es: ''),
+    (En: 'Usage:'; Es: 'Uso:'),
+    (En: '  superterm new SESSION[:PANE] [options]     open/split a pane';
+     Es: '  superterm nueva SESION[:PANEL] [opciones]  abre/divide un panel'),
+    (En: '     -c, --class NAME   (es: --clase)  window class from your config';
+     Es: '     -c, --clase NOMBRE (en: --class)  clase de ventana de tu config'),
+    (En: '     --cmd COMMAND      (es: --comando)  run this command';
+     Es: '     --comando ORDEN    (en: --cmd)   ejecuta esta orden'),
+    (En: '     --cwd DIR          starting directory';
+     Es: '     --cwd DIR          directorio inicial'),
+    (En: '     -t, --title NAME   (es: --titulo)  pane title';
+     Es: '     -t, --titulo NOMBRE (en: --title)  titulo del panel'),
+    (En: '     -d, --down | -r, --right          split direction';
+     Es: '     -d, --abajo | -r, --derecha       direccion de la division'),
+    (En: '  superterm close TARGET                     close a pane';
+     Es: '  superterm cerrar DESTINO                   cierra un panel'),
+    (En: '  superterm focus TARGET                     set the focused pane';
+     Es: '  superterm foco DESTINO                     fija el panel enfocado'),
+    (En: '  superterm rename TARGET NEW_NAME           set a pane title';
+     Es: '  superterm renombrar DESTINO NOMBRE         fija el titulo'),
+    (En: '  superterm resize TARGET COLSxROWS          e.g. 100x30';
+     Es: '  superterm tamano DESTINO COLSxFILAS        ej. 100x30'),
+    (En: '  superterm minimize|restore|zoom TARGET';
+     Es: '  superterm minimizar|restaurar|ampliar DESTINO'),
+    (En: '  superterm organize SESSION [grid|tile|cascade]';
+     Es: '  superterm organizar SESION [rejilla|mosaico|cascada]'),
+    (En: ''; Es: ''),
+    (En: 'Examples:'; Es: 'Ejemplos:'),
+    (En: '  superterm new prod --cmd "tail -f /var/log/syslog" -t Logs';
+     Es: '  superterm nueva prod --comando "tail -f /var/log/syslog" -t Logs'),
+    (En: '  superterm focus prod:Logs   &&   superterm send . clear';
+     Es: '  superterm foco prod:Logs   &&   superterm enviar . clear'),
+    (En: '  superterm organize prod grid';
+     Es: '  superterm organizar prod rejilla'));
 begin
   PrintLines(L);
 end;
@@ -959,6 +1021,12 @@ begin
     end;
     Inc(i);
   end;
+  if TargetSpec = '' then
+  begin
+    ErrLn(T('superterm: a target is required (SESSION[:PANE], or ''.'' for the only session).',
+      'superterm: falta el destino (SESION[:PANEL], o ''.'' para la unica sesion).'));
+    Exit(2);
+  end;
   SplitTargetSpec(TargetSpec, Ses, PaneSpec);
   rc := ResolveSession(Ses, True, Info);
   if rc <> 0 then
@@ -1029,6 +1097,309 @@ begin
   Exit(3);
 end;
 
+// ------------------------------------------------- gestion de ventanas
+
+function PasStr(const S: string): TByteArray;
+var
+  L: Longint;
+begin
+  Result := nil;
+  L := Length(S);
+  SetLength(Result, SizeOf(Longint) + L);
+  Move(L, Result[0], SizeOf(Longint));
+  if L > 0 then
+    Move(S[1], Result[SizeOf(Longint)], L);
+end;
+
+procedure AppendBytes(var Dst: TByteArray; const Src: TByteArray);
+var
+  Ofs: integer;
+begin
+  Ofs := Length(Dst);
+  SetLength(Dst, Ofs + Length(Src));
+  if Length(Src) > 0 then
+    Move(Src[0], Dst[Ofs], Length(Src));
+end;
+
+// ejecuta una WINOP sobre un destino ya resuelto; imprime errores
+function DoWinOp(const AInfo: TSessionInfo; APane: integer; AOp: byte;
+  const AExtra: TByteArray; out AReply: string): integer;
+var
+  Payload: TByteArray;
+begin
+  Payload := nil;
+  SetLength(Payload, 1);
+  Payload[0] := AOp;
+  AppendBytes(Payload, AExtra);
+  if CtlSimple(AInfo.SocketPath, FRAME_CTL_WINOP, APane, Payload,
+    AReply) then
+    Exit(0);
+  if AReply = 'session is attached' then
+  begin
+    ErrLn(T('superterm: the session is attached; detach it first',
+      'superterm: la sesion esta conectada; separala primero'));
+    Exit(1);
+  end;
+  if AReply <> '' then
+  begin
+    ErrLn('superterm: ' + AReply);
+    Exit(1);
+  end;
+  ErrLn(Format(T('superterm: cannot connect to session ''%s''',
+    'superterm: no se puede conectar con la sesion ''%s'''), [AInfo.Name]));
+  Exit(3);
+end;
+
+// resuelve TARGET (primera no-flag) de una lista de args
+function GrabTarget(const AArgs: array of string; ARequired: boolean;
+  out AInfo: TSessionInfo; out APane: integer): integer;
+var
+  i, rc: integer;
+  Spec, Ses, PaneSpec: string;
+begin
+  Spec := '';
+  for i := 0 to High(AArgs) do
+    if not IsFlag(AArgs[i]) then
+    begin
+      Spec := AArgs[i];
+      Break;
+    end;
+  if (Spec = '') and ARequired then
+  begin
+    ErrLn(T('superterm: a target is required. Try ''--help''.',
+      'superterm: falta el destino. Prueba ''--ayuda''.'));
+    Exit(2);
+  end;
+  SplitTargetSpec(Spec, Ses, PaneSpec);
+  rc := ResolveSession(Ses, True, AInfo);
+  if rc <> 0 then
+    Exit(rc);
+  Result := ResolvePane(AInfo.SocketPath, AInfo.Name, PaneSpec, APane);
+end;
+
+function CmdSimpleOp(const AArgs: array of string; AOp: byte;
+  ANeedTarget: boolean): integer;
+var
+  Info: TSessionInfo;
+  Pane, rc: integer;
+  Reply: string;
+begin
+  rc := GrabTarget(AArgs, ANeedTarget, Info, Pane);
+  if rc <> 0 then
+    Exit(rc);
+  Result := DoWinOp(Info, Pane, AOp, nil, Reply);
+end;
+
+function CmdNew(const AArgs: array of string): integer;
+var
+  Info: TSessionInfo;
+  Pane, rc, i: integer;
+  Reply, ClassS, CmdS, CwdS, TitleS, Spec, Ses, PaneSpec: string;
+  DirB: byte;
+  Extra: TByteArray;
+begin
+  ClassS := '';
+  CmdS := '';
+  CwdS := '';
+  TitleS := '';
+  DirB := 0;   // abajo por defecto
+  Spec := '';
+  i := 0;
+  while i <= High(AArgs) do
+  begin
+    case NormToken(AArgs[i]) of
+      'c', 'class', 'clase':
+        begin
+          if i = High(AArgs) then Exit(2);
+          ClassS := AArgs[i + 1];
+          Inc(i);
+        end;
+      'cmd', 'comando':
+        begin
+          if i = High(AArgs) then Exit(2);
+          CmdS := AArgs[i + 1];
+          Inc(i);
+        end;
+      'cwd', 'dir', 'directorio':
+        begin
+          if i = High(AArgs) then Exit(2);
+          CwdS := AArgs[i + 1];
+          Inc(i);
+        end;
+      't', 'title', 'titulo':
+        begin
+          if i = High(AArgs) then Exit(2);
+          TitleS := AArgs[i + 1];
+          Inc(i);
+        end;
+      'd', 'down', 'abajo': DirB := 0;
+      'r', 'right', 'derecha': DirB := 1;
+    else
+      if IsFlag(AArgs[i]) then
+      begin
+        ErrLn(Format(T('superterm: unknown option ''%s''',
+          'superterm: opcion desconocida ''%s'''), [AArgs[i]]));
+        Exit(2);
+      end;
+      if Spec = '' then
+        Spec := AArgs[i];
+    end;
+    Inc(i);
+  end;
+  if Spec = '' then
+  begin
+    ErrLn(T('superterm: a session is required (or ''.'' for the only one). Try ''superterm new --help''.',
+      'superterm: falta la sesion (o ''.'' para la unica). Prueba ''superterm nueva --ayuda''.'));
+    Exit(2);
+  end;
+  SplitTargetSpec(Spec, Ses, PaneSpec);
+  rc := ResolveSession(Ses, True, Info);
+  if rc <> 0 then
+    Exit(rc);
+  Pane := -1;
+  if PaneSpec <> '' then
+  begin
+    rc := ResolvePane(Info.SocketPath, Info.Name, PaneSpec, Pane);
+    if rc <> 0 then
+      Exit(rc);
+  end;
+  Extra := nil;
+  SetLength(Extra, 1);
+  Extra[0] := DirB;
+  AppendBytes(Extra, PasStr(ClassS));
+  AppendBytes(Extra, PasStr(CmdS));
+  AppendBytes(Extra, PasStr(CwdS));
+  AppendBytes(Extra, PasStr(TitleS));
+  Result := DoWinOp(Info, Pane, WINOP_NEWPANE, Extra, Reply);
+  if Result = 0 then
+    WriteLn(Format(T('superterm: pane %s created in ''%s''',
+      'superterm: panel %s creado en ''%s'''), [Reply, Info.Name]));
+end;
+
+function CmdRename(const AArgs: array of string): integer;
+var
+  Info: TSessionInfo;
+  Pane, rc, i: integer;
+  Reply, Spec, Ses, PaneSpec, NewName: string;
+begin
+  Spec := '';
+  NewName := '';
+  for i := 0 to High(AArgs) do
+    if not IsFlag(AArgs[i]) then
+    begin
+      if Spec = '' then
+        Spec := AArgs[i]
+      else
+      begin
+        if NewName <> '' then
+          NewName := NewName + ' ';
+        NewName := NewName + AArgs[i];
+      end;
+    end;
+  if (Spec = '') or (NewName = '') then
+  begin
+    ErrLn(T('superterm: usage: rename TARGET NEW_NAME',
+      'superterm: uso: renombrar DESTINO NUEVO_NOMBRE'));
+    Exit(2);
+  end;
+  SplitTargetSpec(Spec, Ses, PaneSpec);
+  rc := ResolveSession(Ses, True, Info);
+  if rc <> 0 then
+    Exit(rc);
+  rc := ResolvePane(Info.SocketPath, Info.Name, PaneSpec, Pane);
+  if rc <> 0 then
+    Exit(rc);
+  Result := DoWinOp(Info, Pane, WINOP_RENAME, PasStr(NewName), Reply);
+  if Result = 0 then
+    WriteLn(Format(T('superterm: pane %d renamed to "%s"',
+      'superterm: panel %d renombrado a "%s"'), [Pane + 1, NewName]));
+end;
+
+function CmdResize(const AArgs: array of string): integer;
+var
+  Info: TSessionInfo;
+  Pane, rc, i, XPos: integer;
+  Reply, Spec, Size: string;
+  Ses, PaneSpec: string;
+  Cols, Rows: Longint;
+  Extra: TByteArray;
+begin
+  Spec := '';
+  Size := '';
+  for i := 0 to High(AArgs) do
+    if not IsFlag(AArgs[i]) then
+    begin
+      if Spec = '' then
+        Spec := AArgs[i]
+      else if Size = '' then
+        Size := AArgs[i];
+    end;
+  XPos := Pos('x', LowerCase(Size));
+  if (Spec = '') or (XPos = 0) then
+  begin
+    ErrLn(T('superterm: usage: resize TARGET COLSxROWS  (e.g. 100x30)',
+      'superterm: uso: tamano DESTINO COLSxFILAS  (ej. 100x30)'));
+    Exit(2);
+  end;
+  Cols := StrToIntDef(Copy(Size, 1, XPos - 1), 0);
+  Rows := StrToIntDef(Copy(Size, XPos + 1, MaxInt), 0);
+  SplitTargetSpec(Spec, Ses, PaneSpec);
+  rc := ResolveSession(Ses, True, Info);
+  if rc <> 0 then
+    Exit(rc);
+  rc := ResolvePane(Info.SocketPath, Info.Name, PaneSpec, Pane);
+  if rc <> 0 then
+    Exit(rc);
+  Extra := nil;
+  SetLength(Extra, 2 * SizeOf(Longint));
+  Move(Cols, Extra[0], SizeOf(Longint));
+  Move(Rows, Extra[SizeOf(Longint)], SizeOf(Longint));
+  Result := DoWinOp(Info, Pane, WINOP_RESIZE, Extra, Reply);
+end;
+
+function CmdOrganize(const AArgs: array of string): integer;
+var
+  Info: TSessionInfo;
+  rc, i: integer;
+  Reply, Ses, HowS: string;
+  HowB: byte;
+  Extra: TByteArray;
+begin
+  Ses := '';
+  HowS := '';
+  for i := 0 to High(AArgs) do
+    if not IsFlag(AArgs[i]) then
+    begin
+      case NormToken(AArgs[i]) of
+        'tile', 'mosaico': HowS := 'tile';
+        'cascade', 'cascada': HowS := 'cascade';
+        'grid', 'rejilla': HowS := 'grid';
+      else
+        if Ses = '' then
+          Ses := AArgs[i];
+      end;
+    end;
+  if Ses = '' then
+  begin
+    ErrLn(T('superterm: a session is required (or ''.'' for the only one).',
+      'superterm: falta la sesion (o ''.'' para la unica).'));
+    Exit(2);
+  end;
+  rc := ResolveSession(Ses, True, Info);
+  if rc <> 0 then
+    Exit(rc);
+  case HowS of
+    'tile': HowB := 1;
+    'cascade': HowB := 2;
+  else
+    HowB := 0;   // rejilla
+  end;
+  Extra := nil;
+  SetLength(Extra, 1);
+  Extra[0] := HowB;
+  Result := DoWinOp(Info, -1, WINOP_ORGANIZE, Extra, Reply);
+end;
+
 // ---------------------------------------------------------------- despacho
 
 function IsHelpToken(const S: string): boolean;
@@ -1077,6 +1448,15 @@ begin
     'send', 'enviar': CmdIdx := 2;
     'capture', 'capturar': CmdIdx := 3;
     'kill', 'matar': CmdIdx := 4;
+    'new', 'nueva', 'nuevo': CmdIdx := 5;
+    'close', 'cerrar': CmdIdx := 6;
+    'focus', 'foco', 'select', 'seleccionar': CmdIdx := 7;
+    'minimize', 'minimizar': CmdIdx := 8;
+    'restore', 'restaurar': CmdIdx := 9;
+    'zoom', 'ampliar': CmdIdx := 10;
+    'organize', 'organizar': CmdIdx := 11;
+    'rename', 'renombrar': CmdIdx := 12;
+    'resize', 'tamano', 'redimensionar': CmdIdx := 13;
     'attach', 'conectar':
       begin
         // resuelve el nombre aqui (mejor matching) y delega el enganche
@@ -1100,6 +1480,11 @@ begin
             'send', 'enviar': begin HelpSend; Halt(0); end;
             'capture', 'capturar': begin HelpCapture; Halt(0); end;
             'kill', 'matar': begin HelpKill; Halt(0); end;
+            'new', 'nueva', 'nuevo', 'close', 'cerrar', 'focus', 'foco',
+            'select', 'seleccionar', 'minimize', 'minimizar', 'restore',
+            'restaurar', 'zoom', 'ampliar', 'organize', 'organizar',
+            'rename', 'renombrar', 'resize', 'tamano', 'redimensionar',
+            'windows', 'ventanas': begin HelpWindows; Halt(0); end;
           end;
         end;
         HelpGlobal;
@@ -1132,6 +1517,7 @@ begin
       2: HelpSend;
       3: HelpCapture;
       4: HelpKill;
+      5..13: HelpWindows;
     end;
     Halt(0);
   end;
@@ -1147,6 +1533,15 @@ begin
     2: rc := CmdSend(Rest);
     3: rc := CmdCapture(Rest);
     4: rc := CmdKill(Rest);
+    5: rc := CmdNew(Rest);
+    6: rc := CmdSimpleOp(Rest, WINOP_KILL, True);
+    7: rc := CmdSimpleOp(Rest, WINOP_FOCUS, True);
+    8: rc := CmdSimpleOp(Rest, WINOP_MINIMIZE, True);
+    9: rc := CmdSimpleOp(Rest, WINOP_RESTORE, True);
+    10: rc := CmdSimpleOp(Rest, WINOP_ZOOM, True);
+    11: rc := CmdOrganize(Rest);
+    12: rc := CmdRename(Rest);
+    13: rc := CmdResize(Rest);
   end;
   Halt(rc);
 end;

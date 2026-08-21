@@ -51,6 +51,17 @@ const
   CAPTURE_ALL = 1;
   CAPTURE_LAST_N = 2;
 
+  // sub-operaciones de FRAME_CTL_WINOP (byte Op al inicio del payload)
+  WINOP_NEWPANE = 1;    // byte Dir(0=V,1=H); strings Class,Cmd,Cwd,Title
+  WINOP_KILL = 2;       // panel en la cabecera
+  WINOP_FOCUS = 3;
+  WINOP_MINIMIZE = 4;
+  WINOP_RESTORE = 5;    // deshace minimizar y zoom
+  WINOP_ZOOM = 6;
+  WINOP_ORGANIZE = 8;   // byte How: 0 rejilla, 1 mosaico, 2 cascada
+  WINOP_RENAME = 9;     // string NewTitle
+  WINOP_RESIZE = 10;    // Longint Cols, Rows (tamano del terminal)
+
   MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
 type
@@ -209,6 +220,7 @@ type
     FDeskW, FDeskH: Longint;
     FCtlClasses: TWindowClassArray;   // clases resueltas para LIST (lazy)
     FCtlClassesLoaded: boolean;
+    FCtlCfg: TConfig;                 // config para spawns daemon-side
     function CreateListener: boolean;
     function SendFrame(AKind: byte; APane: integer;
       const Data: TByteArray): boolean;
@@ -222,7 +234,13 @@ type
     procedure HandleControlFrame(AFd: cint; AKind: byte; APane: integer;
       const AData: TByteArray);
     procedure CtlReplyErr(AFd: cint; const AMsg: string);
+    procedure CtlReplyOk(AFd: cint; const AMsg: string);
     procedure EnsureCtlConfig;
+    procedure HandleWinOp(AFd: cint; APane: integer;
+      const AData: TByteArray);
+    function SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
+      ACols, ARows: integer; out APty: TPty; out ATerm: string): boolean;
+    procedure ReapChildren;
     function HandleAttach(AFd: cint; AFirstKind: byte): boolean;
     function HandleClientFrame(var AClient: cint): boolean;
     procedure HandlePaneOutput(APane: integer);
@@ -1461,9 +1479,382 @@ begin
   if FCtlClassesLoaded then
     Exit;
   FCtlClassesLoaded := True;
+  LoadConfig(FCtlCfg);
   LoadWindowClasses(ConfigFile, coUser, FCtlClasses);
   LoadWindowClasses(SystemConfigFile, coSystem, SysClasses);
   MergeWindowClasses(FCtlClasses, SysClasses);
+end;
+
+procedure TDetachedSession.CtlReplyOk(AFd: cint; const AMsg: string);
+var
+  Data: TByteArray;
+begin
+  Data := nil;
+  SetLength(Data, Length(AMsg));
+  if Length(AMsg) > 0 then
+    Move(AMsg[1], Data[0], Length(AMsg));
+  WriteFrameToTimeout(AFd, FRAME_CTL_OK, -1, Data, 5000);
+end;
+
+// recoge hijos del daemon (paneles creados daemon-side) sin bloquear
+procedure TDetachedSession.ReapChildren;
+var
+  St: cint;
+begin
+  St := 0;
+  while fpWaitPid(-1, St, WNOHANG) > 0 do
+    ;
+end;
+
+// crea un PTY para una clase de ventana o un comando, como StartPaneEx
+// pero sin FreeVision: wcSSH -> argv estructurado; resto -> comando compuesto
+function TDetachedSession.SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
+  ACols, ARows: integer; out APty: TPty; out ATerm: string): boolean;
+var
+  CIdx: integer;
+  ShellS, CmdS, CwdS: string;
+  ExecProgram, ExecSecret: string;
+  ExecArgs: TStringList;
+begin
+  Result := False;
+  APty := nil;
+  ATerm := '';
+  EnsureCtlConfig;
+  CIdx := -1;
+  if AClass <> '' then
+  begin
+    CIdx := FindClassByName(FCtlClasses, AClass);
+    if CIdx < 0 then
+      Exit;
+    ATerm := FCtlClasses[CIdx].Name;
+  end;
+  APty := TPty.Create;
+  if (CIdx >= 0) and (FCtlClasses[CIdx].Kind = wcSSH) then
+  begin
+    ExecArgs := TStringList.Create;
+    try
+      ExecProgram := '';
+      ExecSecret := '';
+      BuildWindowClassExec(FCtlClasses[CIdx], ExecProgram, ExecArgs,
+        ExecSecret, ACmd);
+      Result := APty.SpawnArgv(ExecProgram, ExecArgs.ToStringArray,
+        ExpandUserPath(ACwd), ACols, ARows, '', ExecSecret);
+    finally
+      ExecArgs.Free;
+    end;
+  end
+  else
+  begin
+    ShellS := FCtlCfg.Shell;
+    CwdS := ACwd;
+    if CIdx >= 0 then
+    begin
+      if FCtlClasses[CIdx].Shell <> '' then
+        ShellS := FCtlClasses[CIdx].Shell;
+      if CwdS = '' then
+        CwdS := FCtlClasses[CIdx].Cwd;
+      CmdS := ComposePaneCommand(FCtlClasses[CIdx], ACmd, '', '', ShellS,
+        FCtlCfg.LoginShell);
+    end
+    else if ACmd <> '' then
+      CmdS := CommandWithInteractiveShell(ACmd, ShellS, FCtlCfg.LoginShell)
+    else
+      CmdS := '';
+    if CwdS = '' then
+      CwdS := GetEnvironmentVariable('HOME');
+    Result := APty.Spawn(ShellS, ExpandUserPath(CwdS), CmdS, ACols, ARows,
+      '', FCtlCfg.LoginShell);
+  end;
+  if not Result then
+    FreeAndNil(APty);
+end;
+
+// gestion de ventanas por control; con un cliente enganchado se rechaza
+// (hasta la fase multi-cliente, que difunde los cambios en vivo)
+procedure TDetachedSession.HandleWinOp(AFd: cint; APane: integer;
+  const AData: TByteArray);
+var
+  Ofs: integer;
+  Op, HowB, DirB: byte;
+  ClassS, CmdS, CwdS, TitleS: string;
+  NewPty: TPty;
+  TermS: string;
+  NewIdx, OldCount, j, N, i, k: integer;
+  Cols, Rows: Longint;
+  GC, GR, CW, CH, MaxOff: integer;
+
+  function RdStr: string;
+  var
+    L: Longint;
+  begin
+    Result := '';
+    L := Default(Longint);
+    if Ofs + SizeOf(Longint) > Length(AData) then
+      Exit;
+    Move(AData[Ofs], L, SizeOf(L));
+    Inc(Ofs, SizeOf(L));
+    if (L < 0) or (Ofs + L > Length(AData)) then
+      Exit;
+    SetLength(Result, L);
+    if L > 0 then
+      Move(AData[Ofs], Result[1], L);
+    Inc(Ofs, L);
+  end;
+
+begin
+  if Length(AData) < 1 then
+  begin
+    CtlReplyErr(AFd, 'bad request');
+    Exit;
+  end;
+  if FClient >= 0 then
+  begin
+    CtlReplyErr(AFd, 'session is attached');
+    Exit;
+  end;
+  Op := AData[0];
+  Ofs := 1;
+  case Op of
+    WINOP_NEWPANE:
+      begin
+        if FPaneCount >= MAX_PANES then
+        begin
+          CtlReplyErr(AFd, 'max panes');
+          Exit;
+        end;
+        DirB := 0;
+        if Ofs < Length(AData) then
+        begin
+          DirB := AData[Ofs];
+          Inc(Ofs);
+        end;
+        ClassS := RdStr;
+        CmdS := RdStr;
+        CwdS := RdStr;
+        TitleS := RdStr;
+        // dividir el panel indicado (o el enfocado)
+        if (APane < 0) or (APane >= FPaneCount) then
+          APane := FFocused;
+        if (APane < 0) or (APane >= FPaneCount) then
+          APane := 0;
+        Cols := 80;
+        Rows := 24;
+        if FScreens[APane] <> nil then
+        begin
+          Cols := FScreens[APane].Width;
+          Rows := FScreens[APane].Height;
+        end;
+        OldCount := FPaneCount;
+        if DirB = 1 then
+        begin
+          if not FLayout.SplitPane(APane, sdH) then
+          begin
+            CtlReplyErr(AFd, 'split failed');
+            Exit;
+          end;
+        end
+        else if not FLayout.SplitPane(APane, sdV) then
+        begin
+          CtlReplyErr(AFd, 'split failed');
+          Exit;
+        end;
+        NewIdx := FLayout.LastInsertedIndex;
+        if not SpawnPaneForSpec(ClassS, CmdS, CwdS, Cols, Rows,
+          NewPty, TermS) then
+        begin
+          FLayout.ClosePane(NewIdx);
+          if ClassS <> '' then
+            CtlReplyErr(AFd, 'unknown class or spawn failed')
+          else
+            CtlReplyErr(AFd, 'spawn failed');
+          Exit;
+        end;
+        // desplazar los arrays en espejo del cliente (DoSplit)
+        for j := OldCount downto NewIdx + 1 do
+        begin
+          FPanes[j] := FPanes[j - 1];
+          FScreens[j] := FScreens[j - 1];
+          FTitles[j] := FTitles[j - 1];
+          FTerms[j] := FTerms[j - 1];
+          FGeom[j] := FGeom[j - 1];
+        end;
+        FPanes[NewIdx] := NewPty;
+        FScreens[NewIdx] := TScreen.Create(Cols, Rows,
+          DEFAULT_SCROLLBACK);
+        FTerms[NewIdx] := TermS;
+        if TitleS <> '' then
+          FTitles[NewIdx] := ' ' + TitleS
+        else if TermS <> '' then
+          FTitles[NewIdx] := ' ' + TermS
+        else if CmdS <> '' then
+          FTitles[NewIdx] := ' ' + CmdS
+        else
+          FTitles[NewIdx] := ' shell';
+        FGeom[NewIdx] := Default(TPaneGeom);
+        Inc(FPaneCount);
+        FFocused := NewIdx;
+        WriteSidecar;
+        CtlReplyOk(AFd, IntToStr(NewIdx + 1));
+      end;
+    WINOP_KILL:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        if FPaneCount <= 1 then
+        begin
+          CtlReplyErr(AFd, 'last pane; use kill-session');
+          Exit;
+        end;
+        DoKillPane(APane);
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_FOCUS:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        FFocused := APane;
+        // enfocar restaura si estaba minimizada
+        FGeom[APane].Minimized := False;
+        FGeomValid := True;
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_MINIMIZE, WINOP_RESTORE, WINOP_ZOOM:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        case Op of
+          WINOP_MINIMIZE: FGeom[APane].Minimized := True;
+          WINOP_RESTORE:
+            begin
+              FGeom[APane].Minimized := False;
+              FGeom[APane].Zoomed := False;
+            end;
+          WINOP_ZOOM:
+            begin
+              // solo una maximizada a la vez (espejo de la UI)
+              for j := 0 to FPaneCount - 1 do
+                FGeom[j].Zoomed := False;
+              FGeom[APane].Zoomed := True;
+              FGeom[APane].Minimized := False;
+            end;
+        end;
+        FGeomValid := True;
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_ORGANIZE:
+      begin
+        if (FDeskW <= 0) or (FDeskH <= 0) then
+        begin
+          CtlReplyErr(AFd, 'no desk size known yet');
+          Exit;
+        end;
+        HowB := 0;
+        if Ofs < Length(AData) then
+          HowB := AData[Ofs];
+        N := FPaneCount;
+        case HowB of
+          2:  // cascada
+            begin
+              CW := FDeskW * 2 div 3;
+              CH := FDeskH * 2 div 3;
+              if CW < 20 then CW := 20;
+              if CH < 6 then CH := 6;
+              MaxOff := FDeskH - CH - 1;
+              if MaxOff < 1 then MaxOff := 1;
+              k := 0;
+              for i := 0 to N - 1 do
+              begin
+                FGeom[i].BX := (k * 3) mod (FDeskW - CW);
+                FGeom[i].BY := k mod MaxOff;
+                FGeom[i].BW := CW;
+                FGeom[i].BH := CH;
+                FGeom[i].Zoomed := False;
+                FGeom[i].Minimized := False;
+                Inc(k);
+              end;
+            end;
+          1:  // mosaico segun el arbol de splits
+            begin
+              for i := 0 to N - 1 do
+              begin
+                FGeom[i].BW := 0;  // sin bounds manuales: re-tila al attach
+                FGeom[i].BH := 0;
+                FGeom[i].Zoomed := False;
+                FGeom[i].Minimized := False;
+              end;
+            end;
+        else
+          // rejilla NxM lo mas cuadrada posible
+          GC := 1;
+          while GC * GC < N do
+            Inc(GC);
+          GR := (N + GC - 1) div GC;
+          for i := 0 to N - 1 do
+          begin
+            FGeom[i].BW := FDeskW div GC;
+            FGeom[i].BH := FDeskH div GR;
+            FGeom[i].BX := (i mod GC) * (FDeskW div GC);
+            FGeom[i].BY := (i div GC) * (FDeskH div GR);
+            FGeom[i].Zoomed := False;
+            FGeom[i].Minimized := False;
+          end;
+        end;
+        FGeomValid := True;
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_RENAME:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        TitleS := RdStr;
+        if Trim(TitleS) = '' then
+        begin
+          CtlReplyErr(AFd, 'empty title');
+          Exit;
+        end;
+        FTitles[APane] := ' ' + Trim(TitleS);
+        CtlReplyOk(AFd, '');
+      end;
+    WINOP_RESIZE:
+      begin
+        if (APane < 0) or (APane >= FPaneCount) or
+           (FScreens[APane] = nil) then
+        begin
+          CtlReplyErr(AFd, 'no such pane');
+          Exit;
+        end;
+        Cols := 0;
+        Rows := 0;
+        if Ofs + 2 * SizeOf(Longint) <= Length(AData) then
+        begin
+          Move(AData[Ofs], Cols, SizeOf(Longint));
+          Move(AData[Ofs + SizeOf(Longint)], Rows, SizeOf(Longint));
+        end;
+        if (Cols < 4) or (Rows < 2) or (Cols > 1000) or (Rows > 500) then
+        begin
+          CtlReplyErr(AFd, 'bad size');
+          Exit;
+        end;
+        FScreens[APane].Resize(Cols, Rows);
+        if FPanes[APane] <> nil then
+          FPanes[APane].Resize(Cols, Rows);
+        CtlReplyOk(AFd, '');
+      end;
+  else
+    CtlReplyErr(AFd, 'unknown operation');
+  end;
 end;
 
 // peticion de control efimera: un frame de peticion ya leido, responder por
@@ -1660,7 +2051,7 @@ begin
         end;
       end;
     FRAME_CTL_WINOP:
-      CtlReplyErr(AFd, 'not supported');   // llega en la fase F3
+      HandleWinOp(AFd, APane, AData);
   end;
 end;
 
@@ -1851,6 +2242,7 @@ begin
     end;
     if (FClient >= 0) and (fpFD_ISSET(FClient, ReadSet) <> 0) then
       HandleClientFrame(FClient);
+    ReapChildren;
     for I := 0 to FPaneCount - 1 do
       if (FPanes[I] <> nil) and FPanes[I].Alive and
          (FPanes[I].Master >= 0) and
