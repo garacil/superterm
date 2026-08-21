@@ -865,6 +865,13 @@ begin
     Exit;
   if buf[VNODE_INFO_PATH_OFFSET_] = Ord('/') then
     Result := StrPas(PAnsiChar(@buf[VNODE_INFO_PATH_OFFSET_]));
+  { macOS firmlinks /tmp, /var and /etc under /private; proc_pidinfo returns the
+    physical path. Present the user-facing path so captured cwd matches what the
+    user typed (and the Linux equivalent). }
+  if (Copy(Result, 1, 12) = '/private/tmp') or
+     (Copy(Result, 1, 12) = '/private/var') or
+     (Copy(Result, 1, 12) = '/private/etc') then
+    Delete(Result, 1, 8);
 end;
 {$ENDIF}
 
