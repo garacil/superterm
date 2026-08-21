@@ -10,7 +10,7 @@ program superterm;
 
 uses
   SysUtils, Objects, Drivers, App, st_fvui, st_server, st_video, st_kbd,
-  st_config, st_cli;
+  st_config, st_cli, st_debug;
 
 var
   STApp: PSuperApp;
@@ -151,6 +151,8 @@ begin
     // server-always: the freshly built workspace moves to a daemon
     // and this instance becomes a client (config [session] server=always)
     STApp^.PromoteToServer;
+    if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
+    STApp^.FinishBoot;   // release the boot lock and paint ONCE
     if not STApp^.AbortRun then
       STApp^.Run;
   end;

@@ -17,11 +17,15 @@ procedure WriteRaw(const S: AnsiString);
 
 var
   PassthroughActive: Boolean = False;
+  // startup: while True, FreeVision draws into the buffer normally but the
+  // driver does NOT write to the terminal, so the whole build+promote+
+  // attach is flushed ONCE (a forced paint at the end) instead of several
+  SuppressFlush: Boolean = False;
 
 implementation
 
 uses
-  SysUtils, termio, Video;
+  SysUtils, termio, Video, st_debug;
 
 var
   SavedDriver: TVideoDriver;
@@ -50,6 +54,8 @@ begin
     else
       Exit;   // EINTR is retried by FileWrite; anything else = give up on this chunk
   end;
+  if DebugActive then
+    DebugLog(Format('pass: raw %d bytes straight to terminal', [ALen]));
 end;
 
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
@@ -241,14 +247,27 @@ var
   Attr: Byte;
   OutCursorX, OutCursorY: Word;
   Body, Frame: AnsiString;
+  ChangedCells, Runs: LongInt;
 begin
   if PassthroughActive then
+  begin
+    if DebugActive then
+      DebugLog('video: update SUPPRESSED (passthrough owns the terminal)');
     Exit;   // the pane owns the terminal; FreeVision must not write over it
+  end;
+  if SuppressFlush then
+  begin
+    if DebugActive then
+      DebugLog('video: flush suppressed (booting; buffer kept, no write)');
+    Exit;   // booting: draw into the buffer only; one forced flush at the end
+  end;
   if (VideoBuf = nil) or (OldVideoBuf = nil) or
      (ScreenWidth = 0) or (ScreenHeight = 0) then
     Exit;
 
   Body := '';
+  ChangedCells := 0;
+  Runs := 0;
   for Y := 0 to ScreenHeight - 1 do
   begin
     X := 0;
@@ -276,6 +295,8 @@ begin
         Inc(X);
       end;
       RunStop := X;
+      Inc(Runs);
+      Inc(ChangedCells, RunStop - RunStart);
       Body := Body + CursorPosition(RunStart, Y) + AttrSequence(Attr) +
         CellsToStr(Y * ScreenWidth + RunStart, Y * ScreenWidth + RunStop);
     end;
@@ -299,6 +320,10 @@ begin
     Frame := CursorPosition(OutCursorX, OutCursorY);
   WriteRaw(Frame);
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
+  if DebugActive then
+    DebugLog(Format('video: update force=%d runs=%d changed_cells=%d ' +
+      'of %d bytes=%d', [Ord(Force), Runs, ChangedCells,
+      LongInt(ScreenWidth) * ScreenHeight, Length(Frame)]));
 end;
 
 procedure WideDoneVideo;

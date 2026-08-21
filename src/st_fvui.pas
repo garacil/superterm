@@ -136,6 +136,9 @@ type
     // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
     PassPane: integer;
     PassReqW, PassReqH: integer;  // full size requested on enter
+    // startup: hold one LockScreenUpdate across the whole build+promote+
+    // attach so the screen is flushed ONCE at the end, not several times
+    FBootLocked: boolean;
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -173,6 +176,13 @@ type
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
+    // incremental repaint: redraw the view tree into the buffer but push
+    // ONLY the changed cells (the FreeVision diff), instead of the
+    // ResetVideoSurface+ReDraw sledgehammer that re-sends every cell
+    procedure RepaintChanges;
+    // release the startup screen lock and paint the final workspace once
+    // (or go straight into passthrough if a pane is maximized)
+    procedure FinishBoot;
     // passthrough of a maximized pane straight to the host terminal
     procedure EnterPassthrough(i: integer);
     procedure ExitPassthrough;
@@ -315,9 +325,47 @@ end;
 
 procedure ResetVideoSurface;
 begin
+  if DebugActive then
+    DebugLog('fvui: ResetVideoSurface (FORCED full repaint follows)');
   if (VideoBuf <> nil) and (VideoBufSize > 0) then
     FillWord(VideoBuf^, VideoBufSize div SizeOf(Word), $0720);
   ClearScreen;
+end;
+
+// Incremental full-tree repaint. TView.DrawView redraws every subview
+// (menu, desktop + windows, status) into VideoBuf and then calls
+// DrawScreenBuf(false) -> UpdateScreen(false) -> WideUpdateScreen diffs
+// against OldVideoBuf and emits ONLY the cells that actually changed.
+// The desktop background repaints over any area a closed/shrunk window
+// vacated, so no stale cells survive -- without re-sending the whole
+// screen the way ResetVideoSurface (blanks OldVideoBuf) + ReDraw
+// (drawscreenbuf TRUE, forced) does. Reserve the sledgehammer for real
+// video-mode/size changes and coming back from raw passthrough.
+procedure TSuperApp.RepaintChanges;
+begin
+  if DebugActive then
+    DebugLog('fvui: RepaintChanges (incremental DrawView -> diff)');
+  DrawView;
+end;
+
+// End of startup: release the single boot lock and paint ONCE. If the
+// focused pane is maximized we go straight into passthrough (the pane owns
+// the terminal and paints itself), so we never even flush the grid version.
+procedure TSuperApp.FinishBoot;
+begin
+  if FBootLocked then
+  begin
+    SuppressFlush := False;
+    FBootLocked := False;
+  end;
+  UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
+  if not PassthroughActive then
+  begin
+    if DebugActive then DebugLog('== BOOT: single final paint (forced) ==');
+    // OldVideoBuf never tracked the buffered build, so force a full paint
+    // of the settled workspace -- this is the ONE unavoidable initial paint
+    ReDraw;
+  end;
 end;
 
 function TranslitByte(const C: TCell): AnsiChar;
@@ -943,7 +991,16 @@ var
   SysClassesTmp: TWindowClassArray;
 begin
   InstallWideVideoOutput;
+  if DebugActive then DebugLog('== BOOT: TSuperApp.Init begin (build local workspace) ==');
+  // suppress terminal flushes for the WHOLE startup: FreeVision draws the
+  // local build, the promote and the re-attach into the buffer normally but
+  // nothing reaches the terminal; FinishBoot flushes exactly once.
+  // SuppressFlush is a unit global (survives inherited Init's FillChar of
+  // Self); FBootLocked is a field, so set it AFTER inherited Init or the
+  // zero-fill would wipe it and the flush would never be released.
+  SuppressFlush := True;
   inherited Init;
+  FBootLocked := True;
   LoadConfig(Cfg);
   if Cfg.Palette = 'bw' then
     AppPalette := apBlackWhite
@@ -1006,8 +1063,7 @@ begin
     if AttachSocket = '' then
     begin
       AttachSocket := PickSessionSocketUI(True);
-      ResetVideoSurface;
-      ReDraw;
+      RepaintChanges;
     end;
     if (AttachSocket <> '') and AttachRemoteSession(AttachSocket) then
       Exit;
@@ -1109,8 +1165,7 @@ begin
       end;
       Lay.Focused := 0;
       RelayoutAll;
-      ResetVideoSurface;
-      ReDraw;
+      RepaintChanges;
       FocusPane(0);
       Exit;
     end;
@@ -1177,8 +1232,7 @@ begin
          Pin[i].Minimized then
         MinimizeWindow(i);
   end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
 end;
 
@@ -1189,6 +1243,13 @@ begin
   // suppressed, which would leave the alternate screen unblanked on exit
   PassthroughActive := False;
   PassPane := -1;
+  // a suppressed flush left on (aborted attach) would likewise swallow the
+  // teardown's ClearScreen -> release it so the shell is left clean
+  if FBootLocked then
+  begin
+    SuppressFlush := False;
+    FBootLocked := False;
+  end;
   try
   if DetachRequested then
   begin
@@ -1230,6 +1291,7 @@ begin
 end;
 
 procedure TSuperApp.ApplyTerminalSize(ACols, ARows: integer);
+{ logs a forced full repaint when the terminal actually changed size }
 var
   Mode: TVideoMode;
   R: Objects.TRect;
@@ -1864,6 +1926,7 @@ var
   GR: Objects.TRect;
   PW, PH: integer;
 begin
+  if DebugActive then DebugLog('attach: AttachRemoteSession begin (build remote workspace)');
   Result := False;
   Remote := TSessionClient.Create;
   if not Remote.Connect(APath, Snapshot) then
@@ -1998,8 +2061,7 @@ begin
         Remote.SendResize(I, PW, PH);
       end;
     end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   RebuildMenu;
   CurrentSessionSocket := APath;
@@ -2025,6 +2087,7 @@ var
 begin
   if RemoteMode or AbortRun or DetachRequested then
     Exit;
+  if DebugActive then DebugLog('promote: PromoteToServer begin (fork daemon, hand off PTYs, re-attach)');
   if Cfg.ServerMode <> 'always' then
     Exit;
   N := Lay.PaneCount;
@@ -2729,8 +2792,7 @@ begin
   begin
     Lay.Focused := 0;
     RelayoutAll;
-    ResetVideoSurface;
-    ReDraw;
+    RepaintChanges;
     FocusPane(Lay.Focused);
     PromoteToServer;   // the wizard session is also born with a server
   end;
@@ -3013,7 +3075,7 @@ begin
     Lay.Focused := FirstVisiblePane;
   // do NOT re-tile: remaining windows keep their size and position.
   // KillPane already removed the closed one from the desktop; repaint.
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout; // the tree changed: mirror it in the daemon
 end;
@@ -3093,6 +3155,7 @@ procedure TSuperApp.EnterPassthrough(i: integer);
 begin
   if PassthroughActive or (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
     Exit;
+  if DebugActive then DebugLog(Format('pass: ENTER pane=%d full=%dx%d', [i, ScreenWidth, ScreenHeight]));
   PassPane := i;
   PassReqW := ScreenWidth;
   PassReqH := ScreenHeight;
@@ -3121,6 +3184,7 @@ procedure TSuperApp.ExitPassthrough;
 begin
   if not PassthroughActive then
     Exit;
+  if DebugActive then DebugLog('pass: EXIT (reclaim screen, full repaint)');
   PassthroughActive := False;   // must precede any repaint
   PassPane := -1;
   PassReqW := 0;
@@ -3258,7 +3322,7 @@ begin
     Lay.Focused := Focused;
     FocusPane(Focused);
   end;
-  ReDraw;
+  RepaintChanges;
   // what was applied is the common state: do not re-push (no bounces)
   RemoteLayoutHash := ComputeLayoutHash;
 end;
@@ -3301,7 +3365,7 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   RemoteLayoutHash := ComputeLayoutHash;
 end;
@@ -3434,7 +3498,7 @@ begin
   if Trim(S) = '' then
     Exit;
   Win[APane]^.SetTitle(' ' + Trim(S));
-  ReDraw;
+  RepaintChanges;
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
@@ -3447,8 +3511,7 @@ begin
     if (Win[i] <> nil) and Win[i]^.Minimized then
       RestoreWindow(i);
   RelayoutAll;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3480,8 +3543,7 @@ begin
       Win[i]^.Locate(R);
       Inc(k);
     end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3505,8 +3567,7 @@ begin
   if HasIcons then
     Dec(R.B.Y, 2); // respect the icon strip
   Desktop^.Tile(R);
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3561,8 +3622,7 @@ begin
   SaveConfig(Cfg);
   RebuildMenu;
   RebuildStatusLine;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
 end;
 
 procedure TSuperApp.SaveSessionNow;
