@@ -78,6 +78,7 @@ install: release
 		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
 	done
 	@mkdir -p "$(DATADIR)/backgrounds"
+	@rm -f "$(DATADIR)"/backgrounds/*.art
 	@for art in "$(PROJECT_DIR)"/backgrounds/*.art; do \
 		install -m 0644 "$$art" "$(DATADIR)/backgrounds/$$(basename "$$art")"; \
 	done
