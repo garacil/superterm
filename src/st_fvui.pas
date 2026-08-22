@@ -564,10 +564,12 @@ var
     end
     else if (c.Attr and A_FGDEF) <> 0 then
     begin
-      if (c.Attr and A_BOLD) <> 0 then
-        ffg := $02000000 or 15    // bold default -> bright white (like RenderAttr)
-      else
-        ffg := 0;
+      // Bold + DEFAULT fg: keep the default color and carry bold as a weight
+      // (";1"), like a real terminal. Do NOT force bright white -- that turned
+      // the shell text a different color after Claude (which exits leaving bold
+      // set) even though the foreground is the terminal default.
+      ffg := 0;
+      if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
     end
     else
     begin
