@@ -80,6 +80,11 @@ type
     FPState: TParserState;
     FPParams: array[0..15] of integer;
     FPCount: integer;
+    // which CSI parameters were introduced by ':' rather than ';'. The colon
+    // form of truecolor is "38:2:<colour-space>:R:G:B" -- it carries an extra
+    // field the semicolon form does not -- so the separator has to be known
+    // or the channels come out shifted by one.
+    FPColon: array[0..15] of boolean;
     FPPriv: boolean;
     FPrivOther: boolean;    // CSI private intro < = > (consumed but NOT acted on)
     FUtfBuf: array[0..7] of byte;
@@ -1028,7 +1033,7 @@ end;
 procedure TScreen.DoCSI(final: AnsiChar);
 var
   p1, p2, i, n: integer;
-  rr, gg, bb, idx: integer;
+  rr, gg, bb, idx, base: integer;
   RGBVal: LongWord;
 begin
   case final of
@@ -1256,14 +1261,19 @@ begin
                 end
                 else if p2 = 2 then
                 begin
-                  rr := GetParam(i + 2, 0);
-                  gg := GetParam(i + 3, 0);
-                  bb := GetParam(i + 4, 0);
+                  // colon form carries a colour-space id between the 2 and the
+                  // red channel (usually empty): "38:2::R:G:B"
+                  base := i + 2;
+                  if (base <= 15) and FPColon[base] then
+                    Inc(base);
+                  rr := GetParam(base, 0);
+                  gg := GetParam(base + 1, 0);
+                  bb := GetParam(base + 2, 0);
                   // preserve the exact RGB for the rich renderer ($01RRGGBB)
                   RGBVal := $01000000 or (LongWord(rr and $FF) shl 16) or
                     (LongWord(gg and $FF) shl 8) or LongWord(bb and $FF);
                   p1 := Ansi16FromRgb(rr, gg, bb);
-                  Inc(i, 4);
+                  Inc(i, (base - i) + 2);
                 end
                 else
                   p1 := -1; // unknown form: default color
@@ -1416,7 +1426,10 @@ begin
         FPState := psCsi;
         FPCount := 0;
         for i := 0 to High(FPParams) do
+        begin
           FPParams[i] := -1;
+          FPColon[i] := False;
+        end;
         FPPriv := False;
         FPrivOther := False;
         FInterm := #0;
@@ -1606,9 +1619,11 @@ begin
           else if (b = Ord(';')) or (b = Ord(':')) then
           begin
             // ':' separates subparameters (38:5:196m from modern emitters);
-            // treating it as ';' avoids printing the rest as text
+            // treating it as ';' avoids printing the rest as text, but the
+            // distinction is remembered for the truecolor case below
             Inc(FPCount);
             if FPCount > 15 then FPCount := 15;
+            FPColon[FPCount] := (b = Ord(':'));
           end
           else if b = Ord('?') then
             // '?' = DEC private: DECSET/DECRST (?1049h, ?25h...) ARE handled
