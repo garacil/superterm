@@ -1,4 +1,4 @@
-# superterm 3.2
+# superterm 3.3
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
@@ -66,6 +66,12 @@ panes in a normal GNU/Linux or macOS terminal window.
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
   remote PTYs stay alive on the session server.
 - A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
+- **ASCII art desktop backgrounds.** A picture behind the windows, in real RGB
+  colour, chosen from `Options`. Pictures are plain text files read at run time
+  -- eight ship, including the 7kas phoenix, the London skyline and three
+  seamless patterns for the tiled layout -- so your own drops into
+  `~/.superterm/backgrounds/` without rebuilding. Centred, tiled, stretched or
+  fitted.
 - Two per-profile display options in the Options menu: **show contents while
   dragging** (off gives a wireframe drag, where only the window outline moves
   and everything behind it stays visible -- much less traffic on a slow link)

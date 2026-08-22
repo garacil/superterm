@@ -1,5 +1,47 @@
 # Changelog
 
+## 3.3 - 2026-08
+
+### A picture on the desktop, behind the windows
+
+The desktop can show ASCII art instead of the plain pattern. Colours are real
+RGB and reach the terminal through the rich renderer added in 3.2, so a picture
+is not confined to the 16-colour grid.
+
+- **Pictures are plain text files, not compiled in.** Drop one in
+  `~/.superterm/backgrounds/` and it appears in the menu without rebuilding.
+  A file is a palette plus three parallel lines per row -- glyphs, foreground
+  indexes and optional background indexes -- and the glyph alphabet includes
+  the half-block and shade characters, so a cell can carry two colours and a
+  picture gets twice the vertical resolution.
+- **Eight ship with it.** The 7kas phoenix, sampled from the brand artwork and
+  the default; the London skyline; an Alaska range under an aurora; an open
+  field at golden hour; a boat at sunset; and three patterns designed for the
+  tiled layout that are seamless on all four sides -- a stone wall, interlocking
+  Truchet loops and a circuit board.
+- **The classic layouts:** centred, tiled, stretched or fitted. A picture can
+  name the layout it was made for, so choosing a seamless pattern from the menu
+  also tiles it.
+- **Chosen from `Options`**, which lists whatever is on disk, and remembered per
+  profile in `[ui] background` and `[ui] background_mode`.
+- **Searched** in `$SUPERTERM_BACKGROUNDS`, then `~/.superterm/backgrounds`,
+  then the installed directory relative to the binary (so any `--prefix`
+  works), then the usual system paths, then the source checkout. First match
+  wins, so your own file shadows an installed one of the same name.
+  `make install` creates and populates the installed directory.
+
+FreeVision is untouched, as ever: the desktop, its background and the
+application's desktop factory are all virtual, so they are replaced by
+subclassing.
+
+### Known issue
+
+- `large_screen_test`'s 4096-column restore case leaves a stale window border
+  one row below the real one when a picture is on. It is confined to that
+  synthetic width -- no real terminal is anywhere near 4096 character columns --
+  and does not affect normal use. Traced to the overlay registration the
+  background performs; the cause inside the per-cell delta is still open.
+
 ## 3.2 - 2026-08
 
 ### Every pane now renders in full fidelity, not just the maximized one
