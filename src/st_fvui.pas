@@ -67,6 +67,7 @@ const
   cmToggleAutoSave    = 2760;
   cmToggleAutoRestore = 2761;
   cmToggleDragContent = 2762;
+  cmToggleZoomAnim    = 2763;
 
 type
   PSuperApp = ^TSuperApp;
@@ -188,6 +189,7 @@ type
     procedure EnterPassthrough(i: integer);
     procedure ExitPassthrough;
     procedure UpdatePassthrough;
+    procedure ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
     function ComputeLayoutHash: string;
     procedure ApplyRemoteLayoutEv(const AData: TByteArray);
     procedure ApplyRemoteKillPane(APane: integer);
@@ -3465,6 +3467,31 @@ end;
 // reclaim the terminal for the window manager: reset the modes the app may
 // have set, restore the pane's windowed size, and force one clean full
 // repaint so menus, status line and window frames come back.
+// Cosmetic zoom transition: a handful of outline frames interpolating between
+// the window's rectangle and the full desktop. It reuses the wireframe-drag
+// primitives, so each frame costs only its ring. Opt-in (Options > zoom
+// transition); the default F5 stays instant.
+procedure TSuperApp.ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
+const
+  STEPS = 8;
+  FRAME_MS = 45;
+var
+  k, x1, y1, x2, y2: integer;
+begin
+  if PassthroughActive or (Desktop = nil) then
+    Exit;
+  for k := 1 to STEPS do
+  begin
+    x1 := AX1 + ((BX1 - AX1) * k) div STEPS;
+    y1 := AY1 + ((BY1 - AY1) * k) div STEPS;
+    x2 := AX2 + ((BX2 - AX2) * k) div STEPS;
+    y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
+    OutlinePaint(x1, y1, x2, y2, $1F);
+    Sleep(FRAME_MS);
+    OutlineRestore(x1, y1, x2, y2);
+  end;
+end;
+
 procedure TSuperApp.ExitPassthrough;
 var
   P, pw, ph: integer;
@@ -4017,6 +4044,10 @@ var
   PrefixByte: byte;
   PrefixSeq: RawByteString;
   ZoomSaveFlush: boolean;
+  ZoomAnimOn, ZoomWasZoomed: boolean;
+  ZoomF: integer;
+  ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2: integer;
+  ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -4040,6 +4071,28 @@ begin
   // fullscreen, and straight back to the IDE exactly as it was.
   if (Event.What = evCommand) and (Event.Command = cmZoom) then
   begin
+    // optional transition: expand the outline out to full screen before
+    // zooming in, and contract it back after restoring
+    ZoomF := Lay.Focused;
+    ZoomAnimOn := Cfg.ZoomAnim and (Desktop <> nil) and
+      (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
+      (not Win[ZoomF]^.Minimized);
+    if ZoomAnimOn then
+    begin
+      ZoomWasZoomed := Win[ZoomF]^.Zoomed;
+      ZoomWX1 := Desktop^.Origin.X + Win[ZoomF]^.Origin.X;
+      ZoomWY1 := Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y;
+      ZoomWX2 := ZoomWX1 + Win[ZoomF]^.Size.X - 1;
+      ZoomWY2 := ZoomWY1 + Win[ZoomF]^.Size.Y - 1;
+      ZoomDX1 := Desktop^.Origin.X;
+      ZoomDY1 := Desktop^.Origin.Y;
+      ZoomDX2 := ZoomDX1 + Desktop^.Size.X - 1;
+      ZoomDY2 := ZoomDY1 + Desktop^.Size.Y - 1;
+      // growing: animate BEFORE the zoom, while the IDE is still on screen
+      if not ZoomWasZoomed then
+        ZoomAnimate(ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2,
+                    ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2);
+    end;
     ZoomSaveFlush := SuppressFlush;
     SuppressFlush := True;
     try
@@ -4053,6 +4106,15 @@ begin
     end;
     if not PassthroughActive then
       RepaintChanges;
+    // shrinking: animate AFTER the IDE is back, so the ring is erased against
+    // the real screen instead of the application's leftovers
+    if ZoomAnimOn and ZoomWasZoomed and (not PassthroughActive) and
+       (Win[ZoomF] <> nil) then
+      ZoomAnimate(ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2,
+                  Desktop^.Origin.X + Win[ZoomF]^.Origin.X,
+                  Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y,
+                  Desktop^.Origin.X + Win[ZoomF]^.Origin.X + Win[ZoomF]^.Size.X - 1,
+                  Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y + Win[ZoomF]^.Size.Y - 1);
     Exit;
   end;
   if Event.What = evKeyDown then
@@ -4202,6 +4264,12 @@ begin
       cmToggleDragContent:
         begin
           Cfg.DragContent := not Cfg.DragContent;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
+      cmToggleZoomAnim:
+        begin
+          Cfg.ZoomAnim := not Cfg.ZoomAnim;
           SaveConfig(Cfg);
           RebuildMenu;
         end;
@@ -4772,7 +4840,11 @@ begin
     NewItem(ActiveMark(Cfg.DragContent) +
       UiText('Show contents while ~d~ragging',
              'Ver contenido al ~a~rrastrar'), '',
-      kbNoKey, cmToggleDragContent, hcNoContext, nil )))))));
+      kbNoKey, cmToggleDragContent, hcNoContext,
+    NewItem(ActiveMark(Cfg.ZoomAnim) +
+      UiText('Zoom ~t~ransition (F5)',
+             '~T~ransicion al hacer zoom (F5)'), '',
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
