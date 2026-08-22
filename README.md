@@ -92,6 +92,13 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
+**superterm 3.2: the optional zoom transition.** `F5` maximizes a pane and
+gives it the whole terminal, `F5` again brings the window back at the size it
+had. The expanding outline is the optional transition (`[session] zoomanim`,
+off by default — the instant switch is the fast one):
+
+![The F5 zoom transition](screenshots/zoom-transition.gif)
+
 **superterm 3.0 in action — one capture per feature.**
 
 Two clients attached to the same session at once: everything typed in client
