@@ -325,12 +325,7 @@ begin
   end;
 end;
 
-// Pane whose window is being dragged/resized right now (-1 = none). While a
-// drag is in progress and the profile has "show contents while dragging" off,
-// that pane draws hollow: only the window frame moves and the interior stays
-// transparent, so a drag costs the perimeter instead of the whole area.
 var
-  DragPane: integer = -1;
   // reason the last attach was refused (shown to the user instead of silently
   // starting a fresh local session)
   AttachFailReason: string = '';
@@ -1074,7 +1069,6 @@ begin
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
-    DragPane := PaneIdx;
     // HIDE the terminal view, do not merely blank it: a blanked view is still
     // an opaque rectangle that drags around. Hidden, it leaves the clipping
     // chain, so only the window frame moves and whatever is behind shows
@@ -1085,7 +1079,6 @@ begin
   inherited HandleEvent(Event);
   if Dragging then
   begin
-    DragPane := -1;
     if Term <> nil then
       Term^.Show;          // released: the contents come back
   end;
