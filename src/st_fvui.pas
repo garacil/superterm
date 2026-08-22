@@ -3283,10 +3283,13 @@ end;
 // have set, restore the pane's windowed size, and force one clean full
 // repaint so menus, status line and window frames come back.
 procedure TSuperApp.ExitPassthrough;
+var
+  P, pw, ph: integer;
 begin
   if not PassthroughActive then
     Exit;
   if DebugActive then DebugLog('pass: EXIT (reclaim screen, full repaint)');
+  P := PassPane;                // remember which pane owned the screen
   PassthroughActive := False;   // must precede any repaint
   PassPane := -1;
   PassReqW := 0;
@@ -3307,7 +3310,31 @@ begin
   WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
     #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
     #27']22;default'#27'\');
-  RelayoutAll;         // re-derives each pane's windowed size (SendResize back)
+  // Resize ONLY the pane that owned the screen, to the bounds its window
+  // already has. Un-zooming (F5) restored those bounds itself, but the
+  // ChangeBounds guard suppressed the PTY resize while passthrough was active,
+  // so the PTY is still full-screen and must be synced here. Do NOT call
+  // RelayoutAll: that re-tiles every window and overwrites the size the user's
+  // window had (an 80x20 pane came back filling the whole screen).
+  if (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
+     (not Win[P]^.Minimized) and (Scr[P] <> nil) then
+  begin
+    pw := Win[P]^.Size.X - 2;
+    ph := Win[P]^.Size.Y - 2;
+    if pw < 4 then pw := 4;
+    if ph < 2 then ph := 2;
+    if (pw <> Scr[P].Width) or (ph <> Scr[P].Height) then
+    begin
+      Scr[P].Resize(pw, ph);
+      if RemoteMode then
+      begin
+        if (Remote <> nil) and Remote.Connected then
+          Remote.SendResize(P, pw, ph);
+      end
+      else if Panes[P] <> nil then
+        Panes[P].Resize(pw, ph);
+    end;
+  end;
   ResetVideoSurface;   // blank both buffers
   ReDraw;              // full repaint of menu, desktop, windows and status
   if (Lay.Focused >= 0) and (Lay.Focused < MAX_PANES) then
