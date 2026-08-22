@@ -525,6 +525,52 @@ var
   Scrolled: boolean;
   ShowBlk: boolean;
   BlankWord: word;
+  GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
+  PadCell: TCell;    // synthetic blank for padding cells (pane default color)
+
+  // Register one cell in the rich overlay at its global screen position, with
+  // B[x] (the word just written to VideoBuf) as the oracle. The full UTF-8
+  // glyph and exact color (truecolor when the cell carries RGB, else the
+  // 16-color fallback) let WideUpdateScreen present the pane area faithfully
+  // instead of the CP437/16-color grid. cursor=True inverts (block cursor).
+  procedure RichReg(lx, ly: integer; const c: TCell; oracle: word;
+    cursor: boolean);
+  var
+    g: RawByteString;
+    ffg, fbg: LongWord;
+    fl, k: integer;
+    isSkip: boolean;
+  begin
+    isSkip := c.Cont;
+    if isSkip then
+      g := ''
+    else if c.Len > 0 then
+    begin
+      SetLength(g, c.Len);
+      for k := 1 to c.Len do
+        g[k] := c.Txt[k - 1];
+    end
+    else
+      g := ' ';
+    if c.FgRGB <> 0 then
+      ffg := c.FgRGB
+    else if (c.Attr and A_FGDEF) <> 0 then
+      ffg := 0
+    else
+      ffg := $02000000 or LongWord(c.Attr and $07);
+    if c.BgRGB <> 0 then
+      fbg := c.BgRGB
+    else if (c.Attr and A_BGDEF) <> 0 then
+      fbg := 0
+    else
+      fbg := $02000000 or LongWord((c.Attr shr 4) and $0F);
+    fl := 0;
+    if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
+    if (c.Attr and A_UNDER) <> 0 then fl := fl or 2;
+    if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
+    RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
+      oracle, isSkip);
+  end;
 
   function VideoColor(AAnsiColor: byte): byte;
   begin
@@ -592,6 +638,16 @@ begin
     App^.Scr[PaneIdx].CursorVisible and
     (CursorPhase or (App^.Scr[PaneIdx].CursorStyle in [2, 4, 6]));
   NonBlank := 0;
+  // global origin of the view and a blank cell carrying the pane's current
+  // color, so padding/empty cells register richly too (a truecolor background
+  // Claude painted with spaces still shows)
+  GOrig.X := 0;
+  GOrig.Y := 0;
+  MakeGlobal(GOrig, GOrig);
+  PadCell := Default(TCell);
+  PadCell.Attr := App^.Scr[PaneIdx].Attr;
+  PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
+  PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
   for y := 0 to h - 1 do
   begin
     RowLen := 0;
@@ -612,9 +668,13 @@ begin
              B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
                word(TranslitByte(cell));
            end;
+           RichReg(x, y, cell, B[x], ShowBlk and (x = cx) and (y = cy));
          end
          else
+         begin
            B[x] := BlankWord or word(' ');
+           RichReg(x, y, PadCell, B[x], false);
+         end;
       end;
     end
     else if Scrolled then
@@ -629,14 +689,21 @@ begin
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
+           RichReg(x, y, cell, B[x], false);
          end
          else
+         begin
            B[x] := BlankWord or word(' ');
+           RichReg(x, y, PadCell, B[x], false);
+         end;
        end;
     end
     else
       for x := 0 to w - 1 do
+      begin
         B[x] := BlankWord or word(' ');
+        RichReg(x, y, PadCell, B[x], false);
+      end;
     WriteLine(0, y, w, 1, B);
   end;
   if Scrolled then

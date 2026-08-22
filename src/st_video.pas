@@ -15,6 +15,24 @@ procedure PassthroughRaw(const Data; ALen: LongInt);
 // Raw escape/string writer to the host terminal (respects OutputFailed).
 procedure WriteRaw(const S: AnsiString);
 
+// Rich overlay (the "option B" renderer). A pane registers each of its cells
+// -- the full UTF-8 glyph plus the EXACT color -- at its GLOBAL screen
+// position, passing the VideoBuf word it wrote there as an oracle. Then
+// WideUpdateScreen emits the rich cell (truecolor + UTF-8) whenever VideoBuf
+// still holds that oracle (i.e. the pane cell is the visible top one), and
+// falls back to the CP437/16-color chrome for everything else (window frames,
+// menu, status line, cells covered by another window). This keeps FreeVision
+// untouched: the grid is still drawn (it is the visibility oracle), but the
+// pane area is presented richly. Colors: $01RRGGBB = truecolor;
+// $02000000 or index (0..15, 8..15 = bright) = the 16-color fallback; 0 = the
+// terminal default. Flags: 1 = bold, 2 = underline, 4 = reverse. ASkip marks
+// a wide-glyph continuation cell (its lead already emitted the 2-wide glyph,
+// so nothing is written here).
+procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
+  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean);
+// Drop the whole overlay (nothing renders rich until panes repopulate it).
+procedure RichInvalidate;
+
 var
   PassthroughActive: Boolean = False;
   // startup: while True, FreeVision draws into the buffer normally but the
@@ -237,6 +255,131 @@ begin
     Result := Result + VgaChar(Byte(VideoCellAt(VideoBuf, I)));
 end;
 
+type
+  // overlay entry populated by panes; persists across frames and is gated at
+  // emission time by Oracle = VideoBuf (so a covered/scrolled cell falls back
+  // to chrome automatically without any explicit invalidation)
+  TRichCell = record
+    Valid: Boolean;
+    Skip: Boolean;      // wide-glyph continuation: emit nothing here
+    Oracle: Word;       // the VideoBuf word the pane wrote at this cell
+    Glyph: string[7];   // UTF-8 bytes to emit
+    Fg, Bg: LongWord;
+    Flags: Byte;
+  end;
+  // the per-cell "effective" screen the delta is computed against: either a
+  // rich pane cell or a chrome cell, unified so one diff covers both
+  TEffCell = record
+    Skip: Boolean;
+    Rich: Boolean;
+    Glyph: string[7];
+    Attr: Byte;         // chrome path (VGA attribute byte)
+    Fg, Bg: LongWord;   // rich path
+    Flags: Byte;
+  end;
+
+var
+  RichScreen: array of TRichCell;   // overlay, persists across frames
+  EffOld: array of TEffCell;        // previous frame's effective screen (delta)
+  RichW: LongInt = 0;
+  RichH: LongInt = 0;
+
+procedure RichEnsureSize;
+var
+  i: LongInt;
+begin
+  if (RichW = ScreenWidth) and (RichH = ScreenHeight) and (RichScreen <> nil) then
+    Exit;
+  RichW := ScreenWidth;
+  RichH := ScreenHeight;
+  SetLength(RichScreen, RichW * RichH);
+  SetLength(EffOld, RichW * RichH);
+  for i := 0 to High(RichScreen) do
+    RichScreen[i].Valid := False;
+  // sentinel that never equals a real effective cell -> first frame after a
+  // resize is a full paint
+  for i := 0 to High(EffOld) do
+  begin
+    EffOld[i].Skip := False;
+    EffOld[i].Rich := False;
+    EffOld[i].Glyph := #1;
+    EffOld[i].Attr := $FF;
+  end;
+end;
+
+procedure RichInvalidate;
+var
+  i: LongInt;
+begin
+  for i := 0 to High(RichScreen) do
+    RichScreen[i].Valid := False;
+end;
+
+procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
+  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean);
+var
+  idx: LongInt;
+begin
+  if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
+    RichEnsureSize;
+  if (AX < 0) or (AY < 0) or (AX >= RichW) or (AY >= RichH) then
+    Exit;
+  idx := AY * RichW + AX;
+  RichScreen[idx].Valid := True;
+  RichScreen[idx].Skip := ASkip;
+  RichScreen[idx].Oracle := AOracle;
+  if Length(AGlyph) > 7 then
+    RichScreen[idx].Glyph := Copy(AGlyph, 1, 7)
+  else
+    RichScreen[idx].Glyph := AGlyph;
+  RichScreen[idx].Fg := AFg;
+  RichScreen[idx].Bg := ABg;
+  RichScreen[idx].Flags := AFlags;
+end;
+
+// SGR for a rich cell: a full reset then bold/underline/reverse and the fg/bg
+// as truecolor (38/48;2;r;g;b) or 16-color (30-37/90-97, 40-47/100-107).
+// A missing color falls through to the terminal default from the leading 0.
+function RichSGR(AFg, ABg: LongWord; AFlags: Byte): AnsiString;
+var
+  n: LongWord;
+begin
+  Result := #27'[0';
+  if (AFlags and 1) <> 0 then Result := Result + ';1';
+  if (AFlags and 2) <> 0 then Result := Result + ';4';
+  if (AFlags and 4) <> 0 then Result := Result + ';7';
+  case AFg shr 24 of
+    1: Result := Result + ';38;2;' + IntToStr((AFg shr 16) and $FF) + ';' +
+         IntToStr((AFg shr 8) and $FF) + ';' + IntToStr(AFg and $FF);
+    2: begin
+         n := AFg and $0F;
+         if n < 8 then Result := Result + ';' + IntToStr(30 + LongInt(n))
+         else Result := Result + ';' + IntToStr(90 + LongInt(n - 8));
+       end;
+  end;
+  case ABg shr 24 of
+    1: Result := Result + ';48;2;' + IntToStr((ABg shr 16) and $FF) + ';' +
+         IntToStr((ABg shr 8) and $FF) + ';' + IntToStr(ABg and $FF);
+    2: begin
+         n := ABg and $0F;
+         if n < 8 then Result := Result + ';' + IntToStr(40 + LongInt(n))
+         else Result := Result + ';' + IntToStr(100 + LongInt(n - 8));
+       end;
+  end;
+  Result := Result + 'm';
+end;
+
+function EffEqual(const A, B: TEffCell): Boolean;
+begin
+  if A.Skip or B.Skip then Exit(A.Skip and B.Skip);
+  if A.Rich <> B.Rich then Exit(False);
+  if A.Glyph <> B.Glyph then Exit(False);
+  if A.Rich then
+    Result := (A.Fg = B.Fg) and (A.Bg = B.Bg) and (A.Flags = B.Flags)
+  else
+    Result := (A.Attr = B.Attr);
+end;
+
 // Builds the whole frame in one buffer and emits it with a SINGLE write,
 // wrapped in DECSET 2026 synchronized output. Over SSH this collapses the
 // hundreds of tiny writes the per-run approach produced into one segment,
@@ -244,11 +387,13 @@ end;
 // paints the frame atomically (no tearing). Terminals without 2026 ignore it.
 procedure WideUpdateScreen(Force: Boolean);
 var
-  X, Y, Index, RunStart, RunStop: LongInt;
-  Attr: Byte;
+  X, Y, Index: LongInt;
+  VCell: TVideoCell;
+  Eff: TEffCell;
+  NeedMove: Boolean;
   OutCursorX, OutCursorY: Word;
-  Body, Frame: AnsiString;
-  ChangedCells, Runs: LongInt;
+  Body, Frame, CurSGR, LastSGR: AnsiString;
+  ChangedCells, Runs, RHit, RMiss: LongInt;
 begin
   if PassthroughActive then
   begin
@@ -266,40 +411,74 @@ begin
      (ScreenWidth = 0) or (ScreenHeight = 0) then
     Exit;
 
+  RichEnsureSize;
   Body := '';
   ChangedCells := 0;
   Runs := 0;
+  RHit := 0;
+  RMiss := 0;
+  LastSGR := #0;   // impossible SGR: the first emitted cell always sets color
   for Y := 0 to ScreenHeight - 1 do
   begin
-    X := 0;
-    while X < ScreenWidth do
+    NeedMove := True;   // start of a row is always a discontinuity
+    for X := 0 to ScreenWidth - 1 do
     begin
       Index := Y * ScreenWidth + X;
-      if (not Force) and
-         (VideoCellAt(VideoBuf, Index) = VideoCellAt(OldVideoBuf, Index)) then
+      VCell := VideoCellAt(VideoBuf, Index);
+      // effective cell: the rich pane cell when its oracle still stands in
+      // VideoBuf (visible top cell), otherwise the CP437/16-color chrome
+      if RichScreen[Index].Valid then
+        if Word(VCell) = RichScreen[Index].Oracle then Inc(RHit) else Inc(RMiss);
+      if RichScreen[Index].Valid and (Word(VCell) = RichScreen[Index].Oracle) then
       begin
-        Inc(X);
+        Eff.Skip := RichScreen[Index].Skip;
+        Eff.Rich := True;
+        Eff.Glyph := RichScreen[Index].Glyph;
+        Eff.Fg := RichScreen[Index].Fg;
+        Eff.Bg := RichScreen[Index].Bg;
+        Eff.Flags := RichScreen[Index].Flags;
+        Eff.Attr := 0;
+      end
+      else
+      begin
+        Eff.Skip := False;
+        Eff.Rich := False;
+        Eff.Attr := Byte(VCell shr 8);
+        Eff.Glyph := VgaChar(Byte(VCell and $FF));
+        Eff.Fg := 0;
+        Eff.Bg := 0;
+        Eff.Flags := 0;
+      end;
+      if (not Force) and EffEqual(Eff, EffOld[Index]) then
+      begin
+        NeedMove := True;   // skipped a cell: next change needs a reposition
         Continue;
       end;
-
-      RunStart := X;
-      Attr := Byte(VideoCellAt(VideoBuf, Index) shr 8);
-      Inc(X);
-      while X < ScreenWidth do
+      EffOld[Index] := Eff;
+      Inc(ChangedCells);
+      if Eff.Skip then
       begin
-        Index := Y * ScreenWidth + X;
-        if (not Force) and
-           (VideoCellAt(VideoBuf, Index) = VideoCellAt(OldVideoBuf, Index)) then
-          Break;
-        if Byte(VideoCellAt(VideoBuf, Index) shr 8) <> Attr then
-          Break;
-        Inc(X);
+        // wide-glyph continuation: the lead already advanced the cursor two
+        // columns, so emit nothing and force the next change to reposition
+        NeedMove := True;
+        Continue;
       end;
-      RunStop := X;
-      Inc(Runs);
-      Inc(ChangedCells, RunStop - RunStart);
-      Body := Body + CursorPosition(RunStart, Y) + AttrSequence(Attr) +
-        CellsToStr(Y * ScreenWidth + RunStart, Y * ScreenWidth + RunStop);
+      if NeedMove then
+      begin
+        Body := Body + CursorPosition(X, Y);
+        NeedMove := False;
+        Inc(Runs);
+      end;
+      if Eff.Rich then
+        CurSGR := RichSGR(Eff.Fg, Eff.Bg, Eff.Flags)
+      else
+        CurSGR := AttrSequence(Eff.Attr);
+      if CurSGR <> LastSGR then
+      begin
+        Body := Body + CurSGR;
+        LastSGR := CurSGR;
+      end;
+      Body := Body + Eff.Glyph;
     end;
   end;
 
@@ -314,12 +493,13 @@ begin
 
   if (Body <> '') or Force then
   begin
-    // SGR reset + autowrap off + body + cursor, in ONE write. Optionally
-    // wrapped in DECSET 2026 synchronized output (atomic present, no
-    // tearing) -- but that holds the frame until ?2026l, and some
-    // terminals do not present it until the next input, so it is OFF by
-    // default and enabled with SUPERTERM_SYNC=1.
-    Frame := #27'[0;40;37m'#27'[?7l' + Body +
+    // neutral SGR reset + autowrap off + body + cursor, in ONE write. Each
+    // cell carries its own color now (chrome or rich), so the prefix must NOT
+    // pin a default fg/bg. Optionally wrapped in DECSET 2026 synchronized
+    // output (atomic present, no tearing) -- but that holds the frame until
+    // ?2026l, and some terminals do not present it until the next input, so it
+    // is OFF by default and enabled with SUPERTERM_SYNC=1.
+    Frame := #27'[0m'#27'[?7l' + Body +
       CursorPosition(OutCursorX, OutCursorY);
     if UseSyncOutput then
       Frame := #27'[?2026h' + Frame + #27'[?2026l';
@@ -331,8 +511,8 @@ begin
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
   if DebugActive then
     DebugLog(Format('video: update force=%d runs=%d changed_cells=%d ' +
-      'of %d bytes=%d', [Ord(Force), Runs, ChangedCells,
-      LongInt(ScreenWidth) * ScreenHeight, Length(Frame)]));
+      'of %d bytes=%d rich_hit=%d rich_miss=%d', [Ord(Force), Runs, ChangedCells,
+      LongInt(ScreenWidth) * ScreenHeight, Length(Frame), RHit, RMiss]));
 end;
 
 procedure WideDoneVideo;
