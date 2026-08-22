@@ -897,7 +897,9 @@ begin
       end;
     WriteLine(0, y, w, 1, B);
   end;
-  if Scrolled then
+  // per-draw detail is FULL-mode only, for the same reason
+  if not DebugFull then
+  else if Scrolled then
     DebugLog(Format('draw pane=%d scrolled=%d', [PaneIdx, App^.Scr[PaneIdx].ViewOffset]))
   else if NonBlank > 0 then
     DebugLog(Format('draw pane=%d %dx%d nonblank=%d cur=(%d,%d) selected=%d',

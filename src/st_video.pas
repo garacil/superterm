@@ -855,7 +855,9 @@ begin
     Frame := CursorPosition(OutCursorX, OutCursorY);
   WriteRaw(Frame);
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
-  if DebugActive then
+  // per-frame detail is FULL-mode only: a blinking cursor alone writes two
+  // lines every half second, which buried everything worth reading
+  if DebugFull then
     DebugLog(Format('video: update force=%d runs=%d changed_cells=%d ' +
       'of %d bytes=%d rich_hit=%d rich_miss=%d', [Ord(Force), Runs, ChangedCells,
       LongInt(ScreenWidth) * ScreenHeight, Length(Frame), RHit, RMiss]));
