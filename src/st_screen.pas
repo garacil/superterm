@@ -120,6 +120,7 @@ type
     destructor Destroy; override;
     procedure Resize(AWidth, AHeight: integer);
     procedure WriteBytes(const Buf; Count: integer);
+    procedure ClampCursor;
     procedure ResetSoft;
     // RIS (ESC c): full reset -- what `reset` sends (terminfo rs1). Unlike the
     // soft reset it also ERASES the screen, leaves the alternate buffer and
@@ -1222,6 +1223,7 @@ begin
       begin
         CursorX := FSaveX;
         CursorY := FSaveY;
+        ClampCursor;
         Attr := FSaveAttr;
         AttrFgRGB := FSaveFgRGB;
         AttrBgRGB := FSaveBgRGB;
@@ -1284,6 +1286,7 @@ begin
                         // on every byte the shell printed afterwards.
                         CursorX := FAltSaveX;
                         CursorY := FAltSaveY;
+                        ClampCursor;
                         Attr := FAltSaveAttr;
                         AttrFgRGB := FAltSaveFgRGB;
                         AttrBgRGB := FAltSaveBgRGB;
@@ -1349,6 +1352,7 @@ begin
         // DECRC restores both, so attributes do not leak past a restore
         CursorX := FSaveX;
         CursorY := FSaveY;
+        ClampCursor;
         Attr := FSaveAttr;
         AttrFgRGB := FSaveFgRGB;
         AttrBgRGB := FSaveBgRGB;
@@ -1374,6 +1378,17 @@ begin
   end;
   if FPState <> psCsi then
     FPState := psGround;
+end;
+
+// A saved cursor can outlive a Resize, so every restore path must clamp:
+// an out-of-range CursorY silently swallows all further output (writes land
+// outside the grid), which looks like the pane going dead.
+procedure TScreen.ClampCursor;
+begin
+  if CursorX < 0 then CursorX := 0;
+  if CursorY < 0 then CursorY := 0;
+  if CursorX > Width - 1 then CursorX := Width - 1;
+  if CursorY > Height - 1 then CursorY := Height - 1;
 end;
 
 procedure TScreen.ResetSoft;
