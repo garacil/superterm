@@ -400,49 +400,61 @@ end;
 // terminals drop it without advancing, breaking the one-column assumption.
 function SafeGlyph(const C: TCell): RawByteString;
 var
-  b0, k: byte;
-  need: byte;
+  i, k, need: integer;
+  b0: byte;
   cp: cardinal;
+  first: boolean;
 begin
   Result := ' ';
   if C.Len = 0 then
     Exit;
-  b0 := byte(C.Txt[0]);
-  if C.Len = 1 then
+  // A cell may hold a BASE codepoint followed by zero-width marks (combining
+  // accents, or the U+FE0F selector that turns a symbol into an emoji), so
+  // validate the whole sequence, not just one codepoint. Everything must be
+  // well-formed UTF-8, and the first codepoint must be printable.
+  i := 0;
+  first := True;
+  while i < C.Len do
   begin
-    if (b0 >= $20) and (b0 <= $7E) then
-      Result := AnsiChar(b0)
+    b0 := byte(C.Txt[i]);
+    if b0 < $80 then
+    begin
+      if (b0 < $20) or (b0 = $7F) then
+        Exit('?');            // controls and DEL are not glyphs
+      need := 1;
+      cp := b0;
+    end
+    else if (b0 >= $C2) and (b0 <= $DF) then need := 2
+    else if (b0 >= $E0) and (b0 <= $EF) then need := 3
+    else if (b0 >= $F0) and (b0 <= $F4) then need := 4
     else
-      Result := '?';        // controls, DEL and bare high bytes
+      Exit('?');              // $C0, $C1, $F5..$FF are never legal leads
+    if i + need > C.Len then
+      Exit('?');
+    if need > 1 then
+    begin
+      for k := 1 to need - 1 do
+        if (byte(C.Txt[i + k]) and $C0) <> $80 then
+          Exit('?');
+      case need of
+        2: cp := ((b0 and $1F) shl 6) or (byte(C.Txt[i + 1]) and $3F);
+        3: cp := ((b0 and $0F) shl 12) or ((byte(C.Txt[i + 1]) and $3F) shl 6) or
+                 (byte(C.Txt[i + 2]) and $3F);
+      else
+        cp := ((b0 and $07) shl 18) or ((byte(C.Txt[i + 1]) and $3F) shl 12) or
+              ((byte(C.Txt[i + 2]) and $3F) shl 6) or (byte(C.Txt[i + 3]) and $3F);
+      end;
+      if ((need = 2) and (cp < $80)) or
+         ((need = 3) and (cp < $800)) or
+         ((need = 4) and ((cp < $10000) or (cp > $10FFFF))) or
+         ((cp >= $D800) and (cp <= $DFFF)) then
+        Exit('?');            // overlong, surrogate or out of range
+    end;
+    first := False;
+    Inc(i, need);
+  end;
+  if first then
     Exit;
-  end;
-  if C.Len > 4 then
-    Exit('?');
-  // length implied by the lead byte must match, and $C0/$C1/$F5..$FF are
-  // never legal lead bytes
-  if (b0 >= $C2) and (b0 <= $DF) then need := 2
-  else if (b0 >= $E0) and (b0 <= $EF) then need := 3
-  else if (b0 >= $F0) and (b0 <= $F4) then need := 4
-  else Exit('?');
-  if need <> C.Len then
-    Exit('?');
-  for k := 1 to C.Len - 1 do
-    if (byte(C.Txt[k]) and $C0) <> $80 then
-      Exit('?');            // continuation bytes must be $80..$BF
-  case C.Len of
-    2: cp := ((b0 and $1F) shl 6) or (byte(C.Txt[1]) and $3F);
-    3: cp := ((b0 and $0F) shl 12) or ((byte(C.Txt[1]) and $3F) shl 6) or
-             (byte(C.Txt[2]) and $3F);
-  else
-    cp := ((b0 and $07) shl 18) or ((byte(C.Txt[1]) and $3F) shl 12) or
-          ((byte(C.Txt[2]) and $3F) shl 6) or (byte(C.Txt[3]) and $3F);
-  end;
-  // overlong encodings, surrogates and out-of-range code points
-  if ((C.Len = 2) and (cp < $80)) or
-     ((C.Len = 3) and (cp < $800)) or
-     ((C.Len = 4) and ((cp < $10000) or (cp > $10FFFF))) or
-     ((cp >= $D800) and (cp <= $DFFF)) then
-    Exit('?');
   SetLength(Result, C.Len);
   for k := 1 to C.Len do
     Result[k] := C.Txt[k - 1];

@@ -101,6 +101,7 @@ type
       NewWidth, NewHeight: integer);
     procedure CopyGrid(const Source: TGridArray; out Target: TGridArray);
     procedure BlankRow(y: integer; AAttr: word);
+    procedure AppendZeroWidth(const S: RawByteString);
     procedure PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
     procedure ScrollUp(n: integer);
     procedure ScrollDown(n: integer);
@@ -654,7 +655,20 @@ begin
     cp := ((b and $07) shl 18) or ((byte(S[2]) and $3F) shl 12) or
       ((byte(S[3]) and $3F) shl 6) or (byte(S[4]) and $3F);
   end;
-  // approximate CJK/fullwidth ranges
+  // ZERO width: combining marks, variation selectors and the zero-width
+  // joiner/spaces. A terminal does not advance for these, and neither must we
+  // -- treating them as one column shifted the rest of the line by one for
+  // every emoji written as base+VS16 (the routine form of the warning, check
+  // and arrow symbols).
+  if ((cp >= $0300) and (cp <= $036F)) or
+     ((cp >= $1AB0) and (cp <= $1AFF)) or
+     ((cp >= $1DC0) and (cp <= $1DFF)) or
+     ((cp >= $20D0) and (cp <= $20FF)) or
+     ((cp >= $FE00) and (cp <= $FE0F)) or
+     ((cp >= $FE20) and (cp <= $FE2F)) or
+     ((cp >= $200B) and (cp <= $200F)) then
+    Exit(0);
+  // TWO columns: CJK/fullwidth, plus the emoji-presentation blocks
   if ((cp >= $1100) and (cp <= $115F)) or
      ((cp >= $2E80) and (cp <= $A4CF)) or
      ((cp >= $AC00) and (cp <= $D7A3)) or
@@ -662,7 +676,24 @@ begin
      ((cp >= $FE30) and (cp <= $FE6F)) or
      ((cp >= $FF00) and (cp <= $FF60)) or
      ((cp >= $FFE0) and (cp <= $FFE6)) or
-     ((cp >= $20000) and (cp <= $3FFFD)) then
+     ((cp >= $20000) and (cp <= $3FFFD)) or
+     ((cp >= $1F300) and (cp <= $1F64F)) or
+     ((cp >= $1F680) and (cp <= $1F6FF)) or
+     ((cp >= $1F900) and (cp <= $1FAFF)) or
+     (cp = $1F004) or (cp = $1F0CF) or
+     ((cp >= $1F18E) and (cp <= $1F19A)) or
+     (cp = $231A) or (cp = $231B) or (cp = $23E9) or (cp = $23EA) or
+     (cp = $23EB) or (cp = $23EC) or (cp = $23F0) or (cp = $23F3) or
+     (cp = $25FD) or (cp = $25FE) or (cp = $2614) or (cp = $2615) or
+     ((cp >= $2648) and (cp <= $2653)) or (cp = $267F) or (cp = $2693) or
+     (cp = $26A1) or (cp = $26AA) or (cp = $26AB) or (cp = $26BD) or
+     (cp = $26BE) or (cp = $26C4) or (cp = $26C5) or (cp = $26CE) or
+     (cp = $26D4) or (cp = $26EA) or (cp = $26F2) or (cp = $26F3) or
+     (cp = $26F5) or (cp = $26FA) or (cp = $26FD) or (cp = $2705) or
+     (cp = $270A) or (cp = $270B) or (cp = $2728) or (cp = $274C) or
+     (cp = $274E) or ((cp >= $2753) and (cp <= $2755)) or (cp = $2757) or
+     ((cp >= $2795) and (cp <= $2797)) or (cp = $27B0) or (cp = $27BF) or
+     (cp = $2B1B) or (cp = $2B1C) or (cp = $2B50) or (cp = $2B55) then
     Result := 2;
 end;
 
@@ -755,6 +786,52 @@ begin
   Dirty := True;
 end;
 
+// Attach a zero-width sequence to the cell just written. Emoji are routinely
+// sent as base + U+FE0F, and that selector turns a 1-column base into a
+// 2-column emoji, so the promotion has to happen here too or the rest of the
+// line drifts by one.
+procedure TScreen.AppendZeroWidth(const S: RawByteString);
+var
+  px, i, room: integer;
+  IsVS16: boolean;
+begin
+  px := CursorX - 1;
+  while (px >= 0) and (px < Width) and FGrid[CursorY][px].Cont do
+    Dec(px);
+  if (px < 0) or (px >= Width) then
+    Exit;
+  if FGrid[CursorY][px].Len = 0 then
+    Exit;
+  room := 8 - FGrid[CursorY][px].Len;
+  if Length(S) <= room then
+  begin
+    for i := 1 to Length(S) do
+    begin
+      FGrid[CursorY][px].Txt[FGrid[CursorY][px].Len] := S[i];
+      Inc(FGrid[CursorY][px].Len);
+    end;
+  end;
+  IsVS16 := (Length(S) = 3) and (byte(S[1]) = $EF) and (byte(S[2]) = $B8) and
+            (byte(S[3]) = $8F);
+  if IsVS16 and (px + 1 < Width) and (not FGrid[CursorY][px + 1].Cont) and
+     (CursorX = px + 1) then
+  begin
+    // base + VS16 now occupies two columns
+    ClearCell(FGrid[CursorY][px + 1]);
+    FGrid[CursorY][px + 1].Cont := True;
+    FGrid[CursorY][px + 1].Attr := FGrid[CursorY][px].Attr;
+    FGrid[CursorY][px + 1].FgRGB := FGrid[CursorY][px].FgRGB;
+    FGrid[CursorY][px + 1].BgRGB := FGrid[CursorY][px].BgRGB;
+    Inc(CursorX);
+    if CursorX >= Width then
+    begin
+      CursorX := Width - 1;
+      FPendingWrap := FAutoWrap;
+    end;
+  end;
+  Dirty := True;
+end;
+
 procedure TScreen.PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
 var
   S: RawByteString;
@@ -771,6 +848,14 @@ begin
   for i := 0 to alen - 1 do
     S[i + 1] := b[i];
   w := CellWidth(S);
+  if w = 0 then
+  begin
+    // combining mark / variation selector: it belongs to the glyph already
+    // written, so append it there (if it fits) and do NOT advance. A VS16
+    // additionally promotes its base to emoji presentation, i.e. two columns.
+    AppendZeroWidth(S);
+    Exit;
+  end;
   if CursorX + w > Width then
   begin
     if not FAutoWrap then
