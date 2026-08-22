@@ -24,7 +24,8 @@ procedure WriteRaw(const S: AnsiString);
 // menu, status line, cells covered by another window). This keeps FreeVision
 // untouched: the grid is still drawn (it is the visibility oracle), but the
 // pane area is presented richly. Colors: $01RRGGBB = truecolor;
-// $02000000 or index (0..15, 8..15 = bright) = the 16-color fallback; 0 = the
+// $02000000 or index (0..15, 8..15 = bright) = the 16-color fallback;
+// $03000000 or index (16..255) = an xterm-256 palette index; 0 = the
 // terminal default. Flags: 1 = bold, 2 = underline, 4 = reverse. ASkip marks
 // a wide-glyph continuation cell (its lead already emitted the 2-wide glyph,
 // so nothing is written here).
@@ -381,6 +382,7 @@ begin
          if n < 8 then Result := Result + ';' + IntToStr(30 + LongInt(n))
          else Result := Result + ';' + IntToStr(90 + (LongInt(n) - 8));
        end;
+    3: Result := Result + ';38;5;' + IntToStr(AFg and $FF);
   end;
   case ABg shr 24 of
     1: Result := Result + ';48;2;' + IntToStr((ABg shr 16) and $FF) + ';' +
@@ -390,6 +392,7 @@ begin
          if n < 8 then Result := Result + ';' + IntToStr(40 + LongInt(n))
          else Result := Result + ';' + IntToStr(100 + (LongInt(n) - 8));
        end;
+    3: Result := Result + ';48;5;' + IntToStr(ABg and $FF);
   end;
   Result := Result + 'm';
 end;

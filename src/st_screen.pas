@@ -921,7 +921,7 @@ end;
 procedure TScreen.DoCSI(final: AnsiChar);
 var
   p1, p2, i, n: integer;
-  rr, gg, bb: integer;
+  rr, gg, bb, idx: integer;
   RGBVal: LongWord;
 begin
   case final of
@@ -1135,7 +1135,15 @@ begin
                 RGBVal := 0;   // 0 = no truecolor; keep the 16-color fallback
                 if p2 = 5 then
                 begin
-                  p1 := Ansi16From256(GetParam(i + 2, -1));
+                  idx := GetParam(i + 2, -1);
+                  p1 := Ansi16From256(idx);
+                  // Keep the EXACT palette index for the rich renderer
+                  // ($030000NN). Claude Code paints nearly everything with
+                  // 38;5;N, and flattening that to 16 colors collapsed four
+                  // distinct shades into the same grey. Indexes 0..15 stay
+                  // untagged so they keep honouring the user's terminal theme.
+                  if (idx >= 16) and (idx <= 255) then
+                    RGBVal := $03000000 or LongWord(idx);
                   Inc(i, 2);
                 end
                 else if p2 = 2 then
