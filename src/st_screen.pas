@@ -701,7 +701,11 @@ begin
   while n > 0 do
   begin
     Dec(n);
-    if ScrollTop = 0 then
+    // The ALTERNATE screen has no scrollback: xterm never pushes its lines to
+    // the history. A full-screen app that scrolls (Claude Code repainting, an
+    // editor, less) would otherwise flood the pane's history with its own
+    // transient frames and bury the real shell output.
+    if (ScrollTop = 0) and (not FUsingAlt) then
       PushScrollRow(Copy(FGrid[0], 0, Width));
     for y := ScrollTop to ScrollBot - 1 do
       FGrid[y] := Copy(FGrid[y + 1], 0, Width);
