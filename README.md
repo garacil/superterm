@@ -92,10 +92,12 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
-**superterm 3.2: `F5` maximizes a pane and gives it the whole terminal.** The
-small window is running `top`; maximizing hands it the entire terminal, so it
-reflows into the full screen, and `F5` again brings the window back at the size
-it had. The expanding outline is the optional zoom transition
+**superterm 3.2: a workspace, and `F5` giving one pane the whole terminal.**
+Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
+in the centre, and a fourth minimized to a title bar at the bottom. `F5`
+maximizes the focused pane and hands it the entire terminal, so `top` reflows
+into the full screen; `F5` again brings the desktop back with every window
+where it was. The expanding outline is the optional zoom transition
 (`[session] zoomanim`, off by default — the instant switch is the fast one):
 
 ![The F5 zoom transition](screenshots/zoom-transition.gif)
