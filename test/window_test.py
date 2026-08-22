@@ -87,22 +87,37 @@ try:
     s.send(b'echo WINDOW_TWO_VISIBLE\r')
     check('split window created', 'WINDOW_TWO_VISIBLE' in s.text())
 
-    s.send(b'\x1b[15~')                # F5: maximize focused window
-    top = s.screen.display[1]
-    check('window maximized', '↕' in top and '┌' not in top)
+    # F5 maximize: a full-screen pane now enters passthrough (its raw bytes
+    # own the terminal), so superterm's chrome disappears
+    s.send(b'\x1b[15~', 1.3)           # F5: maximize -> passthrough
+    check('maximize enters passthrough', 'F5 Zoom' not in s.text())
 
-    s.send(b'\x1b[15~')                # F5: restore focused window
-    check('window restored', '┌' in s.screen.display[1])
+    # F5 again un-maximizes and reclaims the screen for the window manager
+    s.send(b'\x1b[15~', 1.3)           # F5: restore -> back to windows
+    check('restore leaves passthrough',
+          'F5 Zoom' in s.text() and '┌' in s.screen.display[1])
 
+    # fresh marker: the passthrough resize cycle made bash reprint, so the
+    # first marker scrolled off; this also proves the pane survived it
+    s.send(b'echo WINDOW_TWO_AGAIN\r')
+    check('pane alive after passthrough', 'WINDOW_TWO_AGAIN' in s.text())
+
+    # count window frames by top-left corners (active '╔' + inactive '┌'):
+    # the resize churn scrolls echo markers away, so verify structurally
+    def windows():
+        t = s.text()
+        return t.count('┌') + t.count('╔')
+
+    check('two windows before minimize', windows() == 2)
     s.send(b'\x1b\x1b[20~')            # Alt-F9: minimize focused window
-    check('window minimized', 'WINDOW_TWO_VISIBLE' not in s.text())
+    check('window minimized', windows() == 1)
 
     s.send(b'\x1bp')                  # Alt-P: Panes (restore lives here)
     menu = s.text()
     check('restore entries listed',
           'Restore all' in menu and 'Restore 2' in menu)
     s.send(b'r')                      # mnemonic: Restore all
-    check('all windows restored', 'WINDOW_TWO_VISIBLE' in s.text())
+    check('all windows restored', windows() == 2)
 finally:
     try:
         s.send(b'\x1bq', 0.5)          # Alt-Q: quit without saving

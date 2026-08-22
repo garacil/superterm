@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""superterm test: maximized-pane passthrough writes raw PTY bytes verbatim.
+
+A rich line (truecolor fg+bg, prompt arrow U+276F, wide CJK) is collapsed to
+the CP437/16-color grid while windowed, but passes through byte-for-byte once
+the pane is maximized -- and the window manager comes back on restore.
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib
+from stlib import check
+
+HOME = stlib.fresh_home('passthrough')
+os.makedirs(HOME, exist_ok=True)
+with open(HOME + '/.bashrc', 'w') as f:
+    f.write("PS1='$ '\n")
+
+# truecolor orange fg, ❯ (E2 9D AF), checkmark, wide 漢 (E6 BC A2), truecolor bg
+RICH = (b"printf '\\033[38;2;255;100;0m\\342\\235\\257\\033[0m RICH "
+        b"\\342\\234\\224 \\346\\274\\242 \\033[48;2;0;80;200mBG\\033[0m END\\r'\r")
+
+c = stlib.Client(HOME, w=118, h=34, lang='en')
+c.drain(2.5)
+
+# ---- windowed: the rich renderer keeps the pane faithful without passthrough.
+# Before 3.2 a windowed pane went through the CP437 / 16-color grid and these
+# were asserted the other way round: truecolor was collapsed and the arrow was
+# lost. That limitation is what the rich renderer removes. ----
+base = len(c.raw())
+c.send(RICH, 1.2)
+win = c.raw()[base:]
+check('windowed keeps truecolor fg', b'38;2;255;100;0' in win)
+check('windowed keeps truecolor bg', b'48;2;0;80;200' in win)
+check('windowed keeps the U+276F arrow', b'\xe2\x9d\xaf' in win)
+check('windowed keeps the wide glyph', b'\xe6\xbc\xa2' in win)
+
+# ---- maximize (F5): the pane owns the terminal -> passthrough ----
+c.send(b'\x1b[15~', 1.4)
+check('maximize hides the menu', 'F5 Zoom' not in c.text())
+base = len(c.raw())
+c.send(RICH, 1.2)
+mx = c.raw()[base:]
+check('passthrough keeps truecolor fg', b'38;2;255;100;0' in mx)
+check('passthrough keeps truecolor bg', b'48;2;0;80;200' in mx)
+check('passthrough keeps the U+276F arrow', b'\xe2\x9d\xaf' in mx)
+check('passthrough keeps the wide glyph', b'\xe6\xbc\xa2' in mx)
+
+# ---- restore (F5): the window manager reclaims the screen ----
+c.send(b'\x1b[15~', 1.4)
+check('restore brings the menu back', 'F5 Zoom' in c.text())
+check('restore redraws a window frame',
+      ('┌' in '\n'.join(c.screen.display)) or
+      ('╔' in '\n'.join(c.screen.display)))
+
+c.send(b'\x1bx', 1.5)   # Alt-X: close the session (server saves then dies)
+c.wait_exit(timeout=6.0)
+c.close()
+deadline = time.time() + 6.0
+while time.time() < deadline and stlib.session_sockets(HOME) != []:
+    time.sleep(0.2)
+
+stlib.report()

@@ -15,12 +15,36 @@ uses
 
 const
   MAX_SCREEN_SCROLLBACK = 100000;
+  // Geometry the snapshot validator accepts. It must not be narrower than the
+  // geometry the application itself can build: a pane on an 8192-column
+  // terminal is a legal screen, and capping the loader at 4096 meant such a
+  // screen could be saved but never loaded back -- the attach failed and the
+  // pane came up as garbage. Kept in one place so producer and consumer agree.
+  MAX_SCREEN_COLS = 8192;   // >= the vendor's MaxViewWidth
+  MAX_SCREEN_ROWS = 4096;
   // attribute bits
   A_BOLD = $0100;
   A_UNDER = $0200;
   A_REVERSE = $0400;
   A_FGDEF = $0800;
   A_BGDEF = $1000;
+  // Bright foreground. Kept SEPARATE from A_BOLD: A_BOLD is the WEIGHT
+  // (SGR 1 / 22) while this is the high bit of the 16-color foreground (SGR
+  // 90-97 and the bright half of an approximated 256-color). Overloading
+  // A_BOLD meant SGR 22 ("normal intensity") also demoted the COLOR, which
+  // turned Claude Code's grey text pure black. Bit 3 of the fg nibble is free
+  // (it only ever holds 0..7), so every "Attr and $FFF0" that changes the
+  // foreground clears the bright bit automatically.
+  A_FGBRIGHT = $0008;
+  // SGR 2: faint / dim. Claude Code marks all its secondary text with it
+  // (hints, shortcuts, placeholders); ignoring it painted that text at exactly
+  // the same weight as the primary text and flattened the UI's hierarchy.
+  // Mutually exclusive with A_BOLD, and SGR 22 clears both.
+  A_FAINT = $2000;
+  // SGR 8: conceal. The application asked for this text NOT to be shown --
+  // TUI password fields and form widgets use it -- so rendering it in clear
+  // leaks the secret onto the screen, into the scrollback and into `capture`.
+  A_CONCEAL = $4000;
 
 type
   TCell = record
@@ -28,11 +52,21 @@ type
     Len: byte;
     Attr: word;
     Cont: boolean; // continuation cell of a wide character
+    // truecolor kept alongside the 16-color Attr fallback: 0 = use Attr,
+    // else $01RRGGBB. The rich renderer emits these directly; the CP437
+    // FreeVision path keeps using Attr.
+    FgRGB, BgRGB: LongWord;
   end;
 
   TRow = array of TCell;
   TGridArray = array of TRow;
-  TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
+  // psDcs/psDcsEsc consume string sequences (DCS ESC P, SOS ESC X, PM ESC ^,
+  // APC ESC _) up to their ST/BEL terminator and DISCARD them, so an app's
+  // capability query (e.g. XTGETTCAP "ESC P + q ... ESC \") never leaks its
+  // payload onto the grid as stray characters. Appended to keep existing
+  // ordinals stable for the serialized parser state.
+  TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc,
+    psDcs, psDcsEsc);
   TCharBuf = array[0..7] of AnsiChar; // buffer for one UTF-8 codepoint
 
   TScreen = class
@@ -50,12 +84,30 @@ type
     FPState: TParserState;
     FPParams: array[0..15] of integer;
     FPCount: integer;
+    // which CSI parameters were introduced by ':' rather than ';'. The colon
+    // form of truecolor is "38:2:<colour-space>:R:G:B" -- it carries an extra
+    // field the semicolon form does not -- so the separator has to be known
+    // or the channels come out shifted by one.
+    FPColon: array[0..15] of boolean;
     FPPriv: boolean;
+    FPrivOther: boolean;    // CSI private intro < = > (consumed but NOT acted on)
     FUtfBuf: array[0..7] of byte;
     FUtfLen: byte;
     FUtfNeed: byte;
     FOscBuf: RawByteString;
     FSaveX, FSaveY: integer;
+    // DECSC (ESC 7) saves cursor AND graphic rendition; DECRC (ESC 8) restores
+    // both. Keeping only the position left attributes leaking across a restore.
+    FSaveAttr: word;
+    FSaveFgRGB, FSaveBgRGB: LongWord;
+    // The alternate screen (?1049) has its OWN save slot in xterm, independent
+    // of DECSC, and it too saves the graphic rendition. Without this an app
+    // that exits the alt screen without an explicit SGR reset (Claude Code
+    // does exactly that) left its last attributes -- typically bold -- applied
+    // to every byte the shell printed afterwards.
+    FAltSaveX, FAltSaveY: integer;
+    FAltSaveAttr: word;
+    FAltSaveFgRGB, FAltSaveBgRGB: LongWord;
     FInterm: AnsiChar;      // CSI intermediate byte (e.g. ' ' of DECSCUSR)
     FAutoWrap: boolean;     // DECAWM ?7 (default on)
     procedure ClearCell(var C: TCell);
@@ -63,6 +115,7 @@ type
       NewWidth, NewHeight: integer);
     procedure CopyGrid(const Source: TGridArray; out Target: TGridArray);
     procedure BlankRow(y: integer; AAttr: word);
+    procedure AppendZeroWidth(const S: RawByteString);
     procedure PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
     procedure ScrollUp(n: integer);
     procedure ScrollDown(n: integer);
@@ -81,14 +134,20 @@ type
     ScrollTop, ScrollBot: integer;
     CursorVisible: boolean;
     CursorStyle: integer;   // DECSCUSR: 0 def | 1/2 block | 3/4 under | 5/6 bar
-    Attr: word; // current attr of the stream
+    Attr: word; // current attr of the stream (16-color fallback)
+    AttrFgRGB, AttrBgRGB: LongWord; // current truecolor of the stream (0=none)
     Dirty: boolean;
     MaxScrollBack: integer;    // history capacity (0 = no history)
     constructor Create(AWidth, AHeight: integer; AMaxScrollBack: integer = 10000);
     destructor Destroy; override;
     procedure Resize(AWidth, AHeight: integer);
     procedure WriteBytes(const Buf; Count: integer);
+    procedure ClampCursor;
     procedure ResetSoft;
+    // RIS (ESC c): full reset -- what `reset` sends (terminfo rs1). Unlike the
+    // soft reset it also ERASES the screen, leaves the alternate buffer and
+    // drops the scrollback.
+    procedure ResetHard;
     function ViewOffset: integer;
     procedure ScrollViewport(ADelta: integer);  // + back, - forward
     function DisplayRow(y: integer): TRow;
@@ -116,6 +175,16 @@ begin
   CursorVisible := True;
   CursorStyle := 0;
   Attr := A_FGDEF or A_BGDEF;
+  AttrFgRGB := 0;
+  AttrBgRGB := 0;
+  // saved-cursor slots start at the default rendition: restoring one that was
+  // never saved must not paint black on black
+  FSaveAttr := A_FGDEF or A_BGDEF;
+  FSaveFgRGB := 0;
+  FSaveBgRGB := 0;
+  FAltSaveAttr := A_FGDEF or A_BGDEF;
+  FAltSaveFgRGB := 0;
+  FAltSaveBgRGB := 0;
   Dirty := True;
   FUsingAlt := False;
   FAutoWrap := True;
@@ -200,6 +269,10 @@ begin
   ch := AHeight;
   if cw < 1 then cw := 1;
   if ch < 1 then ch := 1;
+  // clamp here so no caller can build a screen the serializer cannot round
+  // trip (a resize request arrives from the network and is not trusted)
+  if cw > MAX_SCREEN_COLS then cw := MAX_SCREEN_COLS;
+  if ch > MAX_SCREEN_ROWS then ch := MAX_SCREEN_ROWS;
   Lost := 0;
   if (cw = Width) and (ch = Height) and (FGrid <> nil) then
     Exit;
@@ -337,13 +410,13 @@ begin
   Rows := Default(Longint);
   Cols := Default(Longint);
   Stream.ReadBuffer(Rows, SizeOf(Rows));
-  if (Rows < 0) or (Rows > 4096) then
+  if (Rows < 0) or (Rows > MAX_SCREEN_ROWS) then
     Exit;
   SetLength(G, Rows);
   for Y := 0 to Rows - 1 do
   begin
     Stream.ReadBuffer(Cols, SizeOf(Cols));
-    if (Cols < 0) or (Cols > 4096) then
+    if (Cols < 0) or (Cols > MAX_SCREEN_COLS) then
       Exit;
     SetLength(G[Y], Cols);
     for X := 0 to Cols - 1 do
@@ -490,7 +563,8 @@ begin
   try
     Stream.ReadBuffer(Width, SizeOf(Width));
     Stream.ReadBuffer(Height, SizeOf(Height));
-    if (Width < 1) or (Width > 4096) or (Height < 1) or (Height > 4096) then
+    if (Width < 1) or (Width > MAX_SCREEN_COLS) or
+       (Height < 1) or (Height > MAX_SCREEN_ROWS) then
       Exit;
     Stream.ReadBuffer(CursorX, SizeOf(CursorX));
     Stream.ReadBuffer(CursorY, SizeOf(CursorY));
@@ -551,7 +625,7 @@ begin
     for I := 0 to FSBCount - 1 do
     begin
       Stream.ReadBuffer(Cols, SizeOf(Cols));
-      if (Cols < 0) or (Cols > 4096) then
+      if (Cols < 0) or (Cols > MAX_SCREEN_COLS) then
         Exit;
       SetLength(Row, Cols);
       for X := 0 to Cols - 1 do
@@ -595,7 +669,20 @@ begin
     cp := ((b and $07) shl 18) or ((byte(S[2]) and $3F) shl 12) or
       ((byte(S[3]) and $3F) shl 6) or (byte(S[4]) and $3F);
   end;
-  // approximate CJK/fullwidth ranges
+  // ZERO width: combining marks, variation selectors and the zero-width
+  // joiner/spaces. A terminal does not advance for these, and neither must we
+  // -- treating them as one column shifted the rest of the line by one for
+  // every emoji written as base+VS16 (the routine form of the warning, check
+  // and arrow symbols).
+  if ((cp >= $0300) and (cp <= $036F)) or
+     ((cp >= $1AB0) and (cp <= $1AFF)) or
+     ((cp >= $1DC0) and (cp <= $1DFF)) or
+     ((cp >= $20D0) and (cp <= $20FF)) or
+     ((cp >= $FE00) and (cp <= $FE0F)) or
+     ((cp >= $FE20) and (cp <= $FE2F)) or
+     ((cp >= $200B) and (cp <= $200F)) then
+    Exit(0);
+  // TWO columns: CJK/fullwidth, plus the emoji-presentation blocks
   if ((cp >= $1100) and (cp <= $115F)) or
      ((cp >= $2E80) and (cp <= $A4CF)) or
      ((cp >= $AC00) and (cp <= $D7A3)) or
@@ -603,7 +690,24 @@ begin
      ((cp >= $FE30) and (cp <= $FE6F)) or
      ((cp >= $FF00) and (cp <= $FF60)) or
      ((cp >= $FFE0) and (cp <= $FFE6)) or
-     ((cp >= $20000) and (cp <= $3FFFD)) then
+     ((cp >= $20000) and (cp <= $3FFFD)) or
+     ((cp >= $1F300) and (cp <= $1F64F)) or
+     ((cp >= $1F680) and (cp <= $1F6FF)) or
+     ((cp >= $1F900) and (cp <= $1FAFF)) or
+     (cp = $1F004) or (cp = $1F0CF) or
+     ((cp >= $1F18E) and (cp <= $1F19A)) or
+     (cp = $231A) or (cp = $231B) or (cp = $23E9) or (cp = $23EA) or
+     (cp = $23EB) or (cp = $23EC) or (cp = $23F0) or (cp = $23F3) or
+     (cp = $25FD) or (cp = $25FE) or (cp = $2614) or (cp = $2615) or
+     ((cp >= $2648) and (cp <= $2653)) or (cp = $267F) or (cp = $2693) or
+     (cp = $26A1) or (cp = $26AA) or (cp = $26AB) or (cp = $26BD) or
+     (cp = $26BE) or (cp = $26C4) or (cp = $26C5) or (cp = $26CE) or
+     (cp = $26D4) or (cp = $26EA) or (cp = $26F2) or (cp = $26F3) or
+     (cp = $26F5) or (cp = $26FA) or (cp = $26FD) or (cp = $2705) or
+     (cp = $270A) or (cp = $270B) or (cp = $2728) or (cp = $274C) or
+     (cp = $274E) or ((cp >= $2753) and (cp <= $2755)) or (cp = $2757) or
+     ((cp >= $2795) and (cp <= $2797)) or (cp = $27B0) or (cp = $27BF) or
+     (cp = $2B1B) or (cp = $2B1C) or (cp = $2B50) or (cp = $2B55) then
     Result := 2;
 end;
 
@@ -618,6 +722,8 @@ begin
   for i := 1 to FGrid[y][x].Len do
     FGrid[y][x].Txt[i - 1] := S[i];
   FGrid[y][x].Attr := AAttr;
+  FGrid[y][x].FgRGB := AttrFgRGB;
+  FGrid[y][x].BgRGB := AttrBgRGB;
   if CellWidth(S) = 2 then
   begin
     FGrid[y][x].Cont := False;
@@ -626,6 +732,8 @@ begin
       ClearCell(FGrid[y][x + 1]);
       FGrid[y][x + 1].Cont := True;
       FGrid[y][x + 1].Attr := AAttr;
+      FGrid[y][x + 1].FgRGB := AttrFgRGB;
+      FGrid[y][x + 1].BgRGB := AttrBgRGB;
     end;
   end;
 end;
@@ -651,7 +759,11 @@ begin
   while n > 0 do
   begin
     Dec(n);
-    if ScrollTop = 0 then
+    // The ALTERNATE screen has no scrollback: xterm never pushes its lines to
+    // the history. A full-screen app that scrolls (Claude Code repainting, an
+    // editor, less) would otherwise flood the pane's history with its own
+    // transient frames and bury the real shell output.
+    if (ScrollTop = 0) and (not FUsingAlt) then
       PushScrollRow(Copy(FGrid[0], 0, Width));
     for y := ScrollTop to ScrollBot - 1 do
       FGrid[y] := Copy(FGrid[y + 1], 0, Width);
@@ -688,6 +800,52 @@ begin
   Dirty := True;
 end;
 
+// Attach a zero-width sequence to the cell just written. Emoji are routinely
+// sent as base + U+FE0F, and that selector turns a 1-column base into a
+// 2-column emoji, so the promotion has to happen here too or the rest of the
+// line drifts by one.
+procedure TScreen.AppendZeroWidth(const S: RawByteString);
+var
+  px, i, room: integer;
+  IsVS16: boolean;
+begin
+  px := CursorX - 1;
+  while (px >= 0) and (px < Width) and FGrid[CursorY][px].Cont do
+    Dec(px);
+  if (px < 0) or (px >= Width) then
+    Exit;
+  if FGrid[CursorY][px].Len = 0 then
+    Exit;
+  room := 8 - FGrid[CursorY][px].Len;
+  if Length(S) <= room then
+  begin
+    for i := 1 to Length(S) do
+    begin
+      FGrid[CursorY][px].Txt[FGrid[CursorY][px].Len] := S[i];
+      Inc(FGrid[CursorY][px].Len);
+    end;
+  end;
+  IsVS16 := (Length(S) = 3) and (byte(S[1]) = $EF) and (byte(S[2]) = $B8) and
+            (byte(S[3]) = $8F);
+  if IsVS16 and (px + 1 < Width) and (not FGrid[CursorY][px + 1].Cont) and
+     (CursorX = px + 1) then
+  begin
+    // base + VS16 now occupies two columns
+    ClearCell(FGrid[CursorY][px + 1]);
+    FGrid[CursorY][px + 1].Cont := True;
+    FGrid[CursorY][px + 1].Attr := FGrid[CursorY][px].Attr;
+    FGrid[CursorY][px + 1].FgRGB := FGrid[CursorY][px].FgRGB;
+    FGrid[CursorY][px + 1].BgRGB := FGrid[CursorY][px].BgRGB;
+    Inc(CursorX);
+    if CursorX >= Width then
+    begin
+      CursorX := Width - 1;
+      FPendingWrap := FAutoWrap;
+    end;
+  end;
+  Dirty := True;
+end;
+
 procedure TScreen.PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
 var
   S: RawByteString;
@@ -704,6 +862,14 @@ begin
   for i := 0 to alen - 1 do
     S[i + 1] := b[i];
   w := CellWidth(S);
+  if w = 0 then
+  begin
+    // combining mark / variation selector: it belongs to the glyph already
+    // written, so append it there (if it fits) and do NOT advance. A VS16
+    // additionally promotes its base to emoji presentation, i.e. two columns.
+    AppendZeroWidth(S);
+    Exit;
+  end;
   if CursorX + w > Width then
   begin
     if not FAutoWrap then
@@ -871,6 +1037,8 @@ end;
 procedure TScreen.DoCSI(final: AnsiChar);
 var
   p1, p2, i, n: integer;
+  rr, gg, bb, idx, base: integer;
+  RGBVal: LongWord;
 begin
   case final of
     'A':
@@ -1051,6 +1219,8 @@ begin
         if (FPCount = 0) and (FPParams[0] = -1) then
         begin
           Attr := A_FGDEF or A_BGDEF;
+          AttrFgRGB := 0;
+          AttrBgRGB := 0;
           Exit;
         end;
         i := 0;
@@ -1058,52 +1228,79 @@ begin
         begin
           n := GetParam(i, 0);
           case n of
-            0: Attr := A_FGDEF or A_BGDEF;
-            1: Attr := Attr or A_BOLD;
-            2, 3, 5, 6, 8, 9, 23, 29: ;
+            0: begin Attr := A_FGDEF or A_BGDEF; AttrFgRGB := 0; AttrBgRGB := 0; end;
+            1: Attr := (Attr or A_BOLD) and (not A_FAINT);
+            2: Attr := (Attr or A_FAINT) and (not A_BOLD);
+            3, 5, 6, 9, 23, 29: ;
+            8: Attr := Attr or A_CONCEAL;
+            28: Attr := Attr and (not A_CONCEAL);
             4: Attr := Attr or A_UNDER;
             7: Attr := Attr or A_REVERSE;
-            21, 22: Attr := Attr and (not A_BOLD);
+            21, 22: Attr := Attr and (not (A_BOLD or A_FAINT));
             24: Attr := Attr and (not A_UNDER);
             27: Attr := Attr and (not A_REVERSE);
-            30..37: Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 30);
-            39: Attr := (Attr and $FFF0) or A_FGDEF;
-            40..47: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4);
-            49: Attr := (Attr and $FF0F) or A_BGDEF;
-            90..97: Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_BOLD;
-            100..107: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
-              (word(n - 92) shl 4);
+            30..37: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 30); AttrFgRGB := 0; end;
+            39: begin Attr := (Attr and $FFF0) or A_FGDEF; AttrFgRGB := 0; end;
+            40..47: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4); AttrBgRGB := 0; end;
+            49: begin Attr := (Attr and $FF0F) or A_BGDEF; AttrBgRGB := 0; end;
+            90..97: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_FGBRIGHT; AttrFgRGB := 0; end;
+            100..107: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
+              (word(n - 92) shl 4); AttrBgRGB := 0; end;
             38, 48:
               begin
                 // 38/48;5;N (indexed) consumes 2 extra; 38/48;2;r;g;b
                 // (truecolor) consumes 4; both approximate to ANSI 16
                 p2 := GetParam(i + 1, -1);
+                RGBVal := 0;   // 0 = no truecolor; keep the 16-color fallback
                 if p2 = 5 then
                 begin
-                  p1 := Ansi16From256(GetParam(i + 2, -1));
+                  idx := GetParam(i + 2, -1);
+                  p1 := Ansi16From256(idx);
+                  // Keep the EXACT palette index for the rich renderer
+                  // ($030000NN). Claude Code paints nearly everything with
+                  // 38;5;N, and flattening that to 16 colors collapsed four
+                  // distinct shades into the same grey. Indexes 0..15 stay
+                  // untagged so they keep honouring the user's terminal theme.
+                  if (idx >= 16) and (idx <= 255) then
+                    RGBVal := $03000000 or LongWord(idx);
                   Inc(i, 2);
                 end
                 else if p2 = 2 then
                 begin
-                  p1 := Ansi16FromRgb(GetParam(i + 2, 0), GetParam(i + 3, 0),
-                    GetParam(i + 4, 0));
-                  Inc(i, 4);
+                  // colon form carries a colour-space id between the 2 and the
+                  // red channel (usually empty): "38:2::R:G:B"
+                  base := i + 2;
+                  if (base <= 15) and FPColon[base] then
+                    Inc(base);
+                  rr := GetParam(base, 0);
+                  gg := GetParam(base + 1, 0);
+                  bb := GetParam(base + 2, 0);
+                  // preserve the exact RGB for the rich renderer ($01RRGGBB)
+                  RGBVal := $01000000 or (LongWord(rr and $FF) shl 16) or
+                    (LongWord(gg and $FF) shl 8) or LongWord(bb and $FF);
+                  p1 := Ansi16FromRgb(rr, gg, bb);
+                  Inc(i, (base - i) + 2);
                 end
                 else
                   p1 := -1; // unknown form: default color
                 if n = 38 then
                 begin
+                  AttrFgRGB := RGBVal;
+                  // SGR 38 selects a COLOR and must never touch the weight:
+                  // a dark 256-color used to cancel a preceding SGR 1, and a
+                  // bright one used to fake bold. "and $FFF0" clears the old
+                  // bright bit for us.
                   if p1 < 0 then
                     Attr := (Attr and $FFF0) or A_FGDEF
                   else if p1 < 8 then
-                    Attr := ((Attr and $FFF0) and
-                      (not (A_FGDEF or A_BOLD))) or word(p1)
+                    Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(p1)
                   else
                     Attr := ((Attr and $FFF0) and (not A_FGDEF)) or
-                      word(p1 and 7) or A_BOLD;
+                      word(p1 and 7) or A_FGBRIGHT;
                 end
                 else
                 begin
+                  AttrBgRGB := RGBVal;
                   if p1 < 0 then
                     Attr := (Attr and $FF0F) or A_BGDEF
                   else
@@ -1131,13 +1328,24 @@ begin
       end;
     's':
       begin
+        // CSI s (SCP) is xterm's save-cursor: same slot and same payload as
+        // DECSC, so it carries the graphic rendition too. Saving only the
+        // position let a prompt or TUI that brackets its colouring with
+        // CSI s ... CSI u leak its last attribute into the stream.
         FSaveX := CursorX;
         FSaveY := CursorY;
+        FSaveAttr := Attr;
+        FSaveFgRGB := AttrFgRGB;
+        FSaveBgRGB := AttrBgRGB;
       end;
     'u':
       begin
         CursorX := FSaveX;
         CursorY := FSaveY;
+        ClampCursor;
+        Attr := FSaveAttr;
+        AttrFgRGB := FSaveFgRGB;
+        AttrBgRGB := FSaveBgRGB;
       end;
     'q':
       begin
@@ -1167,8 +1375,13 @@ begin
                       FUsingAlt := True;
                       if n = 1049 then
                       begin
-                        FSaveX := CursorX;
-                        FSaveY := CursorY;
+                        // xterm: ?1049h saves the cursor AND the graphic
+                        // rendition into its own slot (independent of DECSC)
+                        FAltSaveX := CursorX;
+                        FAltSaveY := CursorY;
+                        FAltSaveAttr := Attr;
+                        FAltSaveFgRGB := AttrFgRGB;
+                        FAltSaveBgRGB := AttrBgRGB;
                         EraseRange(0, 0, Width - 1, Height - 1, Attr);
                       end;
                       CursorX := 0;
@@ -1185,8 +1398,17 @@ begin
                       FAltGrid := nil;
                       if n = 1049 then
                       begin
-                        CursorX := FSaveX;
-                        CursorY := FSaveY;
+                        // ?1049l restores cursor AND graphic rendition. This is
+                        // what a real terminal does, and why an app may exit the
+                        // alt screen without an explicit SGR reset; restoring
+                        // only the cursor left its last attributes (bold) stuck
+                        // on every byte the shell printed afterwards.
+                        CursorX := FAltSaveX;
+                        CursorY := FAltSaveY;
+                        ClampCursor;
+                        Attr := FAltSaveAttr;
+                        AttrFgRGB := FAltSaveFgRGB;
+                        AttrBgRGB := FAltSaveBgRGB;
                       end;
                     end;
                   end;
@@ -1210,8 +1432,12 @@ begin
         FPState := psCsi;
         FPCount := 0;
         for i := 0 to High(FPParams) do
+        begin
           FPParams[i] := -1;
+          FPColon[i] := False;
+        end;
         FPPriv := False;
+        FPrivOther := False;
         FInterm := #0;
         Exit;
       end;
@@ -1227,16 +1453,31 @@ begin
         FPState := psCharset;
         Exit;
       end;
+    'P', 'X', '^', '_':
+      begin
+        // DCS/SOS/PM/APC: swallow the whole string until ST (ESC \) or BEL
+        FPState := psDcs;
+        Exit;
+      end;
     '7':
       begin
+        // DECSC saves cursor position AND graphic rendition (SGR)
         FSaveX := CursorX;
         FSaveY := CursorY;
+        FSaveAttr := Attr;
+        FSaveFgRGB := AttrFgRGB;
+        FSaveBgRGB := AttrBgRGB;
         FPState := psGround;
       end;
     '8':
       begin
+        // DECRC restores both, so attributes do not leak past a restore
         CursorX := FSaveX;
         CursorY := FSaveY;
+        ClampCursor;
+        Attr := FSaveAttr;
+        AttrFgRGB := FSaveFgRGB;
+        AttrBgRGB := FSaveBgRGB;
         FPState := psGround;
       end;
     'D': LineFeed;
@@ -1253,7 +1494,7 @@ begin
         CursorX := 0;
         LineFeed;
       end;
-    'c': ResetSoft;
+    'c': ResetHard;   // RIS: `reset` expects the screen cleared, not just homed
   else
     ; // =, >, etc: ignore
   end;
@@ -1261,9 +1502,22 @@ begin
     FPState := psGround;
 end;
 
+// A saved cursor can outlive a Resize, so every restore path must clamp:
+// an out-of-range CursorY silently swallows all further output (writes land
+// outside the grid), which looks like the pane going dead.
+procedure TScreen.ClampCursor;
+begin
+  if CursorX < 0 then CursorX := 0;
+  if CursorY < 0 then CursorY := 0;
+  if CursorX > Width - 1 then CursorX := Width - 1;
+  if CursorY > Height - 1 then CursorY := Height - 1;
+end;
+
 procedure TScreen.ResetSoft;
 begin
   Attr := A_FGDEF or A_BGDEF;
+  AttrFgRGB := 0;
+  AttrBgRGB := 0;
   CursorX := 0;
   CursorY := 0;
   ScrollTop := 0;
@@ -1272,6 +1526,44 @@ begin
   CursorStyle := 0;
   FAutoWrap := True;
   FPendingWrap := False;
+end;
+
+procedure TScreen.ResetHard;
+var
+  y: integer;
+begin
+  // back to the normal screen buffer (discard the alternate one)
+  FUsingAlt := False;
+  FAltGrid := nil;
+  ResetSoft;
+  // RIS erases the screen -- this is what `reset` expects and what was
+  // missing: the cursor homed but the old contents stayed on screen
+  for y := 0 to Height - 1 do
+    BlankRow(y, Attr);
+  // ...and drops the scrollback
+  FSBCount := 0;
+  FSBHead := 0;
+  FViewTop := 0;
+  // parser and saved-state slots back to a clean slate
+  FPState := psGround;
+  FPCount := 0;
+  FPPriv := False;
+  FPrivOther := False;
+  FInterm := #0;
+  FUtfLen := 0;
+  FUtfNeed := 0;
+  FOscBuf := '';
+  FSaveX := 0;
+  FSaveY := 0;
+  FSaveAttr := A_FGDEF or A_BGDEF;
+  FSaveFgRGB := 0;
+  FSaveBgRGB := 0;
+  FAltSaveX := 0;
+  FAltSaveY := 0;
+  FAltSaveAttr := A_FGDEF or A_BGDEF;
+  FAltSaveFgRGB := 0;
+  FAltSaveBgRGB := 0;
+  Dirty := True;
 end;
 
 procedure TScreen.WriteBytes(const Buf; Count: integer);
@@ -1333,26 +1625,39 @@ begin
           else if (b = Ord(';')) or (b = Ord(':')) then
           begin
             // ':' separates subparameters (38:5:196m from modern emitters);
-            // treating it as ';' avoids printing the rest as text
+            // treating it as ';' avoids printing the rest as text, but the
+            // distinction is remembered for the truecolor case below
             Inc(FPCount);
             if FPCount > 15 then FPCount := 15;
+            FPColon[FPCount] := (b = Ord(':'));
           end
           else if b = Ord('?') then
+            // '?' = DEC private: DECSET/DECRST (?1049h, ?25h...) ARE handled
             FPPriv := True
+          else if (b >= $3C) and (b <= $3E) then
+            // '<' '=' '>' introduce OTHER private CSIs -- modifyOtherKeys
+            // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" Claude emits.
+            // Consume them so the params/final byte do NOT leak as "4m"/"u",
+            // but do NOT act on them (applying "m" would wrongly set underline).
+            FPrivOther := True
           else if (b >= $20) and (b <= $2F) then
           begin
             FInterm := AnsiChar(b);   // intermediate: ' ' of DECSCUSR etc.
           end
           else if (b >= $40) and (b <= $7E) then
           begin
-            DoCSI(AnsiChar(b));
+            if not FPrivOther then
+              DoCSI(AnsiChar(b));   // private < = > sequences are ignored
             FPState := psGround;
             FPPriv := False;
+            FPrivOther := False;
             FInterm := #0;
           end
           else
           begin
             FPState := psGround;
+            FPPriv := False;
+            FPrivOther := False;
             FInterm := #0;
           end;
         end;
@@ -1378,6 +1683,20 @@ begin
         end;
       psCharset:
         FPState := psGround;
+      psDcs:
+        begin
+          if b = 7 then
+            FPState := psGround     // BEL ends the string
+          else if b = 27 then
+            FPState := psDcsEsc;    // maybe ST (ESC \)
+          // any other byte is part of the payload: discard it
+        end;
+      psDcsEsc:
+        begin
+          // ESC \ = ST (end). A bare ESC starts a new sequence, but for a
+          // discarded string just return to ground either way.
+          FPState := psGround;
+        end;
     end;
   end;
   Dirty := True;
