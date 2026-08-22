@@ -21,6 +21,14 @@ const
   A_REVERSE = $0400;
   A_FGDEF = $0800;
   A_BGDEF = $1000;
+  // Bright foreground. Kept SEPARATE from A_BOLD: A_BOLD is the WEIGHT
+  // (SGR 1 / 22) while this is the high bit of the 16-color foreground (SGR
+  // 90-97 and the bright half of an approximated 256-color). Overloading
+  // A_BOLD meant SGR 22 ("normal intensity") also demoted the COLOR, which
+  // turned Claude Code's grey text pure black. Bit 3 of the fg nibble is free
+  // (it only ever holds 0..7), so every "Attr and $FFF0" that changes the
+  // foreground clears the bright bit automatically.
+  A_FGBRIGHT = $0008;
 
 type
   TCell = record
@@ -1116,7 +1124,7 @@ begin
             39: begin Attr := (Attr and $FFF0) or A_FGDEF; AttrFgRGB := 0; end;
             40..47: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4); AttrBgRGB := 0; end;
             49: begin Attr := (Attr and $FF0F) or A_BGDEF; AttrBgRGB := 0; end;
-            90..97: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_BOLD; AttrFgRGB := 0; end;
+            90..97: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_FGBRIGHT; AttrFgRGB := 0; end;
             100..107: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
               (word(n - 92) shl 4); AttrBgRGB := 0; end;
             38, 48:
@@ -1146,14 +1154,17 @@ begin
                 if n = 38 then
                 begin
                   AttrFgRGB := RGBVal;
+                  // SGR 38 selects a COLOR and must never touch the weight:
+                  // a dark 256-color used to cancel a preceding SGR 1, and a
+                  // bright one used to fake bold. "and $FFF0" clears the old
+                  // bright bit for us.
                   if p1 < 0 then
                     Attr := (Attr and $FFF0) or A_FGDEF
                   else if p1 < 8 then
-                    Attr := ((Attr and $FFF0) and
-                      (not (A_FGDEF or A_BOLD))) or word(p1)
+                    Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(p1)
                   else
                     Attr := ((Attr and $FFF0) and (not A_FGDEF)) or
-                      word(p1 and 7) or A_BOLD;
+                      word(p1 and 7) or A_FGBRIGHT;
                 end
                 else
                 begin

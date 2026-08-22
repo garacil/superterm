@@ -587,7 +587,9 @@ var
     else
     begin
       k := c.Attr and $07;
-      if (c.Attr and A_BOLD) <> 0 then k := k or 8;   // bold -> bright fg
+      // an explicitly bright color (SGR 90-97) or a bold weight both render
+      // as the bright half here, which is what the CP437 path always did
+      if (c.Attr and (A_BOLD or A_FGBRIGHT)) <> 0 then k := k or 8;
       ffg := $02000000 or LongWord(k);
     end;
     if c.BgRGB <> 0 then
@@ -631,7 +633,9 @@ var
       LocalBg := VideoColor((AAttr shr 4) and $0F);
     if (AAttr and $0080) <> 0 then
       LocalBg := LocalBg or 8;
-    if (AAttr and A_BOLD) <> 0 then
+    // both the weight bit and the dedicated bright bit map to the same
+    // bright half of the 16-color VGA palette on this CP437 path
+    if (AAttr and (A_BOLD or A_FGBRIGHT)) <> 0 then
       LocalFg := LocalFg or 8;
     if (AAttr and A_REVERSE) <> 0 then
     begin
