@@ -33,6 +33,15 @@ procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
 // Drop the whole overlay (nothing renders rich until panes repopulate it).
 procedure RichInvalidate;
 
+// Declare that what the terminal currently shows is unknown, so the NEXT
+// update repaints every cell. This is the only legitimate way to ask for a
+// full repaint: the per-cell delta is otherwise always trustworthy, because
+// this unit is the only writer to the terminal and it tracks what it wrote.
+// FreeVision's TGroup.Redraw asks for a forced update on every ChangeBounds,
+// which during a window drag meant a whole-screen resend per mouse step; that
+// request is now ignored and only an explicit invalidation forces a repaint.
+procedure InvalidateFrame;
+
 var
   PassthroughActive: Boolean = False;
   // startup: while True, FreeVision draws into the buffer normally but the
@@ -315,6 +324,22 @@ begin
     RichScreen[i].Valid := False;
 end;
 
+procedure InvalidateFrame;
+var
+  i: LongInt;
+begin
+  // poison the previous-frame snapshot so no cell can compare equal
+  for i := 0 to High(EffOld) do
+  begin
+    EffOld[i].Skip := False;
+    EffOld[i].Rich := False;
+    EffOld[i].Glyph := #1;
+    EffOld[i].Attr := $FF;
+  end;
+  if (OldVideoBuf <> nil) and (VideoBufSize > 0) then
+    FillChar(OldVideoBuf^, VideoBufSize, $FF);
+end;
+
 procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
   AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean);
 var
@@ -449,7 +474,13 @@ begin
         Eff.Bg := 0;
         Eff.Flags := 0;
       end;
-      if (not Force) and EffEqual(Eff, EffOld[Index]) then
+      // Force is IGNORED on purpose: FreeVision asks for a forced update from
+      // TGroup.Redraw, which TGroup.ChangeBounds triggers on every step of a
+      // window drag -- that resent all ~10k cells per mouse move (measured:
+      // 802 of 1639 frames, 9.9 MB of 10.2 MB, over SSH). The delta below is
+      // always correct because this unit is the sole writer to the terminal;
+      // when that stops being true the caller must say so via InvalidateFrame.
+      if EffEqual(Eff, EffOld[Index]) then
       begin
         NeedMove := True;   // skipped a cell: next change needs a reposition
         Continue;
@@ -491,7 +522,7 @@ begin
   else
     OutCursorY := CursorY;
 
-  if (Body <> '') or Force then
+  if Body <> '' then
   begin
     // neutral SGR reset + autowrap off + body + cursor, in ONE write. Each
     // cell carries its own color now (chrome or rich), so the prefix must NOT

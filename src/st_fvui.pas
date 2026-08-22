@@ -329,6 +329,10 @@ begin
     DebugLog('fvui: ResetVideoSurface (FORCED full repaint follows)');
   if (VideoBuf <> nil) and (VideoBufSize > 0) then
     FillWord(VideoBuf^, VideoBufSize div SizeOf(Word), $0720);
+  // the terminal contents are no longer what we last tracked, so the delta
+  // must not be trusted for the next frame (WideUpdateScreen ignores the
+  // vendor's own "forced" flag; this is the explicit way to ask for a repaint)
+  InvalidateFrame;
   ClearScreen;
 end;
 
