@@ -32,6 +32,7 @@ var
   DriverInstalled: Boolean;
   OutputFailed: Boolean;
   ConsoleRow, ConsoleCol: Integer; // cursor position at startup (0 = unknown)
+  UseSyncOutput: Boolean = False;  // DECSET 2026; opt-in via SUPERTERM_SYNC=1
 
 procedure PassthroughRaw(const Data; ALen: LongInt);
 var
@@ -312,9 +313,17 @@ begin
     OutCursorY := CursorY;
 
   if (Body <> '') or Force then
-    // synchronized begin + SGR reset + autowrap off + body + cursor + sync end
-    Frame := #27'[?2026h'#27'[0;40;37m'#27'[?7l' + Body +
-      CursorPosition(OutCursorX, OutCursorY) + #27'[?2026l'
+  begin
+    // SGR reset + autowrap off + body + cursor, in ONE write. Optionally
+    // wrapped in DECSET 2026 synchronized output (atomic present, no
+    // tearing) -- but that holds the frame until ?2026l, and some
+    // terminals do not present it until the next input, so it is OFF by
+    // default and enabled with SUPERTERM_SYNC=1.
+    Frame := #27'[0;40;37m'#27'[?7l' + Body +
+      CursorPosition(OutCursorX, OutCursorY);
+    if UseSyncOutput then
+      Frame := #27'[?2026h' + Frame + #27'[?2026l';
+  end
   else
     // nothing changed: only keep the hardware cursor in sync (cheap)
     Frame := CursorPosition(OutCursorX, OutCursorY);
@@ -354,6 +363,7 @@ var
 begin
   if DriverInstalled then
     Exit;
+  UseSyncOutput := GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
   GetVideoDriver(SavedDriver);
   Driver := SavedDriver;
   Driver.InitDriver := @WideInitVideo;
