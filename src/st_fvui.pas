@@ -66,6 +66,7 @@ const
   cmPaletteBase  = 2750;   // +apColor/apBlackWhite/apMonochrome
   cmToggleAutoSave    = 2760;
   cmToggleAutoRestore = 2761;
+  cmToggleDragContent = 2762;
 
 type
   PSuperApp = ^TSuperApp;
@@ -323,6 +324,13 @@ begin
   end;
 end;
 
+// Pane whose window is being dragged/resized right now (-1 = none). While a
+// drag is in progress and the profile has "show contents while dragging" off,
+// that pane draws hollow: only the window frame moves and the interior stays
+// transparent, so a drag costs the perimeter instead of the whole area.
+var
+  DragPane: integer = -1;
+
 procedure ResetVideoSurface;
 begin
   if DebugActive then
@@ -530,6 +538,7 @@ var
   ShowBlk: boolean;
   BlankWord: word;
   GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
+  Hollow: boolean;         // window being dragged with contents hidden
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
 
   // Register one cell in the rich overlay at its global screen position, with
@@ -669,10 +678,22 @@ begin
   PadCell.Attr := App^.Scr[PaneIdx].Attr;
   PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
   PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
+  // hollow while this window is being dragged: the frame (drawn by the
+  // vendor) still moves, but the interior is left empty, so the gesture costs
+  // the perimeter instead of the whole area
+  Hollow := (DragPane = PaneIdx);
   for y := 0 to h - 1 do
   begin
     RowLen := 0;
-    if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
+    if Hollow then
+    begin
+      for x := 0 to w - 1 do
+      begin
+        B[x] := BlankWord or word(' ');
+        RichReg(x, y, PadCell, B[x], false);
+      end;
+    end
+    else if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
     begin
       for x := 0 to w - 1 do
       begin
@@ -933,6 +954,7 @@ end;
 procedure TTermWindow.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
+  Dragging: boolean;
 begin
   // a click on the minimized icon restores it, before the vendor
   // window selection swallows the event
@@ -946,7 +968,27 @@ begin
       Exit;
     end;
   end;
+  // A drag/resize runs a MODAL loop inside the vendor (TView.DragView), so
+  // flagging it around the inherited call covers the whole gesture. Only a
+  // press on the FRAME drags -- a click inside the pane must not blank it.
+  App := PSuperApp(Application);
+  Dragging := (App <> nil) and (not App^.Cfg.DragContent) and (not Minimized) and
+    (((Event.What = evMouseDown) and (Term <> nil) and
+      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where))) or
+     ((Event.What = evCommand) and (Event.Command = cmResize)));
+  if Dragging then
+  begin
+    DragPane := PaneIdx;
+    if Term <> nil then
+      Term^.DrawView;      // show it hollow before the gesture starts
+  end;
   inherited HandleEvent(Event);
+  if Dragging then
+  begin
+    DragPane := -1;
+    if Term <> nil then
+      Term^.DrawView;      // released: bring the contents back
+  end;
 end;
 
 procedure TTermWindow.SizeLimits(var Min, Max: Objects.TPoint);
@@ -3996,6 +4038,12 @@ begin
           SaveConfig(Cfg);
           RebuildMenu;
         end;
+      cmToggleDragContent:
+        begin
+          Cfg.DragContent := not Cfg.DragContent;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
       cmToggleAutoRestore:
         begin
           Cfg.AutoRestore := not Cfg.AutoRestore;
@@ -4559,7 +4607,11 @@ begin
       cmToggleAutoSave, hcNoContext,
     NewItem(ActiveMark(Cfg.AutoRestore) +
       UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
-      kbNoKey, cmToggleAutoRestore, hcNoContext, nil))))));
+      kbNoKey, cmToggleAutoRestore, hcNoContext,
+    NewItem(ActiveMark(Cfg.DragContent) +
+      UiText('Show contents while ~d~ragging',
+             'Ver contenido al ~a~rrastrar'), '',
+      kbNoKey, cmToggleDragContent, hcNoContext, nil )))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
