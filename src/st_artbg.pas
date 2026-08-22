@@ -268,6 +268,23 @@ begin
   end;
 end;
 
+// Alphabetical by label, so the menu reads the same whatever order the
+// directory happened to hand the files over in.
+procedure SortPics;
+var
+  i, j: integer;
+  T: TArtPicture;
+begin
+  for i := 0 to High(Pics) - 1 do
+    for j := 0 to High(Pics) - 1 - i do
+      if CompareText(Pics[j].Title, Pics[j + 1].Title) > 0 then
+      begin
+        T := Pics[j];
+        Pics[j] := Pics[j + 1];
+        Pics[j + 1] := T;
+      end;
+end;
+
 procedure EnsureLoaded;
 var
   Path, Dir: string;
@@ -294,6 +311,7 @@ begin
     if Dir <> '' then
       ScanDir(Dir);
   end;
+  SortPics;
 end;
 
 procedure ArtReload;
