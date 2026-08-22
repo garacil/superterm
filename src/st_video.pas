@@ -354,7 +354,7 @@ begin
     2: begin
          n := AFg and $0F;
          if n < 8 then Result := Result + ';' + IntToStr(30 + LongInt(n))
-         else Result := Result + ';' + IntToStr(90 + LongInt(n - 8));
+         else Result := Result + ';' + IntToStr(90 + (LongInt(n) - 8));
        end;
   end;
   case ABg shr 24 of
@@ -363,7 +363,7 @@ begin
     2: begin
          n := ABg and $0F;
          if n < 8 then Result := Result + ';' + IntToStr(40 + LongInt(n))
-         else Result := Result + ';' + IntToStr(100 + LongInt(n - 8));
+         else Result := Result + ';' + IntToStr(100 + (LongInt(n) - 8));
        end;
   end;
   Result := Result + 'm';

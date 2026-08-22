@@ -552,20 +552,35 @@ var
     end
     else
       g := ' ';
+    fl := 0;
+    // Truecolor keeps bold as a weight bit; the 16-color fallback folds bold
+    // into a BRIGHT foreground exactly like the old CP437 path (RenderAttr),
+    // so bash's "1;32" prompt stays bright green (92) instead of turning into
+    // a garish bold+green. Same for a bold default fg -> bright white.
     if c.FgRGB <> 0 then
-      ffg := c.FgRGB
+    begin
+      ffg := c.FgRGB;
+      if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
+    end
     else if (c.Attr and A_FGDEF) <> 0 then
-      ffg := 0
+    begin
+      if (c.Attr and A_BOLD) <> 0 then
+        ffg := $02000000 or 15    // bold default -> bright white (like RenderAttr)
+      else
+        ffg := 0;
+    end
     else
-      ffg := $02000000 or LongWord(c.Attr and $07);
+    begin
+      k := c.Attr and $07;
+      if (c.Attr and A_BOLD) <> 0 then k := k or 8;   // bold -> bright fg
+      ffg := $02000000 or LongWord(k);
+    end;
     if c.BgRGB <> 0 then
       fbg := c.BgRGB
     else if (c.Attr and A_BGDEF) <> 0 then
       fbg := 0
     else
       fbg := $02000000 or LongWord((c.Attr shr 4) and $0F);
-    fl := 0;
-    if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
     if (c.Attr and A_UNDER) <> 0 then fl := fl or 2;
     if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
     RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
