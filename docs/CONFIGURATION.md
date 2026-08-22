@@ -42,6 +42,8 @@ palette=color
 server=always
 autosave=1
 autorestore=1
+dragcontent=1
+zoomanim=0
 default_profile=daily
 ```
 
@@ -96,7 +98,17 @@ saved when changed.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
   when no profile takes priority. Set it to `0` when every startup must
   create fresh profile connections.
-- Both flags can also be toggled at runtime from the `Options` menu.
+- `dragcontent=1` (default) draws a window's contents while it is being
+  dragged. Set it to `0` for a wireframe drag: the window is hidden for the
+  duration of the gesture and only its outline moves, so the desktop and the
+  windows behind it stay visible through it and each step sends just the strip
+  the outline vacates plus the one it takes. On a 53x29 window that is about 29
+  cells per step instead of redrawing the interior, which is worth having on a
+  slow or high-latency link, or with a pane full of content.
+- `zoomanim=0` (default) makes `F5` switch instantly. Set it to `1` for a short
+  expanding and contracting outline between the pane and the full desktop
+  (about 350 ms). Purely cosmetic; the instant transition is the fast one.
+- All four flags can also be toggled at runtime from the `Options` menu.
 - `default_profile` names the profile activated at startup.
 - The legacy keys `default_template`, `default_session`, and
   `default_window` are still read. The startup profile is resolved as
@@ -104,6 +116,14 @@ saved when changed.
   `default_template/default_session` (the name produced by template
   flattening). `default_window` selects the starting window of the profile
   by name.
+
+## Full-screen passthrough
+
+Maximizing a pane (F5) makes it own the whole terminal and streams its raw
+output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
+at full fidelity instead of being approximated to the CP437 grid. Press F5
+again to un-maximize and bring the window manager back. This assumes a single
+client is attached to the session.
 
 ## Window classes
 

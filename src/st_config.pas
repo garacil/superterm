@@ -23,6 +23,15 @@ type
     PrefixKey: integer;    // prefix key (17 = Ctrl-Q; 1..26 = Ctrl-A..Z)
     AutoSave: boolean;     // save session on exit
     AutoRestore: boolean;  // restore session on startup
+    // draw the window contents while it is being dragged. Off = wireframe
+    // drag: only the frame moves and the interior stays transparent, which
+    // makes a drag cost the perimeter instead of the whole area -- a big win
+    // on slow links. Default on (the familiar behaviour).
+    DragContent: boolean;
+    // draw a short expanding/contracting outline when F5 zooms a pane in or
+    // out. Purely cosmetic and off by default: the instant transition is the
+    // fast one, this is for whoever wants it to look nicer.
+    ZoomAnim: boolean;
     DefaultProfile: string;  // default profile (new model)
     DefaultTemplate: string; // legacy: used to derive DefaultProfile
     DefaultSession: string;  // legacy
@@ -195,6 +204,8 @@ begin
   Cfg.PrefixKey := 17; // Ctrl-Q (does not collide with remote tmux/screen)
   Cfg.AutoSave := True;
   Cfg.AutoRestore := True;
+  Cfg.DragContent := True;
+  Cfg.ZoomAnim := False;
   Cfg.DefaultProfile := '';
   Cfg.DefaultTemplate := '';
   Cfg.DefaultSession := '';
@@ -223,6 +234,8 @@ begin
       Cfg.ServerMode := 'always';
     Cfg.AutoSave := Ini.ReadBool('session', 'autosave', Cfg.AutoSave);
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
+    Cfg.DragContent := Ini.ReadBool('session', 'dragcontent', Cfg.DragContent);
+    Cfg.ZoomAnim := Ini.ReadBool('session', 'zoomanim', Cfg.ZoomAnim);
     Cfg.DefaultProfile := Ini.ReadString('session', 'default_profile',
       Cfg.DefaultProfile);
     Cfg.DefaultTemplate := Ini.ReadString('session', 'default_template',
@@ -255,6 +268,8 @@ begin
     Ini.WriteString('session', 'server', Cfg.ServerMode);
     Ini.WriteBool('session', 'autosave', Cfg.AutoSave);
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
+    Ini.WriteBool('session', 'dragcontent', Cfg.DragContent);
+    Ini.WriteBool('session', 'zoomanim', Cfg.ZoomAnim);
     Ini.WriteString('session', 'default_profile', Cfg.DefaultProfile);
     Ini.WriteString('session', 'default_template', Cfg.DefaultTemplate);
     Ini.WriteString('session', 'default_session', Cfg.DefaultSession);

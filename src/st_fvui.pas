@@ -66,6 +66,8 @@ const
   cmPaletteBase  = 2750;   // +apColor/apBlackWhite/apMonochrome
   cmToggleAutoSave    = 2760;
   cmToggleAutoRestore = 2761;
+  cmToggleDragContent = 2762;
+  cmToggleZoomAnim    = 2763;
 
 type
   PSuperApp = ^TSuperApp;
@@ -131,6 +133,14 @@ type
     // bounds (tile -> final geometry) and must NOT request transient
     // sizes from the daemon nor resize the snapshot screen every step
     RemoteAttachSettling: boolean;
+    // passthrough: when a pane is maximized it owns the whole host
+    // terminal and its raw PTY bytes are written straight through, so a
+    // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
+    PassPane: integer;
+    PassReqW, PassReqH: integer;  // full size requested on enter
+    // startup: hold one LockScreenUpdate across the whole build+promote+
+    // attach so the screen is flushed ONCE at the end, not several times
+    FBootLocked: boolean;
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
@@ -168,6 +178,18 @@ type
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     procedure SyncRemoteLayout;
+    // incremental repaint: redraw the view tree into the buffer but push
+    // ONLY the changed cells (the FreeVision diff), instead of the
+    // ResetVideoSurface+ReDraw sledgehammer that re-sends every cell
+    procedure RepaintChanges;
+    // release the startup screen lock and paint the final workspace once
+    // (or go straight into passthrough if a pane is maximized)
+    procedure FinishBoot;
+    // passthrough of a maximized pane straight to the host terminal
+    procedure EnterPassthrough(i: integer);
+    procedure ExitPassthrough;
+    procedure UpdatePassthrough;
+    procedure ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
     function ComputeLayoutHash: string;
     procedure ApplyRemoteLayoutEv(const AData: TByteArray);
     procedure ApplyRemoteKillPane(APane: integer);
@@ -187,6 +209,7 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
+    // why the last attach attempt failed (empty = generic/none)
     // server-always: converts the freshly built local workspace into a
     // daemon session and attaches to it as a client
     procedure PromoteToServer;
@@ -304,11 +327,137 @@ begin
   end;
 end;
 
+var
+  // Wireframe drag. The window must stay VISIBLE while the mouse-down is
+  // dispatched, otherwise the event never reaches the frame and the vendor's
+  // DragView never starts (that mistake made windows undraggable). So we arm
+  // it here and hide the window LAZILY, on the first ChangeBounds once
+  // DragView has set sfDragging -- its loop pulls mouse events from the
+  // application queue, not through view dispatch, so hiding then is safe.
+  OutlineArmed: integer = -1;    // pane whose drag should go wireframe
+  OutlineOn: boolean = False;    // window hidden and an outline is painted
+  OutlineX1, OutlineY1, OutlineX2, OutlineY2: integer;
+  // reason the last attach was refused (shown to the user instead of silently
+  // starting a fresh local session)
+  AttachFailReason: string = '';
+
 procedure ResetVideoSurface;
 begin
+  if DebugActive then
+    DebugLog('fvui: ResetVideoSurface (FORCED full repaint follows)');
   if (VideoBuf <> nil) and (VideoBufSize > 0) then
     FillWord(VideoBuf^, VideoBufSize div SizeOf(Word), $0720);
+  // the terminal contents are no longer what we last tracked, so the delta
+  // must not be trusted for the next frame (WideUpdateScreen ignores the
+  // vendor's own "forced" flag; this is the explicit way to ask for a repaint)
+  InvalidateFrame;
   ClearScreen;
+end;
+
+// Incremental full-tree repaint. TView.DrawView redraws every subview
+// (menu, desktop + windows, status) into VideoBuf and then calls
+// DrawScreenBuf(false) -> UpdateScreen(false) -> WideUpdateScreen diffs
+// against OldVideoBuf and emits ONLY the cells that actually changed.
+// The desktop background repaints over any area a closed/shrunk window
+// vacated, so no stale cells survive -- without re-sending the whole
+// screen the way ResetVideoSurface (blanks OldVideoBuf) + ReDraw
+// (drawscreenbuf TRUE, forced) does. Reserve the sledgehammer for real
+// video-mode/size changes and coming back from raw passthrough.
+procedure TSuperApp.RepaintChanges;
+begin
+  if DebugActive then
+    DebugLog('fvui: RepaintChanges (incremental DrawView -> diff)');
+  DrawView;
+end;
+
+// End of startup: release the single boot lock and paint ONCE. If the
+// focused pane is maximized we go straight into passthrough (the pane owns
+// the terminal and paints itself), so we never even flush the grid version.
+procedure TSuperApp.FinishBoot;
+begin
+  if FBootLocked then
+  begin
+    SuppressFlush := False;
+    FBootLocked := False;
+  end;
+  UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
+  if not PassthroughActive then
+  begin
+    if DebugActive then DebugLog('== BOOT: single final paint (forced) ==');
+    // OldVideoBuf never tracked the buffered build, so force a full paint
+    // of the settled workspace -- this is the ONE unavoidable initial paint
+    ReDraw;
+  end;
+end;
+
+
+// Return the cell's glyph ONLY when it is a valid, printable, single-codepoint
+// UTF-8 sequence; otherwise '?'. The CP437 path was immune to junk because
+// TranslitByte collapsed every cell to one byte, but the rich renderer writes
+// the bytes straight to the terminal: one stray $E2 makes a UTF-8 decoder
+// swallow the two bytes that follow -- which are our next SGR's ESC [ -- and
+// the rest of that sequence is printed as text. DEL is a control, not a glyph:
+// terminals drop it without advancing, breaking the one-column assumption.
+function SafeGlyph(const C: TCell): RawByteString;
+var
+  i, k, need: integer;
+  b0: byte;
+  cp: cardinal;
+  first: boolean;
+begin
+  Result := ' ';
+  if C.Len = 0 then
+    Exit;
+  // A cell may hold a BASE codepoint followed by zero-width marks (combining
+  // accents, or the U+FE0F selector that turns a symbol into an emoji), so
+  // validate the whole sequence, not just one codepoint. Everything must be
+  // well-formed UTF-8, and the first codepoint must be printable.
+  i := 0;
+  first := True;
+  while i < C.Len do
+  begin
+    b0 := byte(C.Txt[i]);
+    if b0 < $80 then
+    begin
+      if (b0 < $20) or (b0 = $7F) then
+        Exit('?');            // controls and DEL are not glyphs
+      need := 1;
+      cp := b0;
+    end
+    else if (b0 >= $C2) and (b0 <= $DF) then need := 2
+    else if (b0 >= $E0) and (b0 <= $EF) then need := 3
+    else if (b0 >= $F0) and (b0 <= $F4) then need := 4
+    else
+      Exit('?');              // $C0, $C1, $F5..$FF are never legal leads
+    if i + need > C.Len then
+      Exit('?');
+    if need > 1 then
+    begin
+      for k := 1 to need - 1 do
+        if (byte(C.Txt[i + k]) and $C0) <> $80 then
+          Exit('?');
+      case need of
+        2: cp := ((b0 and $1F) shl 6) or (byte(C.Txt[i + 1]) and $3F);
+        3: cp := ((b0 and $0F) shl 12) or ((byte(C.Txt[i + 1]) and $3F) shl 6) or
+                 (byte(C.Txt[i + 2]) and $3F);
+      else
+        cp := ((b0 and $07) shl 18) or ((byte(C.Txt[i + 1]) and $3F) shl 12) or
+              ((byte(C.Txt[i + 2]) and $3F) shl 6) or (byte(C.Txt[i + 3]) and $3F);
+      end;
+      if ((need = 2) and (cp < $80)) or
+         ((need = 3) and (cp < $800)) or
+         ((need = 4) and ((cp < $10000) or (cp > $10FFFF))) or
+         ((cp >= $D800) and (cp <= $DFFF)) then
+        Exit('?');            // overlong, surrogate or out of range
+    end;
+    first := False;
+    Inc(i, need);
+  end;
+  if first then
+    Exit;
+  SetLength(Result, C.Len);
+  for k := 1 to C.Len do
+    Result[k] := C.Txt[k - 1];
 end;
 
 function TranslitByte(const C: TCell): AnsiChar;
@@ -319,6 +468,8 @@ begin
   Result := ' ';
   if C.Len = 0 then
     Exit;
+  if (C.Attr and A_CONCEAL) <> 0 then
+    Exit;                 // SGR 8: concealed, render as a blank
   b := byte(C.Txt[0]);
   if (C.Len = 1) and (b < $80) then
     Exit(AnsiChar(b));
@@ -468,6 +619,96 @@ var
   Scrolled: boolean;
   ShowBlk: boolean;
   BlankWord: word;
+  GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
+  // rectangles of the windows stacked IN FRONT of this one, in global screen
+  // coordinates: cells they cover are theirs, not ours
+  FrontR: array[0..MAX_PANES - 1] of Objects.TRect;
+  FrontN: integer;
+  MyWin, PW: PView;
+  PadCell: TCell;    // synthetic blank for padding cells (pane default color)
+
+  // Register one cell in the rich overlay at its global screen position, with
+  // B[x] (the word just written to VideoBuf) as the oracle. The full UTF-8
+  // glyph and exact color (truecolor when the cell carries RGB, else the
+  // 16-color fallback) let WideUpdateScreen present the pane area faithfully
+  // instead of the CP437/16-color grid. cursor=True inverts (block cursor).
+  // True when this global cell is covered by a window stacked in front, so the
+  // rich entry there belongs to that window and must not be overwritten.
+  // FreeVision clips VideoBuf correctly, but it draws front-to-back, so
+  // without this test the BACK pane registers last and wins -- and the oracle
+  // cannot catch it, because two blank cells quantise to the same word.
+  function Occluded(gx, gy: integer): boolean;
+  var
+    q: integer;
+  begin
+    Occluded := False;
+    for q := 0 to FrontN - 1 do
+      if (gx >= FrontR[q].A.X) and (gx < FrontR[q].B.X) and
+         (gy >= FrontR[q].A.Y) and (gy < FrontR[q].B.Y) then
+        Exit(True);
+  end;
+
+  procedure RichReg(lx, ly: integer; const c: TCell; oracle: word;
+    cursor: boolean; nextCont: boolean);
+  var
+    g: RawByteString;
+    ffg, fbg: LongWord;
+    fl, k: integer;
+    isSkip, isWide: boolean;
+  begin
+    isSkip := c.Cont;
+    if isSkip then
+      g := ''
+    else if (c.Attr and A_CONCEAL) <> 0 then
+      g := ' '            // SGR 8: the application hid this; do not reveal it
+    else
+      g := SafeGlyph(c);
+    fl := 0;
+    // Truecolor keeps bold as a weight bit; the 16-color fallback folds bold
+    // into a BRIGHT foreground exactly like the old CP437 path (RenderAttr),
+    // so bash's "1;32" prompt stays bright green (92) instead of turning into
+    // a garish bold+green. Same for a bold default fg -> bright white.
+    if c.FgRGB <> 0 then
+    begin
+      ffg := c.FgRGB;
+      if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
+    end
+    else if (c.Attr and A_FGDEF) <> 0 then
+    begin
+      // Bold + DEFAULT fg: keep the default color and carry bold as a weight
+      // (";1"), like a real terminal. Do NOT force bright white -- that turned
+      // the shell text a different color after Claude (which exits leaving bold
+      // set) even though the foreground is the terminal default.
+      ffg := 0;
+      if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
+    end
+    else
+    begin
+      k := c.Attr and $07;
+      // an explicitly bright color (SGR 90-97) or a bold weight both render
+      // as the bright half here, which is what the CP437 path always did
+      if (c.Attr and (A_BOLD or A_FGBRIGHT)) <> 0 then k := k or 8;
+      ffg := $02000000 or LongWord(k);
+    end;
+    if c.BgRGB <> 0 then
+      fbg := c.BgRGB
+    else if (c.Attr and A_BGDEF) <> 0 then
+      fbg := 0
+    else
+      fbg := $02000000 or LongWord((c.Attr shr 4) and $0F);
+    if (c.Attr and A_UNDER) <> 0 then fl := fl or 2;
+    if (c.Attr and A_FAINT) <> 0 then fl := fl or 8;   // SGR 2
+    if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
+    if Occluded(GOrig.X + lx, GOrig.Y + ly) then
+      Exit;   // that cell belongs to the window in front; leave its entry alone
+    // lead of a two-column glyph: the caller knows whether the next cell of
+    // the SAME source row is its continuation (the live grid and a scrollback
+    // row are different sources). The emitter needs it to refuse a pair split
+    // by a pane edge.
+    isWide := (not isSkip) and nextCont;
+    RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
+      oracle, isSkip, isWide);
+  end;
 
   function VideoColor(AAnsiColor: byte): byte;
   begin
@@ -498,7 +739,9 @@ var
       LocalBg := VideoColor((AAttr shr 4) and $0F);
     if (AAttr and $0080) <> 0 then
       LocalBg := LocalBg or 8;
-    if (AAttr and A_BOLD) <> 0 then
+    // both the weight bit and the dedicated bright bit map to the same
+    // bright half of the 16-color VGA palette on this CP437 path
+    if (AAttr and (A_BOLD or A_FGBRIGHT)) <> 0 then
       LocalFg := LocalFg or 8;
     if (AAttr and A_REVERSE) <> 0 then
     begin
@@ -535,6 +778,42 @@ begin
     App^.Scr[PaneIdx].CursorVisible and
     (CursorPhase or (App^.Scr[PaneIdx].CursorStyle in [2, 4, 6]));
   NonBlank := 0;
+  // global origin of the view and a blank cell carrying the pane's current
+  // color, so padding/empty cells register richly too (a truecolor background
+  // Claude painted with spaces still shows)
+  GOrig.X := 0;
+  GOrig.Y := 0;
+  MakeGlobal(GOrig, GOrig);
+  // walk the desktop's Z-order from the topmost view up to our own window and
+  // remember every visible window in front of it
+  FrontN := 0;
+  MyWin := nil;
+  if (App^.Win[PaneIdx] <> nil) then
+    MyWin := PView(App^.Win[PaneIdx]);
+  if (Desktop <> nil) and (MyWin <> nil) then
+  begin
+    PW := Desktop^.First;
+    while (PW <> nil) and (PW <> MyWin) and (FrontN < MAX_PANES) do
+    begin
+      if (PW^.GetState(sfVisible)) then
+      begin
+        FrontR[FrontN].A := PW^.Origin;
+        FrontR[FrontN].B.X := PW^.Origin.X + PW^.Size.X;
+        FrontR[FrontN].B.Y := PW^.Origin.Y + PW^.Size.Y;
+        // Origin is relative to the desktop; shift to screen coordinates
+        Inc(FrontR[FrontN].A.X, Desktop^.Origin.X);
+        Inc(FrontR[FrontN].A.Y, Desktop^.Origin.Y);
+        Inc(FrontR[FrontN].B.X, Desktop^.Origin.X);
+        Inc(FrontR[FrontN].B.Y, Desktop^.Origin.Y);
+        Inc(FrontN);
+      end;
+      PW := PW^.NextView;
+    end;
+  end;
+  PadCell := Default(TCell);
+  PadCell.Attr := App^.Scr[PaneIdx].Attr;
+  PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
+  PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
   for y := 0 to h - 1 do
   begin
     RowLen := 0;
@@ -555,9 +834,15 @@ begin
              B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
                word(TranslitByte(cell));
            end;
+           RichReg(x, y, cell, B[x], ShowBlk and (x = cx) and (y = cy),
+             (x + 1 < App^.Scr[PaneIdx].Width) and
+             App^.Scr[PaneIdx].Grid[y][x + 1].Cont);
          end
          else
+         begin
            B[x] := BlankWord or word(' ');
+           RichReg(x, y, PadCell, B[x], false, false);
+         end;
       end;
     end
     else if Scrolled then
@@ -572,14 +857,22 @@ begin
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
+           RichReg(x, y, cell, B[x], false,
+             (x + 1 < RowLen) and Row[x + 1].Cont);
          end
          else
+         begin
            B[x] := BlankWord or word(' ');
+           RichReg(x, y, PadCell, B[x], false, false);
+         end;
        end;
     end
     else
       for x := 0 to w - 1 do
+      begin
         B[x] := BlankWord or word(' ');
+        RichReg(x, y, PadCell, B[x], false, false);
+      end;
     WriteLine(0, y, w, 1, B);
   end;
   if Scrolled then
@@ -788,6 +1081,7 @@ end;
 procedure TTermWindow.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
+  Dragging: boolean;
 begin
   // a click on the minimized icon restores it, before the vendor
   // window selection swallows the event
@@ -801,7 +1095,33 @@ begin
       Exit;
     end;
   end;
+  // A drag/resize runs a MODAL loop inside the vendor (TView.DragView), so
+  // flagging it around the inherited call covers the whole gesture. Only a
+  // press on the FRAME drags -- a click inside the pane must not blank it.
+  App := PSuperApp(Application);
+  Dragging := (App <> nil) and (not App^.Cfg.DragContent) and (not Minimized) and
+    (((Event.What = evMouseDown) and (Term <> nil) and
+      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where))) or
+     ((Event.What = evCommand) and (Event.Command = cmResize)));
+  if Dragging then
+  begin
+    if DebugActive then DebugLog(Format('drag: ARMED pane=%d',[PaneIdx]));
+    OutlineArmed := PaneIdx;   // armed only; hidden later, see ChangeBounds
+  end;
   inherited HandleEvent(Event);
+  if Dragging then
+  begin
+    OutlineArmed := -1;
+    if OutlineOn then
+    begin
+      // forget the ring, then Show: the regular (rich-aware) repaint puts the
+      // real colours back. Repainting it by hand would restore the text but
+      // not the attributes.
+      OutlineInvalidate(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
+      OutlineOn := False;
+      Show;                    // released: the window comes back, moved
+    end;
+  end;
 end;
 
 procedure TTermWindow.SizeLimits(var Min, Max: Objects.TPoint);
@@ -829,8 +1149,52 @@ var
   R: Objects.TRect;
   App: PSuperApp;
   pw, ph: integer;
+  gx1, gy1, gx2, gy2: integer;
 begin
   inherited ChangeBounds(Bounds);
+  // Wireframe drag, step by step. On the first step (DragView has just set
+  // sfDragging) hide the WHOLE window: the frame paints its interior full
+  // width (vendor/fv322/views.pas:2935-2939) and a visible window keeps
+  // clipping the desktop underneath, so nothing else can make the interior
+  // see-through. Hidden, FreeVision repaints the desktop and the other
+  // windows normally and VideoBuf holds the true screen; the outline is then
+  // painted on top of it and erased straight back from the buffer.
+  if (OutlineArmed = PaneIdx) and (Desktop <> nil) and GetState(sfDragging) then
+  begin
+    gx1 := Desktop^.Origin.X + Bounds.A.X;
+    gy1 := Desktop^.Origin.Y + Bounds.A.Y;
+    gx2 := Desktop^.Origin.X + Bounds.B.X - 1;
+    gy2 := Desktop^.Origin.Y + Bounds.B.Y - 1;
+    if DebugActive then DebugLog(Format('drag: step pane=%d rect=%d,%d..%d,%d on=%d',[PaneIdx,gx1,gy1,gx2,gy2,Ord(OutlineOn)]));
+    if not OutlineOn then
+    begin
+      Hide;
+      OutlineOn := True;
+      OutlineX1 := gx1; OutlineY1 := gy1;
+      OutlineX2 := gx2; OutlineY2 := gy2;
+      OutlinePaint(gx1, gy1, gx2, gy2, $1F);
+    end
+    else if ((gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
+             (gx2 <> OutlineX2) or (gy2 <> OutlineY2)) and
+            (not InputPending) then
+    begin
+      // another mouse event is already queued: this position is about to be
+      // superseded, so do not spend a round trip drawing it. OutlineX* still
+      // names what is ON SCREEN, so the next move goes straight from there to
+      // the newest position -- the intermediate steps cost nothing.
+      // Touch ONLY the difference between the two rings: give back the cells
+      // the frame leaves (invalidated, so the rich renderer repaints them with
+      // their real colours) and draw only the ones it newly occupies. A
+      // one-cell step then costs a sliver, not two whole perimeters.
+      OutlineLeaveDiff(OutlineX1, OutlineY1, OutlineX2, OutlineY2,
+                       gx1, gy1, gx2, gy2);
+      UpdateScreen(False);
+      OutlineEnterDiff(gx1, gy1, gx2, gy2,
+                       OutlineX1, OutlineY1, OutlineX2, OutlineY2, $1F);
+      OutlineX1 := gx1; OutlineY1 := gy1;
+      OutlineX2 := gx2; OutlineY2 := gy2;
+    end;
+  end;
   if Term <> nil then
   begin
     R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
@@ -840,6 +1204,8 @@ begin
   App := PSuperApp(Application);
   if (App <> nil) and App^.RemoteMode and App^.RemoteAttachSettling then
     Exit;   // attach does ONE final pass with the definitive geometry
+  if (App <> nil) and (App^.PassPane = PaneIdx) then
+    Exit;   // passthrough owns the full terminal; keep the pane at that size
   if (App <> nil) and (not Minimized) and (App^.Scr[PaneIdx] <> nil) then
   begin
     pw := Size.X - 2;
@@ -932,7 +1298,16 @@ var
   SysClassesTmp: TWindowClassArray;
 begin
   InstallWideVideoOutput;
+  if DebugActive then DebugLog('== BOOT: TSuperApp.Init begin (build local workspace) ==');
+  // suppress terminal flushes for the WHOLE startup: FreeVision draws the
+  // local build, the promote and the re-attach into the buffer normally but
+  // nothing reaches the terminal; FinishBoot flushes exactly once.
+  // SuppressFlush is a unit global (survives inherited Init's FillChar of
+  // Self); FBootLocked is a field, so set it AFTER inherited Init or the
+  // zero-fill would wipe it and the flush would never be released.
+  SuppressFlush := True;
   inherited Init;
+  FBootLocked := True;
   LoadConfig(Cfg);
   if Cfg.Palette = 'bw' then
     AppPalette := apBlackWhite
@@ -985,6 +1360,9 @@ begin
   RemoteLayoutHash := '';
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
+  PassPane := -1;
+  PassReqW := 0;
+  PassReqH := 0;
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -992,8 +1370,7 @@ begin
     if AttachSocket = '' then
     begin
       AttachSocket := PickSessionSocketUI(True);
-      ResetVideoSurface;
-      ReDraw;
+      RepaintChanges;
     end;
     if (AttachSocket <> '') and AttachRemoteSession(AttachSocket) then
       Exit;
@@ -1001,6 +1378,8 @@ begin
     // A cmQuit posted here would be lost (TGroup.Execute sets EndState
     // to 0 when entering Run), so AbortRun is flagged and the main
     // program skips Run; no workspace is built
+    if AttachFailReason <> '' then
+      WriteLn(StdErr, 'superterm: ', AttachFailReason);
     SkipSave := True;
     AbortRun := True;
     Exit;
@@ -1095,8 +1474,7 @@ begin
       end;
       Lay.Focused := 0;
       RelayoutAll;
-      ResetVideoSurface;
-      ReDraw;
+      RepaintChanges;
       FocusPane(0);
       Exit;
     end;
@@ -1163,13 +1541,24 @@ begin
          Pin[i].Minimized then
         MinimizeWindow(i);
   end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
 end;
 
 destructor TSuperApp.Done;
 begin
+  // must clear passthrough before teardown: while it is active every
+  // FreeVision screen write (incl. Drivers.DoneVideo's ClearScreen) is
+  // suppressed, which would leave the alternate screen unblanked on exit
+  PassthroughActive := False;
+  PassPane := -1;
+  // a suppressed flush left on (aborted attach) would likewise swallow the
+  // teardown's ClearScreen -> release it so the shell is left clean
+  if FBootLocked then
+  begin
+    SuppressFlush := False;
+    FBootLocked := False;
+  end;
   try
   if DetachRequested then
   begin
@@ -1211,6 +1600,7 @@ begin
 end;
 
 procedure TSuperApp.ApplyTerminalSize(ACols, ARows: integer);
+{ logs a forced full repaint when the terminal actually changed size }
 var
   Mode: TVideoMode;
   R: Objects.TRect;
@@ -1845,10 +2235,16 @@ var
   GR: Objects.TRect;
   PW, PH: integer;
 begin
+  if DebugActive then DebugLog('attach: AttachRemoteSession begin (build remote workspace)');
   Result := False;
   Remote := TSessionClient.Create;
   if not Remote.Connect(APath, Snapshot) then
   begin
+    // a version mismatch is worth explaining: otherwise the user just gets a
+    // fresh local session and no idea why the attach did not happen
+    AttachFailReason := Remote.AttachError;
+    if DebugActive and (AttachFailReason <> '') then
+      DebugLog('attach: refused -- ' + AttachFailReason);
     Remote.Free;
     Remote := nil;
     Exit;
@@ -1979,8 +2375,7 @@ begin
         Remote.SendResize(I, PW, PH);
       end;
     end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   RebuildMenu;
   CurrentSessionSocket := APath;
@@ -2006,6 +2401,7 @@ var
 begin
   if RemoteMode or AbortRun or DetachRequested then
     Exit;
+  if DebugActive then DebugLog('promote: PromoteToServer begin (fork daemon, hand off PTYs, re-attach)');
   if Cfg.ServerMode <> 'always' then
     Exit;
   N := Lay.PaneCount;
@@ -2107,10 +2503,16 @@ function TSuperApp.PickSessionSocketUI(AForAttach: boolean): string;
 var
   Act: TSessionPickAction;
   Path: string;
+  SavedSF: boolean;
 begin
   Result := '';
   Path := '';
+  // the picker is an interactive modal: it must render even during the
+  // suppressed startup, or it shows up blank until a key is pressed
+  SavedSF := SuppressFlush;
+  SuppressFlush := False;
   Act := RunSessionPicker(not AForAttach, Path);
+  SuppressFlush := SavedSF;
   if Act = spAttach then
     Result := Path;
 end;
@@ -2122,12 +2524,18 @@ var
   Infos: TSessionInfoArray;
   Act: TSessionPickAction;
   Path: string;
+  SavedSF: boolean;
 begin
   Result := False;
   if not EnumerateSessions(Infos) then
     Exit;
   Path := '';
+  // the startup picker is interactive: render it live (the suppressed
+  // startup flush would otherwise leave it blank until a key is pressed)
+  SavedSF := SuppressFlush;
+  SuppressFlush := False;
   Act := RunSessionPicker(True, Path);
+  SuppressFlush := SavedSF;
   if (Act = spAttach) and (Path <> '') then
     Result := AttachRemoteSession(Path);
 end;
@@ -2710,8 +3118,7 @@ begin
   begin
     Lay.Focused := 0;
     RelayoutAll;
-    ResetVideoSurface;
-    ReDraw;
+    RepaintChanges;
     FocusPane(Lay.Focused);
     PromoteToServer;   // the wizard session is also born with a server
   end;
@@ -2994,7 +3401,7 @@ begin
     Lay.Focused := FirstVisiblePane;
   // do NOT re-tile: remaining windows keep their size and position.
   // KillPane already removed the closed one from the desktop; repaint.
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout; // the tree changed: mirror it in the daemon
 end;
@@ -3064,6 +3471,164 @@ begin
   Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
     DeskW, DeskH);
   RemoteLayoutHash := ComputeLayoutHash;
+end;
+
+// give a pane the WHOLE host terminal and start writing its raw PTY bytes
+// straight through; the SIGWINCH from the resize makes the app repaint at
+// full fidelity (truecolor, emoji, wide glyphs) with no CP437 grid in the
+// way. Only valid while the pane is maximized and owns the screen alone.
+procedure TSuperApp.EnterPassthrough(i: integer);
+begin
+  if PassthroughActive or (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
+    Exit;
+  if DebugActive then DebugLog(Format('pass: ENTER pane=%d full=%dx%d', [i, ScreenWidth, ScreenHeight]));
+  PassPane := i;
+  PassReqW := ScreenWidth;
+  PassReqH := ScreenHeight;
+  PassthroughActive := True;   // silences all FreeVision screen writes
+  // hand a clean surface to the app: show cursor, reset attrs, clear.
+  // Also RELEASE the mouse: turn superterm's own tracking off so, in
+  // fullscreen, a drag selects text normally and clicks are NOT reported to
+  // FreeVision (a click on the hidden-but-logical menu row would otherwise pop
+  // the menu and drop out of zoom). The app (Claude) re-asserts whatever mouse
+  // modes it wants through its raw output; ExitPassthrough re-enables ours.
+  WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
+    #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
+  // resize the pane's PTY to the full terminal (menu + desktop + status
+  // rows included). Single client => the daemon applies it as-is; the
+  // RESIZE_EV round-trip in ApplyRemoteResize aborts if another client
+  // constrains the size (falls back to grid rendering).
+  if Scr[i] <> nil then
+    Scr[i].Resize(ScreenWidth, ScreenHeight);
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, ScreenWidth, ScreenHeight);
+  end
+  else if Panes[i] <> nil then
+    Panes[i].Resize(ScreenWidth, ScreenHeight);
+end;
+
+// reclaim the terminal for the window manager: reset the modes the app may
+// have set, restore the pane's windowed size, and force one clean full
+// repaint so menus, status line and window frames come back.
+// Cosmetic zoom transition: a handful of outline frames interpolating between
+// the window's rectangle and the full desktop. It reuses the wireframe-drag
+// primitives, so each frame costs only its ring. Opt-in (Options > zoom
+// transition); the default F5 stays instant.
+procedure TSuperApp.ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
+const
+  STEPS = 8;
+  FRAME_MS = 45;
+var
+  k, x1, y1, x2, y2: integer;
+begin
+  if PassthroughActive or (Desktop = nil) then
+    Exit;
+  for k := 1 to STEPS do
+  begin
+    x1 := AX1 + ((BX1 - AX1) * k) div STEPS;
+    y1 := AY1 + ((BY1 - AY1) * k) div STEPS;
+    x2 := AX2 + ((BX2 - AX2) * k) div STEPS;
+    y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
+    OutlinePaint(x1, y1, x2, y2, $1F);
+    Sleep(FRAME_MS);
+    OutlineInvalidate(x1, y1, x2, y2);
+    UpdateScreen(False);
+  end;
+end;
+
+procedure TSuperApp.ExitPassthrough;
+var
+  P, pw, ph: integer;
+begin
+  if not PassthroughActive then
+    Exit;
+  if DebugActive then DebugLog('pass: EXIT (reclaim screen, full repaint)');
+  P := PassPane;                // remember which pane owned the screen
+  PassthroughActive := False;   // must precede any repaint
+  PassPane := -1;
+  PassReqW := 0;
+  PassReqH := 0;
+  // undo modes a full-screen app commonly leaves set, and make sure we are
+  // on superterm's (alternate) screen with sane defaults before repainting.
+  // The mouse must be RE-ENABLED, not disabled: FreeVision turned it on once
+  // at startup (vendor/fv322/drivers.pas, ?1000/1002/1003/1006h) and guards
+  // that with a sticky TmuxMouseEnabled flag, so it never re-emits the enable.
+  // The maximized app left its own tracking modes set (or cleared); if we exit
+  // with the mouse OFF, FreeVision still thinks it is ON and the pointer goes
+  // dead -- no clicks reach the menu, status line or frames. Re-assert exactly
+  // FreeVision's enable set so reporting is live again for the window manager.
+  // The terminal draws an I-beam pointer while mouse tracking is off (and a
+  // full-screen app may also have pinned the pointer shape via OSC 22); the
+  // mouse re-enable above brings the arrow back, and OSC 22 with the default
+  // shape undoes any explicit override. Terminals without OSC 22 ignore it.
+  WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
+    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
+    #27']22;default'#27'\');
+  // Resize ONLY the pane that owned the screen, to the bounds its window
+  // already has. Un-zooming (F5) restored those bounds itself, but the
+  // ChangeBounds guard suppressed the PTY resize while passthrough was active,
+  // so the PTY is still full-screen and must be synced here. Do NOT call
+  // RelayoutAll: that re-tiles every window and overwrites the size the user's
+  // window had (an 80x20 pane came back filling the whole screen).
+  if (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
+     (not Win[P]^.Minimized) and (Scr[P] <> nil) then
+  begin
+    pw := Win[P]^.Size.X - 2;
+    ph := Win[P]^.Size.Y - 2;
+    if pw < 4 then pw := 4;
+    if ph < 2 then ph := 2;
+    if (pw <> Scr[P].Width) or (ph <> Scr[P].Height) then
+    begin
+      Scr[P].Resize(pw, ph);
+      if RemoteMode then
+      begin
+        if (Remote <> nil) and Remote.Connected then
+          Remote.SendResize(P, pw, ph);
+      end
+      else if Panes[P] <> nil then
+        Panes[P].Resize(pw, ph);
+    end;
+  end;
+  ResetVideoSurface;   // blank both buffers
+  ReDraw;              // full repaint of menu, desktop, windows and status
+  if (Lay.Focused >= 0) and (Lay.Focused < MAX_PANES) then
+    FocusPane(Lay.Focused);
+end;
+
+// derive passthrough purely from the maximized state, once per Idle tick,
+// so any window-management action (restore, minimize, switch, close, split)
+// leaves it automatically without wiring every command.
+procedure TSuperApp.UpdatePassthrough;
+var
+  f: integer;
+  want: boolean;
+begin
+  f := Lay.Focused;
+  want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
+    Win[f]^.Zoomed and (Current = PView(Desktop));
+  if want and (not PassthroughActive) then
+    EnterPassthrough(f)
+  else if PassthroughActive and (not want) then
+    ExitPassthrough
+  else if PassthroughActive and
+    ((ScreenWidth <> PassReqW) or (ScreenHeight <> PassReqH)) then
+  begin
+    // host terminal was resized while passthrough was on: re-request the
+    // new full size so the app repaints to fit
+    PassReqW := ScreenWidth;
+    PassReqH := ScreenHeight;
+    if Scr[PassPane] <> nil then
+      Scr[PassPane].Resize(ScreenWidth, ScreenHeight);
+    if RemoteMode then
+    begin
+      if (Remote <> nil) and Remote.Connected then
+        Remote.SendResize(PassPane, ScreenWidth, ScreenHeight);
+    end
+    else if Panes[PassPane] <> nil then
+      Panes[PassPane].Resize(ScreenWidth, ScreenHeight);
+  end;
 end;
 
 // fingerprint of the visible state (geometry+titles+focus): if it
@@ -3154,7 +3719,7 @@ begin
     Lay.Focused := Focused;
     FocusPane(Focused);
   end;
-  ReDraw;
+  RepaintChanges;
   // what was applied is the common state: do not re-push (no bounces)
   RemoteLayoutHash := ComputeLayoutHash;
 end;
@@ -3197,7 +3762,7 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   RemoteLayoutHash := ComputeLayoutHash;
 end;
@@ -3297,6 +3862,12 @@ begin
   Move(AData[SizeOf(C)], R, SizeOf(R));
   if (C < 4) or (R < 2) then
     Exit;
+  // while a pane is drawn raw its size is owned by EnterPassthrough; ignore
+  // resize echoes for it (incl. the stale desktop-size echo from the zoom
+  // that preceded passthrough). Passthrough assumes a single attached
+  // client -- see EnterPassthrough.
+  if PassthroughActive and (APane = PassPane) then
+    Exit;
   if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
   begin
     Scr[APane].Resize(C, R);
@@ -3324,7 +3895,7 @@ begin
   if Trim(S) = '' then
     Exit;
   Win[APane]^.SetTitle(' ' + Trim(S));
-  ReDraw;
+  RepaintChanges;
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
@@ -3337,8 +3908,7 @@ begin
     if (Win[i] <> nil) and Win[i]^.Minimized then
       RestoreWindow(i);
   RelayoutAll;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3370,8 +3940,7 @@ begin
       Win[i]^.Locate(R);
       Inc(k);
     end;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3395,8 +3964,7 @@ begin
   if HasIcons then
     Dec(R.B.Y, 2); // respect the icon strip
   Desktop^.Tile(R);
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
   FocusPane(Lay.Focused);
   SyncRemoteLayout;
 end;
@@ -3451,8 +4019,7 @@ begin
   SaveConfig(Cfg);
   RebuildMenu;
   RebuildStatusLine;
-  ResetVideoSurface;
-  ReDraw;
+  RepaintChanges;
 end;
 
 procedure TSuperApp.SaveSessionNow;
@@ -3522,10 +4089,80 @@ var
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
   PrefixSeq: RawByteString;
+  ZoomSaveFlush: boolean;
+  ZoomAnimOn, ZoomWasZoomed: boolean;
+  ZoomF: integer;
+  ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2: integer;
+  ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
   ResizeHeight := Event.InfoWord;
+  // In passthrough the maximized pane owns the whole terminal, so FreeVision
+  // must NOT act on the mouse: a click on the hidden-but-still-logical menu
+  // row would pop the menu and drop out of zoom. The mouse was released to the
+  // app/terminal on EnterPassthrough (tracking off), so normal text selection
+  // works; only F5 (a key, handled below) leaves passthrough. Swallow every
+  // mouse event here before the inherited handler can dispatch it.
+  if PassthroughActive and ((Event.What and evMouse) <> 0) then
+  begin
+    ClearEvent(Event);
+    Exit;
+  end;
+  // F5 used to be visible in TWO steps: the window first maximized inside the
+  // IDE (one painted frame, menu and status still there) and only on the next
+  // Idle tick did passthrough take the screen -- which reads as a little
+  // zoom animation. Same on the way back. Do the whole transition with the
+  // flush held, then decide passthrough, then paint ONCE: straight to
+  // fullscreen, and straight back to the IDE exactly as it was.
+  if (Event.What = evCommand) and (Event.Command = cmZoom) then
+  begin
+    // optional transition: expand the outline out to full screen before
+    // zooming in, and contract it back after restoring
+    ZoomF := Lay.Focused;
+    ZoomAnimOn := Cfg.ZoomAnim and (Desktop <> nil) and
+      (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
+      (not Win[ZoomF]^.Minimized);
+    if ZoomAnimOn then
+    begin
+      ZoomWasZoomed := Win[ZoomF]^.Zoomed;
+      ZoomWX1 := Desktop^.Origin.X + Win[ZoomF]^.Origin.X;
+      ZoomWY1 := Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y;
+      ZoomWX2 := ZoomWX1 + Win[ZoomF]^.Size.X - 1;
+      ZoomWY2 := ZoomWY1 + Win[ZoomF]^.Size.Y - 1;
+      ZoomDX1 := Desktop^.Origin.X;
+      ZoomDY1 := Desktop^.Origin.Y;
+      ZoomDX2 := ZoomDX1 + Desktop^.Size.X - 1;
+      ZoomDY2 := ZoomDY1 + Desktop^.Size.Y - 1;
+      // growing: animate BEFORE the zoom, while the IDE is still on screen
+      if not ZoomWasZoomed then
+        ZoomAnimate(ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2,
+                    ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2);
+    end;
+    ZoomSaveFlush := SuppressFlush;
+    SuppressFlush := True;
+    try
+      inherited HandleEvent(Event);
+      for i := 0 to MAX_PANES - 1 do
+        if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
+          Lay.Focused := i;
+      UpdatePassthrough;
+    finally
+      SuppressFlush := ZoomSaveFlush;
+    end;
+    if not PassthroughActive then
+      RepaintChanges;
+    // shrinking: animate AFTER the IDE is back, so the ring is erased against
+    // the real screen instead of the application's leftovers
+    if ZoomAnimOn and ZoomWasZoomed and (not PassthroughActive) and
+       (Win[ZoomF] <> nil) then
+      ZoomAnimate(ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2,
+                  Desktop^.Origin.X + Win[ZoomF]^.Origin.X,
+                  Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y,
+                  Desktop^.Origin.X + Win[ZoomF]^.Origin.X + Win[ZoomF]^.Size.X - 1,
+                  Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y + Win[ZoomF]^.Size.Y - 1);
+    Exit;
+  end;
   if Event.What = evKeyDown then
   begin
     PrefixByte := Event.KeyCode and $00FF;
@@ -3614,6 +4251,19 @@ begin
       ClearEvent(Event);
       Exit;
     end;
+    // passthrough: the maximized pane owns the screen, so every key goes to
+    // it -- bypass menu/status/Alt-1..9 which would otherwise steal F-keys,
+    // Alt-letters and Ctrl-S. Two escapes are kept for superterm: the prefix
+    // (handled above, detaches) and F5, which un-maximizes and is therefore
+    // the way OUT of passthrough -- so F5 falls through to the zoom handler.
+    if PassthroughActive and (Event.KeyCode <> kbF5) then
+    begin
+      PrefixSeq := TranslateKey(Event.KeyCode);
+      if PrefixSeq <> '' then
+        WritePaneInput(Lay.Focused, PrefixSeq);
+      ClearEvent(Event);
+      Exit;
+    end;
   end;
   // Alt-1..9 NO longer intercepted: falls through to native TProgram,
   // which selects pane N (cmSelectWindowNum); open class = Classes menu
@@ -3654,6 +4304,18 @@ begin
       cmToggleAutoSave:
         begin
           Cfg.AutoSave := not Cfg.AutoSave;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
+      cmToggleDragContent:
+        begin
+          Cfg.DragContent := not Cfg.DragContent;
+          SaveConfig(Cfg);
+          RebuildMenu;
+        end;
+      cmToggleZoomAnim:
+        begin
+          Cfg.ZoomAnim := not Cfg.ZoomAnim;
           SaveConfig(Cfg);
           RebuildMenu;
         end;
@@ -3807,6 +4469,8 @@ var
     LastSizeCheck := Tick;
     SyncTerminalSize;
   end;
+  // enter/leave passthrough purely from the focused pane's maximized state
+  UpdatePassthrough;
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
@@ -3818,18 +4482,27 @@ var
       case RemoteEvent.Kind of
         sekOutput:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
-             (Scr[RemoteEvent.Pane] <> nil) and
              (Length(RemoteEvent.Data) > 0) then
           begin
-            Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
-              Length(RemoteEvent.Data));
-            if Win[RemoteEvent.Pane] <> nil then
-              Win[RemoteEvent.Pane]^.Term^.DrawView;
+            if PassthroughActive and (RemoteEvent.Pane = PassPane) then
+              // no parsing: the pane owns the terminal, write bytes verbatim
+              PassthroughRaw(RemoteEvent.Data[0], Length(RemoteEvent.Data))
+            else if Scr[RemoteEvent.Pane] <> nil then
+            begin
+              Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
+                Length(RemoteEvent.Data));
+              if Win[RemoteEvent.Pane] <> nil then
+                Win[RemoteEvent.Pane]^.Term^.DrawView;
+            end;
           end;
         sekExit:
-          if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
-             (Win[RemoteEvent.Pane] <> nil) then
-            Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+          begin
+            if PassthroughActive and (RemoteEvent.Pane = PassPane) then
+              ExitPassthrough;   // the app died: reclaim the screen
+            if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
+               (Win[RemoteEvent.Pane] <> nil) then
+              Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+          end;
         sekError:
           DebugLog('remote session error: ' + RemoteEvent.Text);
         sekLayoutEv: ApplyRemoteLayoutEv(RemoteEvent.Data);
@@ -3915,12 +4588,21 @@ var
           DebugLog(Format('poll pane=%d master=%d n=%d', [i, Panes[i].Master, n]));
           if n > 0 then
           begin
-            Scr[i].WriteBytes(Buf, n);
-            if Win[i] <> nil then
-              Win[i]^.Term^.DrawView;
+            if PassthroughActive and (i = PassPane) then
+              PassthroughRaw(Buf[0], n)
+            else
+            begin
+              Scr[i].WriteBytes(Buf, n);
+              if Win[i] <> nil then
+                Win[i]^.Term^.DrawView;
+            end;
           end
           else if (n = 0) or (fpgeterrno <> ESysEAGAIN) then
+          begin
+            if PassthroughActive and (i = PassPane) then
+              ExitPassthrough;
             Panes[i].MarkDead;
+          end;
         end;
   end
   else
@@ -4200,7 +4882,15 @@ begin
       cmToggleAutoSave, hcNoContext,
     NewItem(ActiveMark(Cfg.AutoRestore) +
       UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
-      kbNoKey, cmToggleAutoRestore, hcNoContext, nil))))));
+      kbNoKey, cmToggleAutoRestore, hcNoContext,
+    NewItem(ActiveMark(Cfg.DragContent) +
+      UiText('Show contents while ~d~ragging',
+             'Ver contenido al ~a~rrastrar'), '',
+      kbNoKey, cmToggleDragContent, hcNoContext,
+    NewItem(ActiveMark(Cfg.ZoomAnim) +
+      UiText('Zoom ~t~ransition (F5)',
+             '~T~ransicion al hacer zoom (F5)'), '',
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,

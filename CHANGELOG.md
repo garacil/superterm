@@ -1,5 +1,205 @@
 # Changelog
 
+## 3.2 - 2026-08
+
+### Every pane now renders in full fidelity, not just the maximized one
+
+3.1 gave a maximized pane the whole terminal so a rich TUI could render
+untouched. 3.2 does the same for panes that are **tiled or windowed**, without
+modifying the vendored FreeVision.
+
+- **Rich pane renderer.** A pane used to reach the screen through FreeVision's
+  VGA text grid: one CP437 byte and 16 colours per cell, so anything outside
+  that repertoire became `?` and every colour collapsed to the nearest of 16.
+  Each pane now also registers every cell in a parallel overlay -- the full
+  UTF-8 glyph, the exact colour, and the attributes -- keyed by its global
+  screen position, with the grid word it wrote there kept as an oracle. The
+  screen driver then decides per cell: the rich pane cell when its oracle still
+  stands (so it is the visible top cell), otherwise the CP437/16-colour chrome
+  for frames, menu, status line and covered cells. The same single-write,
+  delta-per-cell model as before, so overlapping windows and the window manager
+  keep rendering exactly as they did.
+- **Truecolor is preserved end to end.** `38/48;2;R;G;B` was downsampled to 16
+  colours in the parser, before it could ever reach a cell. Cells now carry the
+  colour itself and the renderer emits it verbatim.
+- **256-colour palette indexes are preserved too.** Every `38/48;5;N` was
+  approximated to one of 16 colours and the index discarded, so four distinct
+  shades of an application's palette rendered as the same grey. Indexes 16..255
+  are now carried and emitted as-is; 0..15 stay unpinned so they keep honouring
+  the user's own terminal theme.
+- **The colon form of an extended colour is parsed correctly.** `38:2:R:G:B`
+  follows ITU T.416 and carries a colour-space field the semicolon form does
+  not, so reading the channels at the wrong offset turned a dusty pink into a
+  saturated green. Emitters that use subparameters are no longer miscoloured.
+- **Emoji and combining marks occupy their real width.** Everything that was
+  not CJK was assumed one column wide, so a line containing an emoji shifted
+  everything to its right. Emoji are now two columns; combining marks,
+  variation selectors and zero-width joiners are zero columns and attach to the
+  glyph they modify, and a `U+FE0F` selector promotes its base to two columns
+  (the usual way a warning or check symbol is sent).
+- **A two-column glyph is never split across a pane edge.** Its two halves were
+  classified independently, so a pane edge between them let the right half land
+  on the window frame -- which the delta then never repaired -- or left an
+  orphan column blank forever.
+- **Malformed UTF-8 can no longer corrupt the screen.** Cell bytes are written
+  straight to the terminal now, so one stray byte made the terminal's decoder
+  swallow the escape sequence that followed. Only well-formed, printable
+  sequences are emitted; anything else renders as `?`, exactly as before.
+- **Bold and bright are no longer the same bit.** One attribute bit served as
+  both the SGR 1/22 weight and the high bit of the 16-colour foreground, so
+  "normal intensity" also demoted the colour -- an application's grey text
+  turned pure black -- and `SGR 38` silently changed the weight. They are now
+  separate, and the on-screen result of `1;32` is unchanged.
+- **Faint (`SGR 2`) is honoured** and `SGR 22` clears it, so an application's
+  secondary text is no longer painted at exactly the same weight as its primary
+  text.
+- **Concealed text (`SGR 8`) is no longer displayed.** Text an application
+  explicitly hides -- password fields, form widgets -- was rendered in clear.
+  Both renderers now draw it blank, and `SGR 28` reveals it again.
+- **A pane only claims the cells it actually owns.** Registration followed draw
+  order, so with overlapping windows the one behind could overwrite the entries
+  of the one in front for every shared cell.
+
+### Terminal emulation fixes
+
+- **Attributes no longer leak out of a full-screen application.** Leaving the
+  alternate screen (`?1049l`), `DECRC` (`ESC 8`) and `CSI u` restored only the
+  cursor position. A real terminal restores the graphic rendition too, which is
+  why an application may exit without an explicit reset -- and several do,
+  ending with bold set. That bold then applied to everything the shell printed
+  afterwards. All three now save and restore the rendition, the alternate
+  screen in its own slot as in xterm.
+- **`reset` clears the screen again.** `ESC c` (RIS, what `reset` sends) was
+  treated as a soft reset: the cursor homed and attributes came back, but the
+  old contents stayed. RIS now also erases the screen, leaves the alternate
+  buffer and drops the scrollback.
+- **The alternate screen no longer pollutes the scrollback.** Every full-screen
+  application that scrolled -- an editor, a pager, a TUI repainting itself --
+  pushed its transient frames into the pane's history and buried the real shell
+  output.
+- **Stray characters on application exit are gone.** Two classes of escape
+  sequence were not fully consumed: DCS/SOS/PM/APC strings (a capability query
+  such as XTGETTCAP had its payload printed as text), and private CSIs
+  introduced by `<`, `=` or `>` (modifyOtherKeys, the kitty keyboard protocol),
+  whose remainder leaked as text or was wrongly applied as an attribute.
+- **A restored cursor is clamped to the current geometry.** A cursor saved
+  before a resize could be restored outside the grid, after which every write
+  was silently dropped and the pane looked dead.
+
+### Faster, especially over SSH
+
+- **Window drags no longer resend the whole screen.** FreeVision asks for a
+  forced full repaint on every bounds change, and a window is a group, so each
+  step of a drag re-sent every cell. Measured on a real session over SSH at
+  163x64: 802 of 1639 frames were full repaints, 9.9 MB of the 10.2 MB emitted
+  while dragging a window in circles. The forced flag is now ignored -- the
+  per-cell delta is always correct on its own -- and the few places that truly
+  need a repaint ask for one explicitly. **13926 -> 1810 bytes per drag step,
+  and 23x fewer cells per frame.**
+- **Frames are coalesced when more input is already waiting.** A mouse drag
+  produces events far faster than a frame can cross an SSH link, and each one
+  produced its own frame -- a round trip whose result the next event
+  immediately superseded. A frame is now skipped when input is already queued,
+  bounded at 40 ms so the screen can never be starved. On a burst drag:
+  **148355 -> 69696 bytes and 45 of 132 frames saved**, and the same applies to
+  the wireframe mode.
+- **Startup paints once.** The whole build, promote and re-attach sequence is
+  buffered and flushed a single time, instead of redrawing the screen four
+  times. Routine repaints redraw only the changed cells; a forced full repaint
+  is kept only for real size changes, returning from passthrough, and the
+  explicit refresh.
+- **`F5` is a single step in both directions.** Zooming was visible in two
+  stages -- the window maximized inside the interface, then passthrough took
+  the screen on the next tick -- which read as an unintended animation and cost
+  an extra full screen of traffic. Entering fullscreen now costs no repaint at
+  all from the multiplexer; leaving costs exactly one.
+
+### New options
+
+Both are per-profile, saved in `superterm.ini`, and toggled from the Options
+menu like autosave and autorestore.
+
+- **Show contents while dragging** (`[session] dragcontent`, default on). With
+  it off, a dragged window shows only its frame: the window is hidden for the
+  gesture, so the desktop and the windows behind it stay visible through it,
+  and only the moving outline travels. Each step touches just the difference
+  between the two outlines -- the strip the frame vacates and the one it takes
+  -- which is **29 cells per step** on a 53x29 window instead of redrawing the
+  interior. Worth turning on for a slow link or a content-heavy pane.
+- **Zoom transition** (`[session] zoomanim`, default off). A short expanding
+  and contracting outline when `F5` maximizes or restores a pane, about 350 ms.
+  Purely cosmetic: the instant transition remains the default because it is the
+  fast one.
+
+### Passthrough refinements
+
+- **The mouse works again after un-maximizing.** Leaving passthrough turned
+  mouse reporting off, while FreeVision -- which enables it once at startup and
+  never re-emits it -- still believed it on, so clicks stopped reaching the
+  menu, status line and frames. The pointer also stayed an I-beam instead of an
+  arrow.
+- **The mouse belongs to the application while maximized.** A click on the
+  hidden-but-still-logical menu row used to pop the menu and drop out of zoom,
+  and a drag could not select text. The pane now owns the mouse; only `F5`
+  leaves.
+- **A restored pane keeps its own size.** Un-zooming re-tiled every window, so
+  a window the user had sized by hand came back filling the screen as if it had
+  stayed maximized.
+
+### Session protocol
+
+- **The attach protocol is versioned (v3).** The pane snapshot serialises cells
+  by their record size, which per-cell colour grew from 14 to 24 bytes. A
+  daemon outlives its clients and the two can be different builds, so a
+  mismatch made every cell be read at the wrong offset. Both sides now refuse a
+  mismatch, and the refusal explains itself instead of silently starting a
+  fresh local session.
+- **Wide panes can be attached again.** The snapshot validator refused any
+  screen wider than 4096 columns although the application itself allows 8192,
+  so such a pane could be saved and never loaded back. The limits are named in
+  one place and the producer clamps to them as well.
+- **A full scrollback fits again.** The frame ceiling is a budget in cells, and
+  the larger cell silently cut it by 40%: a pane over roughly 280 columns with
+  a full history could no longer be attached at all.
+
+### Startup
+
+- **Synchronized output (DECSET 2026) is opt-in** (`SUPERTERM_SYNC=1`). It
+  presents each frame atomically, but it also holds the frame until released
+  and some terminals do not present it until the next input, which looked like
+  nothing being painted until a key was pressed. The single write per frame --
+  the actual win over SSH -- stays unconditional.
+- **The startup session picker renders while you choose.** The
+  one-flush-at-end startup buffered it too, so it came up blank until a key was
+  pressed.
+
+## 3.1 - 2026-08
+
+### Full-fidelity passthrough for maximized panes
+- Maximizing a pane (F5) now hands it the **whole host terminal** and writes
+  its raw PTY bytes straight through, bypassing the CP437/16-color grid. A
+  rich TUI (Claude Code and the like) renders untouched: truecolor, emoji,
+  wide glyphs and box drawing exactly as the app intended, instead of
+  collapsed to `?` and 16 colors. F5 again un-maximizes and the window
+  manager reclaims the screen. Every window operation (restore, minimize,
+  switch, close, split) leaves passthrough automatically. While a pane is
+  passed through, every key reaches it except the prefix (still detaches)
+  and F5 (the way out). Assumes a single attached client.
+
+### Smoother window manager over SSH
+- The screen driver now emits each frame as a **single write wrapped in
+  synchronized output (DECSET 2026)** instead of hundreds of tiny writes.
+  Over SSH this collapses the per-frame TCP segments into one and lets the
+  terminal paint atomically, so moving and resizing windows is noticeably
+  faster and no longer tears.
+
+### No more accidental nesting
+- Launching the interactive UI (`superterm` or `superterm attach`) from
+  inside a superterm pane is now refused, the way tmux guards `$TMUX`:
+  otherwise the pane attached to its own session and mirrored forever. The
+  control CLI (`list`/`send`/`capture`/...) still works from inside a pane;
+  set `SUPERTERM_ALLOW_NESTED=1` to force nesting on purpose.
+
 ## 3.0.1 - 2026-08
 
 - Attaching a client no longer bounces pane sizes across the session.

@@ -8,9 +8,25 @@ disconnection and the shutdown notice.
 """
 import os
 import socket
+import re
 import struct
 import sys
 import time
+
+def attach_proto_ver():
+    """Protocol version the daemon currently requires, read from the source so
+    this test does not silently rot when the wire format changes."""
+    src = os.path.join(os.path.dirname(__file__), '..', 'src', 'st_server.pas')
+    with open(src, encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            m = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
+            if m:
+                return int(m.group(1))
+    raise RuntimeError('ATTACH_PROTO_VER not found in st_server.pas')
+
+
+PROTO_VER = attach_proto_ver()
+
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
@@ -169,7 +185,7 @@ check('panes still aligned in A', 'AFTER_CLOSE_OK' in a.text())
 check('panes still aligned in B', 'AFTER_CLOSE_OK' in b.text())
 
 # ---- laggard client: an attached v2 that never reads does not block the daemon ----
-lag, ok = attach_raw(SOCK, struct.pack('<iiii', 2, 0, 0, 1))
+lag, ok = attach_raw(SOCK, struct.pack('<iiii', PROTO_VER, 0, 0, 1))
 check('laggard attached', ok)
 check('three clients listed', clients_column(HOME) == 3)
 run_cli(['send', SES + ':1',
