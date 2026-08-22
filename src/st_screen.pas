@@ -36,7 +36,13 @@ type
 
   TRow = array of TCell;
   TGridArray = array of TRow;
-  TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc);
+  // psDcs/psDcsEsc consume string sequences (DCS ESC P, SOS ESC X, PM ESC ^,
+  // APC ESC _) up to their ST/BEL terminator and DISCARD them, so an app's
+  // capability query (e.g. XTGETTCAP "ESC P + q ... ESC \") never leaks its
+  // payload onto the grid as stray characters. Appended to keep existing
+  // ordinals stable for the serialized parser state.
+  TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc,
+    psDcs, psDcsEsc);
   TCharBuf = array[0..7] of AnsiChar; // buffer for one UTF-8 codepoint
 
   TScreen = class
@@ -55,6 +61,7 @@ type
     FPParams: array[0..15] of integer;
     FPCount: integer;
     FPPriv: boolean;
+    FPrivOther: boolean;    // CSI private intro < = > (consumed but NOT acted on)
     FUtfBuf: array[0..7] of byte;
     FUtfLen: byte;
     FUtfNeed: byte;
@@ -1235,6 +1242,7 @@ begin
         for i := 0 to High(FPParams) do
           FPParams[i] := -1;
         FPPriv := False;
+        FPrivOther := False;
         FInterm := #0;
         Exit;
       end;
@@ -1248,6 +1256,12 @@ begin
     '(', ')', '*', '+':
       begin
         FPState := psCharset;
+        Exit;
+      end;
+    'P', 'X', '^', '_':
+      begin
+        // DCS/SOS/PM/APC: swallow the whole string until ST (ESC \) or BEL
+        FPState := psDcs;
         Exit;
       end;
     '7':
@@ -1363,21 +1377,32 @@ begin
             if FPCount > 15 then FPCount := 15;
           end
           else if b = Ord('?') then
+            // '?' = DEC private: DECSET/DECRST (?1049h, ?25h...) ARE handled
             FPPriv := True
+          else if (b >= $3C) and (b <= $3E) then
+            // '<' '=' '>' introduce OTHER private CSIs -- modifyOtherKeys
+            // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" Claude emits.
+            // Consume them so the params/final byte do NOT leak as "4m"/"u",
+            // but do NOT act on them (applying "m" would wrongly set underline).
+            FPrivOther := True
           else if (b >= $20) and (b <= $2F) then
           begin
             FInterm := AnsiChar(b);   // intermediate: ' ' of DECSCUSR etc.
           end
           else if (b >= $40) and (b <= $7E) then
           begin
-            DoCSI(AnsiChar(b));
+            if not FPrivOther then
+              DoCSI(AnsiChar(b));   // private < = > sequences are ignored
             FPState := psGround;
             FPPriv := False;
+            FPrivOther := False;
             FInterm := #0;
           end
           else
           begin
             FPState := psGround;
+            FPPriv := False;
+            FPrivOther := False;
             FInterm := #0;
           end;
         end;
@@ -1403,6 +1428,20 @@ begin
         end;
       psCharset:
         FPState := psGround;
+      psDcs:
+        begin
+          if b = 7 then
+            FPState := psGround     // BEL ends the string
+          else if b = 27 then
+            FPState := psDcsEsc;    // maybe ST (ESC \)
+          // any other byte is part of the payload: discard it
+        end;
+      psDcsEsc:
+        begin
+          // ESC \ = ST (end). A bare ESC starts a new sequence, but for a
+          // discarded string just return to ground either way.
+          FPState := psGround;
+        end;
     end;
   end;
   Dirty := True;
