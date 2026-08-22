@@ -380,6 +380,64 @@ begin
   end;
 end;
 
+
+// Return the cell's glyph ONLY when it is a valid, printable, single-codepoint
+// UTF-8 sequence; otherwise '?'. The CP437 path was immune to junk because
+// TranslitByte collapsed every cell to one byte, but the rich renderer writes
+// the bytes straight to the terminal: one stray $E2 makes a UTF-8 decoder
+// swallow the two bytes that follow -- which are our next SGR's ESC [ -- and
+// the rest of that sequence is printed as text. DEL is a control, not a glyph:
+// terminals drop it without advancing, breaking the one-column assumption.
+function SafeGlyph(const C: TCell): RawByteString;
+var
+  b0, k: byte;
+  need: byte;
+  cp: cardinal;
+begin
+  Result := ' ';
+  if C.Len = 0 then
+    Exit;
+  b0 := byte(C.Txt[0]);
+  if C.Len = 1 then
+  begin
+    if (b0 >= $20) and (b0 <= $7E) then
+      Result := AnsiChar(b0)
+    else
+      Result := '?';        // controls, DEL and bare high bytes
+    Exit;
+  end;
+  if C.Len > 4 then
+    Exit('?');
+  // length implied by the lead byte must match, and $C0/$C1/$F5..$FF are
+  // never legal lead bytes
+  if (b0 >= $C2) and (b0 <= $DF) then need := 2
+  else if (b0 >= $E0) and (b0 <= $EF) then need := 3
+  else if (b0 >= $F0) and (b0 <= $F4) then need := 4
+  else Exit('?');
+  if need <> C.Len then
+    Exit('?');
+  for k := 1 to C.Len - 1 do
+    if (byte(C.Txt[k]) and $C0) <> $80 then
+      Exit('?');            // continuation bytes must be $80..$BF
+  case C.Len of
+    2: cp := ((b0 and $1F) shl 6) or (byte(C.Txt[1]) and $3F);
+    3: cp := ((b0 and $0F) shl 12) or ((byte(C.Txt[1]) and $3F) shl 6) or
+             (byte(C.Txt[2]) and $3F);
+  else
+    cp := ((b0 and $07) shl 18) or ((byte(C.Txt[1]) and $3F) shl 12) or
+          ((byte(C.Txt[2]) and $3F) shl 6) or (byte(C.Txt[3]) and $3F);
+  end;
+  // overlong encodings, surrogates and out-of-range code points
+  if ((C.Len = 2) and (cp < $80)) or
+     ((C.Len = 3) and (cp < $800)) or
+     ((C.Len = 4) and ((cp < $10000) or (cp > $10FFFF))) or
+     ((cp >= $D800) and (cp <= $DFFF)) then
+    Exit('?');
+  SetLength(Result, C.Len);
+  for k := 1 to C.Len do
+    Result[k] := C.Txt[k - 1];
+end;
+
 function TranslitByte(const C: TCell): AnsiChar;
 var
   cp: cardinal;
@@ -556,14 +614,8 @@ var
     isSkip := c.Cont;
     if isSkip then
       g := ''
-    else if c.Len > 0 then
-    begin
-      SetLength(g, c.Len);
-      for k := 1 to c.Len do
-        g[k] := c.Txt[k - 1];
-    end
     else
-      g := ' ';
+      g := SafeGlyph(c);
     fl := 0;
     // Truecolor keeps bold as a weight bit; the 16-color fallback folds bold
     // into a BRIGHT foreground exactly like the old CP437 path (RenderAttr),
