@@ -81,7 +81,13 @@ const
 
   // versioned attach (tolerant tail of the FRAME_ATTACH payload):
   // ProtoVer, DeskW, DeskH, Caps; no payload = exclusive legacy client
-  ATTACH_PROTO_VER = 2;
+  // 3: TCell gained per-cell truecolor (FgRGB/BgRGB), so SizeOf(TCell) -- which
+  //    IS the FRAME_SCREEN element size -- grew from 14 to 24 bytes. A daemon
+  //    and a client are separate processes and can be different builds, and a
+  //    daemon outlives its clients, so a 24-byte producer feeding a 14-byte
+  //    consumer reads every cell at the wrong offset and the pane fills with
+  //    garbage. The version must be refused on BOTH sides.
+  ATTACH_PROTO_VER = 3;
   ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
   MAX_CLIENTS = 8;
@@ -158,6 +164,9 @@ type
     FSocket: cint;
     FConnected: boolean;
     FServerProto: Longint;
+    // why the last Connect failed, so the UI can say something useful
+    // instead of silently falling back to a fresh local session
+    FAttachError: string;
     function SendFrame(AKind: byte; APane: integer;
       const Data: TByteArray): boolean;
     function ReadFrame(out AKind: byte; out APane: integer;
@@ -186,6 +195,7 @@ type
     function SendFocus(APane: integer): boolean;
     function SendRename(APane: integer; const ATitle: string): boolean;
     property Connected: boolean read FConnected;
+    property AttachError: string read FAttachError;
     // version of the daemon we are attached to (0 = pre-v2)
     property ServerProto: Longint read FServerProto;
   end;
@@ -1081,6 +1091,7 @@ var
   L: Longint;
 begin
   Result := False;
+  FAttachError := '';
   Snapshot.LayoutNodes := '';
   Snapshot.Focused := 0;
   Snapshot.PaneCount := 0;
@@ -1153,6 +1164,17 @@ begin
     FServerProto := Snapshot.ProtoVer;
   finally
     Stream.Free;
+  end;
+  // The daemon refuses clients older than itself, but an OLDER daemon happily
+  // accepts a newer client and then feeds it cells of the wrong size. Refuse
+  // that direction here too, instead of rendering garbage.
+  if Snapshot.ProtoVer < ATTACH_PROTO_VER then
+  begin
+    FAttachError := 'session created by an older superterm (protocol ' +
+      IntToStr(Snapshot.ProtoVer) + ', need ' + IntToStr(ATTACH_PROTO_VER) +
+      '): close it or run the matching binary';
+    CloseSocket;
+    Exit;
   end;
   for I := 0 to Snapshot.PaneCount - 1 do
   begin

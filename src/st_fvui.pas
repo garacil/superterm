@@ -207,6 +207,7 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string);
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
+    // why the last attach attempt failed (empty = generic/none)
     // server-always: converts the freshly built local workspace into a
     // daemon session and attaches to it as a client
     procedure PromoteToServer;
@@ -330,6 +331,9 @@ end;
 // transparent, so a drag costs the perimeter instead of the whole area.
 var
   DragPane: integer = -1;
+  // reason the last attach was refused (shown to the user instead of silently
+  // starting a fresh local session)
+  AttachFailReason: string = '';
 
 procedure ResetVideoSurface;
 begin
@@ -1297,6 +1301,8 @@ begin
     // A cmQuit posted here would be lost (TGroup.Execute sets EndState
     // to 0 when entering Run), so AbortRun is flagged and the main
     // program skips Run; no workspace is built
+    if AttachFailReason <> '' then
+      WriteLn(StdErr, 'superterm: ', AttachFailReason);
     SkipSave := True;
     AbortRun := True;
     Exit;
@@ -2157,6 +2163,11 @@ begin
   Remote := TSessionClient.Create;
   if not Remote.Connect(APath, Snapshot) then
   begin
+    // a version mismatch is worth explaining: otherwise the user just gets a
+    // fresh local session and no idea why the attach did not happen
+    AttachFailReason := Remote.AttachError;
+    if DebugActive and (AttachFailReason <> '') then
+      DebugLog('attach: refused -- ' + AttachFailReason);
     Remote.Free;
     Remote := nil;
     Exit;
