@@ -1,0 +1,46 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
+#   .  background palette index (optional line)
+# Seamless: designed for the tiled layout, the edges match on all four sides.
+name: Stone wall
+name.es: Muro de piedra
+mode: tile
+palette: 888175 807A6F 797469 777167 766E65 726C62 6E6B61 6F6960 6D6961 6E665E 69655D 69635C 656159 66605A 645F59 635E58 615D57 625C56 5F5B55 5E5854 5C5A53 5C5854 5A5752 5A5652 56544E 575350 56514E 54514E 52504D 514D4C 4C4948 484444 464241 434040 413D3E 3E3B3C 3D3A3C 3C393A 3A3839 353336 302E2E 2E2D2D 2D2B2C 2B292B 2B282B 272628 252327 222025
+
+> 222222222222222222222222
+: u688894xx4b88a3xv132241s
+. yprqqrnCCnrrrsnCAgnllmgx
+> 222222222222222222222222
+: xhnmlmgAAgnjnmhBxacdbcav
+. xhiiijezzekikjeBx8bb9b7v
+> 222222222222222222222222
+: LJKHHKJLLJKHHJJLKGIEFJIL
+. ykoppokBBkpoqqiBy9hfhhbv
+> 222222222222222222222222
+: 121vu010110tx386794xt011
+. npjCAelijleADpttttpDAfmi
+> 222222222222222222222222
+: dd9yx456794wBeljlmfBw495
+. bb5yw385572vBeijjjcBv358
+> 222222222222222222222222
+: FIGKKFGEEIGKLJKHHKJLKGHE
+. hhbyx47b9a6wCjooookCw6a9
+> 222222222222222222222222
+: u466983xt011010tv022121r
+. BsttttrDAgljileACjpnnpnz
+> 222222222222222222222222
+: xhnkjnfBw477774wy9dddd9v
+. xgikkkcBv275573wy5ddad7v
+> 222222222222222222222222
+: LJKHHJHLKFGEEGEKKGHEEIGK
+. yjooopgCw5bbba6xzahhhhcv
+> 222222222222222222222222
+: 220ux478b63wzdgeffayx4a8
+. npjBDqttttrDDuvuuutDDrut
+> 222222222222222222222222
+: df9yAgmkkmgACpssrrmDziml
+. ae7xAekklkfzCnqrrrnCzcki
+> 222222222222222222222222
+: EEDGIEEEEEEIIGGGGGGIIEEE
+. iiczCmsomrnCDtuuuutDCnqq

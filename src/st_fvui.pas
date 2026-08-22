@@ -14,7 +14,7 @@ uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
-  st_layout, st_session, st_debug, st_server, st_video, st_cli;
+  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -68,6 +68,8 @@ const
   cmToggleAutoRestore = 2761;
   cmToggleDragContent = 2762;
   cmToggleZoomAnim    = 2763;
+  cmBackgroundBase    = 2800;   // + index into the pictures found on disk
+  cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
 
 type
   PSuperApp = ^TSuperApp;
@@ -104,6 +106,20 @@ type
     procedure Minimize;
     procedure Restore;
     procedure SetTitle(const S: string);
+  end;
+
+  // Desktop background that paints an ASCII art picture behind the windows.
+  // The picture's cells go through the rich renderer, so they keep their real
+  // RGB colours; the CP437 grid gets a 16-colour approximation so the chrome
+  // path still shows something sensible.
+  PArtBackground = ^TArtBackground;
+  TArtBackground = object(TBackground)
+    procedure Draw; virtual;
+  end;
+
+  PArtDesktop = ^TArtDesktop;
+  TArtDesktop = object(TDeskTop)
+    procedure InitBackground; virtual;
   end;
 
   TSuperApp = object(TApplication)
@@ -146,6 +162,7 @@ type
     procedure Idle; virtual;
     procedure HandleEvent(var Event: TEvent); virtual;
     procedure InitMenuBar; virtual;
+    procedure InitDeskTop; virtual;
     procedure InitStatusLine; virtual;
     function PaneCount: integer;
     procedure StartPane(i: integer; const ACwd, ACmd: string);
@@ -351,6 +368,11 @@ begin
   // must not be trusted for the next frame (WideUpdateScreen ignores the
   // vendor's own "forced" flag; this is the explicit way to ask for a repaint)
   InvalidateFrame;
+  // and the rich overlay describes the PREVIOUS layout: after a resize its
+  // entries name cells that no longer belong to whoever registered them, and
+  // an oracle can match by coincidence and resurrect a stale glyph. Drop it;
+  // every view repopulates it as it draws.
+  RichInvalidate;
   ClearScreen;
 end;
 
@@ -4319,6 +4341,28 @@ begin
           SaveConfig(Cfg);
           RebuildMenu;
         end;
+      cmBackgroundBase..cmBackgroundBase + 29:
+        begin
+          Cfg.Background := ArtName(Event.Command - cmBackgroundBase);
+          // a picture may ask for the layout it was designed for: a seamless
+          // pattern ships with 'tile', a scene leaves the choice alone
+          if ArtSuggestedMode(Event.Command - cmBackgroundBase) <> '' then
+            Cfg.BackgroundMode :=
+              ArtSuggestedMode(Event.Command - cmBackgroundBase);
+          SaveConfig(Cfg);
+          RebuildMenu;
+          ResetVideoSurface;   // the whole desktop changes
+          ReDraw;
+        end;
+      cmBackgroundModeBase..cmBackgroundModeBase + 9:
+        begin
+          Cfg.BackgroundMode :=
+            ArtModeName(TArtMode(Event.Command - cmBackgroundModeBase));
+          SaveConfig(Cfg);
+          RebuildMenu;
+          ResetVideoSurface;
+          ReDraw;
+        end;
       cmToggleAutoRestore:
         begin
           Cfg.AutoRestore := not Cfg.AutoRestore;
@@ -4660,6 +4704,150 @@ begin
     Result^.Disabled := True;
 end;
 
+
+{ ---- desktop background: ASCII art behind the windows ---- }
+
+// Nearest of the 16 VGA colours, for the CP437 fallback the chrome path uses
+// when a cell is not carried by the rich renderer.
+function Vga16FromRgb(C: LongWord): byte;
+var
+  r, g, b, m: integer;
+begin
+  r := (C shr 16) and $FF;
+  g := (C shr 8) and $FF;
+  b := C and $FF;
+  m := r;
+  if g > m then m := g;
+  if b > m then m := b;
+  Result := 0;
+  if r > m div 2 then Result := Result or 4;   // VGA red bit
+  if g > m div 2 then Result := Result or 2;
+  if b > m div 2 then Result := Result or 1;
+  if m > 160 then Result := Result or 8;       // bright
+  if m < 40 then Result := 0;
+end;
+
+// CP437 byte that looks closest to a picture glyph, so the 16-colour grid
+// still shows the shape when a cell does not reach the rich renderer.
+function Cp437ForGlyph(const G: RawByteString): byte;
+begin
+  Result := Ord(' ');
+  if G = '' then
+    Exit;
+  if Length(G) = 1 then
+    Exit(byte(G[1]));
+  if G = #$E2#$96#$80 then Result := 223       // upper half block
+  else if G = #$E2#$96#$84 then Result := 220  // lower half block
+  else if G = #$E2#$96#$88 then Result := 219  // full block
+  else if G = #$E2#$96#$91 then Result := 176  // light shade
+  else if G = #$E2#$96#$92 then Result := 177  // medium shade
+  else if G = #$E2#$96#$93 then Result := 178  // dark shade
+  else Result := Ord('.');
+end;
+
+procedure TArtBackground.Draw;
+var
+  B: TDrawBuffer;
+  x, y: integer;
+  App: PSuperApp;
+  Idx: integer;
+  Mode: TArtMode;
+  C: TArtCell;
+  Attr: byte;
+  W: integer;
+  GOrig: Objects.TPoint;
+  Word0: word;
+begin
+  App := PSuperApp(Application);
+  // With no picture this must cost exactly what it cost before the feature
+  // existed: one string compare and the ancestor's single WriteLine. Nothing
+  // is looked up, nothing is registered, no per-cell work happens at all.
+  if (App = nil) or (App^.Cfg.Background = '') or
+     (App^.Cfg.Background = 'none') then
+  begin
+    inherited Draw;
+    Exit;
+  end;
+  Idx := ArtIndexOf(App^.Cfg.Background);
+  // Clear through the ancestor first: it covers the view's whole extent in
+  // one call, so nothing of a previous layout can survive in a row this
+  // routine might not reach. The picture is then laid over that.
+  inherited Draw;
+  if Idx <= 0 then
+    Exit;                // name not found on disk: the plain pattern
+  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
+  GOrig.X := 0;
+  GOrig.Y := 0;
+  MakeGlobal(GOrig, GOrig);
+  // TDrawBuffer is a fixed-size array, so a row must be clamped exactly as
+  // TTermView.Draw does. Writing past it on a very wide terminal corrupted
+  // the tail of the row and left stale cells behind after a resize.
+  W := Size.X;
+  if W > MaxViewWidth then
+    W := MaxViewWidth;
+  if W < 0 then
+    W := 0;
+  // The background owns the entire desktop, so nothing registered here by a
+  // previous layout may survive: clear the whole region before painting.
+  for y := 0 to Size.Y - 1 do
+    for x := 0 to W - 1 do
+      RichClear(GOrig.X + x, GOrig.Y + y);
+  for y := 0 to Size.Y - 1 do
+  begin
+    B := Default(TDrawBuffer);
+    for x := 0 to W - 1 do
+    begin
+      C := ArtCellFor(Idx, Mode, W, Size.Y, x, y);
+      if C.Glyph = '' then
+      begin
+        // Empty cell: the plain pattern, and NOT registered in the overlay.
+        // A background covers the whole desktop, so registering every empty
+        // cell filled the overlay with entries that a later layout could
+        // match by coincidence and resurrect as a stale glyph.
+        Word0 := (word(GetColor($01)) shl 8) or word(Pattern);
+        B[x] := Word0;
+        RichClear(GOrig.X + x, GOrig.Y + y);
+      end
+      else
+      begin
+        Attr := Vga16FromRgb(C.Fg);
+        if C.Bg <> 0 then
+          Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
+        Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
+        B[x] := Word0;
+        RichSetCell(GOrig.X + x, GOrig.Y + y, C.Glyph, C.Fg, C.Bg, 0,
+          Word0, False, False);
+      end;
+    end;
+    WriteLine(0, y, W, 1, B);
+  end;
+end;
+
+procedure TArtDesktop.InitBackground;
+var
+  R: Objects.TRect;
+begin
+  R := Default(Objects.TRect);
+  GetExtent(R);
+  Background := New(PArtBackground, Init(R, ' '));
+end;
+
+procedure TSuperApp.InitDeskTop;
+var
+  R: Objects.TRect;
+begin
+  // Same geometry as TProgram.InitDeskTop: the edges are only pulled in when
+  // the bar in question actually exists. Trimming unconditionally left the
+  // desktop the wrong size and cells stale after a resize.
+  R := Default(Objects.TRect);
+  GetExtent(R);
+  if MenuBar <> nil then
+    Inc(R.A.Y);
+  if StatusLine <> nil then
+    Dec(R.B.Y);
+  Desktop := New(PArtDesktop, Init(R));
+end;
+
 procedure TSuperApp.InitMenuBar;
 var
   R: Objects.TRect;
@@ -4671,6 +4859,8 @@ var
   TitleS: string;
   HasProfiles: boolean;
   PaletteItems: PMenuItem;
+  BgItems, BgModeItems: PMenuItem;
+  AM: TArtMode;
 begin
   R := Default(Objects.TRect);
   GetExtent(R);
@@ -4871,11 +5061,29 @@ begin
     UiText('~C~olor (classic Turbo Pascal)',
       '~C~olor (Turbo Pascal clasico)'), '', kbNoKey,
     cmPaletteBase + apColor, hcNoContext, PaletteItems);
+  // Desktop background: one entry per picture found on disk, plus the
+  // classic layout modes. Built at run time because the pictures are files,
+  // so a new one appears in the menu without rebuilding.
+  BgItems := nil;
+  for i := ArtCount - 1 downto 0 do
+    BgItems := NewItem(ActiveMark(ArtIndexOf(Cfg.Background) = i) +
+      UiText(ArtLabel(i), ArtLabelEs(i)), '', kbNoKey,
+      cmBackgroundBase + i, hcNoContext, BgItems);
+  BgModeItems := nil;
+  for AM := High(TArtMode) downto Low(TArtMode) do
+    BgModeItems := NewItem(ActiveMark(ArtModeOf(Cfg.BackgroundMode) = AM) +
+      UiText(ArtModeLabel(AM), ArtModeLabelEs(AM)), '', kbNoKey,
+      cmBackgroundModeBase + Ord(AM), hcNoContext, BgModeItems);
+
   MOptions := NewMenu(
     NewSubMenu(UiText('~L~anguage', '~I~dioma'), hcNoContext,
       NewMenu(LanguageItems),
     NewSubMenu(UiText('Color ~p~alette', '~P~aleta de colores'), hcNoContext,
       NewMenu(PaletteItems),
+    NewSubMenu(UiText('Desktop ~b~ackground', '~F~ondo del escritorio'),
+      hcNoContext, NewMenu(BgItems),
+    NewSubMenu(UiText('Background la~y~out', 'Dis~p~osicion del fondo'),
+      hcNoContext, NewMenu(BgModeItems),
     NewLine(
     NewItem(ActiveMark(Cfg.AutoSave) +
       UiText('Auto~s~ave on exit', 'Auto~g~uardar al salir'), '', kbNoKey,
@@ -4890,7 +5098,7 @@ begin
     NewItem(ActiveMark(Cfg.ZoomAnim) +
       UiText('Zoom ~t~ransition (F5)',
              '~T~ransicion al hacer zoom (F5)'), '',
-      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))));
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,

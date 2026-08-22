@@ -7,6 +7,7 @@ PREFIX := @PREFIX@
 BINDIR := @BINDIR@
 SYSCONFDIR := @SYSCONFDIR@
 DOCDIR := @DOCDIR@
+DATADIR := @DATADIR@
 
 MODE ?= release
 TARGET ?= $(PROJECT_DIR)/bin/superterm
@@ -77,6 +78,13 @@ test: release
 		$(PYTHON) "$(PROJECT_DIR)/test/$$test"; \
 	done
 
+# Regenerate this Makefile when its template or configure changes. An existing
+# checkout otherwise keeps a stale Makefile after a pull -- which is how a new
+# install path (the desktop backgrounds directory) silently went missing.
+Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
+	@printf '%s\n' "Makefile.in or configure changed; re-running ./configure"
+	@cd "$(PROJECT_DIR)" && ./configure
+
 install: release
 	@mkdir -p "$(BINDIR)" "$(DOCDIR)" "$(SYSCONFDIR)/superterm"
 	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(BINDIR)/superterm"
@@ -84,6 +92,12 @@ install: release
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
 		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
 	done
+	@mkdir -p "$(DATADIR)/backgrounds"
+	@rm -f "$(DATADIR)"/backgrounds/*.art
+	@for art in "$(PROJECT_DIR)"/backgrounds/*.art; do \
+		install -m 0644 "$$art" "$(DATADIR)/backgrounds/$$(basename "$$art")"; \
+	done
+	@printf '%s\n' "Desktop backgrounds installed in $(DATADIR)/backgrounds"
 	@if [ ! -f "$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
 		install -m 0644 "$(PROJECT_DIR)/examples/superterm.ini.example" \
 			"$(SYSCONFDIR)/superterm/superterm.ini.example"; \
@@ -96,6 +110,7 @@ uninstall:
 	rm -f "$(DOCDIR)/README.md" "$(DOCDIR)/BUILDING.md" \
 		"$(DOCDIR)/CONFIGURATION.md" "$(DOCDIR)/WIZARD.md"
 	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
+	rm -rf "$(DATADIR)/backgrounds"
 
 install-deps:
 	@if [ "$$(uname -s)" = "Darwin" ]; then \

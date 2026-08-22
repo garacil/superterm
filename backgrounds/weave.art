@@ -1,0 +1,46 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
+#   .  background palette index (optional line)
+# Seamless Truchet tiles: repeated they draw endless interlocking loops.
+name: Truchet weave
+name.es: Trenzado de Truchet
+mode: tile
+palette: 43A4A8 3EA09B 3C9A96 39908F 3C8693 457AA6 3C7191 2E7373 4D6BB4 4769A5 2C6F6F 2A6968 4B65AF 4A63AC 43629D 2E576D 2A4E65 364C7D 36477D 344378 254559 2B3D63 283A5C 1E3B48 1F3547 21304C 192438 12222A 141F2E 101E26 101C25 151A2D 131629 101422 111225 0D111D 0C111A 0F0F1E 0D0E1C 0B0F16 0A0C14 090811 0A0614 050709 090310 06000A 040004 010001
+
+> 222222222222222222222222
+: 72rBhcvza1rBhcvza1rBhcvA
+. J7aGHhiFJ7aGHhiFJ7aGHhiF
+> 222222222222222222222222
+: GC3gDAelGC3gDzdlGC3gDzdj
+. arq25yqd4uo25yqd4uo25yqe
+> 222222222222222222222222
+: vHjcpJb2nKj971uCsHjd71uC
+. As8wIs1uIs8wK74GDs8wK74G
+> 222222222222222222222222
+: semHr3kIvdmHGC3gwcmHGC3g
+. 8iBl0bzk8jBm7to38jBm7to3
+> 222222222222222222222222
+: 71tBhcwz71tCsHjcpKb2nKjd
+. La7GKhhEK77GAs8wKp0rFs8w
+> 222222222222222222222222
+: GC3gDzdlGB2gycmFr2kIvcmH
+. aro29yqd4uo38jCl0bAk8jzm
+> 222222222222222222222222
+: vHjd71uBhcyAsJb2nKjcpKb2
+. As8wK74GHh9DIp0rJn8vKp0r
+> 222222222222222222222222
+: vdlHGB2bEAelt2kIvcmFr3kJ
+. 8jCm7tq29ype1bAk8jCm0bxk
+> 222222222222222222222222
+: sJb3hcyAsJb2nKjcpKb3hcwA
+. Ip0rKh9EGs1tKn8vKp0rLhhF
+> 222222222222222222222222
+: r3kIEzdlu2kIvcmFr2kIEzdj
+. 1bzkhwqe1bAk8jCm0bzkhwqe
+> 222222222222222222222222
+: hcwza1uCsKjcpKb2nKjd71uC
+. LhhEIa4GIn8vKp0rJn8vJ74G
+> 222222222222222222222222
+: FAelGC3gwdmHr2kIvdmHGC3b
+. ivqd4uo38jzm0bzk8jxm7to3

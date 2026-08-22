@@ -1,4 +1,4 @@
-# superterm 3.2
+# superterm 3.3
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
@@ -66,6 +66,12 @@ panes in a normal GNU/Linux or macOS terminal window.
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
   remote PTYs stay alive on the session server.
 - A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
+- **ASCII art desktop backgrounds.** A picture behind the windows, in real RGB
+  colour, chosen from `Options`. Pictures are plain text files read at run time
+  -- eight ship, including the 7kas phoenix, the London skyline and three
+  seamless patterns for the tiled layout -- so your own drops into
+  `~/.superterm/backgrounds/` without rebuilding. Centred, tiled, stretched or
+  fitted.
 - Two per-profile display options in the Options menu: **show contents while
   dragging** (off gives a wireframe drag, where only the window outline moves
   and everything behind it stays visible -- much less traffic on a slow link)
@@ -91,6 +97,20 @@ panes in a normal GNU/Linux or macOS terminal window.
   mouse fixes. The system FreeVision installation is not modified.
 
 ## Screenshots
+
+**superterm 3.3: a picture on the desktop, behind the windows.** Eight ship and
+your own drop into `~/.superterm/backgrounds/` without rebuilding. The colours
+are real RGB, not the 16-colour grid.
+
+| | |
+| --- | --- |
+| ![7kas phoenix](screenshots/bg-phoenix.png) | ![London skyline](screenshots/bg-london.png) |
+| ![Alaska range](screenshots/bg-alaska.png) | ![Open field](screenshots/bg-field.png) |
+| ![Sea at sunset](screenshots/bg-sea.png) | ![Stone wall, tiled](screenshots/bg-wall.png) |
+| ![Truchet weave, tiled](screenshots/bg-weave.png) | ![Circuit board, tiled](screenshots/bg-circuit.png) |
+
+The last three are seamless patterns meant for the tiled layout: they repeat
+across the desktop with no visible join.
 
 **superterm 3.2: a workspace, and `F5` giving one pane the whole terminal.**
 Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`

@@ -37,6 +37,8 @@ prefix=ctrl-q
 [ui]
 language=en
 palette=color
+background=phoenix
+background_mode=center
 
 [session]
 server=always
@@ -84,6 +86,42 @@ palette, the default), `bw` (black and white), or `mono` (monochrome). Any
 other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed.
+
+### [ui] desktop background
+
+- `background` names the picture drawn on the desktop behind the windows, by
+  file name without the extension; `none` leaves the plain pattern. Pictures
+  are plain text files read at run time, searched in `$SUPERTERM_BACKGROUNDS`,
+  then `~/.superterm/backgrounds`, then the directory installed beside the
+  binary, then `/usr/local/share/superterm/backgrounds` and
+  `/usr/share/superterm/backgrounds`, then `backgrounds/` in a source
+  checkout. The first match wins, so your own file shadows an installed one of
+  the same name, and a new file appears in the `Options` menu without
+  rebuilding.
+- `background_mode` is the layout: `center` (default), `tile`, `stretch` or
+  `fit`. A picture may name the layout it was designed for -- the seamless
+  patterns ask for `tile` -- and choosing it from the menu adopts that layout.
+- Both are on the `Options` menu, which lists whatever is on disk.
+
+A picture file is a palette plus three parallel lines per row:
+
+```
+name: City at night
+name.es: Ciudad de noche
+mode: tile
+palette: 0E1430 1B2450 26325F FFD866
+>    333   33333
+:    111   22222
+.    000   00000
+```
+
+`>` is a row of glyphs: a space leaves the cell empty so the desktop shows
+through, `1` `2` `3` are the upper half, lower half and full block, `4` `5` `6`
+the light, medium and dark shades, and anything else is drawn literally. `:`
+and `.` give the foreground and background palette index of each cell, as
+`0`-`9`, then `a`-`z`, then `A`-`Z`. Because a cell can carry two colours
+through a half block, a picture has twice the vertical resolution of the
+character grid.
 
 ### [session]
 
