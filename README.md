@@ -1,4 +1,4 @@
-# superterm 3.1
+# superterm 3.2
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
@@ -66,13 +66,25 @@ panes in a normal GNU/Linux or macOS terminal window.
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
   remote PTYs stay alive on the session server.
 - A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
+- Two per-profile display options in the Options menu: **show contents while
+  dragging** (off gives a wireframe drag, where only the window outline moves
+  and everything behind it stays visible -- much less traffic on a slow link)
+  and an optional **zoom transition** for `F5`.
 - Automatic session save and restore through `~/.superterm/session.ini`.
 - A quick session wizard for one to four panes. Each pane accepts a connection
   command and an optional command to feed to the connection after it starts.
 - A custom keyboard driver: a lone `Esc` reaches the pane (timeout-based, not
   treated as an Alt prefix), with CSI/SS3 decoding and X10/SGR mouse support.
-- 256-color and truecolor escape sequences are parsed and approximated to the
-  16-color palette.
+- **Full-fidelity pane rendering.** Truecolor and 256-color escape sequences
+  are carried through to the terminal exactly as the application sent them,
+  together with the real UTF-8 glyphs, emoji at their true two-column width,
+  combining marks, faint, and concealed text. A pane is no longer flattened to
+  one CP437 byte and 16 colors per cell, whether it is tiled, windowed or
+  maximized. The vendored FreeVision is not modified: its grid is still drawn
+  and decides what is visible.
+- **Maximize (`F5`) hands the pane the whole terminal** and writes its raw PTY
+  bytes straight through, for applications that want the terminal to
+  themselves. `F5` again restores the window at the size it had.
 - English application interface by default, with a runtime-selectable Spanish
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux

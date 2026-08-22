@@ -25,12 +25,17 @@ RICH = (b"printf '\\033[38;2;255;100;0m\\342\\235\\257\\033[0m RICH "
 c = stlib.Client(HOME, w=118, h=34, lang='en')
 c.drain(2.5)
 
-# ---- windowed: superterm re-renders through the CP437 / 16-color grid ----
+# ---- windowed: the rich renderer keeps the pane faithful without passthrough.
+# Before 3.2 a windowed pane went through the CP437 / 16-color grid and these
+# were asserted the other way round: truecolor was collapsed and the arrow was
+# lost. That limitation is what the rich renderer removes. ----
 base = len(c.raw())
 c.send(RICH, 1.2)
 win = c.raw()[base:]
-check('windowed collapses truecolor', b'38;2;255;100;0' not in win)
-check('windowed loses the U+276F arrow', b'\xe2\x9d\xaf' not in win)
+check('windowed keeps truecolor fg', b'38;2;255;100;0' in win)
+check('windowed keeps truecolor bg', b'48;2;0;80;200' in win)
+check('windowed keeps the U+276F arrow', b'\xe2\x9d\xaf' in win)
+check('windowed keeps the wide glyph', b'\xe6\xbc\xa2' in win)
 
 # ---- maximize (F5): the pane owns the terminal -> passthrough ----
 c.send(b'\x1b[15~', 1.4)
