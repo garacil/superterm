@@ -14,7 +14,7 @@ interface
 
 uses
   Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
-  st_config, st_wclass, st_layout, st_pty, st_screen, st_session;
+  st_config, st_wclass, st_layout, st_pty, st_screen, st_session, st_debug;
 
 const
   FRAME_ATTACH = 1;
@@ -2964,6 +2964,13 @@ var
   FlowBlocked: boolean;
   NewTitle: string;
 begin
+  // From here on this process IS the session: if it dies every pane goes with
+  // it and the clients only see 'connection lost'. Name it in the log and trap
+  // the fatal signals so it leaves a report behind instead of vanishing.
+  DebugSetRole('daemon');
+  InstallCrashHandler;
+  if DebugActive then
+    DebugLog('daemon: session server starting (pid ' + IntToStr(FpGetPid) + ')');
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
   if not CreateListener then

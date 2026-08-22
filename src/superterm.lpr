@@ -138,6 +138,10 @@ begin
     end;
     Halt(2);
   end;
+  // a crash here loses the visible terminal only, but the report is just as
+  // useful and costs nothing when nothing goes wrong
+  DebugSetRole('client');
+  InstallCrashHandler;
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
