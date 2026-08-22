@@ -3210,8 +3210,13 @@ begin
   // with the mouse OFF, FreeVision still thinks it is ON and the pointer goes
   // dead -- no clicks reach the menu, status line or frames. Re-assert exactly
   // FreeVision's enable set so reporting is live again for the window manager.
+  // The terminal draws an I-beam pointer while mouse tracking is off (and a
+  // full-screen app may also have pinned the pointer shape via OSC 22); the
+  // mouse re-enable above brings the arrow back, and OSC 22 with the default
+  // shape undoes any explicit override. Terminals without OSC 22 ignore it.
   WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
-    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l');
+    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
+    #27']22;default'#27'\');
   RelayoutAll;         // re-derives each pane's windowed size (SendResize back)
   ResetVideoSurface;   // blank both buffers
   ReDraw;              // full repaint of menu, desktop, windows and status
