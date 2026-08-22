@@ -28,6 +28,10 @@ type
     Len: byte;
     Attr: word;
     Cont: boolean; // continuation cell of a wide character
+    // truecolor kept alongside the 16-color Attr fallback: 0 = use Attr,
+    // else $01RRGGBB. The rich renderer emits these directly; the CP437
+    // FreeVision path keeps using Attr.
+    FgRGB, BgRGB: LongWord;
   end;
 
   TRow = array of TCell;
@@ -81,7 +85,8 @@ type
     ScrollTop, ScrollBot: integer;
     CursorVisible: boolean;
     CursorStyle: integer;   // DECSCUSR: 0 def | 1/2 block | 3/4 under | 5/6 bar
-    Attr: word; // current attr of the stream
+    Attr: word; // current attr of the stream (16-color fallback)
+    AttrFgRGB, AttrBgRGB: LongWord; // current truecolor of the stream (0=none)
     Dirty: boolean;
     MaxScrollBack: integer;    // history capacity (0 = no history)
     constructor Create(AWidth, AHeight: integer; AMaxScrollBack: integer = 10000);
@@ -116,6 +121,8 @@ begin
   CursorVisible := True;
   CursorStyle := 0;
   Attr := A_FGDEF or A_BGDEF;
+  AttrFgRGB := 0;
+  AttrBgRGB := 0;
   Dirty := True;
   FUsingAlt := False;
   FAutoWrap := True;
@@ -618,6 +625,8 @@ begin
   for i := 1 to FGrid[y][x].Len do
     FGrid[y][x].Txt[i - 1] := S[i];
   FGrid[y][x].Attr := AAttr;
+  FGrid[y][x].FgRGB := AttrFgRGB;
+  FGrid[y][x].BgRGB := AttrBgRGB;
   if CellWidth(S) = 2 then
   begin
     FGrid[y][x].Cont := False;
@@ -626,6 +635,8 @@ begin
       ClearCell(FGrid[y][x + 1]);
       FGrid[y][x + 1].Cont := True;
       FGrid[y][x + 1].Attr := AAttr;
+      FGrid[y][x + 1].FgRGB := AttrFgRGB;
+      FGrid[y][x + 1].BgRGB := AttrBgRGB;
     end;
   end;
 end;
@@ -871,6 +882,8 @@ end;
 procedure TScreen.DoCSI(final: AnsiChar);
 var
   p1, p2, i, n: integer;
+  rr, gg, bb: integer;
+  RGBVal: LongWord;
 begin
   case final of
     'A':
@@ -1051,6 +1064,8 @@ begin
         if (FPCount = 0) and (FPParams[0] = -1) then
         begin
           Attr := A_FGDEF or A_BGDEF;
+          AttrFgRGB := 0;
+          AttrBgRGB := 0;
           Exit;
         end;
         i := 0;
@@ -1058,7 +1073,7 @@ begin
         begin
           n := GetParam(i, 0);
           case n of
-            0: Attr := A_FGDEF or A_BGDEF;
+            0: begin Attr := A_FGDEF or A_BGDEF; AttrFgRGB := 0; AttrBgRGB := 0; end;
             1: Attr := Attr or A_BOLD;
             2, 3, 5, 6, 8, 9, 23, 29: ;
             4: Attr := Attr or A_UNDER;
@@ -1066,18 +1081,19 @@ begin
             21, 22: Attr := Attr and (not A_BOLD);
             24: Attr := Attr and (not A_UNDER);
             27: Attr := Attr and (not A_REVERSE);
-            30..37: Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 30);
-            39: Attr := (Attr and $FFF0) or A_FGDEF;
-            40..47: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4);
-            49: Attr := (Attr and $FF0F) or A_BGDEF;
-            90..97: Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_BOLD;
-            100..107: Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
-              (word(n - 92) shl 4);
+            30..37: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 30); AttrFgRGB := 0; end;
+            39: begin Attr := (Attr and $FFF0) or A_FGDEF; AttrFgRGB := 0; end;
+            40..47: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or (word(n - 40) shl 4); AttrBgRGB := 0; end;
+            49: begin Attr := (Attr and $FF0F) or A_BGDEF; AttrBgRGB := 0; end;
+            90..97: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 90) or A_BOLD; AttrFgRGB := 0; end;
+            100..107: begin Attr := ((Attr and $FF0F) and (not A_BGDEF)) or
+              (word(n - 92) shl 4); AttrBgRGB := 0; end;
             38, 48:
               begin
                 // 38/48;5;N (indexed) consumes 2 extra; 38/48;2;r;g;b
                 // (truecolor) consumes 4; both approximate to ANSI 16
                 p2 := GetParam(i + 1, -1);
+                RGBVal := 0;   // 0 = no truecolor; keep the 16-color fallback
                 if p2 = 5 then
                 begin
                   p1 := Ansi16From256(GetParam(i + 2, -1));
@@ -1085,14 +1101,20 @@ begin
                 end
                 else if p2 = 2 then
                 begin
-                  p1 := Ansi16FromRgb(GetParam(i + 2, 0), GetParam(i + 3, 0),
-                    GetParam(i + 4, 0));
+                  rr := GetParam(i + 2, 0);
+                  gg := GetParam(i + 3, 0);
+                  bb := GetParam(i + 4, 0);
+                  // preserve the exact RGB for the rich renderer ($01RRGGBB)
+                  RGBVal := $01000000 or (LongWord(rr and $FF) shl 16) or
+                    (LongWord(gg and $FF) shl 8) or LongWord(bb and $FF);
+                  p1 := Ansi16FromRgb(rr, gg, bb);
                   Inc(i, 4);
                 end
                 else
                   p1 := -1; // unknown form: default color
                 if n = 38 then
                 begin
+                  AttrFgRGB := RGBVal;
                   if p1 < 0 then
                     Attr := (Attr and $FFF0) or A_FGDEF
                   else if p1 < 8 then
@@ -1104,6 +1126,7 @@ begin
                 end
                 else
                 begin
+                  AttrBgRGB := RGBVal;
                   if p1 < 0 then
                     Attr := (Attr and $FF0F) or A_BGDEF
                   else
@@ -1264,6 +1287,8 @@ end;
 procedure TScreen.ResetSoft;
 begin
   Attr := A_FGDEF or A_BGDEF;
+  AttrFgRGB := 0;
+  AttrBgRGB := 0;
   CursorX := 0;
   CursorY := 0;
   ScrollTop := 0;
