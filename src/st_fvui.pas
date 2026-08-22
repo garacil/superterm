@@ -4759,19 +4759,23 @@ var
   Word0: word;
 begin
   App := PSuperApp(Application);
-  Idx := 0;
-  Mode := amCenter;
-  if App <> nil then
+  // With no picture this must cost exactly what it cost before the feature
+  // existed: one string compare and the ancestor's single WriteLine. Nothing
+  // is looked up, nothing is registered, no per-cell work happens at all.
+  if (App = nil) or (App^.Cfg.Background = '') or
+     (App^.Cfg.Background = 'none') then
   begin
-    Idx := ArtIndexOf(App^.Cfg.Background);
-    Mode := ArtModeOf(App^.Cfg.BackgroundMode);
+    inherited Draw;
+    Exit;
   end;
-  // Always clear through the ancestor first: it covers the view's whole
-  // extent in one call, so nothing of a previous layout can survive in a row
-  // this routine might not reach. The picture is then laid over that.
+  Idx := ArtIndexOf(App^.Cfg.Background);
+  // Clear through the ancestor first: it covers the view's whole extent in
+  // one call, so nothing of a previous layout can survive in a row this
+  // routine might not reach. The picture is then laid over that.
   inherited Draw;
   if Idx <= 0 then
-    Exit;                // no picture: the plain pattern is all there is
+    Exit;                // name not found on disk: the plain pattern
+  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
   GOrig.X := 0;
   GOrig.Y := 0;
   MakeGlobal(GOrig, GOrig);
