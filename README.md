@@ -98,6 +98,20 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
+**superterm 3.3: a picture on the desktop, behind the windows.** Eight ship and
+your own drop into `~/.superterm/backgrounds/` without rebuilding. The colours
+are real RGB, not the 16-colour grid.
+
+| | |
+| --- | --- |
+| ![7kas phoenix](screenshots/bg-phoenix.png) | ![London skyline](screenshots/bg-london.png) |
+| ![Alaska range](screenshots/bg-alaska.png) | ![Open field](screenshots/bg-field.png) |
+| ![Sea at sunset](screenshots/bg-sea.png) | ![Stone wall, tiled](screenshots/bg-wall.png) |
+| ![Truchet weave, tiled](screenshots/bg-weave.png) | ![Circuit board, tiled](screenshots/bg-circuit.png) |
+
+The last three are seamless patterns meant for the tiled layout: they repeat
+across the desktop with no visible join.
+
 **superterm 3.2: a workspace, and `F5` giving one pane the whole terminal.**
 Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
 in the centre, and a fourth minimized to a title bar at the bottom. `F5`
