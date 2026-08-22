@@ -3172,8 +3172,14 @@ begin
   PassReqW := ScreenWidth;
   PassReqH := ScreenHeight;
   PassthroughActive := True;   // silences all FreeVision screen writes
-  // hand a clean surface to the app: show cursor, reset attrs, clear
-  WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H');
+  // hand a clean surface to the app: show cursor, reset attrs, clear.
+  // Also RELEASE the mouse: turn superterm's own tracking off so, in
+  // fullscreen, a drag selects text normally and clicks are NOT reported to
+  // FreeVision (a click on the hidden-but-logical menu row would otherwise pop
+  // the menu and drop out of zoom). The app (Claude) re-asserts whatever mouse
+  // modes it wants through its raw output; ExitPassthrough re-enables ours.
+  WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
+    #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
   // resize the pane's PTY to the full terminal (menu + desktop + status
   // rows included). Single client => the daemon applies it as-is; the
   // RESIZE_EV round-trip in ApplyRemoteResize aborts if another client
@@ -3720,6 +3726,17 @@ begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
   ResizeHeight := Event.InfoWord;
+  // In passthrough the maximized pane owns the whole terminal, so FreeVision
+  // must NOT act on the mouse: a click on the hidden-but-still-logical menu
+  // row would pop the menu and drop out of zoom. The mouse was released to the
+  // app/terminal on EnterPassthrough (tracking off), so normal text selection
+  // works; only F5 (a key, handled below) leaves passthrough. Swallow every
+  // mouse event here before the inherited handler can dispatch it.
+  if PassthroughActive and ((Event.What and evMouse) <> 0) then
+  begin
+    ClearEvent(Event);
+    Exit;
+  end;
   if Event.What = evKeyDown then
   begin
     PrefixByte := Event.KeyCode and $00FF;
