@@ -2189,10 +2189,16 @@ function TSuperApp.PickSessionSocketUI(AForAttach: boolean): string;
 var
   Act: TSessionPickAction;
   Path: string;
+  SavedSF: boolean;
 begin
   Result := '';
   Path := '';
+  // the picker is an interactive modal: it must render even during the
+  // suppressed startup, or it shows up blank until a key is pressed
+  SavedSF := SuppressFlush;
+  SuppressFlush := False;
   Act := RunSessionPicker(not AForAttach, Path);
+  SuppressFlush := SavedSF;
   if Act = spAttach then
     Result := Path;
 end;
@@ -2204,12 +2210,18 @@ var
   Infos: TSessionInfoArray;
   Act: TSessionPickAction;
   Path: string;
+  SavedSF: boolean;
 begin
   Result := False;
   if not EnumerateSessions(Infos) then
     Exit;
   Path := '';
+  // the startup picker is interactive: render it live (the suppressed
+  // startup flush would otherwise leave it blank until a key is pressed)
+  SavedSF := SuppressFlush;
+  SuppressFlush := False;
   Act := RunSessionPicker(True, Path);
+  SuppressFlush := SavedSF;
   if (Act = spAttach) and (Path <> '') then
     Result := AttachRemoteSession(Path);
 end;
