@@ -2963,7 +2963,9 @@ var
   B0: byte;
   FlowBlocked: boolean;
   NewTitle: string;
+  Fails: integer;
 begin
+  Fails := 0;
   // From here on this process IS the session: if it dies every pane goes with
   // it and the clients only see 'connection lost'. Name it in the log and trap
   // the fatal signals so it leaves a report behind instead of vanishing.
@@ -2982,137 +2984,163 @@ begin
   SignalReady(AReadyFd, True);
   while not FStop do
   begin
-    // laggards: lots pending and no progress at all during the grace
-    // period -> disconnect BEFORE building the fd_sets (a closed fd
-    // inside the set would make select fail with EBADF)
-    for I := 0 to MAX_CLIENTS - 1 do
-      if (FClients[I].Fd >= 0) and
-         (Length(FClients[I].OutBuf) > LAG_MIN_PENDING) and
-         (GetTickCount64 - FClients[I].LastProgress > LAG_GRACE_MS) then
-        DropClient(I);
-    fpFD_ZERO(ReadSet);
-    fpFD_ZERO(WriteSet);
-    MaxFd := FListener;
-    fpFD_SET(FListener, ReadSet);
-    for I := 0 to MAX_CLIENTS - 1 do
-      if FClients[I].Fd >= 0 then
-      begin
-        fpFD_SET(FClients[I].Fd, ReadSet);
-        if FClients[I].OutBuf <> '' then
-          fpFD_SET(FClients[I].Fd, WriteSet);
-        if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
-      end;
-    // flow control: with too much pending toward some client we do not
-    // read from the PTYs; the producer throttles in the terminal buffer
-    FlowBlocked := False;
-    for I := 0 to MAX_CLIENTS - 1 do
-      if (FClients[I].Fd >= 0) and
-         (Length(FClients[I].OutBuf) > FLOW_STOP) then
-      begin
-        FlowBlocked := True;
-        Break;
-      end;
-    if not FlowBlocked then
-      for I := 0 to FPaneCount - 1 do
-        if (FPanes[I] <> nil) and FPanes[I].Alive and
-           (FPanes[I].Master >= 0) then
+    // One bad iteration must not take the session with it. Before this, an
+    // exception anywhere under the loop -- a failed ini write, a /proc read
+    // of a process that just exited, a socket error -- unwound out of Run,
+    // and the finally that follows frees the session, which kills every pane
+    // on the way out: the user loses every shell and every SSH connection
+    // because of one recoverable error. Log it, dump the state, and carry on;
+    // give up only if it keeps happening, which means the loop itself is
+    // broken and spinning is worse than stopping.
+    try
+      // laggards: lots pending and no progress at all during the grace
+      // period -> disconnect BEFORE building the fd_sets (a closed fd
+      // inside the set would make select fail with EBADF)
+      for I := 0 to MAX_CLIENTS - 1 do
+        if (FClients[I].Fd >= 0) and
+           (Length(FClients[I].OutBuf) > LAG_MIN_PENDING) and
+           (GetTickCount64 - FClients[I].LastProgress > LAG_GRACE_MS) then
+          DropClient(I);
+      fpFD_ZERO(ReadSet);
+      fpFD_ZERO(WriteSet);
+      MaxFd := FListener;
+      fpFD_SET(FListener, ReadSet);
+      for I := 0 to MAX_CLIENTS - 1 do
+        if FClients[I].Fd >= 0 then
         begin
-          fpFD_SET(FPanes[I].Master, ReadSet);
-          if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
+          fpFD_SET(FClients[I].Fd, ReadSet);
+          if FClients[I].OutBuf <> '' then
+            fpFD_SET(FClients[I].Fd, WriteSet);
+          if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
         end;
-    TV.tv_sec := 0;
-    TV.tv_usec := 100000;
-    N := fpSelect(MaxFd + 1, @ReadSet, @WriteSet, nil, @TV);
-    if N < 0 then
-    begin
-      if fpgeterrno = ESysEINTR then
-        continue;
-      Break;
-    end;
-    if fpFD_ISSET(FListener, ReadSet) <> 0 then
-    begin
-      Addr := Default(TUnixSockAddr);
-      AddrLen := SizeOf(Addr);
-      NewClient := fpAccept(FListener, @Addr, @AddrLen);
-      if NewClient >= 0 then
-      begin
-        // the first frame decides: FRAME_CLOSE shuts the daemon down
-        // even on a brand-new connection (CloseSessionAt); FRAME_ATTACH
-        // takes a slot if the versioned payload allows it; anything
-        // else closes the connection
-        if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
-          FpClose(NewClient)
-        else if Kind = FRAME_CLOSE then
+      // flow control: with too much pending toward some client we do not
+      // read from the PTYs; the producer throttles in the terminal buffer
+      FlowBlocked := False;
+      for I := 0 to MAX_CLIENTS - 1 do
+        if (FClients[I].Fd >= 0) and
+           (Length(FClients[I].OutBuf) > FLOW_STOP) then
         begin
-          if (Length(FirstData) > 0) and (FirstData[0] = 1) then
-            DaemonSaveSession;
-          FpClose(NewClient);
-          FStop := True;
-        end
-        else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
-        begin
-          // ephemeral control request: reply and close; takes no slot
-          HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
-          FpClose(NewClient);
-        end
-        else if not HandleAttach(NewClient, Kind, FirstData) then
-          FpClose(NewClient);
-      end;
-    end;
-    for I := 0 to MAX_CLIENTS - 1 do
-      if (FClients[I].Fd >= 0) and
-         (fpFD_ISSET(FClients[I].Fd, WriteSet) <> 0) then
-        FlushClient(I);
-    for I := 0 to MAX_CLIENTS - 1 do
-      if (FClients[I].Fd >= 0) and
-         (fpFD_ISSET(FClients[I].Fd, ReadSet) <> 0) then
-        HandleClientFrame(I);
-    ReapChildren;
-    if not FlowBlocked then
-      for I := 0 to FPaneCount - 1 do
-        if (FPanes[I] <> nil) and FPanes[I].Alive and
-           (FPanes[I].Master >= 0) and
-           (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
-          HandlePaneOutput(I);
-    // live titles: ad-hoc panes without a fixed title show the command
-    // or the current directory, just as the UI does locally
-    if GetTickCount64 - FLastTitleTick > 1500 then
-    begin
-      FLastTitleTick := GetTickCount64;
-      for I := 0 to FPaneCount - 1 do
-        if (FPanes[I] <> nil) and FPanes[I].Alive and
-           (FTerms[I] = '') and (not FTitleFixed[I]) then
-        begin
-          FPanes[I].QueryState;
-          if FPanes[I].TitleCmd <> '' then
-            NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
-          else if FPanes[I].TitleCwd <> '' then
-            NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
-              1, 24)
-          else
-            NewTitle := FTitles[I];
-          if NewTitle <> FTitles[I] then
+          FlowBlocked := True;
+          Break;
+        end;
+      if not FlowBlocked then
+        for I := 0 to FPaneCount - 1 do
+          if (FPanes[I] <> nil) and FPanes[I].Alive and
+             (FPanes[I].Master >= 0) then
           begin
-            FTitles[I] := NewTitle;
-            BroadcastTitle(I);
+            fpFD_SET(FPanes[I].Master, ReadSet);
+            if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
           end;
-        end;
-    end;
-    // self-cleanup: all panes dead and nobody attached for a minute
-    // -> the session no longer serves anyone, close it on its own
-    FlowBlocked := False;
-    for I := 0 to FPaneCount - 1 do
-      if (FPanes[I] <> nil) and FPanes[I].Alive then
+      TV.tv_sec := 0;
+      TV.tv_usec := 100000;
+      N := fpSelect(MaxFd + 1, @ReadSet, @WriteSet, nil, @TV);
+      if N < 0 then
       begin
-        FlowBlocked := True;
+        if fpgeterrno = ESysEINTR then
+          continue;
         Break;
       end;
-    if FlowBlocked or (AttachedCount > 0) then
-      FEmptySince := 0
-    else if FEmptySince = 0 then
-      FEmptySince := GetTickCount64
-    else if GetTickCount64 - FEmptySince > ReapGraceMs then
-      FStop := True;
+      if fpFD_ISSET(FListener, ReadSet) <> 0 then
+      begin
+        Addr := Default(TUnixSockAddr);
+        AddrLen := SizeOf(Addr);
+        NewClient := fpAccept(FListener, @Addr, @AddrLen);
+        if NewClient >= 0 then
+        begin
+          // the first frame decides: FRAME_CLOSE shuts the daemon down
+          // even on a brand-new connection (CloseSessionAt); FRAME_ATTACH
+          // takes a slot if the versioned payload allows it; anything
+          // else closes the connection
+          if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
+            FpClose(NewClient)
+          else if Kind = FRAME_CLOSE then
+          begin
+            if (Length(FirstData) > 0) and (FirstData[0] = 1) then
+              DaemonSaveSession;
+            FpClose(NewClient);
+            FStop := True;
+          end
+          else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
+          begin
+            // ephemeral control request: reply and close; takes no slot
+            HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
+            FpClose(NewClient);
+          end
+          else if not HandleAttach(NewClient, Kind, FirstData) then
+            FpClose(NewClient);
+        end;
+      end;
+      for I := 0 to MAX_CLIENTS - 1 do
+        if (FClients[I].Fd >= 0) and
+           (fpFD_ISSET(FClients[I].Fd, WriteSet) <> 0) then
+          FlushClient(I);
+      for I := 0 to MAX_CLIENTS - 1 do
+        if (FClients[I].Fd >= 0) and
+           (fpFD_ISSET(FClients[I].Fd, ReadSet) <> 0) then
+          HandleClientFrame(I);
+      ReapChildren;
+      if not FlowBlocked then
+        for I := 0 to FPaneCount - 1 do
+          if (FPanes[I] <> nil) and FPanes[I].Alive and
+             (FPanes[I].Master >= 0) and
+             (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
+            HandlePaneOutput(I);
+      // live titles: ad-hoc panes without a fixed title show the command
+      // or the current directory, just as the UI does locally
+      if GetTickCount64 - FLastTitleTick > 1500 then
+      begin
+        FLastTitleTick := GetTickCount64;
+        for I := 0 to FPaneCount - 1 do
+          if (FPanes[I] <> nil) and FPanes[I].Alive and
+             (FTerms[I] = '') and (not FTitleFixed[I]) then
+          begin
+            FPanes[I].QueryState;
+            if FPanes[I].TitleCmd <> '' then
+              NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
+            else if FPanes[I].TitleCwd <> '' then
+              NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
+                1, 24)
+            else
+              NewTitle := FTitles[I];
+            if NewTitle <> FTitles[I] then
+            begin
+              FTitles[I] := NewTitle;
+              BroadcastTitle(I);
+            end;
+          end;
+      end;
+      // self-cleanup: all panes dead and nobody attached for a minute
+      // -> the session no longer serves anyone, close it on its own
+      FlowBlocked := False;
+      for I := 0 to FPaneCount - 1 do
+        if (FPanes[I] <> nil) and FPanes[I].Alive then
+        begin
+          FlowBlocked := True;
+          Break;
+        end;
+      if FlowBlocked or (AttachedCount > 0) then
+        FEmptySince := 0
+      else if FEmptySince = 0 then
+        FEmptySince := GetTickCount64
+      else if GetTickCount64 - FEmptySince > ReapGraceMs then
+        FStop := True;
+      Fails := 0;
+    except
+      on E: Exception do
+      begin
+        Inc(Fails);
+        if DebugActive then
+          DebugLog(Format('daemon: exception in main loop (%d): %s: %s',
+            [Fails, E.ClassName, E.Message]));
+        DumpNow('unhandled ' + E.ClassName + ': ' + E.Message);
+        if Fails > 50 then
+        begin
+          if DebugActive then
+            DebugLog('daemon: too many consecutive failures, shutting down');
+          FStop := True;
+        end;
+      end;
+    end;
   end;
   // orderly shutdown notice to capable clients; legacy ones see the
   // EOF and react as they do today (lost connection)
@@ -3131,6 +3159,7 @@ var
   Pid: TPid;
   B: byte;
   Server: TDetachedSession;
+  NullFd: cint;
 begin
   Result := False;
   if (ALay = nil) or (Length(APanes) < 1) or
@@ -3150,11 +3179,41 @@ begin
       FpClose(ReadyPipe[1]);
       FpExit(1);
     end;
-    // The detached server has no terminal UI. Closing the inherited client
-    // descriptors lets the launching shell regain the terminal cleanly.
-    FpClose(0);
-    FpClose(1);
-    FpClose(2);
+    // The detached server has no terminal UI, so the inherited client
+    // descriptors must go for the launching shell to regain the terminal.
+    // But they must NOT be left FREE. Descriptors are handed out lowest-first,
+    // so the next socket the daemon opens -- the listener, or an accepted
+    // client -- lands on fd 1 or 2. From then on the RTL's unhandled-exception
+    // reporter, which unconditionally writes the message to stderr, is writing
+    // into a client's frame stream; and when that write fails (EPIPE once the
+    // client is gone), the compiler-emitted I/O check promotes the failure to
+    // an EInOutError, which is itself unhandled, which reports to stderr
+    // again, which fails again: an infinite recursion that eats the stack and
+    // kills the daemon with SIGSEGV. That is precisely the crash captured on
+    // 2026-08-23, whose backtrace was TObject.NewInstance / Exception.CreateRes
+    // / SDiskFull with CatchUnhandledException repeating -- SDiskFull being
+    // FPC's message for run-time error 101, which on GNU/Linux means EPIPE,
+    // not a full disk.
+    //
+    // Reopening them on /dev/null costs nothing and makes that write a no-op,
+    // so the reporter can finish and the process dies cleanly instead of
+    // recursing. dup2 closes the old descriptor atomically, so there is no
+    // window in which they are free.
+    NullFd := FpOpen('/dev/null', O_RDWR);
+    if NullFd >= 0 then
+    begin
+      FpDup2(NullFd, 0);
+      FpDup2(NullFd, 1);
+      FpDup2(NullFd, 2);
+      if NullFd > 2 then
+        FpClose(NullFd);
+    end
+    else
+    begin
+      FpClose(0);
+      FpClose(1);
+      FpClose(2);
+    end;
     Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
       AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
       ATitleFixed);

@@ -4500,12 +4500,18 @@ var
   p: TPid;
   Tick: cardinal;
   RemoteEvent: TSessionEvent;
+  // bounded drain of the session socket, so a flooding pane cannot starve
+  // the keyboard, plus the marks for the single repaint that follows it
+  Drained: integer;
+  Deadline: QWord;
+  Touched: array[0..MAX_PANES - 1] of boolean;
+  FullRedraw: boolean;
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
-  begin
+begin
     inherited Idle;
   Tick := GetTickCount64;
   RemoteEvent.Data := nil;
@@ -4522,9 +4528,24 @@ var
     // with a modal open the socket is not drained: events (closing or
     // creating panes, output) wait in order for the modal to finish,
     // so pane indexes never desync in the middle of a dialog
+    // BOUND THIS LOOP. A pane under a flood (think 'ls -R /') keeps the
+    // socket readable on every single poll, and each turn of the body parses
+    // 64 KB and repaints, which is slower than the daemon produces -- so the
+    // loop never ran dry and never returned. FreeVision only reads the
+    // keyboard AFTER Idle returns, so the whole interface went dead: no keys,
+    // no mouse, no menu, and Ctrl-C never even reached the pane. Take a
+    // bounded batch and come back next tick; the daemon queues the rest and
+    // throttles the pane if we genuinely fall behind.
     if Current = PView(Desktop) then
-      while (Remote <> nil) and Remote.Poll(RemoteEvent) do
+    begin
+      Drained := 0;
+      Deadline := GetTickCount64 + 20;
+      FillChar(Touched, SizeOf(Touched), 0);
+      FullRedraw := False;
+      while (Remote <> nil) and (Drained < 32) and
+            (GetTickCount64 < Deadline) and Remote.Poll(RemoteEvent) do
       begin
+        Inc(Drained);
       case RemoteEvent.Kind of
         sekOutput:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
@@ -4537,8 +4558,9 @@ var
             begin
               Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
                 Length(RemoteEvent.Data));
-              if Win[RemoteEvent.Pane] <> nil then
-                Win[RemoteEvent.Pane]^.Term^.DrawView;
+              // mark, do not draw: one repaint after the batch instead of one
+              // per 64 KB frame, each of which is a blocking write to the tty
+              Touched[RemoteEvent.Pane] := True;
             end;
           end;
         sekExit:
@@ -4551,9 +4573,27 @@ var
           end;
         sekError:
           DebugLog('remote session error: ' + RemoteEvent.Text);
-        sekLayoutEv: ApplyRemoteLayoutEv(RemoteEvent.Data);
-        sekKillPaneEv: ApplyRemoteKillPane(RemoteEvent.Pane);
-        sekNewPaneEv: ApplyRemoteNewPane(RemoteEvent.Data);
+        sekLayoutEv:
+          begin
+            ApplyRemoteLayoutEv(RemoteEvent.Data);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            FillChar(Touched, SizeOf(Touched), 0);
+            FullRedraw := True;
+          end;
+        sekKillPaneEv:
+          begin
+            ApplyRemoteKillPane(RemoteEvent.Pane);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            FillChar(Touched, SizeOf(Touched), 0);
+            FullRedraw := True;
+          end;
+        sekNewPaneEv:
+          begin
+            ApplyRemoteNewPane(RemoteEvent.Data);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            FillChar(Touched, SizeOf(Touched), 0);
+            FullRedraw := True;
+          end;
         sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
         sekTitleEv: ApplyRemoteTitle(RemoteEvent.Pane, RemoteEvent.Data);
         sekFocusEv:
@@ -4587,9 +4627,23 @@ var
             Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
-      if not RemoteMode then
-        Break;   // shutdown/lost: stop draining
+        if not RemoteMode then
+          Break;   // shutdown/lost: stop draining
       end;
+      // ONE repaint for the whole batch. Doing it per frame meant a full
+      // pane redraw and a blocking write to the terminal for every 64 KB the
+      // pane produced, which over SSH is a round trip each -- that is what
+      // turned a flood from slow into completely unresponsive.
+      if RemoteMode then
+      begin
+        if FullRedraw then
+          RepaintChanges
+        else
+          for i := 0 to MAX_PANES - 1 do
+            if Touched[i] and (Win[i] <> nil) and (Win[i]^.Term <> nil) then
+              Win[i]^.Term^.DrawView;
+      end;
+    end;
     // debounced layout push: moving, minimizing or renaming here gets
     // mirrored in the daemon (and from there to the other clients)
     // without hooking every single UI action
