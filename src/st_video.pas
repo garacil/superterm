@@ -394,6 +394,7 @@ var
 begin
   Result := #27'[0';
   if (AFlags and 1) <> 0 then Result := Result + ';1';
+  if (AFlags and 8) <> 0 then Result := Result + ';2';   // faint
   if (AFlags and 2) <> 0 then Result := Result + ';4';
   if (AFlags and 4) <> 0 then Result := Result + ';7';
   case AFg shr 24 of

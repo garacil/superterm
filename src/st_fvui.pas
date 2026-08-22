@@ -693,6 +693,7 @@ var
     else
       fbg := $02000000 or LongWord((c.Attr shr 4) and $0F);
     if (c.Attr and A_UNDER) <> 0 then fl := fl or 2;
+    if (c.Attr and A_FAINT) <> 0 then fl := fl or 8;   // SGR 2
     if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
     if Occluded(GOrig.X + lx, GOrig.Y + ly) then
       Exit;   // that cell belongs to the window in front; leave its entry alone

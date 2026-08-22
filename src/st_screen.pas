@@ -36,6 +36,11 @@ const
   // (it only ever holds 0..7), so every "Attr and $FFF0" that changes the
   // foreground clears the bright bit automatically.
   A_FGBRIGHT = $0008;
+  // SGR 2: faint / dim. Claude Code marks all its secondary text with it
+  // (hints, shortcuts, placeholders); ignoring it painted that text at exactly
+  // the same weight as the primary text and flattened the UI's hierarchy.
+  // Mutually exclusive with A_BOLD, and SGR 22 clears both.
+  A_FAINT = $2000;
 
 type
   TCell = record
@@ -1215,11 +1220,12 @@ begin
           n := GetParam(i, 0);
           case n of
             0: begin Attr := A_FGDEF or A_BGDEF; AttrFgRGB := 0; AttrBgRGB := 0; end;
-            1: Attr := Attr or A_BOLD;
-            2, 3, 5, 6, 8, 9, 23, 29: ;
+            1: Attr := (Attr or A_BOLD) and (not A_FAINT);
+            2: Attr := (Attr or A_FAINT) and (not A_BOLD);
+            3, 5, 6, 9, 23, 29: ;
             4: Attr := Attr or A_UNDER;
             7: Attr := Attr or A_REVERSE;
-            21, 22: Attr := Attr and (not A_BOLD);
+            21, 22: Attr := Attr and (not (A_BOLD or A_FAINT));
             24: Attr := Attr and (not A_UNDER);
             27: Attr := Attr and (not A_REVERSE);
             30..37: begin Attr := ((Attr and $FFF0) and (not A_FGDEF)) or word(n - 30); AttrFgRGB := 0; end;
