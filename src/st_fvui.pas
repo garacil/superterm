@@ -3979,6 +3979,7 @@ var
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
   PrefixSeq: RawByteString;
+  ZoomSaveFlush: boolean;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -3992,6 +3993,29 @@ begin
   if PassthroughActive and ((Event.What and evMouse) <> 0) then
   begin
     ClearEvent(Event);
+    Exit;
+  end;
+  // F5 used to be visible in TWO steps: the window first maximized inside the
+  // IDE (one painted frame, menu and status still there) and only on the next
+  // Idle tick did passthrough take the screen -- which reads as a little
+  // zoom animation. Same on the way back. Do the whole transition with the
+  // flush held, then decide passthrough, then paint ONCE: straight to
+  // fullscreen, and straight back to the IDE exactly as it was.
+  if (Event.What = evCommand) and (Event.Command = cmZoom) then
+  begin
+    ZoomSaveFlush := SuppressFlush;
+    SuppressFlush := True;
+    try
+      inherited HandleEvent(Event);
+      for i := 0 to MAX_PANES - 1 do
+        if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
+          Lay.Focused := i;
+      UpdatePassthrough;
+    finally
+      SuppressFlush := ZoomSaveFlush;
+    end;
+    if not PassthroughActive then
+      RepaintChanges;
     Exit;
   end;
   if Event.What = evKeyDown then
