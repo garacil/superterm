@@ -1152,14 +1152,17 @@ begin
     else if (gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
             (gx2 <> OutlineX2) or (gy2 <> OutlineY2) then
     begin
-      // drop the old ring from the delta and let the normal renderer repaint
-      // it -- that is what restores each cell's REAL colour (truecolor or a
-      // 256 index) instead of the 16-colour approximation
-      OutlineInvalidate(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
+      // Touch ONLY the difference between the two rings: give back the cells
+      // the frame leaves (invalidated, so the rich renderer repaints them with
+      // their real colours) and draw only the ones it newly occupies. A
+      // one-cell step then costs a sliver, not two whole perimeters.
+      OutlineLeaveDiff(OutlineX1, OutlineY1, OutlineX2, OutlineY2,
+                       gx1, gy1, gx2, gy2);
       UpdateScreen(False);
+      OutlineEnterDiff(gx1, gy1, gx2, gy2,
+                       OutlineX1, OutlineY1, OutlineX2, OutlineY2, $1F);
       OutlineX1 := gx1; OutlineY1 := gy1;
       OutlineX2 := gx2; OutlineY2 := gy2;
-      OutlinePaint(gx1, gy1, gx2, gy2, $1F);
     end;
   end;
   if Term <> nil then

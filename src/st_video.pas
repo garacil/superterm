@@ -47,6 +47,14 @@ procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
 // back as its CP437 approximation instead of its real colour -- text restored,
 // attributes lost. Letting the regular delta redraw them keeps truecolor.
 procedure OutlineInvalidate(X1, Y1, X2, Y2: LongInt);
+// Move an outline by touching ONLY the difference between the two rings: the
+// cells the frame leaves behind are invalidated (so the normal renderer
+// repaints them with their real colours) and only the cells it newly occupies
+// are drawn. Consecutive positions overlap almost completely, so a one-cell
+// step costs a sliver instead of two full perimeters.
+procedure OutlineLeaveDiff(OX1, OY1, OX2, OY2, NX1, NY1, NX2, NY2: LongInt);
+procedure OutlineEnterDiff(NX1, NY1, NX2, NY2, OX1, OY1, OX2, OY2: LongInt;
+  AAttr: Byte);
 
 // Declare that what the terminal currently shows is unknown, so the NEXT
 // update repaints every cell. This is the only legitimate way to ask for a
@@ -469,6 +477,95 @@ begin
     Poison(X1, Y);
     if X2 <> X1 then Poison(X2, Y);
   end;
+end;
+
+
+function OnRing(X, Y, X1, Y1, X2, Y2: LongInt): Boolean;
+begin
+  OnRing := (X >= X1) and (X <= X2) and (Y >= Y1) and (Y <= Y2) and
+            ((X = X1) or (X = X2) or (Y = Y1) or (Y = Y2));
+end;
+
+// glyph for a position on a ring
+function RingGlyph(X, Y, X1, Y1, X2, Y2: LongInt): AnsiString;
+begin
+  if (X = X1) and (Y = Y1) then RingGlyph := #$E2#$94#$8C        // U+250C
+  else if (X = X2) and (Y = Y1) then RingGlyph := #$E2#$94#$90   // U+2510
+  else if (X = X1) and (Y = Y2) then RingGlyph := #$E2#$94#$94   // U+2514
+  else if (X = X2) and (Y = Y2) then RingGlyph := #$E2#$94#$98   // U+2518
+  else if (Y = Y1) or (Y = Y2) then RingGlyph := #$E2#$94#$80    // U+2500
+  else RingGlyph := #$E2#$94#$82;                                // U+2502
+end;
+
+procedure OutlineLeaveDiff(OX1, OY1, OX2, OY2, NX1, NY1, NX2, NY2: LongInt);
+var
+  X, Y: LongInt;
+
+  procedure Maybe(AX, AY: LongInt);
+  begin
+    if OnRing(AX, AY, NX1, NY1, NX2, NY2) then
+      Exit;                       // still covered by the outline: leave it
+    OutlineInvalidate(AX, AY, AX, AY);
+  end;
+
+begin
+  for X := OX1 to OX2 do
+  begin
+    Maybe(X, OY1);
+    if OY2 <> OY1 then Maybe(X, OY2);
+  end;
+  for Y := OY1 + 1 to OY2 - 1 do
+  begin
+    Maybe(OX1, Y);
+    if OX2 <> OX1 then Maybe(OX2, Y);
+  end;
+end;
+
+procedure OutlineEnterDiff(NX1, NY1, NX2, NY2, OX1, OY1, OX2, OY2: LongInt;
+  AAttr: Byte);
+var
+  X, Y: LongInt;
+  Body: AnsiString;
+  LastX, LastY: LongInt;
+
+  procedure Put(AX, AY: LongInt; Corner: Boolean);
+  begin
+    if not OnScreen(AX, AY) then
+      Exit;
+    // a cell already under the outline only needs redrawing if its glyph
+    // changed, which only happens at the corners
+    if (not Corner) and OnRing(AX, AY, OX1, OY1, OX2, OY2) then
+      Exit;
+    if (AY <> LastY) or (AX <> LastX + 1) then
+      Body := Body + CursorPosition(AX, AY);
+    LastX := AX;
+    LastY := AY;
+    Body := Body + RingGlyph(AX, AY, NX1, NY1, NX2, NY2);
+  end;
+
+begin
+  if PassthroughActive or OutputFailed then
+    Exit;
+  if (NX2 <= NX1) or (NY2 <= NY1) then
+    Exit;
+  Body := AttrSequence(AAttr);
+  LastX := -99;
+  LastY := -99;
+  Put(NX1, NY1, True);
+  Put(NX2, NY1, True);
+  Put(NX1, NY2, True);
+  Put(NX2, NY2, True);
+  for X := NX1 + 1 to NX2 - 1 do
+  begin
+    Put(X, NY1, False);
+    Put(X, NY2, False);
+  end;
+  for Y := NY1 + 1 to NY2 - 1 do
+  begin
+    Put(NX1, Y, False);
+    Put(NX2, Y, False);
+  end;
+  WriteRaw(Body);
 end;
 
 procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
