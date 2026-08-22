@@ -15,6 +15,13 @@ uses
 
 const
   MAX_SCREEN_SCROLLBACK = 100000;
+  // Geometry the snapshot validator accepts. It must not be narrower than the
+  // geometry the application itself can build: a pane on an 8192-column
+  // terminal is a legal screen, and capping the loader at 4096 meant such a
+  // screen could be saved but never loaded back -- the attach failed and the
+  // pane came up as garbage. Kept in one place so producer and consumer agree.
+  MAX_SCREEN_COLS = 8192;   // >= the vendor's MaxViewWidth
+  MAX_SCREEN_ROWS = 4096;
   // attribute bits
   A_BOLD = $0100;
   A_UNDER = $0200;
@@ -247,6 +254,10 @@ begin
   ch := AHeight;
   if cw < 1 then cw := 1;
   if ch < 1 then ch := 1;
+  // clamp here so no caller can build a screen the serializer cannot round
+  // trip (a resize request arrives from the network and is not trusted)
+  if cw > MAX_SCREEN_COLS then cw := MAX_SCREEN_COLS;
+  if ch > MAX_SCREEN_ROWS then ch := MAX_SCREEN_ROWS;
   Lost := 0;
   if (cw = Width) and (ch = Height) and (FGrid <> nil) then
     Exit;
@@ -384,13 +395,13 @@ begin
   Rows := Default(Longint);
   Cols := Default(Longint);
   Stream.ReadBuffer(Rows, SizeOf(Rows));
-  if (Rows < 0) or (Rows > 4096) then
+  if (Rows < 0) or (Rows > MAX_SCREEN_ROWS) then
     Exit;
   SetLength(G, Rows);
   for Y := 0 to Rows - 1 do
   begin
     Stream.ReadBuffer(Cols, SizeOf(Cols));
-    if (Cols < 0) or (Cols > 4096) then
+    if (Cols < 0) or (Cols > MAX_SCREEN_COLS) then
       Exit;
     SetLength(G[Y], Cols);
     for X := 0 to Cols - 1 do
@@ -537,7 +548,8 @@ begin
   try
     Stream.ReadBuffer(Width, SizeOf(Width));
     Stream.ReadBuffer(Height, SizeOf(Height));
-    if (Width < 1) or (Width > 4096) or (Height < 1) or (Height > 4096) then
+    if (Width < 1) or (Width > MAX_SCREEN_COLS) or
+       (Height < 1) or (Height > MAX_SCREEN_ROWS) then
       Exit;
     Stream.ReadBuffer(CursorX, SizeOf(CursorX));
     Stream.ReadBuffer(CursorY, SizeOf(CursorY));
@@ -598,7 +610,7 @@ begin
     for I := 0 to FSBCount - 1 do
     begin
       Stream.ReadBuffer(Cols, SizeOf(Cols));
-      if (Cols < 0) or (Cols > 4096) then
+      if (Cols < 0) or (Cols > MAX_SCREEN_COLS) then
         Exit;
       SetLength(Row, Cols);
       for X := 0 to Cols - 1 do
