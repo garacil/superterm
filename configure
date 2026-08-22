@@ -112,6 +112,7 @@ PREFIX_ESC=$(escape_sed "$PREFIX")
 BINDIR_ESC=$(escape_sed "$BINDIR")
 SYSCONFDIR_ESC=$(escape_sed "$SYSCONFDIR")
 DOCDIR_ESC=$(escape_sed "$PREFIX/share/doc/superterm")
+DATADIR_ESC=$(escape_sed "$PREFIX/share/superterm")
 
 sed \
   -e "s|@PROJECT_DIR@|$PROJECT_ESC|g" \
@@ -121,6 +122,7 @@ sed \
   -e "s|@BINDIR@|$BINDIR_ESC|g" \
   -e "s|@SYSCONFDIR@|$SYSCONFDIR_ESC|g" \
   -e "s|@DOCDIR@|$DOCDIR_ESC|g" \
+  -e "s|@DATADIR@|$DATADIR_ESC|g" \
   "$PROJECT_DIR/Makefile.in" > "$PROJECT_DIR/Makefile"
 
 cat > "$PROJECT_DIR/config.status" <<EOF

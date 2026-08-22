@@ -1,0 +1,68 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#                  4=light 5=medium 6=dark shade, anything else literal
+#   :  foreground palette index per cell ('0'-'9','a'-'z', ' '=default)
+#   .  background palette index (optional line)
+name: 7kas phoenix
+name.es: Ave fenix de 7kas
+palette: 7D2B93 78288F 7A2A8F 80268E 5A45A0 0094D2 873397 1D94CF E87D7B 7A2B8F 068BCA 74258D A5509C B863A4 C972AD CD76AF D579B8 C770AC 2CA9DD 24A1D7 45C6E8 FBB459 FA956C
+
+>        12222222222222222                            
+:        00112222222122345                            
+.         062000000000007                             
+>     22   12222222222222222                          
+:     88   06122222229345555                          
+.     88    2629999999375a5                           
+>            12222222222222222                        
+:            20bbbbbbbbaaaa555                        
+.             cccccccdca5aaa5                         
+>  11222222   2222222222222222222      22222222       
+:  efggffgh   fgffffffh9755aa555a      ij5555kk       
+.    ffgghg   ehggehehf634a5aa5         i75aik        
+>     2 112222211122222222222222222 22222222222222    
+:     l ffgeeeggeheeehfcb39755aa5aa iiiiji55kkkkkk    
+.         eg eg   eghffd99334a5aa5   ijjjijjkkkk      
+>   2222          12211222222222222222222222222222222 
+:   llll          eggehg6b9939455a5jijjjjjjiikkkkkkkk 
+.    ll            gf  fcb929234a5aa7ijjjij777jikkk   
+>   11222          1    2222222222222222221        111
+:   lllll          e    h12229939455ajijjij        kkk
+.     ll                fcb92229234a5ajjji            
+>            2222     1  12222222222222221            
+:            88m8     f  c09999999324a5iij            
+.             8m8         01bbbbbb1134a5i             
+>                  2     2222222222222221             
+:                  2     mhddcccc66693347             
+.                         gfffffffeeehdc              
+>        11       222   222222222222211               
+:        22       260   llfhhhheffedcc6               
+.                 20     lhhfffhdc601                 
+>                    1  222222222221                  
+:                    2  llffhdc6bb00                  
+.                       llc60bb1000                   
+>          222         2222222221                     
+:          efg         ll8bb12960                     
+.           gh         ll8191000                      
+>           11   22   22222221                        
+:           ge   88   llmcb960                        
+.                     lm8c102                         
+>                 1  222221                           
+:                 8  ll88c1                           
+.                    l8886                            
+>         222       2222                              
+:         222       lm8m                              
+.          60       l8m8                              
+>          112     2221                               
+:          202     lmm8                               
+.            2     m88                                
+>                 221                                 
+:                 mm8                                 
+.                 m8                                  
+>                21                                   
+:                mm                                   
+.                m                                    
+>               21                                    
+:               88                                    
+.               8                                     
+>              1                                      
+:              8                                      

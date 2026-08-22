@@ -1,0 +1,33 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#                  4=light 5=medium 6=dark shade, anything else literal
+#   :  foreground palette index per cell ('0'-'9','a'-'z', ' '=default)
+#   .  background palette index (optional line)
+name: Sea at sunset
+name.es: Mar al atardecer
+palette: FF9A3C FFD08A FFF0C8 E8E8E8 B0632A 1E6FA8 145A82 0D3A5C
+
+>                          ______                              
+:                          222222                              
+>                       .-"      "-.                           
+:                       00        00                           
+>                      /            \                          
+:                      1              1                        
+>                     |     3333     |                         
+:                     1     0000     1                         
+>                      \            /                          
+:                      1              1                        
+>                       "-.______.-"          |\               
+:                       00000000000           3 3              
+>                                             | \              
+:                                             3  3             
+>                                             |  \             
+:                                             3   3            
+>                                          ___|___\            
+:                                          44444444            
+>   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\_______/~~~~~~~~    
+:   55555555555555555555555555555555555555444444445555555      
+>   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~     
+:   666666666666666666666666666666666666666666666666666666     
+>   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~     
+:   777777777777777777777777777777777777777777777777777777     
