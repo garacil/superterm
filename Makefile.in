@@ -70,6 +70,13 @@ test: release
 		$(PYTHON) "$(PROJECT_DIR)/test/$$test"; \
 	done
 
+# Regenerate this Makefile when its template or configure changes. An existing
+# checkout otherwise keeps a stale Makefile after a pull -- which is how a new
+# install path (the desktop backgrounds directory) silently went missing.
+Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
+	@printf '%s\n' "Makefile.in or configure changed; re-running ./configure"
+	@cd "$(PROJECT_DIR)" && ./configure
+
 install: release
 	@mkdir -p "$(BINDIR)" "$(DOCDIR)" "$(SYSCONFDIR)/superterm"
 	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(BINDIR)/superterm"
