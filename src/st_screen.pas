@@ -146,6 +146,14 @@ begin
   Attr := A_FGDEF or A_BGDEF;
   AttrFgRGB := 0;
   AttrBgRGB := 0;
+  // saved-cursor slots start at the default rendition: restoring one that was
+  // never saved must not paint black on black
+  FSaveAttr := A_FGDEF or A_BGDEF;
+  FSaveFgRGB := 0;
+  FSaveBgRGB := 0;
+  FAltSaveAttr := A_FGDEF or A_BGDEF;
+  FAltSaveFgRGB := 0;
+  FAltSaveBgRGB := 0;
   Dirty := True;
   FUsingAlt := False;
   FAutoWrap := True;
