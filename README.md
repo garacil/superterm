@@ -1,5 +1,7 @@
 # superterm 3.3
 
+**Project site: [www.superterm.org](https://www.superterm.org)**
+
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
 visible pane remains a real PTY-backed terminal.
@@ -592,6 +594,10 @@ Planned platform and runtime work includes a native Windows ConPTY backend,
 better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author
+
+Project site: <https://www.superterm.org> · Documentation:
+[the wiki](https://github.com/garacil/superterm/wiki) · Releases:
+[GitHub](https://github.com/garacil/superterm/releases)
 
 Author: Germán Luis Aracil Boned — August 2026.
 
