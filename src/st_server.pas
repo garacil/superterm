@@ -77,7 +77,15 @@ const
   WINOP_RESIZE = 10;    // Longint Cols, Rows (terminal size)
   WINOP_SAVE = 11;      // saves session.ini with the daemon state
 
-  MAX_FRAME_SIZE = 64 * 1024 * 1024;
+  // Ceiling for one frame. FRAME_SCREEN carries a pane's whole grid plus its
+  // scrollback as raw TCell records, so this limit is really a CELL budget:
+  // 64 MB used to allow ~4.8M cells at 14 bytes each. Per-cell truecolor grew
+  // TCell to 24 bytes, which silently cut that capacity by 40% -- a pane over
+  // roughly 280 columns with a full scrollback stopped being attachable at all
+  // (WriteFrameTo refused the frame). Sized back to the same number of cells.
+  // A compact wire format would be the better long-term answer; this restores
+  // the previous capacity without another format change.
+  MAX_FRAME_SIZE = 112 * 1024 * 1024;
 
   // versioned attach (tolerant tail of the FRAME_ATTACH payload):
   // ProtoVer, DeskW, DeskH, Caps; no payload = exclusive legacy client
