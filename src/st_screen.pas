@@ -1208,13 +1208,23 @@ begin
       end;
     's':
       begin
+        // CSI s (SCP) is xterm's save-cursor: same slot and same payload as
+        // DECSC, so it carries the graphic rendition too. Saving only the
+        // position let a prompt or TUI that brackets its colouring with
+        // CSI s ... CSI u leak its last attribute into the stream.
         FSaveX := CursorX;
         FSaveY := CursorY;
+        FSaveAttr := Attr;
+        FSaveFgRGB := AttrFgRGB;
+        FSaveBgRGB := AttrBgRGB;
       end;
     'u':
       begin
         CursorX := FSaveX;
         CursorY := FSaveY;
+        Attr := FSaveAttr;
+        AttrFgRGB := FSaveFgRGB;
+        AttrBgRGB := FSaveBgRGB;
       end;
     'q':
       begin
