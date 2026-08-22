@@ -468,6 +468,8 @@ begin
   Result := ' ';
   if C.Len = 0 then
     Exit;
+  if (C.Attr and A_CONCEAL) <> 0 then
+    Exit;                 // SGR 8: concealed, render as a blank
   b := byte(C.Txt[0]);
   if (C.Len = 1) and (b < $80) then
     Exit(AnsiChar(b));
@@ -657,6 +659,8 @@ var
     isSkip := c.Cont;
     if isSkip then
       g := ''
+    else if (c.Attr and A_CONCEAL) <> 0 then
+      g := ' '            // SGR 8: the application hid this; do not reveal it
     else
       g := SafeGlyph(c);
     fl := 0;

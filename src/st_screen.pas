@@ -41,6 +41,10 @@ const
   // the same weight as the primary text and flattened the UI's hierarchy.
   // Mutually exclusive with A_BOLD, and SGR 22 clears both.
   A_FAINT = $2000;
+  // SGR 8: conceal. The application asked for this text NOT to be shown --
+  // TUI password fields and form widgets use it -- so rendering it in clear
+  // leaks the secret onto the screen, into the scrollback and into `capture`.
+  A_CONCEAL = $4000;
 
 type
   TCell = record
@@ -1228,6 +1232,8 @@ begin
             1: Attr := (Attr or A_BOLD) and (not A_FAINT);
             2: Attr := (Attr or A_FAINT) and (not A_BOLD);
             3, 5, 6, 9, 23, 29: ;
+            8: Attr := Attr or A_CONCEAL;
+            28: Attr := Attr and (not A_CONCEAL);
             4: Attr := Attr or A_UNDER;
             7: Attr := Attr or A_REVERSE;
             21, 22: Attr := Attr and (not (A_BOLD or A_FAINT));
