@@ -3202,9 +3202,16 @@ begin
   PassReqW := 0;
   PassReqH := 0;
   // undo modes a full-screen app commonly leaves set, and make sure we are
-  // on superterm's (alternate) screen with sane defaults before repainting
+  // on superterm's (alternate) screen with sane defaults before repainting.
+  // The mouse must be RE-ENABLED, not disabled: FreeVision turned it on once
+  // at startup (vendor/fv322/drivers.pas, ?1000/1002/1003/1006h) and guards
+  // that with a sticky TmuxMouseEnabled flag, so it never re-emits the enable.
+  // The maximized app left its own tracking modes set (or cleared); if we exit
+  // with the mouse OFF, FreeVision still thinks it is ON and the pointer goes
+  // dead -- no clicks reach the menu, status line or frames. Re-assert exactly
+  // FreeVision's enable set so reporting is live again for the window manager.
   WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
-    #27'[?1000l'#27'[?1002l'#27'[?1006l'#27'[?2004l');
+    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l');
   RelayoutAll;         // re-derives each pane's windowed size (SendResize back)
   ResetVideoSurface;   // blank both buffers
   ReDraw;              // full repaint of menu, desktop, windows and status
