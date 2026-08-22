@@ -368,6 +368,11 @@ begin
   // must not be trusted for the next frame (WideUpdateScreen ignores the
   // vendor's own "forced" flag; this is the explicit way to ask for a repaint)
   InvalidateFrame;
+  // and the rich overlay describes the PREVIOUS layout: after a resize its
+  // entries name cells that no longer belong to whoever registered them, and
+  // an oracle can match by coincidence and resurrect a stale glyph. Drop it;
+  // every view repopulates it as it draws.
+  RichInvalidate;
   ClearScreen;
 end;
 
@@ -4749,6 +4754,7 @@ var
   Mode: TArtMode;
   C: TArtCell;
   Attr: byte;
+  W: integer;
   GOrig: Objects.TPoint;
   Word0: word;
 begin
@@ -4760,25 +4766,43 @@ begin
     Idx := ArtIndexOf(App^.Cfg.Background);
     Mode := ArtModeOf(App^.Cfg.BackgroundMode);
   end;
+  // Always clear through the ancestor first: it covers the view's whole
+  // extent in one call, so nothing of a previous layout can survive in a row
+  // this routine might not reach. The picture is then laid over that.
+  inherited Draw;
   if Idx <= 0 then
-  begin
-    inherited Draw;      // no picture: the plain pattern
-    Exit;
-  end;
+    Exit;                // no picture: the plain pattern is all there is
   GOrig.X := 0;
   GOrig.Y := 0;
   MakeGlobal(GOrig, GOrig);
+  // TDrawBuffer is a fixed-size array, so a row must be clamped exactly as
+  // TTermView.Draw does. Writing past it on a very wide terminal corrupted
+  // the tail of the row and left stale cells behind after a resize.
+  W := Size.X;
+  if W > MaxViewWidth then
+    W := MaxViewWidth;
+  if W < 0 then
+    W := 0;
+  // The background owns the entire desktop, so nothing registered here by a
+  // previous layout may survive: clear the whole region before painting.
+  for y := 0 to Size.Y - 1 do
+    for x := 0 to W - 1 do
+      RichClear(GOrig.X + x, GOrig.Y + y);
   for y := 0 to Size.Y - 1 do
   begin
     B := Default(TDrawBuffer);
-    for x := 0 to Size.X - 1 do
+    for x := 0 to W - 1 do
     begin
-      C := ArtCellFor(Idx, Mode, Size.X, Size.Y, x, y);
+      C := ArtCellFor(Idx, Mode, W, Size.Y, x, y);
       if C.Glyph = '' then
       begin
+        // Empty cell: the plain pattern, and NOT registered in the overlay.
+        // A background covers the whole desktop, so registering every empty
+        // cell filled the overlay with entries that a later layout could
+        // match by coincidence and resurrect as a stale glyph.
         Word0 := (word(GetColor($01)) shl 8) or word(Pattern);
         B[x] := Word0;
-        RichSetCell(GOrig.X + x, GOrig.Y + y, ' ', 0, 0, 0, Word0, False, False);
+        RichClear(GOrig.X + x, GOrig.Y + y);
       end
       else
       begin
@@ -4791,7 +4815,7 @@ begin
           Word0, False, False);
       end;
     end;
-    WriteLine(0, y, Size.X, 1, B);
+    WriteLine(0, y, W, 1, B);
   end;
 end;
 
@@ -4808,9 +4832,15 @@ procedure TSuperApp.InitDeskTop;
 var
   R: Objects.TRect;
 begin
+  // Same geometry as TProgram.InitDeskTop: the edges are only pulled in when
+  // the bar in question actually exists. Trimming unconditionally left the
+  // desktop the wrong size and cells stale after a resize.
+  R := Default(Objects.TRect);
   GetExtent(R);
-  Inc(R.A.Y);          // below the menu bar
-  Dec(R.B.Y);          // above the status line
+  if MenuBar <> nil then
+    Inc(R.A.Y);
+  if StatusLine <> nil then
+    Dec(R.B.Y);
   Desktop := New(PArtDesktop, Init(R));
 end;
 
