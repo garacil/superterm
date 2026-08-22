@@ -539,9 +539,17 @@ var
   begin
     if not OnScreen(AX, AY) then
       Exit;
-    // a cell already under the outline only needs redrawing if its glyph
-    // changed, which only happens at the corners
-    if (not Corner) and OnRing(AX, AY, OX1, OY1, OX2, OY2) then
+    if Corner then ;   // corners always differ in glyph, handled by the test
+    // A cell already under the outline may still need redrawing: staying on
+    // the ring is not enough, its GLYPH can change. Moving one step
+    // horizontally or vertically keeps two corners on the ring but turns them
+    // into edge segments (and edges into corners), so skipping them left a
+    // corner glyph sitting in the middle of a straight side. Compare the
+    // glyphs, not the membership. (Diagonal steps never showed it because no
+    // corner is shared.)
+    if OnRing(AX, AY, OX1, OY1, OX2, OY2) and
+       (RingGlyph(AX, AY, OX1, OY1, OX2, OY2) =
+        RingGlyph(AX, AY, NX1, NY1, NX2, NY2)) then
       Exit;
     if (AY <> LastY) or (AX <> LastX + 1) then
       Body := Body + CursorPosition(AX, AY);
