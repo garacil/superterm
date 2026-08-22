@@ -16,12 +16,15 @@
     .    000   00000
 
   Line prefixes:
+    mode:  optional, the layout the picture is meant for (center, tile,
+           stretch or fit). Choosing it from the menu adopts that layout.
+
     >   a row of glyphs. ' ' leaves the cell empty so the desktop shows
         through; '1' '2' '3' are the block characters U+2580 (upper half),
         U+2584 (lower half) and U+2588 (full); '4' '5' '6' are the light,
         medium and dark shades; anything else is drawn literally.
-    :   the foreground palette index of each cell: '0'..'9' then 'a'..'z',
-        with ' ' meaning the terminal default.
+    :   the foreground palette index of each cell: '0'..'9', then 'a'..'z',
+        then 'A'..'Z' (62 entries). ' ' means the terminal default.
     .   the same for the background colour. Optional.
 
   Colours are real RGB and reach the terminal through the rich renderer,
@@ -58,6 +61,10 @@ function ArtLabel(AIndex: integer): string;         // menu label, English
 function ArtLabelEs(AIndex: integer): string;       // menu label, Spanish
 function ArtIndexOf(const AName: string): integer;  // 0 when unknown
 procedure ArtSize(AIndex: integer; out AW, AH: integer);
+// Layout the picture asks for with its 'mode:' key, '' when it does not
+// care. A seamless pattern ships with 'tile' so picking it from the menu
+// lays it out the way it was designed for.
+function ArtSuggestedMode(AIndex: integer): string;
 function ArtCellAt(AIndex, AX, AY: integer): TArtCell;
 // The cell to paint at desktop position (X, Y) for a given mode. This is
 // what the background view calls; it handles the centring, wrapping and
@@ -87,6 +94,7 @@ type
     Name: string;         // file name without extension = config key
     Title: string;        // name:
     TitleEs: string;      // name.es:
+    Mode: string;         // mode: suggested layout, '' = leave the current one
     Pal: array of LongWord;
     Rows: array of TArtRow;
     Width: integer;
@@ -187,6 +195,8 @@ begin
             P.Title := Val
           else if Key = 'name.es' then
             P.TitleEs := Val
+          else if Key = 'mode' then
+            P.Mode := LowerCase(Val)
           else if Key = 'palette' then
           begin
             Body := Val;
@@ -347,6 +357,15 @@ begin
   AH := Length(Pics[AIndex - 1].Rows);
 end;
 
+function ArtSuggestedMode(AIndex: integer): string;
+begin
+  EnsureLoaded;
+  if (AIndex <= 0) or (AIndex > Length(Pics)) then
+    Result := ''
+  else
+    Result := Pics[AIndex - 1].Mode;
+end;
+
 function GlyphOf(C: AnsiChar): RawByteString;
 begin
   case C of
@@ -364,10 +383,14 @@ end;
 
 function PalIndex(C: AnsiChar): integer;
 begin
+  // '0'-'9', then 'a'-'z', then 'A'-'Z': 62 palette entries, enough for a
+  // picture sampled from a gradient rather than drawn by hand.
   if (C >= '0') and (C <= '9') then
     Result := Ord(C) - Ord('0')
   else if (C >= 'a') and (C <= 'z') then
     Result := 10 + Ord(C) - Ord('a')
+  else if (C >= 'A') and (C <= 'Z') then
+    Result := 36 + Ord(C) - Ord('A')
   else
     Result := -1;          // ' ' or anything else: terminal default
 end;

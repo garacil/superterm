@@ -4339,6 +4339,11 @@ begin
       cmBackgroundBase..cmBackgroundBase + 29:
         begin
           Cfg.Background := ArtName(Event.Command - cmBackgroundBase);
+          // a picture may ask for the layout it was designed for: a seamless
+          // pattern ships with 'tile', a scene leaves the choice alone
+          if ArtSuggestedMode(Event.Command - cmBackgroundBase) <> '' then
+            Cfg.BackgroundMode :=
+              ArtSuggestedMode(Event.Command - cmBackgroundBase);
           SaveConfig(Cfg);
           RebuildMenu;
           ResetVideoSurface;   // the whole desktop changes
