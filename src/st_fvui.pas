@@ -1174,9 +1174,14 @@ begin
       OutlineX2 := gx2; OutlineY2 := gy2;
       OutlinePaint(gx1, gy1, gx2, gy2, $1F);
     end
-    else if (gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
-            (gx2 <> OutlineX2) or (gy2 <> OutlineY2) then
+    else if ((gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
+             (gx2 <> OutlineX2) or (gy2 <> OutlineY2)) and
+            (not InputPending) then
     begin
+      // another mouse event is already queued: this position is about to be
+      // superseded, so do not spend a round trip drawing it. OutlineX* still
+      // names what is ON SCREEN, so the next move goes straight from there to
+      // the newest position -- the intermediate steps cost nothing.
       // Touch ONLY the difference between the two rings: give back the cells
       // the frame leaves (invalidated, so the rich renderer repaints them with
       // their real colours) and draw only the ones it newly occupies. A

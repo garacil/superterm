@@ -15,6 +15,12 @@ procedure PassthroughRaw(const Data; ALen: LongInt);
 // Raw escape/string writer to the host terminal (respects OutputFailed).
 procedure WriteRaw(const S: AnsiString);
 
+// True when more input is already waiting to be read. Painting a frame that
+// the very next event will overwrite is wasted work and, over a slow link,
+// wasted latency -- so callers use this to coalesce a burst of events into one
+// frame. Bounded by time so continuous input can never starve the screen.
+function InputPending: Boolean;
+
 // Rich overlay (the "option B" renderer). A pane registers each of its cells
 // -- the full UTF-8 glyph plus the EXACT color -- at its GLOBAL screen
 // position, passing the VideoBuf word it wrote there as an oracle. Then
@@ -76,7 +82,7 @@ var
 implementation
 
 uses
-  SysUtils, termio, Video, st_debug;
+  SysUtils, termio, BaseUnix, Video, st_debug;
 
 var
   SavedDriver: TVideoDriver;
@@ -151,6 +157,18 @@ begin
       Exit;
     end;
   end;
+end;
+
+function InputPending: Boolean;
+var
+  fds: TFDSet;
+  tv: TTimeVal;
+begin
+  fpFD_ZERO(fds);
+  fpFD_SET(StdInputHandle, fds);
+  tv.tv_sec := 0;
+  tv.tv_usec := 0;
+  InputPending := fpSelect(StdInputHandle + 1, @fds, nil, nil, @tv) > 0;
 end;
 
 function VgaColorToAnsi(AColor: Byte; AForeground: Boolean): Integer;
@@ -313,7 +331,11 @@ type
     Flags: Byte;
   end;
 
+const
+  COALESCE_MS = 40;   // never defer a frame longer than this: ~25 fps floor
+
 var
+  LastEmitTick: QWord = 0;
   RichScreen: array of TRichCell;   // overlay, persists across frames
   EffOld: array of TEffCell;        // previous frame's effective screen (delta)
   RichW: LongInt = 0;
@@ -664,6 +686,17 @@ begin
   if (VideoBuf = nil) or (OldVideoBuf = nil) or
      (ScreenWidth = 0) or (ScreenHeight = 0) then
     Exit;
+  // Coalesce: if more input is already queued, this frame is about to be
+  // superseded, so skip it and let the NEXT one emit the accumulated delta.
+  // EffOld is only advanced by cells we actually emit, so skipping is safe.
+  // The time bound keeps at least ~25 frames a second under continuous input.
+  if InputPending and (GetTickCount64 - LastEmitTick < COALESCE_MS) then
+  begin
+    if DebugActive then
+      DebugLog('video: frame coalesced (more input already waiting)');
+    Exit;
+  end;
+  LastEmitTick := GetTickCount64;
 
   RichEnsureSize;
   Body := '';
