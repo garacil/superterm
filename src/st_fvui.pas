@@ -328,6 +328,15 @@ begin
 end;
 
 var
+  // Wireframe drag. The window must stay VISIBLE while the mouse-down is
+  // dispatched, otherwise the event never reaches the frame and the vendor's
+  // DragView never starts (that mistake made windows undraggable). So we arm
+  // it here and hide the window LAZILY, on the first ChangeBounds once
+  // DragView has set sfDragging -- its loop pulls mouse events from the
+  // application queue, not through view dispatch, so hiding then is safe.
+  OutlineArmed: integer = -1;    // pane whose drag should go wireframe
+  OutlineOn: boolean = False;    // window hidden and an outline is painted
+  OutlineX1, OutlineY1, OutlineX2, OutlineY2: integer;
   // reason the last attach was refused (shown to the user instead of silently
   // starting a fresh local session)
   AttachFailReason: string = '';
@@ -1071,18 +1080,22 @@ begin
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
-    // HIDE the terminal view, do not merely blank it: a blanked view is still
-    // an opaque rectangle that drags around. Hidden, it leaves the clipping
-    // chain, so only the window frame moves and whatever is behind shows
-    // through -- the same idiom the minimized window already uses.
-    if Term <> nil then
-      Term^.Hide;
+    if DebugActive then DebugLog(Format('drag: ARMED pane=%d',[PaneIdx]));
+    OutlineArmed := PaneIdx;   // armed only; hidden later, see ChangeBounds
   end;
   inherited HandleEvent(Event);
   if Dragging then
   begin
-    if Term <> nil then
-      Term^.Show;          // released: the contents come back
+    OutlineArmed := -1;
+    if OutlineOn then
+    begin
+      // forget the ring, then Show: the regular (rich-aware) repaint puts the
+      // real colours back. Repainting it by hand would restore the text but
+      // not the attributes.
+      OutlineInvalidate(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
+      OutlineOn := False;
+      Show;                    // released: the window comes back, moved
+    end;
   end;
 end;
 
@@ -1111,8 +1124,44 @@ var
   R: Objects.TRect;
   App: PSuperApp;
   pw, ph: integer;
+  gx1, gy1, gx2, gy2: integer;
 begin
   inherited ChangeBounds(Bounds);
+  // Wireframe drag, step by step. On the first step (DragView has just set
+  // sfDragging) hide the WHOLE window: the frame paints its interior full
+  // width (vendor/fv322/views.pas:2935-2939) and a visible window keeps
+  // clipping the desktop underneath, so nothing else can make the interior
+  // see-through. Hidden, FreeVision repaints the desktop and the other
+  // windows normally and VideoBuf holds the true screen; the outline is then
+  // painted on top of it and erased straight back from the buffer.
+  if (OutlineArmed = PaneIdx) and (Desktop <> nil) and GetState(sfDragging) then
+  begin
+    gx1 := Desktop^.Origin.X + Bounds.A.X;
+    gy1 := Desktop^.Origin.Y + Bounds.A.Y;
+    gx2 := Desktop^.Origin.X + Bounds.B.X - 1;
+    gy2 := Desktop^.Origin.Y + Bounds.B.Y - 1;
+    if DebugActive then DebugLog(Format('drag: step pane=%d rect=%d,%d..%d,%d on=%d',[PaneIdx,gx1,gy1,gx2,gy2,Ord(OutlineOn)]));
+    if not OutlineOn then
+    begin
+      Hide;
+      OutlineOn := True;
+      OutlineX1 := gx1; OutlineY1 := gy1;
+      OutlineX2 := gx2; OutlineY2 := gy2;
+      OutlinePaint(gx1, gy1, gx2, gy2, $1F);
+    end
+    else if (gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
+            (gx2 <> OutlineX2) or (gy2 <> OutlineY2) then
+    begin
+      // drop the old ring from the delta and let the normal renderer repaint
+      // it -- that is what restores each cell's REAL colour (truecolor or a
+      // 256 index) instead of the 16-colour approximation
+      OutlineInvalidate(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
+      UpdateScreen(False);
+      OutlineX1 := gx1; OutlineY1 := gy1;
+      OutlineX2 := gx2; OutlineY2 := gy2;
+      OutlinePaint(gx1, gy1, gx2, gy2, $1F);
+    end;
+  end;
   if Term <> nil then
   begin
     R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
@@ -3451,7 +3500,8 @@ begin
     y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
     OutlinePaint(x1, y1, x2, y2, $1F);
     Sleep(FRAME_MS);
-    OutlineRestore(x1, y1, x2, y2);
+    OutlineInvalidate(x1, y1, x2, y2);
+    UpdateScreen(False);
   end;
 end;
 

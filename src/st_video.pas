@@ -41,7 +41,12 @@ procedure RichInvalidate;
 // erased by repainting just its cells back from VideoBuf. Only the ring
 // travels -- a few dozen cells per step instead of the window's whole area.
 procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
-procedure OutlineRestore(X1, Y1, X2, Y2: LongInt);
+// Forget what we believe is on those ring cells, so the NEXT update repaints
+// them through the normal path. Painting them back by hand is wrong: this unit
+// would rebuild them from the 16-colour VideoBuf and a pane cell would come
+// back as its CP437 approximation instead of its real colour -- text restored,
+// attributes lost. Letting the regular delta redraw them keeps truecolor.
+procedure OutlineInvalidate(X1, Y1, X2, Y2: LongInt);
 
 // Declare that what the terminal currently shows is unknown, so the NEXT
 // update repaints every cell. This is the only legitimate way to ask for a
@@ -420,77 +425,100 @@ end;
 
 // --- wireframe drag outline -------------------------------------------------
 
-function RingCellsFromBuffer(X1, Y1, X2, Y2: LongInt): AnsiString;
+// Ring cells of a rectangle, CLIPPED to the screen. A dragged window is
+// routinely pushed partly off-screen, and bailing out on an out-of-range
+// rectangle meant the outline was neither painted nor erased -- the frame
+// vanished and left debris behind. Clip instead, and draw what is visible.
+
+function OnScreen(X, Y: LongInt): Boolean; inline;
+begin
+  OnScreen := (X >= 0) and (Y >= 0) and (X < ScreenWidth) and (Y < ScreenHeight);
+end;
+
+procedure OutlineInvalidate(X1, Y1, X2, Y2: LongInt);
 var
   X, Y: LongInt;
-  Attr, Last: Integer;
-  Cell: TVideoCell;
 
-  procedure Emit(AX, AY: LongInt; StartRun: Boolean);
+  procedure Poison(AX, AY: LongInt);
+  var
+    idx: LongInt;
   begin
-    Cell := VideoCellAt(VideoBuf, AY * ScreenWidth + AX);
-    Attr := Byte(Cell shr 8);
-    if StartRun then
-      Result := Result + CursorPosition(AX, AY);
-    if Attr <> Last then
-    begin
-      Result := Result + AttrSequence(Byte(Attr));
-      Last := Attr;
-    end;
-    Result := Result + VgaChar(Byte(Cell and $FF));
+    if not OnScreen(AX, AY) then
+      Exit;
+    idx := AY * RichW + AX;
+    if (idx < 0) or (idx > High(EffOld)) then
+      Exit;
+    EffOld[idx].Skip := False;
+    EffOld[idx].Rich := False;
+    EffOld[idx].Glyph := #1;      // no real cell can compare equal to this
+    EffOld[idx].Attr := $FF;
   end;
 
 begin
-  Result := '';
-  Last := -1;
-  // top and bottom edges as one run each
-  for Y := Y1 to Y2 do
-    if (Y = Y1) or (Y = Y2) then
-    begin
-      for X := X1 to X2 do
-        Emit(X, Y, X = X1);
-    end
-    else
-    begin
-      Emit(X1, Y, True);
-      if X2 <> X1 then
-        Emit(X2, Y, True);
-    end;
-end;
-
-procedure OutlineRestore(X1, Y1, X2, Y2: LongInt);
-begin
-  if (VideoBuf = nil) or PassthroughActive or OutputFailed then
+  if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
+    RichEnsureSize;
+  if (X2 < X1) or (Y2 < Y1) then
     Exit;
-  if (X1 < 0) or (Y1 < 0) or (X2 >= ScreenWidth) or (Y2 >= ScreenHeight) or
-     (X2 < X1) or (Y2 < Y1) then
-    Exit;
-  WriteRaw(RingCellsFromBuffer(X1, Y1, X2, Y2));
+  for X := X1 to X2 do
+  begin
+    Poison(X, Y1);
+    if Y2 <> Y1 then Poison(X, Y2);
+  end;
+  for Y := Y1 + 1 to Y2 - 1 do
+  begin
+    Poison(X1, Y);
+    if X2 <> X1 then Poison(X2, Y);
+  end;
 end;
 
 procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
 var
   X, Y: LongInt;
   Body: AnsiString;
+
+  procedure Put(AX, AY: LongInt; const G: AnsiString);
+  begin
+    if not OnScreen(AX, AY) then
+      Exit;
+    Body := Body + CursorPosition(AX, AY) + G;
+  end;
+
 begin
   if PassthroughActive or OutputFailed then
     Exit;
-  if (X1 < 0) or (Y1 < 0) or (X2 >= ScreenWidth) or (Y2 >= ScreenHeight) or
-     (X2 <= X1) or (Y2 <= Y1) then
+  if (X2 <= X1) or (Y2 <= Y1) then
     Exit;
-  Body := AttrSequence(AAttr) + CursorPosition(X1, Y1) + #$E2#$94#$8C;   // U+250C
+  Body := AttrSequence(AAttr);
+  // horizontal edges as runs (one cursor move each), verticals cell by cell
+  Put(X1, Y1, #$E2#$94#$8C);                      // U+250C
   for X := X1 + 1 to X2 - 1 do
-    Body := Body + #$E2#$94#$80;                                          // U+2500
-  Body := Body + #$E2#$94#$90;                                            // U+2510
+    if OnScreen(X, Y1) then
+    begin
+      if not OnScreen(X - 1, Y1) then Body := Body + CursorPosition(X, Y1);
+      Body := Body + #$E2#$94#$80;                // U+2500
+    end;
+  if OnScreen(X2, Y1) then
+  begin
+    if not OnScreen(X2 - 1, Y1) then Body := Body + CursorPosition(X2, Y1);
+    Body := Body + #$E2#$94#$90;                  // U+2510
+  end;
+  Put(X1, Y2, #$E2#$94#$94);                      // U+2514
+  for X := X1 + 1 to X2 - 1 do
+    if OnScreen(X, Y2) then
+    begin
+      if not OnScreen(X - 1, Y2) then Body := Body + CursorPosition(X, Y2);
+      Body := Body + #$E2#$94#$80;
+    end;
+  if OnScreen(X2, Y2) then
+  begin
+    if not OnScreen(X2 - 1, Y2) then Body := Body + CursorPosition(X2, Y2);
+    Body := Body + #$E2#$94#$98;                  // U+2518
+  end;
   for Y := Y1 + 1 to Y2 - 1 do
   begin
-    Body := Body + CursorPosition(X1, Y) + #$E2#$94#$82;                  // U+2502
-    Body := Body + CursorPosition(X2, Y) + #$E2#$94#$82;
+    Put(X1, Y, #$E2#$94#$82);                     // U+2502
+    Put(X2, Y, #$E2#$94#$82);
   end;
-  Body := Body + CursorPosition(X1, Y2) + #$E2#$94#$94;                   // U+2514
-  for X := X1 + 1 to X2 - 1 do
-    Body := Body + #$E2#$94#$80;
-  Body := Body + #$E2#$94#$98;                                            // U+2518
   WriteRaw(Body);
 end;
 
