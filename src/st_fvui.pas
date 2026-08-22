@@ -538,7 +538,6 @@ var
   ShowBlk: boolean;
   BlankWord: word;
   GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
-  Hollow: boolean;         // window being dragged with contents hidden
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
 
   // Register one cell in the rich overlay at its global screen position, with
@@ -682,22 +681,10 @@ begin
   PadCell.Attr := App^.Scr[PaneIdx].Attr;
   PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
   PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
-  // hollow while this window is being dragged: the frame (drawn by the
-  // vendor) still moves, but the interior is left empty, so the gesture costs
-  // the perimeter instead of the whole area
-  Hollow := (DragPane = PaneIdx);
   for y := 0 to h - 1 do
   begin
     RowLen := 0;
-    if Hollow then
-    begin
-      for x := 0 to w - 1 do
-      begin
-        B[x] := BlankWord or word(' ');
-        RichReg(x, y, PadCell, B[x], false);
-      end;
-    end
-    else if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
+    if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
     begin
       for x := 0 to w - 1 do
       begin
@@ -983,15 +970,19 @@ begin
   if Dragging then
   begin
     DragPane := PaneIdx;
+    // HIDE the terminal view, do not merely blank it: a blanked view is still
+    // an opaque rectangle that drags around. Hidden, it leaves the clipping
+    // chain, so only the window frame moves and whatever is behind shows
+    // through -- the same idiom the minimized window already uses.
     if Term <> nil then
-      Term^.DrawView;      // show it hollow before the gesture starts
+      Term^.Hide;
   end;
   inherited HandleEvent(Event);
   if Dragging then
   begin
     DragPane := -1;
     if Term <> nil then
-      Term^.DrawView;      // released: bring the contents back
+      Term^.Show;          // released: the contents come back
   end;
 end;
 
