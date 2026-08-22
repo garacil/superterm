@@ -34,15 +34,6 @@ procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
 // Drop the whole overlay (nothing renders rich until panes repopulate it).
 procedure RichInvalidate;
 
-// Wireframe drag. While a window is dragged with its contents hidden, the
-// window itself is hidden too, so FreeVision repaints the desktop and the
-// other windows normally and VideoBuf holds the TRUE screen. The moving
-// outline is then painted straight to the terminal, outside the buffer, and
-// erased by repainting just its cells back from VideoBuf. Only the ring
-// travels -- a few dozen cells per step instead of the window's whole area.
-procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
-procedure OutlineRestore(X1, Y1, X2, Y2: LongInt);
-
 // Declare that what the terminal currently shows is unknown, so the NEXT
 // update repaints every cell. This is the only legitimate way to ask for a
 // full repaint: the per-cell delta is otherwise always trustworthy, because
@@ -415,83 +406,6 @@ begin
     Result := (A.Fg = B.Fg) and (A.Bg = B.Bg) and (A.Flags = B.Flags)
   else
     Result := (A.Attr = B.Attr);
-end;
-
-
-// --- wireframe drag outline -------------------------------------------------
-
-function RingCellsFromBuffer(X1, Y1, X2, Y2: LongInt): AnsiString;
-var
-  X, Y: LongInt;
-  Attr, Last: Integer;
-  Cell: TVideoCell;
-
-  procedure Emit(AX, AY: LongInt; StartRun: Boolean);
-  begin
-    Cell := VideoCellAt(VideoBuf, AY * ScreenWidth + AX);
-    Attr := Byte(Cell shr 8);
-    if StartRun then
-      Result := Result + CursorPosition(AX, AY);
-    if Attr <> Last then
-    begin
-      Result := Result + AttrSequence(Byte(Attr));
-      Last := Attr;
-    end;
-    Result := Result + VgaChar(Byte(Cell and $FF));
-  end;
-
-begin
-  Result := '';
-  Last := -1;
-  // top and bottom edges as one run each
-  for Y := Y1 to Y2 do
-    if (Y = Y1) or (Y = Y2) then
-    begin
-      for X := X1 to X2 do
-        Emit(X, Y, X = X1);
-    end
-    else
-    begin
-      Emit(X1, Y, True);
-      if X2 <> X1 then
-        Emit(X2, Y, True);
-    end;
-end;
-
-procedure OutlineRestore(X1, Y1, X2, Y2: LongInt);
-begin
-  if (VideoBuf = nil) or PassthroughActive or OutputFailed then
-    Exit;
-  if (X1 < 0) or (Y1 < 0) or (X2 >= ScreenWidth) or (Y2 >= ScreenHeight) or
-     (X2 < X1) or (Y2 < Y1) then
-    Exit;
-  WriteRaw(RingCellsFromBuffer(X1, Y1, X2, Y2));
-end;
-
-procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
-var
-  X, Y: LongInt;
-  Body: AnsiString;
-begin
-  if PassthroughActive or OutputFailed then
-    Exit;
-  if (X1 < 0) or (Y1 < 0) or (X2 >= ScreenWidth) or (Y2 >= ScreenHeight) or
-     (X2 <= X1) or (Y2 <= Y1) then
-    Exit;
-  Body := AttrSequence(AAttr) + CursorPosition(X1, Y1) + #$E2#$94#$8C;   // U+250C
-  for X := X1 + 1 to X2 - 1 do
-    Body := Body + #$E2#$94#$80;                                          // U+2500
-  Body := Body + #$E2#$94#$90;                                            // U+2510
-  for Y := Y1 + 1 to Y2 - 1 do
-  begin
-    Body := Body + CursorPosition(X1, Y) + #$E2#$94#$82;                  // U+2502
-    Body := Body + CursorPosition(X2, Y) + #$E2#$94#$82;
-  end;
-  Body := Body + CursorPosition(X1, Y2) + #$E2#$94#$94;                   // U+2514
-  for X := X1 + 1 to X2 - 1 do
-    Body := Body + #$E2#$94#$80;
-  Body := Body + #$E2#$94#$98;                                            // U+2518
-  WriteRaw(Body);
 end;
 
 // Builds the whole frame in one buffer and emits it with a SINGLE write,

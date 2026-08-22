@@ -328,11 +328,6 @@ begin
 end;
 
 var
-  // wireframe drag: the window being dragged is HIDDEN, and this is the
-  // outline currently painted on the terminal (Valid=False = none painted)
-  OutlineValid: boolean = False;
-  OutlineX1, OutlineY1, OutlineX2, OutlineY2: integer;
-  OutlineOwner: integer = -1;
   // reason the last attach was refused (shown to the user instead of silently
   // starting a fresh local session)
   AttachFailReason: string = '';
@@ -1076,30 +1071,18 @@ begin
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
-    // Hide the WHOLE window, not just the pane: the frame paints its interior
-    // full width (vendor/fv322/views.pas:2935-2939), so a visible frame is an
-    // opaque blue rectangle, and a visible window keeps clipping the desktop
-    // underneath. Hidden, FreeVision repaints the desktop and the other
-    // windows normally, VideoBuf ends up holding the true screen, and we paint
-    // the moving outline on top of it ourselves.
-    OutlineOwner := PaneIdx;
-    OutlineX1 := Desktop^.Origin.X + Origin.X;
-    OutlineY1 := Desktop^.Origin.Y + Origin.Y;
-    OutlineX2 := OutlineX1 + Size.X - 1;
-    OutlineY2 := OutlineY1 + Size.Y - 1;
-    Hide;
-    OutlineValid := True;
-    OutlinePaint(OutlineX1, OutlineY1, OutlineX2, OutlineY2, $1F);
+    // HIDE the terminal view, do not merely blank it: a blanked view is still
+    // an opaque rectangle that drags around. Hidden, it leaves the clipping
+    // chain, so only the window frame moves and whatever is behind shows
+    // through -- the same idiom the minimized window already uses.
+    if Term <> nil then
+      Term^.Hide;
   end;
   inherited HandleEvent(Event);
   if Dragging then
   begin
-    // released: drop the outline and bring the window back at its new place
-    if OutlineValid then
-      OutlineRestore(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
-    OutlineValid := False;
-    OutlineOwner := -1;
-    Show;
+    if Term <> nil then
+      Term^.Show;          // released: the contents come back
   end;
 end;
 
@@ -1127,29 +1110,9 @@ procedure TTermWindow.ChangeBounds(var Bounds: Objects.TRect);
 var
   R: Objects.TRect;
   App: PSuperApp;
-  gx1, gy1, gx2, gy2: integer;
   pw, ph: integer;
 begin
   inherited ChangeBounds(Bounds);
-  // Wireframe drag: the window is hidden, so nothing of it is drawn. Move the
-  // outline instead -- erase the ring we painted last (straight from VideoBuf,
-  // which holds the true screen) and paint the new one. Only those cells
-  // travel, so a drag step costs the perimeter, not the area.
-  if OutlineValid and (OutlineOwner = PaneIdx) and (Desktop <> nil) then
-  begin
-    gx1 := Desktop^.Origin.X + Bounds.A.X;
-    gy1 := Desktop^.Origin.Y + Bounds.A.Y;
-    gx2 := Desktop^.Origin.X + Bounds.B.X - 1;
-    gy2 := Desktop^.Origin.Y + Bounds.B.Y - 1;
-    if (gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
-       (gx2 <> OutlineX2) or (gy2 <> OutlineY2) then
-    begin
-      OutlineRestore(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
-      OutlineX1 := gx1; OutlineY1 := gy1;
-      OutlineX2 := gx2; OutlineY2 := gy2;
-      OutlinePaint(gx1, gy1, gx2, gy2, $1F);   // bright white on blue
-    end;
-  end;
   if Term <> nil then
   begin
     R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
