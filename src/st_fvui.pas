@@ -596,6 +596,11 @@ var
   ShowBlk: boolean;
   BlankWord: word;
   GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
+  // rectangles of the windows stacked IN FRONT of this one, in global screen
+  // coordinates: cells they cover are theirs, not ours
+  FrontR: array[0..MAX_PANES - 1] of Objects.TRect;
+  FrontN: integer;
+  MyWin, PW: PView;
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
 
   // Register one cell in the rich overlay at its global screen position, with
@@ -603,6 +608,22 @@ var
   // glyph and exact color (truecolor when the cell carries RGB, else the
   // 16-color fallback) let WideUpdateScreen present the pane area faithfully
   // instead of the CP437/16-color grid. cursor=True inverts (block cursor).
+  // True when this global cell is covered by a window stacked in front, so the
+  // rich entry there belongs to that window and must not be overwritten.
+  // FreeVision clips VideoBuf correctly, but it draws front-to-back, so
+  // without this test the BACK pane registers last and wins -- and the oracle
+  // cannot catch it, because two blank cells quantise to the same word.
+  function Occluded(gx, gy: integer): boolean;
+  var
+    q: integer;
+  begin
+    Occluded := False;
+    for q := 0 to FrontN - 1 do
+      if (gx >= FrontR[q].A.X) and (gx < FrontR[q].B.X) and
+         (gy >= FrontR[q].A.Y) and (gy < FrontR[q].B.Y) then
+        Exit(True);
+  end;
+
   procedure RichReg(lx, ly: integer; const c: TCell; oracle: word;
     cursor: boolean);
   var
@@ -651,6 +672,8 @@ var
       fbg := $02000000 or LongWord((c.Attr shr 4) and $0F);
     if (c.Attr and A_UNDER) <> 0 then fl := fl or 2;
     if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
+    if Occluded(GOrig.X + lx, GOrig.Y + ly) then
+      Exit;   // that cell belongs to the window in front; leave its entry alone
     RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
       oracle, isSkip);
   end;
@@ -729,6 +752,32 @@ begin
   GOrig.X := 0;
   GOrig.Y := 0;
   MakeGlobal(GOrig, GOrig);
+  // walk the desktop's Z-order from the topmost view up to our own window and
+  // remember every visible window in front of it
+  FrontN := 0;
+  MyWin := nil;
+  if (App^.Win[PaneIdx] <> nil) then
+    MyWin := PView(App^.Win[PaneIdx]);
+  if (Desktop <> nil) and (MyWin <> nil) then
+  begin
+    PW := Desktop^.First;
+    while (PW <> nil) and (PW <> MyWin) and (FrontN < MAX_PANES) do
+    begin
+      if (PW^.GetState(sfVisible)) then
+      begin
+        FrontR[FrontN].A := PW^.Origin;
+        FrontR[FrontN].B.X := PW^.Origin.X + PW^.Size.X;
+        FrontR[FrontN].B.Y := PW^.Origin.Y + PW^.Size.Y;
+        // Origin is relative to the desktop; shift to screen coordinates
+        Inc(FrontR[FrontN].A.X, Desktop^.Origin.X);
+        Inc(FrontR[FrontN].A.Y, Desktop^.Origin.Y);
+        Inc(FrontR[FrontN].B.X, Desktop^.Origin.X);
+        Inc(FrontR[FrontN].B.Y, Desktop^.Origin.Y);
+        Inc(FrontN);
+      end;
+      PW := PW^.NextView;
+    end;
+  end;
   PadCell := Default(TCell);
   PadCell.Attr := App^.Scr[PaneIdx].Attr;
   PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
