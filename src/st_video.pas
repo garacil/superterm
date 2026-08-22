@@ -40,6 +40,9 @@ procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
   AWide: Boolean);
 // Drop the whole overlay (nothing renders rich until panes repopulate it).
 procedure RichInvalidate;
+// Forget one cell. A view that covers ground it does not colour richly says
+// so here, instead of leaving whatever the previous layout registered.
+procedure RichClear(AX, AY: LongInt);
 
 // Wireframe drag. While a window is dragged with its contents hidden, the
 // window itself is hidden too, so FreeVision repaints the desktop and the
@@ -370,6 +373,19 @@ var
 begin
   for i := 0 to High(RichScreen) do
     RichScreen[i].Valid := False;
+end;
+
+procedure RichClear(AX, AY: LongInt);
+var
+  idx: LongInt;
+begin
+  if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
+    RichEnsureSize;
+  if (AX < 0) or (AY < 0) or (AX >= RichW) or (AY >= RichH) then
+    Exit;
+  idx := AY * RichW + AX;
+  if (idx >= 0) and (idx <= High(RichScreen)) then
+    RichScreen[idx].Valid := False;
 end;
 
 procedure InvalidateFrame;

@@ -1,0 +1,46 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
+#   .  background palette index (optional line)
+# Seamless: traces and pads that continue across the repeat.
+name: Circuit board
+name.es: Circuito impreso
+mode: tile
+palette: C5A956 9C954E 6B703D 1B6E47 176944 176240 17603F 2E5434 145538 0D5236 104A31 193D28 0D3323 0D3122 0C3122 0D2E20 0E291D 062B20 112519 09231A 101F16 091F17 071E16 0A1C15 081C15 081C14 081B15 081B14 021B16 091A14 081A14 081A13 071A14 081913 081813 061814 071712 071612 071511 071310 021411 06120F 07110E 06110F 06110E 06100E 030F0E 020B0C
+
+> 222222222222222222222222
+: 4HouuuuxFDJg6HnwznE71kwr
+. 4Houuuxl54534Jounzi002Kn
+> 222222222222222222222222
+: 4Joolxuqedfa6Kk107Kc3gcd
+. 4HouxuuuAAFf6DzniECh9LAC
+> 222222222222222222222222
+: CpCd5HoxFHFJl9m72izvIHHH
+. bBBf6Drl66668mi002Lj6666
+> 222222222222222222222222
+: urCc6JmuuuuqrFg107Enuuuu
+. qrCd6FouooomBjamyEruoooo
+> 222222222222222222222222
+: uurAjajBorBe4am72kzruuuu
+. uuxl9jBqurBg3mk002Knuuuu
+> 222222222222222222222222
+: lxuqlBjajAn107s8gyuuuuuu
+. xuurCjajBnFd5E9sLzuuuuuu
+> 222222222222222222222222
+: 4DAc5Fyd6DE71kwyBruurrrr
+. 5FAf6DDc6Ki002LgcAruuuuu
+> 222222222222222222222222
+: 07ha3gfa4GAd6Jouuuuqeddd
+. 3LHf6JFf6FAh9KouruuuCCCC
+> 222222222222222222222222
+: 28zJFHHJCpCf3ajCzqquFHHH
+. 01955664aCAf3mAntrxl6666
+> 222222222222222222222222
+: ffc5gAuoluCc4Lg107hcjyuu
+. LmalAmoourCc8uagiECCxooo
+> 222222222222222222222222
+: mawLBpCd5HoyCqE72kKGBruu
+. 3384bCBf6DxjbEi00194bCru
+> 222222222222222222222222
+: oBj9luCd6Houuuunntuuuuuu
+. Aj9jyqCd6HouquuEKznoquuu

@@ -7,6 +7,7 @@ PREFIX := @PREFIX@
 BINDIR := @BINDIR@
 SYSCONFDIR := @SYSCONFDIR@
 DOCDIR := @DOCDIR@
+DATADIR := @DATADIR@
 
 MODE ?= release
 TARGET ?= $(PROJECT_DIR)/bin/superterm
@@ -76,6 +77,11 @@ install: release
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
 		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
 	done
+	@mkdir -p "$(DATADIR)/backgrounds"
+	@for art in "$(PROJECT_DIR)"/backgrounds/*.art; do \
+		install -m 0644 "$$art" "$(DATADIR)/backgrounds/$$(basename "$$art")"; \
+	done
+	@printf '%s\n' "Desktop backgrounds installed in $(DATADIR)/backgrounds"
 	@if [ ! -f "$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
 		install -m 0644 "$(PROJECT_DIR)/examples/superterm.ini.example" \
 			"$(SYSCONFDIR)/superterm/superterm.ini.example"; \
@@ -88,6 +94,7 @@ uninstall:
 	rm -f "$(DOCDIR)/README.md" "$(DOCDIR)/BUILDING.md" \
 		"$(DOCDIR)/CONFIGURATION.md" "$(DOCDIR)/WIZARD.md"
 	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
+	rm -rf "$(DATADIR)/backgrounds"
 
 install-deps:
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
