@@ -67,6 +67,18 @@ type
     FUtfNeed: byte;
     FOscBuf: RawByteString;
     FSaveX, FSaveY: integer;
+    // DECSC (ESC 7) saves cursor AND graphic rendition; DECRC (ESC 8) restores
+    // both. Keeping only the position left attributes leaking across a restore.
+    FSaveAttr: word;
+    FSaveFgRGB, FSaveBgRGB: LongWord;
+    // The alternate screen (?1049) has its OWN save slot in xterm, independent
+    // of DECSC, and it too saves the graphic rendition. Without this an app
+    // that exits the alt screen without an explicit SGR reset (Claude Code
+    // does exactly that) left its last attributes -- typically bold -- applied
+    // to every byte the shell printed afterwards.
+    FAltSaveX, FAltSaveY: integer;
+    FAltSaveAttr: word;
+    FAltSaveFgRGB, FAltSaveBgRGB: LongWord;
     FInterm: AnsiChar;      // CSI intermediate byte (e.g. ' ' of DECSCUSR)
     FAutoWrap: boolean;     // DECAWM ?7 (default on)
     procedure ClearCell(var C: TCell);
@@ -101,6 +113,10 @@ type
     procedure Resize(AWidth, AHeight: integer);
     procedure WriteBytes(const Buf; Count: integer);
     procedure ResetSoft;
+    // RIS (ESC c): full reset -- what `reset` sends (terminfo rs1). Unlike the
+    // soft reset it also ERASES the screen, leaves the alternate buffer and
+    // drops the scrollback.
+    procedure ResetHard;
     function ViewOffset: integer;
     procedure ScrollViewport(ADelta: integer);  // + back, - forward
     function DisplayRow(y: integer): TRow;
@@ -1197,8 +1213,13 @@ begin
                       FUsingAlt := True;
                       if n = 1049 then
                       begin
-                        FSaveX := CursorX;
-                        FSaveY := CursorY;
+                        // xterm: ?1049h saves the cursor AND the graphic
+                        // rendition into its own slot (independent of DECSC)
+                        FAltSaveX := CursorX;
+                        FAltSaveY := CursorY;
+                        FAltSaveAttr := Attr;
+                        FAltSaveFgRGB := AttrFgRGB;
+                        FAltSaveBgRGB := AttrBgRGB;
                         EraseRange(0, 0, Width - 1, Height - 1, Attr);
                       end;
                       CursorX := 0;
@@ -1215,8 +1236,16 @@ begin
                       FAltGrid := nil;
                       if n = 1049 then
                       begin
-                        CursorX := FSaveX;
-                        CursorY := FSaveY;
+                        // ?1049l restores cursor AND graphic rendition. This is
+                        // what a real terminal does, and why an app may exit the
+                        // alt screen without an explicit SGR reset; restoring
+                        // only the cursor left its last attributes (bold) stuck
+                        // on every byte the shell printed afterwards.
+                        CursorX := FAltSaveX;
+                        CursorY := FAltSaveY;
+                        Attr := FAltSaveAttr;
+                        AttrFgRGB := FAltSaveFgRGB;
+                        AttrBgRGB := FAltSaveBgRGB;
                       end;
                     end;
                   end;
@@ -1266,14 +1295,22 @@ begin
       end;
     '7':
       begin
+        // DECSC saves cursor position AND graphic rendition (SGR)
         FSaveX := CursorX;
         FSaveY := CursorY;
+        FSaveAttr := Attr;
+        FSaveFgRGB := AttrFgRGB;
+        FSaveBgRGB := AttrBgRGB;
         FPState := psGround;
       end;
     '8':
       begin
+        // DECRC restores both, so attributes do not leak past a restore
         CursorX := FSaveX;
         CursorY := FSaveY;
+        Attr := FSaveAttr;
+        AttrFgRGB := FSaveFgRGB;
+        AttrBgRGB := FSaveBgRGB;
         FPState := psGround;
       end;
     'D': LineFeed;
@@ -1290,7 +1327,7 @@ begin
         CursorX := 0;
         LineFeed;
       end;
-    'c': ResetSoft;
+    'c': ResetHard;   // RIS: `reset` expects the screen cleared, not just homed
   else
     ; // =, >, etc: ignore
   end;
@@ -1311,6 +1348,44 @@ begin
   CursorStyle := 0;
   FAutoWrap := True;
   FPendingWrap := False;
+end;
+
+procedure TScreen.ResetHard;
+var
+  y: integer;
+begin
+  // back to the normal screen buffer (discard the alternate one)
+  FUsingAlt := False;
+  FAltGrid := nil;
+  ResetSoft;
+  // RIS erases the screen -- this is what `reset` expects and what was
+  // missing: the cursor homed but the old contents stayed on screen
+  for y := 0 to Height - 1 do
+    BlankRow(y, Attr);
+  // ...and drops the scrollback
+  FSBCount := 0;
+  FSBHead := 0;
+  FViewTop := 0;
+  // parser and saved-state slots back to a clean slate
+  FPState := psGround;
+  FPCount := 0;
+  FPPriv := False;
+  FPrivOther := False;
+  FInterm := #0;
+  FUtfLen := 0;
+  FUtfNeed := 0;
+  FOscBuf := '';
+  FSaveX := 0;
+  FSaveY := 0;
+  FSaveAttr := A_FGDEF or A_BGDEF;
+  FSaveFgRGB := 0;
+  FSaveBgRGB := 0;
+  FAltSaveX := 0;
+  FAltSaveY := 0;
+  FAltSaveAttr := A_FGDEF or A_BGDEF;
+  FAltSaveFgRGB := 0;
+  FAltSaveBgRGB := 0;
+  Dirty := True;
 end;
 
 procedure TScreen.WriteBytes(const Buf; Count: integer);
