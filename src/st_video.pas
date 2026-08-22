@@ -30,7 +30,8 @@ procedure WriteRaw(const S: AnsiString);
 // a wide-glyph continuation cell (its lead already emitted the 2-wide glyph,
 // so nothing is written here).
 procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
-  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean);
+  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean;
+  AWide: Boolean);
 // Drop the whole overlay (nothing renders rich until panes repopulate it).
 procedure RichInvalidate;
 
@@ -294,6 +295,7 @@ type
   TRichCell = record
     Valid: Boolean;
     Skip: Boolean;      // wide-glyph continuation: emit nothing here
+    Wide: Boolean;      // lead of a two-column glyph
     Oracle: Word;       // the VideoBuf word the pane wrote at this cell
     Glyph: string[7];   // UTF-8 bytes to emit
     Fg, Bg: LongWord;
@@ -304,6 +306,7 @@ type
   TEffCell = record
     Skip: Boolean;
     Rich: Boolean;
+    Wide: Boolean;
     Glyph: string[7];
     Attr: Byte;         // chrome path (VGA attribute byte)
     Fg, Bg: LongWord;   // rich path
@@ -364,7 +367,8 @@ begin
 end;
 
 procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
-  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean);
+  AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean;
+  AWide: Boolean);
 var
   idx: LongInt;
 begin
@@ -375,6 +379,7 @@ begin
   idx := AY * RichW + AX;
   RichScreen[idx].Valid := True;
   RichScreen[idx].Skip := ASkip;
+  RichScreen[idx].Wide := AWide;
   RichScreen[idx].Oracle := AOracle;
   if Length(AGlyph) > 7 then
     RichScreen[idx].Glyph := Copy(AGlyph, 1, 7)
@@ -426,7 +431,8 @@ begin
   if A.Rich <> B.Rich then Exit(False);
   if A.Glyph <> B.Glyph then Exit(False);
   if A.Rich then
-    Result := (A.Fg = B.Fg) and (A.Bg = B.Bg) and (A.Flags = B.Flags)
+    Result := (A.Fg = B.Fg) and (A.Bg = B.Bg) and (A.Flags = B.Flags) and
+              (A.Wide = B.Wide)
   else
     Result := (A.Attr = B.Attr);
 end;
@@ -627,7 +633,7 @@ end;
 // paints the frame atomically (no tearing). Terminals without 2026 ignore it.
 procedure WideUpdateScreen(Force: Boolean);
 var
-  X, Y, Index: LongInt;
+  X, Y, Index, Nx: LongInt;
   VCell: TVideoCell;
   Eff: TEffCell;
   NeedMove: Boolean;
@@ -672,6 +678,7 @@ begin
       if RichScreen[Index].Valid and (Word(VCell) = RichScreen[Index].Oracle) then
       begin
         Eff.Skip := RichScreen[Index].Skip;
+        Eff.Wide := RichScreen[Index].Wide;
         Eff.Rich := True;
         Eff.Glyph := RichScreen[Index].Glyph;
         Eff.Fg := RichScreen[Index].Fg;
@@ -682,12 +689,48 @@ begin
       else
       begin
         Eff.Skip := False;
+        Eff.Wide := False;
         Eff.Rich := False;
         Eff.Attr := Byte(VCell shr 8);
         Eff.Glyph := VgaChar(Byte(VCell and $FF));
         Eff.Fg := 0;
         Eff.Bg := 0;
         Eff.Flags := 0;
+      end;
+      // A two-column glyph and its continuation are two independent cells
+      // here, and a pane edge can separate them: the lead's right half would
+      // then land on the window frame (which the delta sees as unchanged and
+      // never repaints), or a continuation would be left blank forever with no
+      // lead to fill it. Only emit the pair when BOTH halves are ours.
+      if Eff.Rich and Eff.Wide then
+      begin
+        Nx := Index + 1;
+        if (X + 1 >= ScreenWidth) or (not RichScreen[Nx].Valid) or
+           (not RichScreen[Nx].Skip) or
+           (Word(VideoCellAt(VideoBuf, Nx)) <> RichScreen[Nx].Oracle) then
+        begin
+          Eff.Glyph := ' ';    // split pair: never overflow into a foreign cell
+          Eff.Wide := False;
+        end;
+      end
+      else if Eff.Rich and Eff.Skip then
+      begin
+        Nx := Index - 1;
+        if (X = 0) or (not RichScreen[Nx].Valid) or
+           (not RichScreen[Nx].Wide) or
+           (Word(VideoCellAt(VideoBuf, Nx)) <> RichScreen[Nx].Oracle) then
+        begin
+          // orphan continuation: fall back to the chrome cell so the column is
+          // painted instead of staying blank
+          Eff.Skip := False;
+          Eff.Rich := False;
+          Eff.Wide := False;
+          Eff.Attr := Byte(VCell shr 8);
+          Eff.Glyph := VgaChar(Byte(VCell and $FF));
+          Eff.Fg := 0;
+          Eff.Bg := 0;
+          Eff.Flags := 0;
+        end;
       end;
       // Force is IGNORED on purpose: FreeVision asks for a forced update from
       // TGroup.Redraw, which TGroup.ChangeBounds triggers on every step of a

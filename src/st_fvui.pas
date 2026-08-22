@@ -649,12 +649,12 @@ var
   end;
 
   procedure RichReg(lx, ly: integer; const c: TCell; oracle: word;
-    cursor: boolean);
+    cursor: boolean; nextCont: boolean);
   var
     g: RawByteString;
     ffg, fbg: LongWord;
     fl, k: integer;
-    isSkip: boolean;
+    isSkip, isWide: boolean;
   begin
     isSkip := c.Cont;
     if isSkip then
@@ -701,8 +701,13 @@ var
     if ((c.Attr and A_REVERSE) <> 0) <> cursor then fl := fl or 4;
     if Occluded(GOrig.X + lx, GOrig.Y + ly) then
       Exit;   // that cell belongs to the window in front; leave its entry alone
+    // lead of a two-column glyph: the caller knows whether the next cell of
+    // the SAME source row is its continuation (the live grid and a scrollback
+    // row are different sources). The emitter needs it to refuse a pair split
+    // by a pane edge.
+    isWide := (not isSkip) and nextCont;
     RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
-      oracle, isSkip);
+      oracle, isSkip, isWide);
   end;
 
   function VideoColor(AAnsiColor: byte): byte;
@@ -829,12 +834,14 @@ begin
              B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
                word(TranslitByte(cell));
            end;
-           RichReg(x, y, cell, B[x], ShowBlk and (x = cx) and (y = cy));
+           RichReg(x, y, cell, B[x], ShowBlk and (x = cx) and (y = cy),
+             (x + 1 < App^.Scr[PaneIdx].Width) and
+             App^.Scr[PaneIdx].Grid[y][x + 1].Cont);
          end
          else
          begin
            B[x] := BlankWord or word(' ');
-           RichReg(x, y, PadCell, B[x], false);
+           RichReg(x, y, PadCell, B[x], false, false);
          end;
       end;
     end
@@ -850,12 +857,13 @@ begin
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
-           RichReg(x, y, cell, B[x], false);
+           RichReg(x, y, cell, B[x], false,
+             (x + 1 < RowLen) and Row[x + 1].Cont);
          end
          else
          begin
            B[x] := BlankWord or word(' ');
-           RichReg(x, y, PadCell, B[x], false);
+           RichReg(x, y, PadCell, B[x], false, false);
          end;
        end;
     end
@@ -863,7 +871,7 @@ begin
       for x := 0 to w - 1 do
       begin
         B[x] := BlankWord or word(' ');
-        RichReg(x, y, PadCell, B[x], false);
+        RichReg(x, y, PadCell, B[x], false, false);
       end;
     WriteLine(0, y, w, 1, B);
   end;
