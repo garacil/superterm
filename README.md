@@ -308,7 +308,10 @@ The compatibility wrapper remains available:
 
 Use `make info` to inspect the selected compiler, target, prefix, and paths.
 See [`docs/BUILDING.md`](docs/BUILDING.md) for the source tree, vendor units,
-build modes, installation, debugging, and platform boundaries.
+build modes, installation, and platform boundaries, and
+[`docs/DEBUGGING.md`](docs/DEBUGGING.md) for the tracing build, how to read a
+trace, the crash report with its backtrace, and how to reproduce a problem
+from a script.
 
 ## Tests
 

@@ -172,15 +172,23 @@ Then ensure `$HOME/.local/bin` is in `PATH`.
 
 ## Debugging
 
-The application writes optional runtime diagnostics when `SUPERTERM_DEBUG` is
-set:
+The application writes runtime diagnostics when `SUPERTERM_DEBUG` names a
+file, and a build made with `make debug` writes them without being asked:
 
 ```sh
 SUPERTERM_DEBUG=/tmp/superterm-debug.log bin/superterm
+bin/superterm-debug                       # traces to /tmp/st-crash.log
 ```
 
-The log includes PTY creation, terminal sizes, pane focus, key routing, and
-template activation. Do not put passwords in debug logs or command lines.
+The log covers PTY creation, terminal sizes, pane focus, key routing, mouse
+modes, passthrough and template activation, and a fatal signal leaves a report
+with a backtrace that names the source file and line. Do not put passwords in
+debug logs or command lines.
+
+[`DEBUGGING.md`](DEBUGGING.md) covers the whole of it: what each kind of trace
+line means, how to hand a traced session to somebody else, how to read the
+crash report, and how to reproduce a problem from a script with the test
+harness.
 
 ## Platform support
 
