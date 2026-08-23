@@ -259,13 +259,6 @@ type
     procedure StopRuntime;
     procedure ReleaseRuntime;
     function NewWindowRect(ASysIdx: integer): Objects.TRect;
-    // where a pane opened FROM window AAt goes. With a class: centred at the
-    // class size, on top. Without one it is a split -- AAt gives up half of
-    // itself (AKeep) and the new window takes the other half -- and nothing
-    // else on the desktop moves. ASplit says which happened.
-    function PlaceNewPane(AAt: integer; ADir: TSplitDir; AHasClass: boolean;
-      ASysIdx: integer; out AKeep: Objects.TRect;
-      out ASplit: boolean): Objects.TRect;
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
     procedure SyncPaneToWindow(i: integer);
@@ -1084,10 +1077,17 @@ begin
   end;
   if (Event.What = evKeyDown) and (App^.Scr[PaneIdx] <> nil) then
   begin
-    // Shift-PgUp/PgDn: the conventional binding, when the host terminal lets
-    // it through (most keep it for their own history). Alt- and Ctrl- always.
+    // Plain PgUp/PgDn scroll the history too, but only where nothing else
+    // wants them: on the normal screen, and only once there is history to
+    // move through. An application on the alternate screen (less, vim, a
+    // pager) keeps them, and so does a shell before anything has scrolled
+    // off. Shift- is the conventional binding where the host terminal lets
+    // it through -- most keep it for their own history; Alt- and Ctrl-
+    // always work and are the ones to document.
     if ((Event.KeyCode = kbPgUp) or (Event.KeyCode = kbPgDn)) and
-       ((Event.KeyShift and kbBothShifts) <> 0) then
+       (((Event.KeyShift and kbBothShifts) <> 0) or
+        ((not App^.Scr[PaneIdx].UsingAlt) and
+         (App^.Scr[PaneIdx].HistoryRows > 0))) then
     begin
       if Event.KeyCode = kbPgUp then
         App^.Scr[PaneIdx].ScrollViewport(+Size.Y)
@@ -1318,10 +1318,14 @@ begin
      (App^.Scr[PaneIdx] = nil) then
     Exit;
   Hist := App^.Scr[PaneIdx].HistoryRows;
-  // no bar on an icon, on a window too short to hold one, before there is
-  // any history, or while the app owns the alternate screen (vim, less,
-  // Claude Code): there is nothing to scroll there and the column is theirs
-  Want := (not Minimized) and (Size.Y > 3) and (Hist > 0) and
+  // The bar is shown whenever the pane can have history, even while there is
+  // none: hiding it until the first line scrolls off makes a window with a
+  // fresh shell look like a build where the feature is missing. With no
+  // history the thumb simply fills the trough, which is what every terminal
+  // does. It goes away on an icon, on a window too short to hold it, and
+  // while the app owns the alternate screen (vim, less, Claude Code): there
+  // is no history there and the column is theirs.
+  Want := (not Minimized) and (Size.Y > 3) and
           (not App^.Scr[PaneIdx].UsingAlt);
   if (not AValueOnly) and (Want <> SBShown) then
   begin
@@ -1991,6 +1995,11 @@ begin
   if ACommandOverride <> '' then
     CmdS := ACommandOverride;
   CwdS := ExpandUserPath(CwdS);
+  // last resort: a pane with no scrollback keeps no history at all, and
+  // nothing in the interface would say why. Only an explicit setting can
+  // ask for that, and none of the callers can express it as zero.
+  if AMaxSB <= 0 then
+    AMaxSB := DEFAULT_SCROLLBACK;
   PaneTerm[i] := ASysIdx;
   PaneConnect[i] := ''; // callers with a free connection set it afterwards
   Scr[i] := TScreen.Create(pw, ph, AMaxSB);
@@ -2101,39 +2110,6 @@ begin
   Slot := CentredRect(WantW, WantH, DW, DH);
   Result.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
     RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
-end;
-
-function TSuperApp.PlaceNewPane(AAt: integer; ADir: TSplitDir;
-  AHasClass: boolean; ASysIdx: integer; out AKeep: Objects.TRect;
-  out ASplit: boolean): Objects.TRect;
-var
-  WR: Objects.TRect;
-  LR, K, N: st_layout.TRect;
-begin
-  ASplit := False;
-  AKeep := Default(Objects.TRect);
-  // a maximised or minimised window has no real rectangle to share
-  if (not AHasClass) and (AAt >= 0) and (AAt < MAX_PANES) and
-     (Win[AAt] <> nil) and (not Win[AAt]^.Minimized) and
-     (not Win[AAt]^.Zoomed) then
-  begin
-    WR := Default(Objects.TRect);
-    Win[AAt]^.GetBounds(WR);
-    LR.X := WR.A.X;
-    LR.Y := WR.A.Y;
-    LR.W := WR.B.X - WR.A.X;
-    LR.H := WR.B.Y - WR.A.Y;
-    if SplitWindowRect(LR, ADir, K, N) then
-    begin
-      ASplit := True;
-      AKeep.Assign(K.X, K.Y, K.X + K.W, K.Y + K.H);
-      Result := Default(Objects.TRect);
-      Result.Assign(N.X, N.Y, N.X + N.W, N.Y + N.H);
-      Exit;
-    end;
-  end;
-  // a class, or a window too small to split: centred on top
-  Result := NewWindowRect(ASysIdx);
 end;
 
 procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string;
@@ -2553,8 +2529,6 @@ var
   OldCount, NewIdx, j: integer;
   DirB: byte;
   ClassS: string;
-  KeepR: Objects.TRect;
-  SplitWin: boolean;
 begin
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
@@ -2608,9 +2582,9 @@ begin
   Scr[NewIdx] := nil;
   Win[NewIdx] := nil;
   PaneTerm[NewIdx] := -1;
-  // the focused window keeps its index: the new one is inserted after it
-  NextRect := PlaceNewPane(Lay.Focused, ADir, ASysIdx >= 0, ASysIdx,
-    KeepR, SplitWin);
+  // one rule for every way of creating a window: centred, at the size its
+  // class asks for, and nothing already open is touched
+  NextRect := NewWindowRect(ASysIdx);
   NextRectSet := True;
   if ASysIdx >= 0 then
     StartPaneEx(NewIdx, '', '', ASysIdx, '', '', '', 0)
@@ -2646,11 +2620,9 @@ begin
     FocusPane(Lay.Focused);
     Exit;
   end;
-  // do NOT re-tile: the windows already open keep the size and position the
-  // user gave them. A split takes its half from the window it came from and
-  // from nowhere else. Window|Tile (prefix + t) is how you ask for a re-tile.
-  if SplitWin and (Win[Lay.Focused] <> nil) then
-    Win[Lay.Focused]^.Locate(KeepR);
+  // do NOT re-tile, and do not touch the window this was opened from: the
+  // windows already open keep the size and position the user gave them.
+  // Window|Tile (prefix + t) is how you ask for a re-tile.
   Lay.Focused := NewIdx;
   FocusPane(Lay.Focused);
 end;
@@ -4321,8 +4293,6 @@ var
   TitleS, TermS: string;
   OldCount, j: integer;
   SDir: TSplitDir;
-  KeepR: Objects.TRect;
-  SplitWin: boolean;
 begin
   if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
     TitleS, TermS) then
@@ -4362,14 +4332,10 @@ begin
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
-  // same rule as a local split, applied by every client to its own window
-  // At: a pane with a class lands centred; one without splits At in two
-  CreateWindowForPane(NewIdx, Trim(TitleS),
-    PlaceNewPane(At, SDir, Trim(TermS) <> '', PaneTerm[NewIdx], KeepR,
-      SplitWin));
+  // same rule, applied by every client to its own window: centred, and
+  // nothing already open is moved
+  CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
   SyncPaneToWindow(NewIdx);
-  if (Win[NewIdx] <> nil) and SplitWin and (Win[At] <> nil) then
-    Win[At]^.Locate(KeepR);
   if Win[NewIdx] = nil then
   begin
     FreeAndNil(Scr[NewIdx]);

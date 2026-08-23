@@ -188,7 +188,13 @@ begin
           PSpec.Cwd := Ini.ReadString(PSec, 'cwd', '');
           PSpec.Connect := Ini.ReadString(PSec, 'connect', '');
           PSpec.PostConnect := Ini.ReadString(PSec, 'postconnect', '');
-          PSpec.ScrollBack := Ini.ReadInteger(PSec, 'scrollback', 0);
+          // absent means "not stated", not "no history": the writer below
+          // only stores the key when it is greater than zero, so a missing
+          // key cannot mean a deliberate zero. Panes opened from a profile
+          // were getting no scrollback ring at all, so nothing was ever kept
+          // and the history was empty however much scrolled past.
+          PSpec.ScrollBack := Ini.ReadInteger(PSec, 'scrollback',
+            DEFAULT_SCROLLBACK);
           if PSpec.ScrollBack < 0 then
             PSpec.ScrollBack := 0;
           if PSpec.ScrollBack > MAX_SCROLLBACK then
