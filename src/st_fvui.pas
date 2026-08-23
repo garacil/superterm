@@ -3587,9 +3587,17 @@ begin
   // full-screen app may also have pinned the pointer shape via OSC 22); the
   // mouse re-enable above brings the arrow back, and OSC 22 with the default
   // shape undoes any explicit override. Terminals without OSC 22 ignore it.
-  WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
-    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
-    #27']22;default'#27'\');
+  // Only re-assert tracking when FreeVision actually has a mouse. Where the
+  // RTL did not recognise the terminal, ButtonCount is 0, Mouse.InitMouse was
+  // never called and the RTL's event queue is a pair of nil pointers: asking
+  // for reports there is asking for a SIGSEGV on the first one.
+  if ButtonCount <> 0 then
+    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
+      #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
+      #27']22;default'#27'\')
+  else
+    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h'#27'[?2004l' +
+      #27']22;default'#27'\');
   // Resize ONLY the pane that owned the screen, to the bounds its window
   // already has. Un-zooming (F5) restored those bounds itself, but the
   // ChangeBounds guard suppressed the PTY resize while passthrough was active,
