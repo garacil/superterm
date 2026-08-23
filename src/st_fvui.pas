@@ -26,6 +26,7 @@ const
   // Ranges: 2100-2199 panes/app - 2200-2259 templates - 2300-2349
   // terminals (cmOpenClass+i) - 2400-2439 windows - 2500-2539 minimized
   // - 2550-2569 session (detach/wizard) - 2600 help - 2700 language.
+  WHEEL_LINES = 3;   // history lines per wheel notch
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -89,8 +90,22 @@ type
   end;
 
   PTermWindow = ^TTermWindow;
+  // The window's history scrollbar. The vendor funnels arrows, trough and
+  // thumb drag through ScrollDraw, called only when Value really changed, so
+  // this one override is the whole integration. Syncing breaks the echo when
+  // the model is being pushed INTO the bar.
+  PTermScrollBar = ^TTermScrollBar;
+  TTermScrollBar = object(TScrollBar)
+    PaneIdx: integer;
+    Syncing: boolean;
+    constructor Init(var Bounds: Objects.TRect; APane: integer);
+    procedure ScrollDraw; virtual;
+  end;
+
   TTermWindow = object(TWindow)
     Term: PTermView;
+    SB: PTermScrollBar;        // right-edge history scrollbar
+    SBShown: boolean;
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
@@ -106,6 +121,10 @@ type
     procedure Minimize;
     procedure Restore;
     procedure SetTitle(const S: string);
+    // show/hide and position the scrollbar from the pane's history state.
+    // AValueOnly skips Show/Hide, which redraw the owner and must not be
+    // called from inside a Draw.
+    procedure SyncScrollBar(AValueOnly: boolean);
   end;
 
   // Desktop background that paints an ASCII art picture behind the windows.
@@ -243,6 +262,8 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
     procedure SyncPaneToWindow(i: integer);
+    // repaint one pane and bring its scrollbar up to date
+    procedure RepaintPane(i: integer);
     // DECCKM state of a pane, nil-safe
     function PaneWantsAppCursor(i: integer): boolean;
     // ask the daemon for a pane size (remote) or apply it (local). The
@@ -412,10 +433,24 @@ end;
 // screen the way ResetVideoSurface (blanks OldVideoBuf) + ReDraw
 // (drawscreenbuf TRUE, forced) does. Reserve the sledgehammer for real
 // video-mode/size changes and coming back from raw passthrough.
+procedure TSuperApp.RepaintPane(i: integer);
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
+    Exit;
+  Win[i]^.SyncScrollBar(False);
+  if Win[i]^.Term <> nil then
+    Win[i]^.Term^.DrawView;
+end;
+
 procedure TSuperApp.RepaintChanges;
+var
+  i: integer;
 begin
   if DebugActive then
     DebugLog('fvui: RepaintChanges (incremental DrawView -> diff)');
+  for i := 0 to MAX_PANES - 1 do
+    if Win[i] <> nil then
+      Win[i]^.SyncScrollBar(False);
   DrawView;
 end;
 
@@ -675,6 +710,8 @@ var
   FrontN: integer;
   MyWin, PW: PView;
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
+  DefCell: TCell;    // a true default blank, for trimmed history rows
+  DefWord: word;
 
   // Register one cell in the rich overlay at its global screen position, with
   // B[x] (the word just written to VideoBuf) as the oracle. The full UTF-8
@@ -859,6 +896,9 @@ begin
       PW := PW^.NextView;
     end;
   end;
+  DefCell := Default(TCell);
+  DefCell.Attr := A_FGDEF or A_BGDEF;
+  DefWord := RenderAttr(A_FGDEF or A_BGDEF);
   PadCell := Default(TCell);
   PadCell.Attr := App^.Scr[PaneIdx].Attr;
   PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
@@ -911,8 +951,11 @@ begin
          end
          else
          begin
-           B[x] := BlankWord or word(' ');
-           RichReg(x, y, PadCell, B[x], false, false);
+           // history rows are stored trimmed: what follows is a true
+           // default blank, not the pane's CURRENT attribute -- that would
+           // bleed a coloured background over the trimmed tail
+           B[x] := DefWord or word(' ');
+           RichReg(x, y, DefCell, B[x], false, false);
          end;
        end;
     end
@@ -933,8 +976,11 @@ begin
       [PaneIdx, w, h, NonBlank, App^.Scr[PaneIdx].CursorX, App^.Scr[PaneIdx].CursorY,
        Ord(GetState(sfSelected))]))
   else
-    DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d',
-      [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height]));
+    DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d hist=%d off=%d alt=%d cur=%d,%d',
+      [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height,
+       App^.Scr[PaneIdx].HistoryRows, App^.Scr[PaneIdx].ViewOffset,
+       Ord(App^.Scr[PaneIdx].UsingAlt), App^.Scr[PaneIdx].CursorX,
+       App^.Scr[PaneIdx].CursorY]));
   // terminal cursor in the focused pane
   if (cx >= w) then cx := w - 1;
   if (cy >= h) then cy := h - 1;
@@ -964,6 +1010,35 @@ begin
     inherited HandleEvent(Event);
     Exit;
   end;
+  // The wheel. st_kbd maps SGR button 64 (up) to 8 and 65 (down) to 16 --
+  // the RTL's numbering; the vendor's mbScrollWheel* names are the other way
+  // round, so the literals are used on purpose. It scrolls without taking
+  // the focus, like any terminal.
+  if (Event.What = evMouseDown) and ((Event.Buttons and (8 or 16)) <> 0) and
+     (App^.Scr[PaneIdx] <> nil) then
+  begin
+    if App^.Scr[PaneIdx].UsingAlt then
+    begin
+      // no history on the alternate screen: send arrows instead, which is
+      // what xterm's alternateScroll does and what makes the wheel work in
+      // less, man and vim
+      if (Event.Buttons and 8) <> 0 then
+        seq := TranslateKey(kbUp, App^.Scr[PaneIdx].AppCursorKeys)
+      else
+        seq := TranslateKey(kbDown, App^.Scr[PaneIdx].AppCursorKeys);
+      App^.WritePaneInput(PaneIdx, seq + seq + seq);
+    end
+    else
+    begin
+      if (Event.Buttons and 8) <> 0 then
+        App^.Scr[PaneIdx].ScrollViewport(+WHEEL_LINES)
+      else
+        App^.Scr[PaneIdx].ScrollViewport(-WHEEL_LINES);
+      App^.RepaintPane(PaneIdx);
+    end;
+    ClearEvent(Event);
+    Exit;
+  end;
   if Event.What = evMouseDown then
   begin
     App^.FocusPane(PaneIdx);
@@ -972,32 +1047,45 @@ begin
   end;
   if (Event.What = evKeyDown) and (App^.Scr[PaneIdx] <> nil) then
   begin
+    // Shift-PgUp/PgDn: the conventional binding, when the host terminal lets
+    // it through (most keep it for their own history). Alt- and Ctrl- always.
+    if ((Event.KeyCode = kbPgUp) or (Event.KeyCode = kbPgDn)) and
+       ((Event.KeyShift and kbBothShifts) <> 0) then
+    begin
+      if Event.KeyCode = kbPgUp then
+        App^.Scr[PaneIdx].ScrollViewport(+Size.Y)
+      else
+        App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
+      App^.RepaintPane(PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
     case Event.KeyCode of
-      kbAltPgUp:
+      kbAltPgUp, kbCtrlPgUp:
         begin
           App^.Scr[PaneIdx].ScrollViewport(+Size.Y);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
-      kbAltPgDn:
+      kbAltPgDn, kbCtrlPgDn:
         begin
           App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
       kbAltHome:
         begin
           App^.Scr[PaneIdx].ScrollViewport(MaxInt);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
       kbAltEnd:
         begin
           App^.Scr[PaneIdx].ScrollViewport(-MaxInt);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
@@ -1009,6 +1097,12 @@ begin
       (App^.Scr[PaneIdx] <> nil) and App^.Scr[PaneIdx].AppCursorKeys);
     if seq <> '' then
     begin
+      // a key for the application means "I am done reading": back to live
+      if (App^.Scr[PaneIdx] <> nil) and (App^.Scr[PaneIdx].ViewOffset > 0) then
+      begin
+        App^.Scr[PaneIdx].SetViewOffset(0);
+        App^.RepaintPane(PaneIdx);
+      end;
       if (App^.Panes[PaneIdx] <> nil) and App^.Panes[PaneIdx].Alive then
       begin
         DebugLog(Format('key pane=%d code=$%.4x len=%d', [PaneIdx, Event.KeyCode, Length(seq)]));
@@ -1116,6 +1210,39 @@ end;
 
 { ---------------- TTermWindow ---------------- }
 
+constructor TTermScrollBar.Init(var Bounds: Objects.TRect; APane: integer);
+begin
+  inherited Init(Bounds);
+  PaneIdx := APane;
+  Syncing := False;
+  // never focused: its key handler would eat the arrows the pane needs
+  Options := Options and (not ofSelectable);
+end;
+
+procedure TTermScrollBar.ScrollDraw;
+var
+  App: PSuperApp;
+  W: PTermWindow;
+begin
+  // the vendor's ScrollDraw only broadcasts cmScrollBarChanged; nobody here
+  // listens, and the window it would reach is the one we update directly
+  if DebugActive then
+    DebugLog(Format('scrollbar: ScrollDraw pane=%d value=%d min=%d max=%d syncing=%d',
+      [PaneIdx, Value, Min, Max, Ord(Syncing)]));
+  if Syncing then
+    Exit;
+  App := PSuperApp(Application);
+  if (App = nil) or (PaneIdx < 0) or (PaneIdx >= MAX_PANES) or
+     (App^.Scr[PaneIdx] = nil) then
+    Exit;
+  // Value counts from the oldest line (0) to live (Max); the model counts
+  // lines back from live, so the two are mirror images of each other
+  App^.Scr[PaneIdx].SetViewOffset(Max - Value);
+  W := PTermWindow(Owner);
+  if (W <> nil) and (W^.Term <> nil) then
+    W^.Term^.DrawView;
+end;
+
 constructor TTermWindow.Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
 var
   R: Objects.TRect;
@@ -1128,6 +1255,49 @@ begin
   R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
   Term := New(PTermView, Init(R, APane));
   Insert(Term);
+  // the right frame column, rows 1..Size.Y-2: the same rectangle the vendor's
+  // StandardScrollBar uses. It paints over the border, costs the pane no
+  // column (Term keeps its rectangle, so no PTY resize), leaves the title
+  // row and the resize grip alone, and TScrollBar.Init's grow mode keeps it
+  // glued to the right edge on every resize. Hidden until there is history.
+  R.Assign(Bounds.B.X - Bounds.A.X - 1, 1,
+           Bounds.B.X - Bounds.A.X, Bounds.B.Y - Bounds.A.Y - 1);
+  SB := New(PTermScrollBar, Init(R, APane));
+  Insert(SB);
+  SB^.Hide;
+  SBShown := False;
+end;
+
+procedure TTermWindow.SyncScrollBar(AValueOnly: boolean);
+var
+  App: PSuperApp;
+  Want: boolean;
+  Hist, Page: integer;
+begin
+  if SB = nil then
+    Exit;
+  App := PSuperApp(Application);
+  if (App = nil) or (PaneIdx < 0) or (PaneIdx >= MAX_PANES) or
+     (App^.Scr[PaneIdx] = nil) then
+    Exit;
+  Hist := App^.Scr[PaneIdx].HistoryRows;
+  // no bar on an icon, on a window too short to hold one, before there is
+  // any history, or while the app owns the alternate screen (vim, less,
+  // Claude Code): there is nothing to scroll there and the column is theirs
+  Want := (not Minimized) and (Size.Y > 3) and (Hist > 0) and
+          (not App^.Scr[PaneIdx].UsingAlt);
+  if (not AValueOnly) and (Want <> SBShown) then
+  begin
+    if Want then SB^.Show else SB^.Hide;
+    SBShown := Want;
+  end;
+  if not SBShown then
+    Exit;
+  Page := Size.Y - 2;
+  if Page < 1 then Page := 1;
+  SB^.Syncing := True;
+  SB^.SetParams(Hist - App^.Scr[PaneIdx].ViewOffset, 0, Hist, Page, 1);
+  SB^.Syncing := False;
 end;
 
 procedure TTermWindow.HandleEvent(var Event: TEvent);
@@ -1153,7 +1323,8 @@ begin
   App := PSuperApp(Application);
   Dragging := (App <> nil) and (not App^.Cfg.DragContent) and (not Minimized) and
     (((Event.What = evMouseDown) and (Term <> nil) and
-      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where))) or
+      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where)) and
+      ((SB = nil) or (not SBShown) or (not SB^.MouseInView(Event.Where)))) or
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
@@ -1312,6 +1483,11 @@ begin
     Options := Options and (not ofTileable); // out of the vendor Tile
     if Term <> nil then
       Term^.Hide; // the icon is only frame and title
+    if (SB <> nil) and SBShown then
+    begin
+      SB^.Hide;
+      SBShown := False;   // the next sync decides again once restored
+    end;
   end;
 end;
 
@@ -4126,7 +4302,7 @@ begin
   begin
     Scr[APane].Resize(C, R);
     if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
-      Win[APane]^.Term^.DrawView;
+      RepaintPane(APane);
   end;
 end;
 
@@ -4887,7 +5063,7 @@ begin
         else
           for i := 0 to MAX_PANES - 1 do
             if Touched[i] and (Win[i] <> nil) and (Win[i]^.Term <> nil) then
-              Win[i]^.Term^.DrawView;
+              RepaintPane(i);
       end;
     end;
     // debounced layout push: moving, minimizing or renaming here gets
@@ -4907,7 +5083,7 @@ begin
       i := Lay.Focused;
       if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
          (Win[i]^.Term <> nil) then
-        Win[i]^.Term^.DrawView;
+        RepaintPane(i);
     end;
     Exit;
   end;
@@ -4940,7 +5116,7 @@ begin
             begin
               Scr[i].WriteBytes(Buf, n);
               if Win[i] <> nil then
-                Win[i]^.Term^.DrawView;
+                RepaintPane(i);
             end;
           end
           else if (n = 0) or (fpgeterrno <> ESysEAGAIN) then
@@ -4978,7 +5154,7 @@ begin
     i := Lay.Focused;
     if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
        (Win[i]^.Term <> nil) then
-      Win[i]^.Term^.DrawView;
+      RepaintPane(i);
   end;
   // periodic titles
   if Tick - LastTitle > 1500 then

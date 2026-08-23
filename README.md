@@ -370,6 +370,9 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
+| Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
+| `Alt-Home` / `Alt-End` | History: oldest line / back to live |
 | `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
