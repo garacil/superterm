@@ -1136,7 +1136,12 @@ begin
   repeat
     // re-enumerate on each pass: purges orphans and reflects closures;
     // with no sessions no dialog is shown (third button action)
-    if (not EnumerateSessions(Infos)) or (Length(Infos) = 0) then
+    if not EnumerateSessions(Infos) then
+      Exit;
+    // inside a pane, the session this pane belongs to (and its ancestors)
+    // are not offered: attaching to them is the mirror that never ends
+    KeepAllowedSessions(Infos);
+    if Length(Infos) = 0 then
       Exit;
     Cmd := ExecSessionPicker(Infos, AllowStartNew, FocusRow);
     Idx := FocusRow;   // rows map 1:1 to Infos

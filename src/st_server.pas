@@ -218,8 +218,24 @@ type
     Created: string;
     SocketPath: string;
     Legacy: boolean;   // old single socket ~/.superterm/session.sock
+    Id: string;        // session identity (see st_pty.PaneSessionChain)
+    // ids of the sessions inside whose panes this session currently has a
+    // client (the union of the attached clients' chains)
+    ClientChains: string;
   end;
   TSessionInfoArray = array of TSessionInfo;
+
+// The nesting guard. A superterm started inside a pane must never attach to
+// the session that pane belongs to, nor to any session above it: the outer
+// session would render the inner, which renders the outer... These answer
+// whether the guard applies here, and whether a given session is safe to
+// attach to from here. A session whose identity cannot be known -- its
+// daemon predates the sidecar id -- is treated as unsafe, exactly as every
+// nested start was before; SUPERTERM_ALLOW_NESTED=1 still overrides.
+function NestingGuardActive: boolean;
+function SessionAllowedFromHere(const AInfo: TSessionInfo;
+  const AAll: TSessionInfoArray): boolean;
+procedure KeepAllowedSessions(var AInfos: TSessionInfoArray);
 
 function SessionSocketPath: string;      // legacy path (single socket)
 function SessionSocketIsLive: boolean;   // probe of the legacy path
@@ -293,6 +309,11 @@ type
     LastProgress: QWord;     // last tick with bytes accepted by its socket
     ReqCols: array[0..MAX_PANES - 1] of Longint;
     ReqRows: array[0..MAX_PANES - 1] of Longint;
+    // SUPERTERM_SESSION_CHAIN of the client's own environment: non-empty
+    // when the client runs inside a pane of another session. Published in
+    // the sidecar so a nested start elsewhere can see that THIS session is
+    // being displayed inside that one (see SessionAllowedFromHere).
+    Chain: string;
   end;
 
   TDetachedSession = class
@@ -359,6 +380,7 @@ type
     procedure HandlePaneOutput(APane: integer);
     procedure SignalReady(AFd: cint; AOk: boolean);
     procedure WriteSidecar;
+    function ClientChainsUnion: string;
     procedure DoKillPane(APane: integer);
     procedure ApplyLayoutFrame(const Data: TByteArray);
   public
@@ -754,6 +776,82 @@ begin
     Result := S[1] + S + S[1];
 end;
 
+function NestingGuardActive: boolean;
+begin
+  Result := (GetEnvironmentVariable('SUPERTERM') <> '') and
+            (GetEnvironmentVariable('SUPERTERM_ALLOW_NESTED') = '');
+end;
+
+function SessionAllowedFromHere(const AInfo: TSessionInfo;
+  const AAll: TSessionInfoArray): boolean;
+var
+  Reach: string;     // ':'-delimited set of session ids
+  Grew: boolean;
+  i: integer;
+
+  function Has(const ASet, AId: string): boolean;
+  begin
+    Result := (AId <> '') and (Pos(':' + AId + ':', ASet) > 0);
+  end;
+
+  procedure AddAll(var ASet: string; const AList: string);
+  var
+    Rest, Item: string;
+    P: integer;
+  begin
+    Rest := AList;
+    while Rest <> '' do
+    begin
+      P := Pos(':', Rest);
+      if P = 0 then P := Length(Rest) + 1;
+      Item := Copy(Rest, 1, P - 1);
+      Delete(Rest, 1, P);
+      if (Item <> '') and (not Has(ASet, Item)) then
+      begin
+        ASet := ASet + Item + ':';
+        Grew := True;
+      end;
+    end;
+  end;
+
+begin
+  if not NestingGuardActive then
+    Exit(True);
+  if AInfo.Id = '' then
+    Exit(False);               // identity unknown: cannot prove it is safe
+  // Start from the sessions this pane lives inside of. A session on that
+  // set may itself be displayed inside OTHER sessions -- it has a client
+  // running in one of their panes -- and those are reachable too: attaching
+  // to any of them from here closes a loop. Follow the sidecars until the
+  // set stops growing, then refuse the target if it is in it.
+  Reach := ':';
+  Grew := False;
+  AddAll(Reach, GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN'));
+  repeat
+    Grew := False;
+    for i := 0 to High(AAll) do
+      if Has(Reach, AAll[i].Id) then
+        AddAll(Reach, AAll[i].ClientChains);
+  until not Grew;
+  Result := not Has(Reach, AInfo.Id);
+end;
+
+procedure KeepAllowedSessions(var AInfos: TSessionInfoArray);
+var
+  i, n: integer;
+  All: TSessionInfoArray;
+begin
+  All := Copy(AInfos);
+  n := 0;
+  for i := 0 to High(AInfos) do
+    if SessionAllowedFromHere(AInfos[i], All) then
+    begin
+      AInfos[n] := AInfos[i];
+      Inc(n);
+    end;
+  SetLength(AInfos, n);
+end;
+
 function EnumerateSessions(out Infos: TSessionInfoArray): boolean;
 var
   SR: TSearchRec;
@@ -792,6 +890,8 @@ begin
           Info.PaneCount := Ini.ReadInteger('session', 'panes', 0);
           Info.Pid := Ini.ReadInteger('session', 'pid', 0);
           Info.Created := Ini.ReadString('session', 'created', '');
+          Info.Id := Ini.ReadString('session', 'id', '');
+          Info.ClientChains := Ini.ReadString('session', 'client_chains', '');
         finally
           Ini.Free;
         end;
@@ -1091,6 +1191,7 @@ end;
 function TSessionClient.Connect(const APath: string;
   out Snapshot: TSessionSnapshot): boolean;
 var
+  ChainS: string;
   Kind: byte;
   Pane: integer;
   Data: TByteArray;
@@ -1131,6 +1232,14 @@ begin
   Move(L, Data[2 * SizeOf(Longint)], SizeOf(L));
   L := ATTACH_CAP_EVENTS;
   Move(L, Data[3 * SizeOf(Longint)], SizeOf(L));
+  // tail 2: the chain of sessions this client runs inside of (empty from a
+  // real terminal). An older daemon reads the four numbers and ignores it.
+  ChainS := GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN');
+  L := Length(ChainS);
+  SetLength(Data, 5 * SizeOf(Longint) + L);
+  Move(L, Data[4 * SizeOf(Longint)], SizeOf(L));
+  if L > 0 then
+    Move(ChainS[1], Data[5 * SizeOf(Longint)], L);
   if not SendFrame(FRAME_ATTACH, -1, Data) then
   begin
     CloseSocket;
@@ -1900,6 +2009,7 @@ end;
 function TDetachedSession.HandleAttach(AFd: cint; AFirstKind: byte;
   const AFirstData: TByteArray): boolean;
 var
+  ChainLen: Longint;
   Slot, I: integer;
   Ver: Longint;
   IsLegacy: boolean;
@@ -1907,6 +2017,7 @@ begin
   Result := False;
   if AFirstKind <> FRAME_ATTACH then
     Exit;
+  ChainLen := 0;
   IsLegacy := Length(AFirstData) < 4 * SizeOf(Longint);
   if HasLegacyClient then
     Exit;
@@ -1941,6 +2052,17 @@ begin
       SizeOf(Longint));
     Move(AFirstData[3 * SizeOf(Longint)], FClients[Slot].Caps,
       SizeOf(Longint));
+    // tail 2: the client's own session chain (absent from older clients)
+    if Length(AFirstData) >= 5 * SizeOf(Longint) then
+    begin
+      Move(AFirstData[4 * SizeOf(Longint)], ChainLen, SizeOf(ChainLen));
+      if (ChainLen > 0) and (ChainLen <= 4096) and
+         (5 * SizeOf(Longint) + ChainLen <= Length(AFirstData)) then
+      begin
+        SetLength(FClients[Slot].Chain, ChainLen);
+        Move(AFirstData[5 * SizeOf(Longint)], FClients[Slot].Chain[1], ChainLen);
+      end;
+    end;
   end;
   WriteSidecar;
   Result := True;
@@ -2926,6 +3048,32 @@ end;
 
 // metadata sidecar: lets the selector show name/profile/panes
 // without consuming the socket's single client slot
+// every session id some attached client runs inside of, ':'-joined
+function TDetachedSession.ClientChainsUnion: string;
+var
+  I, P: integer;
+  Rest, Item: string;
+begin
+  Result := '';
+  for I := 0 to MAX_CLIENTS - 1 do
+    if (FClients[I].Fd >= 0) and (FClients[I].Chain <> '') then
+    begin
+      Rest := FClients[I].Chain;
+      while Rest <> '' do
+      begin
+        P := Pos(':', Rest);
+        if P = 0 then P := Length(Rest) + 1;
+        Item := Copy(Rest, 1, P - 1);
+        Delete(Rest, 1, P);
+        if (Item <> '') and (Pos(':' + Item + ':', ':' + Result + ':') = 0) then
+        begin
+          if Result <> '' then Result := Result + ':';
+          Result := Result + Item;
+        end;
+      end;
+    end;
+end;
+
 procedure TDetachedSession.WriteSidecar;
 var
   Ini: TIniFile;
@@ -2939,6 +3087,9 @@ begin
     Ini.WriteInteger('session', 'pid', fpGetPid);
     Ini.WriteString('session', 'created',
       FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+    // the identity the panes carry in SUPERTERM_SESSION_CHAIN
+    Ini.WriteString('session', 'id', PaneSessionId);
+    Ini.WriteString('session', 'client_chains', ClientChainsUnion);
     Ini.UpdateFile;
   finally
     Ini.Free;

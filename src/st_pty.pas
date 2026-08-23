@@ -70,6 +70,15 @@ function unlockpt(fd: cint): cint; cdecl; external 'c' name 'unlockpt';
 function ptsname(fd: cint): PAnsiChar; cdecl; external 'c' name 'ptsname';
 {$ENDIF}
 
+// Identity of the session the panes belong to, handed to every pane as
+// SUPERTERM_SESSION_CHAIN = <ancestors>:<this>. Generated once, before the
+// first spawn; the daemon is a fork of the client, so both use one value and
+// panes spawned later by the daemon carry the same id. A superterm started
+// inside a pane reads the chain and refuses to attach to any session on it:
+// attaching to an ancestor is the mirror that never ends, at any depth.
+function PaneSessionId: string;
+function PaneSessionChain: string;
+
 function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
 function ProcArgs(Pid: TPid): TStringArray;
 function ProcCmdLine(Pid: TPid): string;
@@ -90,6 +99,27 @@ begin
   i := Pos(' ', Result);
   if i > 0 then
     Result := Copy(Result, 1, i - 1);
+end;
+
+var
+  SessionIdCache: string = '';
+
+function PaneSessionId: string;
+begin
+  if SessionIdCache = '' then
+    SessionIdCache := IntToHex(fpGetPid, 8) + '-' +
+      IntToHex(GetTickCount64 and $FFFFFFFFFFFF, 12);
+  Result := SessionIdCache;
+end;
+
+function PaneSessionChain: string;
+var
+  Above: string;
+begin
+  Result := PaneSessionId;
+  Above := GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN');
+  if (Above <> '') and (Pos(Result, Above) = 0) then
+    Result := Above + ':' + Result;
 end;
 
 function BuildEnv(const AExtra: string): PPAnsiChar;
@@ -120,9 +150,14 @@ begin
     Add('XDG_RUNTIME_DIR', GetEnvironmentVariable('XDG_RUNTIME_DIR'));
     Add('DISPLAY', GetEnvironmentVariable('DISPLAY'));
     Add('WAYLAND_DISPLAY', GetEnvironmentVariable('WAYLAND_DISPLAY'));
+    // SUPERTERM_INI: a pane's own superterm must read the same system
+    // configuration as its parent (and tests can keep a nested client
+    // isolated); SUPERTERM_ALLOW_NESTED is deliberately NOT inherited
+    Add('SUPERTERM_INI', GetEnvironmentVariable('SUPERTERM_INI'));
     if AExtra <> '' then
       L.Add(AExtra);
     L.Add('SUPERTERM=1');
+    L.Add('SUPERTERM_SESSION_CHAIN=' + PaneSessionChain);
     GetMem(P, (L.Count + 1) * SizeOf(Pointer));
     for i := 0 to L.Count - 1 do
       // The list is freed below. Keep independent copies for execve.
@@ -235,6 +270,10 @@ var
   SecretPtr: PAnsiChar;
   UseSecretPipe: boolean;
 begin
+  // settle the session identity in THIS process before forking: BuildEnv
+  // runs in the child, and an id first generated there would die with the
+  // exec -- leaving every pane, and the daemon, with a different one
+  PaneSessionId;
   Result := False;
   FAlive := False;
   FMaster := -1;
