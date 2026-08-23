@@ -1686,6 +1686,9 @@ begin
       if (MinR = 0) or (FClients[I].ReqRows[APane] < MinR) then
         MinR := FClients[I].ReqRows[APane];
     end;
+  if DebugActive then
+    DebugLog(Format('resize: pane=%d negotiated %dx%d (screen %dx%d)',
+      [APane, MinC, MinR, FScreens[APane].Width, FScreens[APane].Height]));
   if (MinC < 4) or (MinR < 2) then
     Exit;
   if (MinC = FScreens[APane].Width) and (MinR = FScreens[APane].Height) then

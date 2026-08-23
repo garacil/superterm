@@ -153,6 +153,11 @@ type
     // terminal and its raw PTY bytes are written straight through, so a
     // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
     PassPane: integer;
+    // size last REQUESTED from the daemon per pane. In remote mode the
+    // mirror is only resized when the daemon answers, so the request gate
+    // cannot use the mirror's size: a daemon that keeps a pane smaller than
+    // this client's window would otherwise be asked again on every drag step.
+    ReqCols, ReqRows: array[0..MAX_PANES - 1] of integer;
     PassReqW, PassReqH: integer;  // full size requested on enter
     // startup: hold one LockScreenUpdate across the whole build+promote+
     // attach so the screen is flushed ONCE at the end, not several times
@@ -226,6 +231,13 @@ type
     function NewWindowRect(ASysIdx: integer): Objects.TRect;
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
+    procedure SyncPaneToWindow(i: integer);
+    // ask the daemon for a pane size (remote) or apply it (local). The
+    // remote mirror is left alone: it follows FRAME_RESIZE_EV, the
+    // authoritative answer, so it never grows on a request the daemon then
+    // trims -- which pushed the top rows of the mirror into its history.
+    procedure RequestPaneSize(i, ACols, ARows: integer);
+    procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
     // why the last attach attempt failed (empty = generic/none)
@@ -1238,14 +1250,12 @@ begin
     ph := Size.Y - 2;
     if pw < 4 then pw := 4;
     if ph < 2 then ph := 2;
-    if (pw <> App^.Scr[PaneIdx].Width) or (ph <> App^.Scr[PaneIdx].Height) then
-    begin
-      App^.Scr[PaneIdx].Resize(pw, ph);
-      if App^.RemoteMode then
-        App^.Remote.SendResize(PaneIdx, pw, ph)
-      else if App^.Panes[PaneIdx] <> nil then
-        App^.Panes[PaneIdx].Resize(pw, ph);
-    end;
+    if DebugActive and
+       ((pw <> App^.Scr[PaneIdx].Width) or (ph <> App^.Scr[PaneIdx].Height)) then
+      DebugLog(Format('resize: pane=%d window %dx%d -> request %dx%d (mirror %dx%d)',
+        [PaneIdx, Size.X, Size.Y, pw, ph, App^.Scr[PaneIdx].Width,
+         App^.Scr[PaneIdx].Height]));
+    App^.RequestPaneSize(PaneIdx, pw, ph);
   end;
 end;
 
@@ -1861,32 +1871,69 @@ procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string;
   const ARect: Objects.TRect);
 var
   R: Objects.TRect;
-  pw, ph: integer;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] <> nil) then
     Exit;
   R := ARect;
   Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
   Desktop^.Insert(Win[i]);
-  // Init does not go through ChangeBounds, so the pane is still whatever size
-  // it was created with. Match it to the window it just got, or a class that
-  // asks for 100x30 would get a 100x30 frame around an 80x24 terminal.
-  if RemoteAttachSettling or (PassPane = i) or (Scr[i] = nil) then
+end;
+
+procedure TSuperApp.ResetSizeRequests;
+var
+  i: integer;
+begin
+  for i := 0 to MAX_PANES - 1 do
+  begin
+    ReqCols[i] := 0;
+    ReqRows[i] := 0;
+  end;
+end;
+
+procedure TSuperApp.RequestPaneSize(i, ACols, ARows: integer);
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  if RemoteMode then
+  begin
+    if (ACols = ReqCols[i]) and (ARows = ReqRows[i]) then
+      Exit;
+    ReqCols[i] := ACols;
+    ReqRows[i] := ARows;
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, ACols, ARows);
+    Exit;
+  end;
+  if (ACols = Scr[i].Width) and (ARows = Scr[i].Height) then
+    Exit;
+  Scr[i].Resize(ACols, ARows);
+  if Panes[i] <> nil then
+    Panes[i].Resize(ACols, ARows);
+end;
+
+// Match a pane to the window it was just given. TTermWindow.Init does not go
+// through ChangeBounds, so a pane the daemon created at its own size would
+// otherwise sit inside a frame of a different one -- a class asking for
+// 100x30 got a 100x30 frame around an 80x24 terminal. Only for a pane born
+// remotely: a local one is spawned at the window's size to begin with, and
+// the attach path must NOT do this -- it creates every window at the full
+// desktop and then settles them in one pass, and a request here would be
+// exactly the transient that bounces everyone else's screens.
+procedure TSuperApp.SyncPaneToWindow(i: integer);
+var
+  pw, ph: integer;
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or (Scr[i] = nil) or
+     (PassPane = i) or Win[i]^.Minimized then
     Exit;
   pw := Win[i]^.Size.X - 2;
   ph := Win[i]^.Size.Y - 2;
   if pw < 4 then pw := 4;
   if ph < 2 then ph := 2;
-  if (pw = Scr[i].Width) and (ph = Scr[i].Height) then
-    Exit;
-  Scr[i].Resize(pw, ph);
-  if RemoteMode then
-  begin
-    if (Remote <> nil) and Remote.Connected then
-      Remote.SendResize(i, pw, ph);
-  end
-  else if Panes[i] <> nil then
-    Panes[i].Resize(pw, ph);
+  if DebugActive then
+    DebugLog(Format('resize: pane=%d sync to window -> %dx%d (mirror %dx%d)',
+      [i, pw, ph, Scr[i].Width, Scr[i].Height]));
+  RequestPaneSize(i, pw, ph);
 end;
 
 procedure TSuperApp.KillPane(i: integer);
@@ -2293,6 +2340,7 @@ procedure TSuperApp.ReleaseRuntime;
 var
   i: integer;
 begin
+  ResetSizeRequests;
   // Release only the client-side objects. PTy objects are deliberately left
   // untouched when the detached server owns them.
   for i := 0 to MAX_PANES - 1 do
@@ -2436,6 +2484,19 @@ begin
   RelayoutAll;
   // window geometry the daemon keeps (moved, maximized, minimized);
   // only applicable if the desktop size matches the one at save time
+  if DebugActive then
+  begin
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    DebugLog(Format('attach: panes=%d geom=%d desk=%dx%d snapshot desk=%dx%d focused=%d',
+      [Lay.PaneCount, Length(Snapshot.Geom), GR.B.X - GR.A.X, GR.B.Y - GR.A.Y,
+       Snapshot.DeskW, Snapshot.DeskH, Lay.Focused]));
+    for I := 0 to High(Snapshot.Geom) do
+      DebugLog(Format('attach: geom[%d]=%d,%d %dx%d zoom=%d min=%d',
+        [I, Snapshot.Geom[I].BX, Snapshot.Geom[I].BY, Snapshot.Geom[I].BW,
+         Snapshot.Geom[I].BH, Ord(Snapshot.Geom[I].Zoomed),
+         Ord(Snapshot.Geom[I].Minimized)]));
+  end;
   if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
   begin
     GR := Default(Objects.TRect);
@@ -2474,11 +2535,10 @@ begin
       PH := Win[I]^.Size.Y - 2;
       if PW < 4 then PW := 4;
       if PH < 2 then PH := 2;
-      if (PW <> Scr[I].Width) or (PH <> Scr[I].Height) then
-      begin
-        Scr[I].Resize(PW, PH);
-        Remote.SendResize(I, PW, PH);
-      end;
+      if DebugActive then
+        DebugLog(Format('resize: pane=%d attach final request %dx%d (mirror %dx%d)',
+          [I, PW, PH, Scr[I].Width, Scr[I].Height]));
+      RequestPaneSize(I, PW, PH);
     end;
   RepaintChanges;
   FocusPane(Lay.Focused);
@@ -3929,6 +3989,7 @@ begin
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
   CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
+  SyncPaneToWindow(NewIdx);
   if Win[NewIdx] = nil then
   begin
     FreeAndNil(Scr[NewIdx]);
@@ -3973,6 +4034,9 @@ begin
   R := 0;
   Move(AData[0], C, SizeOf(C));
   Move(AData[SizeOf(C)], R, SizeOf(R));
+  if DebugActive then
+    DebugLog(Format('resize: pane=%d daemon says %dx%d (mirror was %dx%d)',
+      [APane, C, R, Scr[APane].Width, Scr[APane].Height]));
   if (C < 4) or (R < 2) then
     Exit;
   // while a pane is drawn raw its size is owned by EnterPassthrough; ignore
@@ -4641,6 +4705,7 @@ begin
       Drained := 0;
       Deadline := GetTickCount64 + 20;
       Touched := Default(TTouchedPanes);
+      ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
       FullRedraw := False;
       while (Remote <> nil) and (Drained < 32) and
             (GetTickCount64 < Deadline) and Remote.Poll(RemoteEvent) do
@@ -4678,6 +4743,7 @@ begin
             ApplyRemoteLayoutEv(RemoteEvent.Data);
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
+            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
             FullRedraw := True;
           end;
         sekKillPaneEv:
@@ -4685,6 +4751,7 @@ begin
             ApplyRemoteKillPane(RemoteEvent.Pane);
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
+            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
             FullRedraw := True;
           end;
         sekNewPaneEv:
@@ -4692,6 +4759,7 @@ begin
             ApplyRemoteNewPane(RemoteEvent.Data);
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
+            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
             FullRedraw := True;
           end;
         sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
