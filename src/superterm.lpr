@@ -142,6 +142,27 @@ begin
   // useful and costs nothing when nothing goes wrong
   DebugSetRole('client');
   InstallCrashHandler;
+  // Linux console: let FreeVision try the mouse at all.
+  //
+  // Drivers sets ButtonCount at unit initialisation from the RTL's terminal
+  // detection, which matches TERM against a fixed list -- 'cons', 'eterm',
+  // 'gnome', 'konsole', 'rxvt', 'screen', 'xterm' (mouse.pp,
+  // detect_xterm_mouse). 'linux' is on none of them, so on a real virtual
+  // console ButtonCount comes back 0, InitEvents skips Mouse.InitMouse
+  // entirely, and InitMouse is the ONLY thing that would have opened gpm.
+  // The result is no mouse on the console however well gpm is running.
+  //
+  // Saying a mouse exists lets the RTL's own gpm path run. It costs nothing
+  // when it does not apply: without gpm, gpm_open fails and every poll
+  // returns immediately. Restricted to the console on purpose -- forcing it
+  // on a graphical terminal would send the RTL down the same gpm path, and
+  // gpm reports the physical console, not the window.
+  if IsLinuxConsole and (Drivers.ButtonCount = 0) then
+    Drivers.ButtonCount := 2;
+  if DebugActive then
+    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d',
+      [GetEnvironmentVariable('TERM'), BoolToStr(IsLinuxConsole, True),
+       Drivers.ButtonCount]));
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
