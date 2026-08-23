@@ -243,6 +243,8 @@ type
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
     procedure SyncPaneToWindow(i: integer);
+    // DECCKM state of a pane, nil-safe
+    function PaneWantsAppCursor(i: integer): boolean;
     // ask the daemon for a pane size (remote) or apply it (local). The
     // remote mirror is left alone: it follows FRAME_RESIZE_EV, the
     // authoritative answer, so it never grows on a request the daemon then
@@ -1003,7 +1005,8 @@ begin
   end;
   if (Event.What = evKeyDown) then
   begin
-    seq := TranslateKey(Event.KeyCode);
+    seq := TranslateKey(Event.KeyCode,
+      (App^.Scr[PaneIdx] <> nil) and App^.Scr[PaneIdx].AppCursorKeys);
     if seq <> '' then
     begin
       if (App^.Panes[PaneIdx] <> nil) and App^.Panes[PaneIdx].Alive then
@@ -1927,6 +1930,12 @@ begin
   R := ARect;
   Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
   Desktop^.Insert(Win[i]);
+end;
+
+function TSuperApp.PaneWantsAppCursor(i: integer): boolean;
+begin
+  Result := (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) and
+    Scr[i].AppCursorKeys;
 end;
 
 procedure TSuperApp.ResetSizeRequests;
@@ -4492,7 +4501,8 @@ begin
       end;
       // Preserve the normal terminal meaning when the prefix is followed by
       // an unbound key.
-      PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) + TranslateKey(Event.KeyCode);
+      PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) +
+        TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
       WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);
       Exit;
@@ -4510,7 +4520,7 @@ begin
     // the way OUT of passthrough -- so F5 falls through to the zoom handler.
     if PassthroughActive and (Event.KeyCode <> kbF5) then
     begin
-      PrefixSeq := TranslateKey(Event.KeyCode);
+      PrefixSeq := TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
       if PrefixSeq <> '' then
         WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);

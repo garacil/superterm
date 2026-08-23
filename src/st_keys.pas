@@ -13,13 +13,25 @@ interface
 uses
   Drivers;
 
-function TranslateKey(KeyCode: word): RawByteString;
+// AAppCursor: the pane is in DECCKM (application cursor keys) mode, which
+// every curses program sets; the cursor keys then go out as SS3 (ESC O A)
+// and the CSI form (ESC [ A) is ignored by the application.
+function TranslateKey(KeyCode: word; AAppCursor: boolean = False): RawByteString;
 
 implementation
 
-function TranslateKey(KeyCode: word): RawByteString;
+function TranslateKey(KeyCode: word; AAppCursor: boolean): RawByteString;
 begin
   Result := '';
+  if AAppCursor then
+    case KeyCode of
+      kbUp: Exit(#27'OA');
+      kbDown: Exit(#27'OB');
+      kbRight: Exit(#27'OC');
+      kbLeft: Exit(#27'OD');
+      kbHome: Exit(#27'OH');
+      kbEnd: Exit(#27'OF');
+    end;
   case KeyCode of
     kbUp: Result := #27'[A';
     kbDown: Result := #27'[B';

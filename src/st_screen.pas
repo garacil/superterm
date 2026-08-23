@@ -110,6 +110,14 @@ type
     FAltSaveFgRGB, FAltSaveBgRGB: LongWord;
     FInterm: AnsiChar;      // CSI intermediate byte (e.g. ' ' of DECSCUSR)
     FAutoWrap: boolean;     // DECAWM ?7 (default on)
+    // DECCKM ?1: the cursor keys send SS3 (ESC O A) instead of CSI (ESC [ A).
+    // Every curses program sets it (keypad(TRUE)), and then IGNORES the CSI
+    // form -- which is why the arrows did nothing in top and htop.
+    FAppCursor: boolean;
+    // DECKPAM (ESC =) / DECKPNM (ESC >): numeric keypad in application mode.
+    // Parsed and kept so it does not leak as text; FreeVision cannot tell a
+    // keypad arrow from a cursor arrow, so there is nothing to translate.
+    FAppKeypad: boolean;
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
       NewWidth, NewHeight: integer);
@@ -148,6 +156,9 @@ type
     // soft reset it also ERASES the screen, leaves the alternate buffer and
     // drops the scrollback.
     procedure ResetHard;
+    // what the application asked the keyboard to send (see the fields)
+    property AppCursorKeys: boolean read FAppCursor;
+    property AppKeypad: boolean read FAppKeypad;
     function ViewOffset: integer;
     procedure ScrollViewport(ADelta: integer);  // + back, - forward
     function DisplayRow(y: integer): TRow;
@@ -188,6 +199,8 @@ begin
   Dirty := True;
   FUsingAlt := False;
   FAutoWrap := True;
+  FAppCursor := False;
+  FAppKeypad := False;
   FInterm := #0;
   MaxScrollBack := AMaxScrollBack;
   if MaxScrollBack < 0 then
@@ -545,6 +558,12 @@ begin
           Stream.WriteBuffer(FSBRing[(FSBHead - FSBCount + I + MaxScrollBack) mod MaxScrollBack][X],
             SizeOf(TCell));
     end;
+  // tolerant tail: keyboard modes. An old reader stops after the ring and
+  // never sees this; a new reader checks there is something left to read.
+  N := 0;
+  if FAppCursor then N := N or 1;
+  if FAppKeypad then N := N or 2;
+  Stream.WriteBuffer(N, SizeOf(N));
 end;
 
 function TScreen.LoadFromStream(Stream: TStream): boolean;
@@ -634,6 +653,16 @@ begin
     end;
     if MaxScrollBack > 0 then
       FSBHead := FSBCount mod MaxScrollBack;
+    // tolerant tail (see SaveToStream): absent in a snapshot from an older
+    // daemon, in which case the modes are learned from the live stream
+    FAppCursor := False;
+    FAppKeypad := False;
+    if Stream.Position + SizeOf(Cols) <= Stream.Size then
+    begin
+      Stream.ReadBuffer(Cols, SizeOf(Cols));
+      FAppCursor := (Cols and 1) <> 0;
+      FAppKeypad := (Cols and 2) <> 0;
+    end;
     Result := True;
   except
     Result := False;
@@ -1365,6 +1394,7 @@ begin
               case n of
                 25: CursorVisible := (final = 'h');
                 7: FAutoWrap := (final = 'h');
+                1: FAppCursor := (final = 'h');
                 47, 1047, 1049:
                 begin
                   if final = 'h' then
@@ -1494,6 +1524,8 @@ begin
         CursorX := 0;
         LineFeed;
       end;
+    '=': FAppKeypad := True;    // DECKPAM
+    '>': FAppKeypad := False;   // DECKPNM
     'c': ResetHard;   // RIS: `reset` expects the screen cleared, not just homed
   else
     ; // =, >, etc: ignore
@@ -1525,6 +1557,8 @@ begin
   CursorVisible := True;
   CursorStyle := 0;
   FAutoWrap := True;
+  FAppCursor := False;
+  FAppKeypad := False;
   FPendingWrap := False;
 end;
 
