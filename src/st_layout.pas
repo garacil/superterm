@@ -15,6 +15,11 @@ uses
 
 const
   MAX_PANES = 16;
+  // FreeVision's MinWinSize (vendor/fv322/views.pas). A window smaller than
+  // this cannot be dragged or resized by hand, so nothing should place one.
+  MIN_WIN_W = 16;
+  MIN_WIN_H = 6;
+  CASCADE_STEP_X = 3;   // horizontal stagger between cascaded windows
 
 type
   TSplitDir = (sdV, sdH); // sdV: side by side | sdH: top/bottom
@@ -60,7 +65,31 @@ type
     procedure Reindex;
   end;
 
+// Staggered slot AK for an AW x AH window on an ADeskW x ADeskH desktop.
+// The span the slots are spread over is clamped to at least 1: a window as
+// wide (or as tall) as the desktop then lands at the origin instead of
+// dividing by zero, which used to raise SIGFPE and kill the whole session.
+function CascadeRect(AK, AW, AH, ADeskW, ADeskH: integer): TRect;
+
 implementation
+
+function CascadeRect(AK, AW, AH, ADeskW, ADeskH: integer): TRect;
+var
+  SpanX, SpanY: integer;
+begin
+  if AK < 0 then
+    AK := 0;
+  SpanX := ADeskW - AW;
+  if SpanX < 1 then
+    SpanX := 1;
+  SpanY := ADeskH - AH - 1;
+  if SpanY < 1 then
+    SpanY := 1;
+  Result.X := (AK * CASCADE_STEP_X) mod SpanX;
+  Result.Y := AK mod SpanY;
+  Result.W := AW;
+  Result.H := AH;
+end;
 
 constructor TNode.CreateLeaf(AIndex: integer);
 begin

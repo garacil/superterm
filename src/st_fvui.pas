@@ -3941,7 +3941,8 @@ end;
 procedure TSuperApp.DoCascadePanes;
 var
   RD, R: Objects.TRect;
-  i, k, w, h, maxoff: integer;
+  i, k, w, h: integer;
+  Slot: st_layout.TRect;
 begin
   if Desktop = nil then
     Exit;
@@ -3951,16 +3952,13 @@ begin
   h := (RD.B.Y - RD.A.Y) * 2 div 3;
   if w < 20 then w := 20;
   if h < 6 then h := 6;
-  maxoff := RD.B.Y - RD.A.Y - h - 1;
-  if maxoff < 1 then maxoff := 1;
   k := 0;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
-      R.Assign(RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w),
-        RD.A.Y + k mod maxoff,
-        RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w) + w,
-        RD.A.Y + k mod maxoff + h);
+      Slot := CascadeRect(k, w, h, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
+      R.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
+        RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
       Win[i]^.Locate(R);
       Inc(k);
     end;

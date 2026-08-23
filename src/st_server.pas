@@ -2332,7 +2332,8 @@ var
   NewIdx, j, N, i, k: integer;
   Cols, Rows: Longint;
   Pair: array[0..1] of Longint;
-  GC, GR, CW, CH, MaxOff: integer;
+  GC, GR, CW, CH: integer;
+  Slot: st_layout.TRect;
 
   function RdStr: string;
   var
@@ -2458,15 +2459,14 @@ begin
               CH := FDeskH * 2 div 3;
               if CW < 20 then CW := 20;
               if CH < 6 then CH := 6;
-              MaxOff := FDeskH - CH - 1;
-              if MaxOff < 1 then MaxOff := 1;
               k := 0;
               for i := 0 to N - 1 do
               begin
-                FGeom[i].BX := (k * 3) mod (FDeskW - CW);
-                FGeom[i].BY := k mod MaxOff;
-                FGeom[i].BW := CW;
-                FGeom[i].BH := CH;
+                Slot := CascadeRect(k, CW, CH, FDeskW, FDeskH);
+                FGeom[i].BX := Slot.X;
+                FGeom[i].BY := Slot.Y;
+                FGeom[i].BW := Slot.W;
+                FGeom[i].BH := Slot.H;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
                 Inc(k);
@@ -2492,6 +2492,10 @@ begin
           begin
             FGeom[i].BW := FDeskW div GC;
             FGeom[i].BH := FDeskH div GR;
+            // BW = 0 means "no manual bounds" everywhere else, so a desktop
+            // too narrow for the grid must not silently produce one
+            if FGeom[i].BW < MIN_WIN_W then FGeom[i].BW := MIN_WIN_W;
+            if FGeom[i].BH < MIN_WIN_H then FGeom[i].BH := MIN_WIN_H;
             FGeom[i].BX := (i mod GC) * (FDeskW div GC);
             FGeom[i].BY := (i div GC) * (FDeskH div GR);
             FGeom[i].Zoomed := False;
