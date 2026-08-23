@@ -38,6 +38,19 @@ behind it.
   per-read, per-frame detail moved behind `SUPERTERM_DEBUG_FULL=1`, so a long
   trace stays readable.
 
+### Leaving superterm no longer leaves the mouse reporting
+
+Quitting or detaching could drop you back at the shell prompt and then, as
+soon as you moved the mouse, fill it with line noise like
+`35;65;64M35;64;64M`. Those are mouse reports: the terminal was still being
+told to send them.
+
+The RTL's mouse driver turns only two of the tracking modes on and off, but
+superterm enables two more by hand when it reclaims the screen from a
+maximised pane, and nothing turned those back off. Every mode superterm can
+enable is now disabled on the way out, and whatever the terminal already
+reported is flushed instead of being read by the shell as typed input.
+
 ### Also
 
 - **A desktop with no picture costs exactly what it did before 3.3.** The

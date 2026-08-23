@@ -161,6 +161,9 @@ begin
       STApp^.Run;
   end;
   Dispose(STApp, Done);
+  // stop the terminal reporting to whatever runs next, and drop anything it
+  // already reported, before putting the cursor back
+  ReleaseConsoleInput;
   // leave the cursor where it was at program launch (quit or detach)
   RestoreConsoleCursor;
 end.
