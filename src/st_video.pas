@@ -7,6 +7,10 @@ interface
 procedure InstallWideVideoOutput;
 procedure CaptureConsoleCursor;
 procedure RestoreConsoleCursor;
+// Hand the terminal back exactly as it was found: every mouse mode off,
+// bracketed paste off, and anything the terminal already reported dropped.
+// Call at the very end, after the application is done.
+procedure ReleaseConsoleInput;
 
 // Passthrough: while active the FreeVision screen driver stays silent and the
 // client writes a pane's raw PTY bytes straight to the host terminal, so a
@@ -955,6 +959,29 @@ begin
     Exit;
   ConsoleRow := StrToIntDef(Copy(Resp, i + 2, j - i - 2), 0);
   ConsoleCol := StrToIntDef(Copy(Resp, j + 1, k - j - 1), 0);
+end;
+
+// Turns off everything that makes the terminal send us bytes, and throws
+// away whatever it sent before we got here.
+//
+// The RTL's mouse driver enables and disables ONLY ?1003 and ?1006 (see
+// mouse.pp, SysInitMouse/SysDoneMouse). superterm also enables ?1000 and
+// ?1002 by hand when it reclaims the screen from a maximised pane, and the
+// RTL knows nothing about those: after teardown they stay ON, so the
+// terminal keeps reporting every mouse movement to whatever runs next --
+// the shell, which prints the reports as line noise at its prompt.
+//
+// Disabling is not quite enough on its own either: reports the terminal
+// already sent are sitting in the tty input buffer and would be read by the
+// shell as typed characters. Flush them.
+procedure ReleaseConsoleInput;
+begin
+  // order matters: SGR last, so the tracking modes are already off and
+  // nothing new can arrive in either encoding
+  WriteRaw(#27'[?1003l'#27'[?1002l'#27'[?1000l'#27'[?1015l'#27'[?1006l' +
+    #27'[?2004l'#27'[?9l');
+  if IsATTY(StdInputHandle) = 1 then
+    TCFlush(StdInputHandle, TCIFLUSH);
 end;
 
 // Puts the console cursor back where it was at startup. Call at the
