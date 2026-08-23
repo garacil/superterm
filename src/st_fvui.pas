@@ -2113,9 +2113,13 @@ end;
 
 procedure TSuperApp.RestoreAllWindows;
 var
-  i: integer;
+  i, LastRestored: integer;
 begin
-  // each window returns to its pre-minimize position; nothing re-tiles
+  // each window returns to its pre-minimize position; nothing re-tiles.
+  // Windows may overlap now, so the ones coming back are brought to the
+  // front and the last of them takes the focus: the user asked to see them,
+  // and focusing whatever was already visible would put it on top of them.
+  LastRestored := -1;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
@@ -2123,8 +2127,12 @@ begin
       if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
          (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
         Win[i]^.Locate(Win[i]^.SavedRect);
+      Win[i]^.MakeFirst;
+      LastRestored := i;
     end;
-  if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
+  if LastRestored >= 0 then
+    Lay.Focused := LastRestored
+  else if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
   FocusPane(Lay.Focused);
