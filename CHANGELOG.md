@@ -1,5 +1,51 @@
 # Changelog
 
+## 3.4.1 - 2026-08
+
+Everything the history needed to actually work, found by using it.
+
+### The history was empty in a session opened from a profile
+
+There was no scrollbar and nothing scrolled, because those panes were
+created with a scrollback ring of **zero lines**: the profile reader
+defaulted the per-pane `scrollback` key to 0 while the window-class reader
+defaults it to 10000. The writer only stores that key when it is greater
+than zero, so a missing key never meant a deliberate zero -- it meant "not
+stated". It now means the normal default, and a pane is never created with
+no ring at all whatever the caller passed.
+
+### The scrollbar drove another pane after opening or closing a window
+
+Clicking the bar moved the thumb and it snapped straight back, and the text
+never moved -- while the wheel worked. A window points at its pane from
+three places: itself, the terminal view and the scrollbar. Panes are
+renumbered whenever one is inserted or closed, and the six sites that do it
+updated the first two and left the scrollbar on the old index, so it scrolled
+a different pane's viewport. All six now move the three together.
+
+### The scrollbar is there from the start
+
+Hiding it until the first line scrolled off made a window with a fresh shell
+look like a build without the feature -- which is exactly how it was
+reported. It now shows with the thumb filling the trough, as every terminal
+does, and still goes away on an icon, on a window too short for it, and while
+an application owns the alternate screen.
+
+Plain `PgUp`/`PgDn` scroll as well now, but only where nothing else wants
+them: on the normal screen, and only once there is history. An application on
+the alternate screen keeps them, and so does a shell before anything has
+scrolled off.
+
+### Opening a window never touches the ones already open
+
+`F2`/`F3` still split the focused window in two in 3.4: the new pane took
+half of it. That is still "creating a window changed the window I was
+using", and repeating it halves a window until nothing fits -- measured
+going from 28 columns to 25 in six rounds. There is now one rule for every
+way of opening a window: centred, at the size its class asks for, on top,
+and nothing already open is moved or resized. Tiling stays on demand:
+`Windows -> Tile`, or prefix + `t`.
+
 ## 3.4 - 2026-08
 
 Four things you asked for, and the repairs they turned up on the way.
