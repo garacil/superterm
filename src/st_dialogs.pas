@@ -1252,8 +1252,8 @@ begin
   begin
     R.Assign(3, 2, 45, 3);
     Insert(New(PStaticText, Init(R, UiText(
-      'The colour behind the windows, and behind a picture.',
-      'El color tras las ventanas, y tras una imagen.'))));
+      'The colour behind the windows.',
+      'El color tras las ventanas.'))));
     NewButton(10, 10, 12, 2, 'OK', cmOK, hcNoContext, bfDefault);
     NewButton(26, 10, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
       hcNoContext, bfNormal);
