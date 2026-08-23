@@ -2258,7 +2258,23 @@ begin
   HostAnyMotion := Want;
   // the RTL queue holds 16 events and FreeVision drains one per loop, so
   // every-motion reporting is asked for only while an application wants it
-  if Want then WriteRaw(#27'[?1003h') else WriteRaw(#27'[?1003l');
+  if Want then
+    WriteRaw(#27'[?1003h')
+  else
+  begin
+    // "?1003l" does not mean "fall back to ?1002" everywhere. xterm keeps the
+    // three tracking modes as independent flags, so turning the highest off
+    // leaves the lower ones standing; Konsole -- and it is not alone -- holds
+    // ONE mouse mode, so the same sequence leaves it reporting nothing at all.
+    // What that looks like: run any full-screen program that asks for
+    // every-motion tracking (Claude Code, Codex) in a pane, click on another
+    // window and the pointer turns from an arrow back into an I-beam and not
+    // one click reaches the window manager again until superterm is
+    // restarted. So the base modes are re-asserted immediately after, which
+    // costs three sequences and is a no-op on a terminal that kept them.
+    WriteRaw(#27'[?1003l');
+    HostMouseOn;
+  end;
 end;
 
 procedure TSuperApp.RequestPaneSize(i, ACols, ARows: integer);
