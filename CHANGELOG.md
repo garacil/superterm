@@ -91,13 +91,15 @@ FreeVision is untouched, as ever: the desktop, its background and the
 application's desktop factory are all virtual, so they are replaced by
 subclassing.
 
-### Known issue
+### Correction to the 3.3 notes
 
-- `large_screen_test`'s 4096-column restore case leaves a stale window border
-  one row below the real one when a picture is on. It is confined to that
-  synthetic width -- no real terminal is anywhere near 4096 character columns --
-  and does not affect normal use. Traced to the overlay registration the
-  background performs; the cause inside the per-cell delta is still open.
+3.3 shipped with a "known issue" saying that a 4096-column restore left a
+stale window border. There is no such defect. The test sampled the screen a
+fixed 1.2 seconds after the resize, and a resize that wide takes a little
+over two seconds to reach its final paint: what it read was the previous
+layout, still on screen. The test now waits for the layout instead of for a
+clock, and every assertion passes. The resize is genuinely slow at those
+widths, which is a performance matter and is being worked on separately.
 
 ## 3.2 - 2026-08
 

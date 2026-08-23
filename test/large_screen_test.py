@@ -80,6 +80,45 @@ def check(name, condition):
         fails.append(name)
 
 
+def frame_corners(session):
+    return {
+        (y, x, char)
+        for y, row in enumerate(session.screen.display)
+        for x, char in enumerate(row)
+        if char in '╔╗╚┘'
+    }
+
+
+def expected_corners(session):
+    return {
+        (1, 0, '╔'),
+        (1, session.width - 3, '╗'),
+        (session.height - 3, 0, '╚'),
+        (session.height - 3, session.width - 3, '┘'),
+    }
+
+
+def settle(session, timeout=20.0):
+    """Wait for the layout to reach its final shape.
+
+    A resize is not one paint: the mode change, the bounds change and the
+    relayout each produce one, and at 4096 or 8192 columns a single frame is
+    hundreds of thousands of cells. Measured here, the 4096-column restore
+    needs a bit over two seconds. Sampling on a fixed pause read an
+    intermediate frame and reported stale corners that were simply the
+    previous layout still on screen -- which is what the 3.3 'known issue'
+    really was. Wait for the shape instead; the assertions below still fail
+    if it never arrives.
+    """
+    want = expected_corners(session)
+    end = time.time() + timeout
+    while time.time() < end:
+        session.drain(0.25)
+        if frame_corners(session) == want:
+            return time.time()
+    return None
+
+
 def check_layout(session, label):
     rows = session.screen.display
     width = session.width
@@ -87,18 +126,8 @@ def check_layout(session, label):
     top = rows[1]
     bottom = rows[height - 3]
     status = rows[height - 1]
-    expected = {
-        (1, 0, '╔'),
-        (1, width - 3, '╗'),
-        (height - 3, 0, '╚'),
-        (height - 3, width - 3, '┘'),
-    }
-    corners = {
-        (y, x, char)
-        for y, row in enumerate(rows)
-        for x, char in enumerate(row)
-        if char in '╔╗╚┘'
-    }
+    expected = expected_corners(session)
+    corners = frame_corners(session)
     check(f'{label}: full frame', expected <= corners)
     check(f'{label}: no stale corners', corners == expected)
     check(f'{label}: status at bottom', 'F2 Split' in ''.join(status))
@@ -107,7 +136,7 @@ def check_layout(session, label):
 
 s = Session(4096, 35)
 try:
-    s.drain(4.0)
+    settle(s)
     check_layout(s, '4096x35 startup')
 
     s.send(b"printf '\\033[44m\\033[2J\\033[H'\r", 1.2)
@@ -122,15 +151,15 @@ try:
           all(color == 'brightwhite' for color in bright_background_cells))
 
     s.set_size(8192, 35)
-    s.drain(3.5)
+    settle(s)
     check_layout(s, '8192x35 maximum')
 
     s.set_size(300, 80)
-    s.drain(1.2)
+    settle(s)
     check_layout(s, '300x80 resize')
 
     s.set_size(4096, 35)
-    s.drain(1.2)
+    settle(s)
     check_layout(s, '4096x35 restore')
 finally:
     try:
