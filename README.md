@@ -33,8 +33,9 @@ Full reference: [`docs/CLI.md`](docs/CLI.md).
 
 ![superterm four-pane workspace](screenshots/four-pane.png)
 
-The screenshot shows the English interface with four independent PTY-backed
-panes in a normal GNU/Linux or macOS terminal window.
+Four independent PTY-backed panes in a normal GNU/Linux or macOS terminal
+window: a process list, disk usage, a coloured application log and a git
+history. Each pane keeps its own process, terminal state, focus and size.
 
 ## Features
 
@@ -159,15 +160,14 @@ where it was. The expanding outline is the optional zoom transition
 **superterm in action — one capture per feature.**
 
 Two clients attached to the same session at once: everything typed in client
-A (left) appears live in client B (right), including the `print` injected
-from a third shell with the control CLI:
+A (left) appears live in client B (right), including the line injected from a
+third shell with the control CLI:
 
 ![Two clients attached to one session](screenshots/multiuser.png)
 
-A workspace built entirely from the command line — panes opened with
-`nueva`, renamed with `renombrar`, re-tiled with `organizar rejilla`, the
-Python expression typed with `send` — while the attached client watches it
-happen:
+A workspace built entirely from another shell — panes opened with `new`,
+renamed with `rename`, re-tiled with `organize grid`, commands typed with
+`send` — while the attached client watches it happen:
 
 ![A workspace driven from the CLI](screenshots/cli-windows.png)
 

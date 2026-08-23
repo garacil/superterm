@@ -58,6 +58,10 @@ type
     destructor Destroy; override;
     function PaneCount: integer;
     function SplitPane(AIndex: integer; ADir: TSplitDir): boolean;
+    // Put the first pane back into an empty layout. Closing the last window
+    // leaves the desktop empty instead of ending the program, so there has to
+    // be a way in again -- and splitting needs a leaf to split.
+    function AddFirstPane: boolean;
     function ClosePane(AIndex: integer): boolean; // false if it became empty
     procedure ResizeFocused(ADir: TSplitDir; ADelta: integer);
     procedure FocusNext(ADelta: integer);
@@ -232,6 +236,17 @@ begin
     if Result = nil then
       Result := FindLeafParent(ARoot.B, ANode);
   end;
+end;
+
+function TLayout.AddFirstPane: boolean;
+begin
+  Result := False;
+  if Root <> nil then
+    Exit;
+  Root := TNode.CreateLeaf(0);
+  Focused := 0;
+  LastInsertedIndex := 0;
+  Result := True;
 end;
 
 function TLayout.SplitPane(AIndex: integer; ADir: TSplitDir): boolean;

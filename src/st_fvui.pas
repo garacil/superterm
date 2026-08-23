@@ -73,6 +73,7 @@ const
   cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
   cmDesktopColor      = 2764;   // visual picker for the desktop colour
   cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
+  cmFullScreen        = 2766;   // F5: hand the terminal to the pane
 
 type
   PSuperApp = ^TSuperApp;
@@ -111,6 +112,11 @@ type
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
+    // Zoomed means "filling the desktop, frame and all"; FullScreen means
+    // "owning the terminal", which is what passthrough is for. They used to
+    // be the same thing, so maximising a window with its own icon threw the
+    // IDE away. Only F5 sets this one.
+    FullScreen: boolean;
     TitleFixed: boolean;       // custom title: cwd refresh must not touch it
     SavedRect: Objects.TRect;  // bounds before the minimized icon
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
@@ -1299,6 +1305,7 @@ begin
   PaneIdx := APane;
   Minimized := False;
   Zoomed := False;
+  FullScreen := False;
   State := State and (not sfShadow);     // no shadow: exact tiling
   R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
   Term := New(PTermView, Init(R, APane));
@@ -1521,6 +1528,8 @@ begin
         App^.Win[i]^.Zoom;
   inherited Zoom;
   Zoomed := not WasZoomed;
+  if WasZoomed then
+    FullScreen := False;   // back to a window: nothing owns the terminal
 end;
 
 procedure TTermWindow.Close;
@@ -2568,7 +2577,11 @@ var
 begin
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
-  if Lay.Focused < 0 then
+  // With no panes at all there is nothing to focus and nothing to split, and
+  // that is exactly when a pane is most wanted: the desktop was emptied by
+  // closing the last window. Fall through with Focused = -1; both the local
+  // path and the daemon read an empty layout as "give me the first pane".
+  if (Lay.Focused < 0) and (Lay.PaneCount > 0) then
     Exit;
   if RemoteMode then
   begin
@@ -2591,7 +2604,13 @@ begin
     Exit;
   end;
   OldCount := Lay.PaneCount;
-  if not Lay.SplitPane(Lay.Focused, ADir) then
+  if (Lay.PaneCount = 0) and Lay.AddFirstPane then
+  begin
+    // the desktop was left empty: this is the first pane again, not a split
+    OldCount := 0;
+    NewIdx := 0;
+  end
+  else if not Lay.SplitPane(Lay.Focused, ADir) then
   begin
     MessageBox(UiText('Maximum 16 panes', 'Maximo 16 paneles'), nil,
       mfInformation or mfOKButton);
@@ -3899,11 +3918,10 @@ var
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
     Exit;
-  if PaneCount <= 1 then
-  begin
-    Message(@Self, evCommand, cmQuit, nil);
-    Exit;
-  end;
+  // Closing the last window used to end the program. It leaves an empty
+  // desktop instead: the menu, the status line and the picture stay, and
+  // Classes or Panes > Split open a pane again. Leaving is what Alt-X and
+  // Panes > Exit are for, said on purpose.
   OldFocused := Lay.Focused;
   // in remote mode the pane lives in the daemon: kill it there and
   // compact mirroring it (same indexes); locally KillPane does the job
@@ -4030,6 +4048,12 @@ begin
   // modes it wants through its raw output; ExitPassthrough re-enables ours.
   WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
     #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
+  // that line turned any-motion reporting off at the terminal, so say so:
+  // SyncHostMouse only writes when its idea of the mode changes, and leaving
+  // it believing ?1003 was still on meant a pane that had asked for
+  // every-motion tracking never got it back after a maximise and restore --
+  // silently, because both sides thought it was already there.
+  HostAnyMotion := False;
   // resize the pane's PTY to the full terminal (menu + desktop + status
   // rows included). Single client => the daemon applies it as-is; the
   // RESIZE_EV round-trip in ApplyRemoteResize aborts if another client
@@ -4112,6 +4136,9 @@ begin
   // left this terminal reporting nothing at all, with no way to notice.
   if ButtonCount <> 0 then
     HostMouseOn;
+  // HostMouseOn restores normal and button tracking; any-motion belongs to
+  // whatever the focused pane asks for, so let the one place that knows decide
+  SyncHostMouse;
   // Resize ONLY the pane that owned the screen, to the bounds its window
   // already has. Un-zooming (F5) restored those bounds itself, but the
   // ChangeBounds guard suppressed the PTY resize while passthrough was active,
@@ -4153,7 +4180,7 @@ var
 begin
   f := Lay.Focused;
   want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
-    Win[f]^.Zoomed and (Current = PView(Desktop));
+    Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop));
   if want and (not PassthroughActive) then
     EnterPassthrough(f)
   else if PassthroughActive and (not want) then
@@ -4275,8 +4302,7 @@ procedure TSuperApp.ApplyRemoteKillPane(APane: integer);
 var
   j, OldFocused: integer;
 begin
-  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
-     (PaneCount <= 1) then
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) then
     Exit;
   OldFocused := Lay.Focused;
   Lay.ClosePane(APane);
@@ -4323,15 +4349,21 @@ begin
   if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
     TitleS, TermS) then
     Exit;
-  if (Lay.PaneCount + 1 <> PC) or (At < 0) or (At >= Lay.PaneCount) or
-     (PC > MAX_PANES) then
+  if (Lay.PaneCount + 1 <> PC) or (PC > MAX_PANES) or
+     ((Lay.PaneCount > 0) and ((At < 0) or (At >= Lay.PaneCount))) then
     Exit;   // out of sync: better not to touch anything
   OldCount := Lay.PaneCount;
   if Dir = 1 then
     SDir := sdH
   else
     SDir := sdV;
-  if not Lay.SplitPane(At, SDir) then
+  // the desktop was left empty: the daemon is giving us the first pane back
+  if Lay.PaneCount = 0 then
+  begin
+    if not Lay.AddFirstPane then
+      Exit;
+  end
+  else if not Lay.SplitPane(At, SDir) then
     Exit;
   if Lay.LastInsertedIndex <> NewIdx then
   begin
@@ -4350,7 +4382,18 @@ begin
       Win[j]^.SetPaneIdx(j);
     end;
   end;
+  // Clear the slot the shift vacated, all four of it. Panes and Scr are
+  // overwritten just below and PaneTerm too, but Win was left holding the
+  // pointer the shift had just copied UP -- so the window now sat in the
+  // array twice, and CreateWindowForPane refuses to build one where Win is
+  // not nil. The new pane therefore got no window of its own, the focus
+  // landed on its neighbour's, and closing either index freed the shared
+  // window through one slot and left the other dangling: the next repaint
+  // walked into it through SyncScrollBar and died. The local path already
+  // did this (see the split above); only the remote one did not, which is
+  // why it needed a daemon to show itself.
   Panes[NewIdx] := nil;
+  Win[NewIdx] := nil;
   PaneTerm[NewIdx] := FindWindowClass(TermS);
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
@@ -4659,7 +4702,8 @@ begin
   // zoom animation. Same on the way back. Do the whole transition with the
   // flush held, then decide passthrough, then paint ONCE: straight to
   // fullscreen, and straight back to the IDE exactly as it was.
-  if (Event.What = evCommand) and (Event.Command = cmZoom) then
+  if (Event.What = evCommand) and
+     ((Event.Command = cmZoom) or (Event.Command = cmFullScreen)) then
   begin
     // optional transition: expand the outline out to full screen before
     // zooming in, and contract it back after restoring
@@ -4686,7 +4730,31 @@ begin
     ZoomSaveFlush := SuppressFlush;
     SuppressFlush := True;
     try
-      inherited HandleEvent(Event);
+      if Event.Command = cmFullScreen then
+      begin
+        // F5 is the only way to the whole terminal. It fills the desktop
+        // first if the window was not already filling it, so leaving full
+        // screen puts the window back exactly where it was.
+        if (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
+           (not Win[ZoomF]^.Minimized) then
+        begin
+          if Win[ZoomF]^.FullScreen then
+          begin
+            Win[ZoomF]^.FullScreen := False;
+            if Win[ZoomF]^.Zoomed then
+              Win[ZoomF]^.Zoom;
+          end
+          else
+          begin
+            if not Win[ZoomF]^.Zoomed then
+              Win[ZoomF]^.Zoom;
+            Win[ZoomF]^.FullScreen := True;
+          end;
+        end;
+        ClearEvent(Event);
+      end
+      else
+        inherited HandleEvent(Event);   // plain maximise, inside the IDE
       for i := 0 to MAX_PANES - 1 do
         if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
           Lay.Focused := i;
@@ -5529,6 +5597,12 @@ begin
 
   // ---- Panes: tile operations (split, focus, zoom, min, size) ----
   PaneItems := nil;
+  // Closing the last window leaves an empty desktop now, so leaving has to be
+  // something you ask for. It is on the Sessions menu too; this is where the
+  // hand already is after closing panes.
+  PaneItems := NewItem(UiText('E~x~it superterm', 'Sa~l~ir de superterm'),
+    'Alt-X', kbAltX, cmQuit, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
     '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
@@ -5561,8 +5635,10 @@ begin
     kbNoKey, cmWindowMinimizeAll, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
     kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~F~ull screen', '~P~antalla completa'),
+    'F5', kbF5, cmFullScreen, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('Ma~x~imize/restore', 'Ma~x~imizar/restaurar'),
-    'F5', kbF5, cmZoom, hcNoContext, PaneItems);
+    '', kbNoKey, cmZoom, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewInfoItem(UiText('Go to pane 1-9', 'Ir al panel 1-9'),
     'Alt-1..9', PaneItems);
@@ -5810,8 +5886,8 @@ begin
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Detach',
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Separar'),
     kbNoKey, cmDetach, Items);
-  Items := NewStatusKey(UiText('~F5~ Zoom', '~F5~ Zoom'), kbF5,
-    cmZoom, Items);
+  Items := NewStatusKey(UiText('~F5~ Full screen', '~F5~ Pantalla'), kbF5,
+    cmFullScreen, Items);
   Items := NewStatusKey(UiText('~F8~ Window', '~F8~ Ventana'), kbF8,
     cmWindowNext, Items);
   Items := NewStatusKey(UiText('~F6~ Pane', '~F6~ Panel'), kbF6,
