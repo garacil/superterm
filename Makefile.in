@@ -14,7 +14,11 @@ TARGET ?= $(PROJECT_DIR)/bin/superterm
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 
-BASE_FLAGS := -Mobjfpc -Sh -vewnh \
+# -vewnh: errors, warnings, notes and hints all on -- the project builds with
+# none of them. -vm11030,11031 silences the two FPC emits about reading its
+# own /etc/fpc.cfg, which say nothing about this code and made a clean build
+# look like it had something to report.
+BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm11030,11031 \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
