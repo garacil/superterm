@@ -5550,7 +5550,7 @@ begin
       if TitleS = '' then
         TitleS := UiText('pane ', 'panel ') + IntToStr(i + 1);
       Chain := NewItem(Format(UiText('Restore %d %s', 'Restaurar %d %s'),
-        [i + 1, Copy(TitleS, 1, 20)]), '', kbNoKey,
+        [i + 1, Copy(TitleS, 1, 16)]), '', kbNoKey,
         cmWindowRestoreBase + i, hcNoContext, PaneItems);
       if Chain <> nil then
         PaneItems := Chain;
@@ -5690,7 +5690,7 @@ begin
     kbCtrlS, cmSaveSess, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('~A~ttach / manage sessions...',
-    '~C~onectar / gestionar sesiones...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
+    '~C~onectar / gestionar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
     cmSessionPick, hcNoContext, SessItems);
   SessItems := NewItem(UiText('~D~etach...', '~S~eparar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' d',
     kbNoKey, cmDetach, hcNoContext, SessItems);
@@ -5719,8 +5719,8 @@ begin
     UiText('~B~lack and white', '~B~lanco y negro'), '', kbNoKey,
     cmPaletteBase + apBlackWhite, hcNoContext, PaletteItems);
   PaletteItems := NewItem(ActiveMark(AppPalette = apColor) +
-    UiText('~C~olor (classic Turbo Pascal)',
-      '~C~olor (Turbo Pascal clasico)'), '', kbNoKey,
+    UiText('~C~olor (Turbo Pascal)',
+      '~C~olor (Turbo Pascal)'), '', kbNoKey,
     cmPaletteBase + apColor, hcNoContext, PaletteItems);
   // Desktop background: one entry per picture found on disk, plus the
   // classic layout modes. Built at run time because the pictures are files,
@@ -5758,12 +5758,12 @@ begin
       UiText('Sol~i~d background', 'Fondo sol~i~do'), '',
       kbNoKey, cmToggleSolidBg, hcNoContext,
     NewItem(ActiveMark(Cfg.DragContent) +
-      UiText('Show contents while ~d~ragging',
-             'Ver contenido al ~a~rrastrar'), '',
+      UiText('Contents while ~d~ragging',
+             'Contenido al ~a~rrastrar'), '',
       kbNoKey, cmToggleDragContent, hcNoContext,
     NewItem(ActiveMark(Cfg.ZoomAnim) +
       UiText('Zoom ~t~ransition (F5)',
-             '~T~ransicion al hacer zoom (F5)'), '',
+             '~T~ransicion de zoom (F5)'), '',
       kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))))));
 
   MHelp := NewMenu(

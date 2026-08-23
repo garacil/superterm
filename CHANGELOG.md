@@ -4,6 +4,16 @@
 
 The desktop: its pictures, its colour, and the shadows cast on it.
 
+### Menu labels that were being cut in silence
+
+A screenshot caught the Options menu reading "Show contents while dragg".
+FreeVision's menu item type is `String[31]` (vendor/fv322/menus.pas:91), so a
+longer label is truncated where it is built, with no diagnostic, and the box
+is then sized to the cut text -- nothing looks wrong except the missing
+letters. Five were over, counting the `(*) ` an on/off item carries and the
+`~` that mark the hotkey, and so was the "Restore N title" line whenever a
+window title was long.
+
 ### One long-standing test flake, gone
 
 `passthrough_test` failed about two runs in eight, and had done since before

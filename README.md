@@ -100,19 +100,51 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
-**A picture on the desktop, behind the windows.** Eight ship and
-your own drop into `~/.superterm/backgrounds/` without rebuilding. The colours
-are real RGB, not the 16-colour grid.
+**A picture on the desktop, behind the windows.** Nine ship, and your own drop
+into `~/.superterm/backgrounds/` without rebuilding. The colours are real RGB,
+not the 16-colour grid, and every picture is drawn with one glyph only -- the
+full block -- so nothing comes apart when the terminal font is stretched.
+
+![Goody on the desktop, with a window over it](screenshots/desktop-goody.png)
+
+They are picked from `Options > Desktop background`, and the desktop follows
+the choice straight away:
+
+![Choosing a desktop picture](screenshots/backgrounds.gif)
 
 | | |
 | --- | --- |
-| ![7kas phoenix](screenshots/bg-phoenix.png) | ![London skyline](screenshots/bg-london.png) |
-| ![Alaska range](screenshots/bg-alaska.png) | ![Open field](screenshots/bg-field.png) |
-| ![Sea at sunset](screenshots/bg-sea.png) | ![Stone wall, tiled](screenshots/bg-wall.png) |
-| ![Truchet weave, tiled](screenshots/bg-weave.png) | ![Circuit board, tiled](screenshots/bg-circuit.png) |
+| ![Goody](screenshots/bg-goody.png) | ![7kas phoenix](screenshots/bg-phoenix.png) |
+| ![London skyline](screenshots/bg-london.png) | ![Alaska range](screenshots/bg-alaska.png) |
+| ![Open field](screenshots/bg-field.png) | ![Sea at sunset](screenshots/bg-sea.png) |
+| ![Stone wall, tiled](screenshots/bg-wall.png) | ![Truchet weave, tiled](screenshots/bg-weave.png) |
 
-The last three are seamless patterns meant for the tiled layout: they repeat
-across the desktop with no visible join.
+The last two, and the circuit board, are seamless patterns meant for the tiled
+layout: they repeat across the desktop with no visible join.
+
+**The desktop's colour is yours.** `Options > Desktop colour...` opens a picker
+over the sixteen text-mode colours -- click one, or move with the arrows. Black
+is the default, and it fills the desktop and the empty cells of a picture
+alike:
+
+![Choosing the desktop colour](screenshots/desktop-colour.gif)
+
+**Three palettes, and the picture stays.** Colour, black and white, and
+monochrome, switched from `Options > Color palette`. A picture keeps its own
+colours in all three -- what shows between the windows is the picture you
+chose:
+
+![Switching the colour palette](screenshots/palette.gif)
+
+**Menus and dialogs cast a real shadow** over whatever is behind them, picture
+included:
+
+![A menu over the desktop picture](screenshots/menu-shadow.png)
+
+**The history is reachable** with the scrollbar in every window's right frame
+column, the wheel, and `Alt-PgUp`/`PgDn`:
+
+![Scrolling back through a pane's history](screenshots/scrollback.png)
 
 **A workspace, and `F5` giving one pane the whole terminal.**
 Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
