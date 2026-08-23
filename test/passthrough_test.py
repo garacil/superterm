@@ -30,7 +30,11 @@ c.drain(2.5)
 # were asserted the other way round: truecolor was collapsed and the arrow was
 # lost. That limitation is what the rich renderer removes. ----
 base = len(c.raw())
-c.send(RICH, 1.2)
+c.send(RICH, 0.5)
+# the bytes arrive when the pane's output has crossed the daemon and been
+# rendered; on a loaded machine that is later than a fixed pause allows, so
+# wait for the LAST thing the line prints rather than for a clock
+c.wait_until(lambda t: b'END' in c.raw()[base:], 10.0)
 win = c.raw()[base:]
 check('windowed keeps truecolor fg', b'38;2;255;100;0' in win)
 check('windowed keeps truecolor bg', b'48;2;0;80;200' in win)
