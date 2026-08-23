@@ -4,10 +4,10 @@
 The pictures are plain text (see src/st_artbg.pas): a row of glyphs and a row
 of palette indexes, one index per cell.
 
-Only two glyphs are ever used -- the full block and the space. Half blocks,
-shades and line-drawing characters split apart the moment the terminal font
-is stretched, so nothing here draws with them: a cell is either painted
-whole, in one colour, or left alone.
+One glyph is used and one only: '6', the dark shade block, in the cell's own
+colour -- plus the space where there is no picture. Every picture is drawn
+with the same character, so what tells them apart is the colour, and the
+grid it is made of is part of how it looks.
 
 Everything is drawn into a PIXEL canvas that may be finer than the character
 grid, and the emitter averages each cell's pixels into its single colour --
@@ -162,9 +162,27 @@ BAYER = [[(v + 0.5) / 16.0 for v in row] for row in
 
 
 class Picture:
-    def __init__(self, canvas, name_en, name_es, mode=None, dither=False):
+    # Characters for the ASCII variant, from the emptiest to the fullest.
+    # Chosen for how much ink each one puts on the cell in a console font,
+    # not for how they read as letters: this is a picture, not a word.
+
+    # The character every picture is drawn with: '6', which the format reads
+    # as the dark shade block. One character for every cell of every picture,
+    # always the same one -- what carries a picture is the colour, and the
+    # colour of a cell is its own. Choosing the character by how bright a cell
+    # is was tried and is not this: partial ink over black reads as the same
+    # picture in dimmer colours, which is a different picture.
+    ASCII_CHAR = '6'
+
+    def __init__(self, canvas, name_en, name_es, mode=None, dither=False,
+                 ascii_art=True):
         self.c = canvas
         self.name_en, self.name_es, self.mode = name_en, name_es, mode
+        # ascii_art: a cell is a CHARACTER in one colour instead of a solid
+        # block of it. The character comes from how bright the cell is, so
+        # the picture keeps its shape through the ink as well as the colour.
+        # 'ascii' picks from RAMP, 'shade' from SHADES
+        self.ascii = ascii_art
         # dither: 62 colours cannot hold a long gradient, and snapping each
         # pixel to the nearest one leaves visible bands across a sky. With
         # this on, a colour that falls between two palette entries alternates
@@ -319,8 +337,11 @@ class Picture:
             for cx, p in enumerate(row):
                 if p is None:
                     g.append(' '); f.append(' ')
+                elif self.ascii:
+                    g.append(self.ASCII_CHAR)
+                    f.append(ALPHABET[idx(p, cx, cy)])
                 else:
-                    g.append('3')          # full block: the only glyph used
+                    g.append('3')          # a solid cell, if one is ever asked for
                     f.append(ALPHABET[idx(p, cx, cy)])
             rows.append((''.join(g).rstrip(), ''.join(f).rstrip()))
 
