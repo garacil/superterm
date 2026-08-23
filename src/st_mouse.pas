@@ -40,6 +40,15 @@ interface
 // mouse is gpm.
 function OnLinuxConsole: boolean;
 
+// The exact set of modes this driver wants the host terminal in, and the way
+// back. One place decides, so anything that hands the terminal to a pane and
+// takes it back again restores precisely what was enabled -- a pane's own
+// program (a superterm inside a pane, say) writes its own mode resets
+// straight to the host while it owns the screen, and they must be undone by
+// the same rules that set them.
+procedure HostMouseOn;
+procedure HostMouseOff;
+
 implementation
 
 uses
@@ -114,11 +123,26 @@ begin
       SysDriver.InitDriver();
     Exit;
   end;
+  HostMouseOn;
+end;
+
+procedure HostMouseOn;
+begin
+  if OnLinuxConsole then
+    Exit;                      // gpm, not escape sequences
   // normal tracking, motion while a button is held, SGR encoding (no
   // 223-column limit). Any-motion tracking (?1003) is not asked for: the
   // RTL queue holds 16 events and FreeVision drains one per loop, so a
   // sweep of the pointer under ?1003 overflows it for nothing.
   Write(#27'[?1000h'#27'[?1002h'#27'[?1006h');
+  Flush(Output);
+end;
+
+procedure HostMouseOff;
+begin
+  if OnLinuxConsole then
+    Exit;
+  Write(#27'[?1006l'#27'[?1002l'#27'[?1000l');
   Flush(Output);
 end;
 
@@ -130,8 +154,7 @@ begin
       SysDriver.DoneDriver();
     Exit;
   end;
-  Write(#27'[?1006l'#27'[?1002l'#27'[?1000l');
-  Flush(Output);
+  HostMouseOff;
 end;
 
 initialization

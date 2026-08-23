@@ -14,7 +14,7 @@ uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
-  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg;
+  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg, st_mouse;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -4084,12 +4084,14 @@ begin
   // never called and the RTL's event queue is a pair of nil pointers: asking
   // for reports there is asking for a SIGSEGV on the first one.
   if ButtonCount <> 0 then
-    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
-      #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
-      #27']22;default'#27'\')
-  else
     WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h'#27'[?2004l' +
       #27']22;default'#27'\');
+  // and re-assert exactly what the mouse driver wants. The pane that owned
+  // the screen wrote straight to the host terminal while it did, and a pane
+  // running its own superterm resets every mouse mode when it exits -- which
+  // left this terminal reporting nothing at all, with no way to notice.
+  if ButtonCount <> 0 then
+    HostMouseOn;
   // Resize ONLY the pane that owned the screen, to the bounds its window
   // already has. Un-zooming (F5) restored those bounds itself, but the
   // ChangeBounds guard suppressed the PTY resize while passthrough was active,
@@ -4690,6 +4692,7 @@ begin
       PrefixPending := False;
       // prefix chords (tmux style): d=detach, c=class, s=session,
       // n/p=window +-, t=tile, 1..9=window N, arrows=pane size,
+      // F5=bare F5 into the pane (for a superterm running inside one),
       // double prefix=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
@@ -4763,6 +4766,20 @@ begin
       begin
         // double prefix: send ONE literal prefix to the pane (like tmux)
         WritePaneInput(Lay.Focused, AnsiChar(Chr(Cfg.PrefixKey)));
+        ClearEvent(Event);
+        Exit;
+      end;
+      if Event.KeyCode = kbF5 then
+      begin
+        // prefix + F5: a BARE F5 into the pane. Plain F5 is kept by this
+        // superterm as the way out of a maximised pane, so a superterm
+        // running inside a pane could never be told to un-maximise: its own
+        // F5 never reached it and it stayed full-screen for ever. The
+        // generic chord below would send prefix+F5, which the inner one
+        // reads as its own prefix, so F5 needs its own rule. It composes:
+        // at two levels, prefix prefix F5 reaches the innermost.
+        WritePaneInput(Lay.Focused,
+          TranslateKey(kbF5, PaneWantsAppCursor(Lay.Focused)));
         ClearEvent(Event);
         Exit;
       end;
@@ -5033,6 +5050,11 @@ begin
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
   SyncHostMouse;
+  // a local pane's master is non-blocking, so a program that was not reading
+  // when input arrived left some of it queued; push it now
+  for i := 0 to MAX_PANES - 1 do
+    if (Panes[i] <> nil) and Panes[i].Alive and Panes[i].InputPending then
+      Panes[i].FlushInput;
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
