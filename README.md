@@ -352,8 +352,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 
 | Key | Action |
 | --- | --- |
-| `F2` | Split the focused window side by side; the other windows stay put |
-| `F3` | Split the focused window top and bottom; the other windows stay put |
+| `F2` / `F3` | Open a window; it appears centred and nothing already open is moved or resized |
 | `Alt-F3` / `Alt-F4` | Close the focused pane; exit when one remains |
 | `F6` / `F7` | Next / previous pane |
 | `Alt-1..9` | Go to pane N |

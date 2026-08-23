@@ -219,10 +219,10 @@ Fields:
   when those are unset too, to two thirds of the desktop. The window frame
   adds one cell on each side, and the size is clamped to the desktop.
 
-A pane opened from a class lands centred on the desktop at that size, on top
-of whatever is there, and no other window moves. `F2`/`F3` are different: they
-split the focused window in two and leave the rest alone. Tiling is on demand
-(`Windows -> Tile`, or prefix + `t`).
+Every way of opening a window behaves the same: it appears centred on the
+desktop at that size, on top of whatever is there, and nothing already open is
+moved or resized -- `F2`/`F3` included. Tiling is on demand (`Windows -> Tile`,
+or prefix + `t`).
 
 The class type is derived when loading and is never stored:
 

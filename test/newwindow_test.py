@@ -70,25 +70,24 @@ check('first window spans the desktop',
       first == (1, 0) and f0[first][0] >= W - 2)
 full_w = f0[first][0] if first else 0
 
-# --- F2: the focused window gives up its right half to the new one
+# --- F2: the new window is centred and NOTHING already open moves
 c.send(b'\x1bOQ', 2.0)
 f1 = frames(c)
 check('split: now two windows', len(f1) == 2)
 check('split: the old window kept its place', first in f1)
-keep_w = f1.get(first, (0, 0))[0]
-check('split: the old window is half as wide', keep_w == full_w // 2)
+check('split: the old window was not resized', f1.get(first) == f0[first])
 new = [p for p in f1 if p != first]
-check('split: the new one starts where the old one ends',
-      new and new[0] == (1, keep_w))
-check('split: the new one has the other half',
-      new and f1[new[0]][0] == full_w - keep_w)
+if new:
+    row, col = new[0]
+    w, h = f1[(row, col)]
+    check('split: the new one is centred across', col == (W - w) // 2)
+    check('split: the new one is centred down', row == 1 + ((H - 2) - h) // 2)
 
-# --- F2 again: only the (new, focused) window is split; the first is untouched
+# --- a second one: still nothing already open moves
 before = dict(f1)
 c.send(b'\x1bOQ', 2.0)
 f2 = frames(c)
-check('second split: three windows', len(f2) == 3)
-check('second split: the first window did not move or resize',
+check('second window: the first is untouched',
       first in f2 and f2[first] == before[first])
 
 # --- a class pane: centred at the class size, on top; nothing else moves

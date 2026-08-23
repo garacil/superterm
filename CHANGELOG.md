@@ -12,10 +12,12 @@ operation had already been taught not to do this -- minimize, restore, close
 and leaving a maximised pane all leave the rest alone. Creation was the last
 one left.
 
-- **`F2`/`F3` are real splits now.** The focused window gives up half of
-  itself and the new pane takes the other half. No other window moves.
-- **A pane opened from a class lands centred**, at the size the class asks
-  for, on top of whatever is there -- again moving nothing else. Classes gain
+- **One rule, every way of opening a window.** It appears centred, at the
+  size its class asks for, on top of whatever is there, and nothing already
+  open is moved or resized -- `F2`/`F3` included. Splitting the focused
+  window in two was tried first and is not what is wanted: creating a window
+  must not change the window you were using, and repeated splits halve a
+  window until it is unusable. Classes gain
   `cols` and `rows` in cells, editable in the class dialog; unset, they fall
   back to `[ui] newwincols`/`newwinrows`, and unset too, to two thirds of the
   desktop. The first window of a session still takes the whole desktop.
