@@ -1,8 +1,9 @@
 # Changelog
 
-## 3.4.3 - 2026-08
+## 3.5.0 - 2026-08
 
-What an afternoon of real use asked for, and the crash it found.
+Text that moves between panes, a pane that keeps its colours when you look
+away, and the tracing written down at last.
 
 ### Clipboard history across local and SSH panes
 
@@ -28,6 +29,25 @@ content over a local or SSH connection.
 The `Windows` / `Ventanas` menu now contains `Minimize all windows` and
 `Restore all windows`. Both commands update the complete workspace together;
 individual minimize and restore entries remain in `Panes` / `Paneles`.
+
+### How to trace superterm, written down
+
+`docs/DEBUGGING.md` is new. It says what `SUPERTERM_DEBUG` and
+`SUPERTERM_DEBUG_FULL` turn on, that a debug build traces by itself while a
+release build only traces when asked, and how to read a line of trace and the
+prefixes it uses. It documents the crash report -- reason, role, pid, uptime,
+a backtrace with file and line, and the last of the trace -- and that the
+release build keeps `-gl` so that backtrace still names a line. It explains
+how to trace a session someone else is attached to, and how to drive a
+reproduction from a script with `test/stlib.py`, the same harness the suite
+runs on. It ends with three ways of measuring that quietly lie: a shell that
+echoes the marker you are waiting for, a line ending in a carriage return that
+the next prompt paints over, and a picture read from where it is installed
+rather than from the tree you just edited.
+
+## 3.4.3 - 2026-08
+
+What an afternoon of real use asked for, and the crash it found.
 
 ### The mouse died after moving the focus away from Claude Code or Codex
 
