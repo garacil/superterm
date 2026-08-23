@@ -17,6 +17,10 @@ const
   MAXREAD = 65536;
 
 const
+  // how long a write may wait for the pane's program to make room before
+  // the rest is left queued: long enough that a program which is reading
+  // never notices, short enough that one which is not cannot stall a loop
+  WRITE_GRACE_MS = 100;
   // more than this waiting for one pane's program means the program is not
   // reading at all; refuse rather than grow without bound
   PENDING_INPUT_MAX = 1 shl 20;
@@ -52,7 +56,7 @@ type
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
     // push queued input toward the pane; safe to call at any time
-    procedure FlushInput;
+    procedure FlushInput(AGraceMs: integer = 0);
     function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
@@ -598,27 +602,53 @@ begin
   if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
     Exit;
   FPendingInput := FPendingInput + S;
-  FlushInput;
+  // Give the program a bounded moment to take it. Nearly always it takes
+  // everything at once and this behaves exactly as the old blocking write;
+  // what it will not do is wait for ever on a program that has stopped
+  // reading, which used to freeze the daemon and every other pane with it.
+  FlushInput(WRITE_GRACE_MS);
   Result := True;
 end;
 
-// Push whatever is still queued for the pane. Called after every write and
-// from the daemon's loop; a partial write simply leaves the rest for the
-// next turn.
-procedure TPty.FlushInput;
+// Push whatever is still queued toward the pane. With AGraceMs > 0 it waits
+// that long in total for the program to make room; with 0 it writes what
+// fits and returns. A partial write simply leaves the rest for the next
+// turn of the caller's loop.
+procedure TPty.FlushInput(AGraceMs: integer);
 var
   N: integer;
+  Deadline: QWord;
+  SetW: TFDSet;
+  TV: TTimeVal;
+  Left: QWord;
 begin
-  while FPendingInput <> '' do
-  begin
+  if (FMaster < 0) or (FPendingInput = '') then
+    Exit;
+  Deadline := GetTickCount64 + QWord(AGraceMs);
+  repeat
     N := FpWrite(FMaster, PAnsiChar(FPendingInput), Length(FPendingInput));
     if N > 0 then
-      Delete(FPendingInput, 1, N)
-    else if (N < 0) and (fpgeterrno = ESysEINTR) then
-      continue
-    else
-      Exit;   // EAGAIN: the program is not reading; try again next turn
-  end;
+    begin
+      Delete(FPendingInput, 1, N);
+      if FPendingInput = '' then
+        Exit;
+      continue;
+    end;
+    if (N < 0) and (fpgeterrno = ESysEINTR) then
+      continue;
+    if (N < 0) and (fpgeterrno <> ESysEAGAIN) then
+      Exit;                       // the pane is gone; drop what is left
+    if GetTickCount64 >= Deadline then
+      Exit;                       // not reading: try again next turn
+    Left := Deadline - GetTickCount64;
+    fpFD_ZERO(SetW);
+    if fpFD_SET(FMaster, SetW) <> 0 then
+      Exit;
+    TV.tv_sec := Left div 1000;
+    TV.tv_usec := (Left mod 1000) * 1000;
+    if fpSelect(FMaster + 1, nil, @SetW, nil, @TV) <= 0 then
+      Exit;
+  until False;
 end;
 
 function TPty.InputPending: boolean;

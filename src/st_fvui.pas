@@ -2315,7 +2315,19 @@ begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (Scr[i] = nil) then
     Exit;
-  TitleS := WClasses[PaneTerm[i]].Name;
+  // PaneTerm is -1 for a pane with no class and -2 for one whose class
+  // failed to start -- and this routine runs exactly when a class pane could
+  // not be brought up, so both are the normal case here, not the exception.
+  // Reading WClasses at a negative index is a segfault, and it was the one
+  // reported: open an ssh class that does not come up, and the client dies.
+  // The bound matters too: a class deleted while its pane lives leaves the
+  // index past the end of the array.
+  if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+    TitleS := WClasses[PaneTerm[i]].Name
+  else
+    TitleS := Trim(Win[i]^.GetTitle(80));
+  if TitleS = '' then
+    TitleS := UiText('terminal', 'terminal');
   Cmd := 'printf ' + ShellQuote(
     UiText('superterm: remote terminal unavailable: ',
       'superterm: terminal remoto no disponible: ') + TitleS + #10) +
@@ -4561,7 +4573,9 @@ begin
     Pin[i].Title := '';
     if Panes[i] <> nil then
     begin
-      if PaneTerm[i] >= 0 then
+      // the upper bound matters: deleting a class leaves the panes that used
+      // it, and the ones after it, pointing past the end of the array
+      if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
         Pin[i].Term := WClasses[PaneTerm[i]].Name
       else
       begin

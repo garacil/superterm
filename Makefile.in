@@ -24,7 +24,11 @@ ifeq ($(MODE),debug)
 # el build no debe depender del config global para sus checks de runtime
 MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
 else ifeq ($(MODE),release)
-MODE_FLAGS := -O4
+# -gl: line information, kept in the optimised build on purpose. A crash
+# report from a release binary carried bare addresses that resolved to
+# nothing, which is exactly when the report matters most; with this the
+# backtrace names the file and line. It does not change the code generated.
+MODE_FLAGS := -O4 -gl
 else
 $(error MODE must be release or debug)
 endif
