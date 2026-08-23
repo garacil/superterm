@@ -3,6 +3,10 @@ SHELL := /bin/sh
 PROJECT_DIR := @PROJECT_DIR@
 FPC := @FPC@
 PYTHON := @PYTHON@
+# DESTDIR: the standard staging prefix every packaging tool sets. Without it
+# 'make install' wrote to the real /usr even inside a fakeroot, so no package
+# could be built from this Makefile.
+DESTDIR ?=
 PREFIX := @PREFIX@
 BINDIR := @BINDIR@
 SYSCONFDIR := @SYSCONFDIR@
@@ -94,31 +98,31 @@ Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
 	@cd "$(PROJECT_DIR)" && ./configure
 
 install: release
-	@mkdir -p "$(BINDIR)" "$(DOCDIR)" "$(SYSCONFDIR)/superterm"
-	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(BINDIR)/superterm"
-	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DOCDIR)/README.md"
+	@mkdir -p "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DOCDIR)" "$(DESTDIR)$(SYSCONFDIR)/superterm"
+	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(DESTDIR)$(BINDIR)/superterm"
+	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DESTDIR)$(DOCDIR)/README.md"
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
-		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
+		install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \
 	done
-	@mkdir -p "$(DATADIR)/backgrounds"
-	@rm -f "$(DATADIR)"/backgrounds/*.art
+	@mkdir -p "$(DESTDIR)$(DATADIR)/backgrounds"
+	@rm -f "$(DESTDIR)$(DATADIR)"/backgrounds/*.art
 	@for art in "$(PROJECT_DIR)"/backgrounds/*.art; do \
-		install -m 0644 "$$art" "$(DATADIR)/backgrounds/$$(basename "$$art")"; \
+		install -m 0644 "$$art" "$(DESTDIR)$(DATADIR)/backgrounds/$$(basename "$$art")"; \
 	done
 	@printf '%s\n' "Desktop backgrounds installed in $(DATADIR)/backgrounds"
-	@if [ ! -f "$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
+	@if [ ! -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
 		install -m 0644 "$(PROJECT_DIR)/examples/superterm.ini.example" \
-			"$(SYSCONFDIR)/superterm/superterm.ini.example"; \
+			"$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"; \
 	else \
 		printf '%s\n' "Keeping existing $(SYSCONFDIR)/superterm/superterm.ini"; \
 	fi
 
 uninstall:
-	rm -f "$(BINDIR)/superterm"
-	rm -f "$(DOCDIR)/README.md" "$(DOCDIR)/BUILDING.md" \
-		"$(DOCDIR)/CONFIGURATION.md" "$(DOCDIR)/WIZARD.md"
-	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
-	rm -rf "$(DATADIR)/backgrounds"
+	rm -f "$(DESTDIR)$(BINDIR)/superterm"
+	rm -f "$(DESTDIR)$(DOCDIR)/README.md" "$(DESTDIR)$(DOCDIR)/BUILDING.md" \
+		"$(DESTDIR)$(DOCDIR)/CONFIGURATION.md" "$(DESTDIR)$(DOCDIR)/WIZARD.md"
+	rm -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"
+	rm -rf "$(DESTDIR)$(DATADIR)/backgrounds"
 
 install-deps:
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
