@@ -71,6 +71,8 @@ const
   cmToggleZoomAnim    = 2763;
   cmBackgroundBase    = 2800;   // + index into the pictures found on disk
   cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
+  cmDesktopColor      = 2764;   // visual picker for the desktop colour
+  cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
 
 type
   PSuperApp = ^TSuperApp;
@@ -140,6 +142,9 @@ type
   PArtBackground = ^TArtBackground;
   TArtBackground = object(TBackground)
     procedure Draw; virtual;
+    // paint the whole desktop black; see the comment on Draw
+    function DeskAttr: byte;
+    procedure FillDesk(AWidth: integer);
   end;
 
   PArtDesktop = ^TArtDesktop;
@@ -1598,6 +1603,9 @@ begin
     AppPalette := apMonochrome
   else
     AppPalette := apColor;
+  // the renderer paints our own ground unless the user wants the host
+  // terminal's -- see SolidBackground in st_video
+  st_video.SolidBackground := Cfg.SolidBg;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
   // window classes: user file + system file (user wins); if
@@ -4629,6 +4637,7 @@ var
   ZoomF: integer;
   ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2: integer;
   ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
+  DeskCol: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -4872,6 +4881,26 @@ begin
           Cfg.DragContent := not Cfg.DragContent;
           SaveConfig(Cfg);
           RebuildMenu;
+        end;
+      cmToggleSolidBg:
+        begin
+          Cfg.SolidBg := not Cfg.SolidBg;
+          st_video.SolidBackground := Cfg.SolidBg;
+          SaveConfig(Cfg);
+          RebuildMenu;
+          ResetVideoSurface;   // every cell's colour changes
+          ReDraw;
+        end;
+      cmDesktopColor:
+        begin
+          DeskCol := Cfg.DesktopColor;
+          if RunDesktopColorPick(DeskCol) then
+          begin
+            Cfg.DesktopColor := DeskCol;
+            SaveConfig(Cfg);
+            ResetVideoSurface;   // the whole desktop changes colour
+            ReDraw;
+          end;
         end;
       cmToggleZoomAnim:
         begin
@@ -5349,6 +5378,36 @@ begin
   else Result := Ord('.');
 end;
 
+// The desktop behind the windows, painted black.
+//
+// FreeVision's own background is the classic blue field of dotted shade. A
+// picture drawn on top of that had the blue showing through everywhere the
+// picture did not reach, and the pictures themselves are photographic: they
+// belong on a plain ground, the way a screen border does. So the desktop is
+// one flat colour -- black unless the user picked another in
+// Options > Desktop colour -- with a picture or without one, and the empty
+// cells of a picture take that same colour rather than blue dots.
+function TArtBackground.DeskAttr: byte;
+var
+  App: PSuperApp;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  DeskAttr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+end;
+
+procedure TArtBackground.FillDesk(AWidth: integer);
+var
+  B: TDrawBuffer;
+  y: integer;
+begin
+  B := Default(TDrawBuffer);
+  MoveChar(B, ' ', DeskAttr, AWidth);
+  for y := 0 to Size.Y - 1 do
+    WriteLine(0, y, AWidth, 1, B);
+end;
+
 procedure TArtBackground.Draw;
 var
   B: TDrawBuffer;
@@ -5366,31 +5425,29 @@ begin
   // With no picture this must cost exactly what it cost before the feature
   // existed: one string compare and the ancestor's single WriteLine. Nothing
   // is looked up, nothing is registered, no per-cell work happens at all.
-  if (App = nil) or (App^.Cfg.Background = '') or
-     (App^.Cfg.Background = 'none') then
-  begin
-    inherited Draw;
-    Exit;
-  end;
-  Idx := ArtIndexOf(App^.Cfg.Background);
-  // Clear through the ancestor first: it covers the view's whole extent in
-  // one call, so nothing of a previous layout can survive in a row this
-  // routine might not reach. The picture is then laid over that.
-  inherited Draw;
-  if Idx <= 0 then
-    Exit;                // name not found on disk: the plain pattern
-  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
-  GOrig.X := 0;
-  GOrig.Y := 0;
-  MakeGlobal(GOrig, GOrig);
-  // TDrawBuffer is a fixed-size array, so a row must be clamped exactly as
-  // TTermView.Draw does. Writing past it on a very wide terminal corrupted
-  // the tail of the row and left stale cells behind after a resize.
   W := Size.X;
   if W > MaxViewWidth then
     W := MaxViewWidth;
   if W < 0 then
     W := 0;
+  if (App = nil) or (App^.Cfg.Background = '') or
+     (App^.Cfg.Background = 'none') then
+  begin
+    // With no picture this costs exactly what the ancestor cost: one filled
+    // buffer and one WriteLine per row, nothing looked up or registered.
+    FillDesk(W);
+    Exit;
+  end;
+  Idx := ArtIndexOf(App^.Cfg.Background);
+  // Clear first: this covers the view's whole extent, so nothing of a
+  // previous layout can survive in a row the picture does not reach.
+  FillDesk(W);
+  if Idx <= 0 then
+    Exit;                // name not found on disk: a plain desktop
+  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
+  GOrig.X := 0;
+  GOrig.Y := 0;
+  MakeGlobal(GOrig, GOrig);
   // The background owns the entire desktop, so nothing registered here by a
   // previous layout may survive: clear the whole region before painting.
   for y := 0 to Size.Y - 1 do
@@ -5404,11 +5461,11 @@ begin
       C := ArtCellFor(Idx, Mode, W, Size.Y, x, y);
       if C.Glyph = '' then
       begin
-        // Empty cell: the plain pattern, and NOT registered in the overlay.
-        // A background covers the whole desktop, so registering every empty
-        // cell filled the overlay with entries that a later layout could
-        // match by coincidence and resurrect as a stale glyph.
-        Word0 := (word(GetColor($01)) shl 8) or word(Pattern);
+        // Empty cell: black, and NOT registered in the overlay. A background
+        // covers the whole desktop, so registering every empty cell filled
+        // the overlay with entries that a later layout could match by
+        // coincidence and resurrect as a stale glyph.
+        Word0 := (word(DeskAttr) shl 8) or word(' ');
         B[x] := Word0;
         RichClear(GOrig.X + x, GOrig.Y + y);
       end
@@ -5695,6 +5752,11 @@ begin
     NewItem(ActiveMark(Cfg.AutoRestore) +
       UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
       kbNoKey, cmToggleAutoRestore, hcNoContext,
+    NewItem(UiText('Desktop ~c~olour...', '~C~olor del escritorio...'), '',
+      kbNoKey, cmDesktopColor, hcNoContext,
+    NewItem(ActiveMark(Cfg.SolidBg) +
+      UiText('Sol~i~d background', 'Fondo sol~i~do'), '',
+      kbNoKey, cmToggleSolidBg, hcNoContext,
     NewItem(ActiveMark(Cfg.DragContent) +
       UiText('Show contents while ~d~ragging',
              'Ver contenido al ~a~rrastrar'), '',
@@ -5702,7 +5764,7 @@ begin
     NewItem(ActiveMark(Cfg.ZoomAnim) +
       UiText('Zoom ~t~ransition (F5)',
              '~T~ransicion al hacer zoom (F5)'), '',
-      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))));
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,

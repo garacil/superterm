@@ -1,5 +1,93 @@
 # Changelog
 
+## 3.4.2 - 2026-08
+
+The desktop: its pictures, its colour, and the shadows cast on it.
+
+### One long-standing test flake, gone
+
+`passthrough_test` failed about two runs in eight, and had done since before
+any of this. Both faults were in the test: the rich line it prints ended in a
+carriage return, so the shell's next prompt landed on top of it and the
+assertion depended on the renderer emitting a frame in the gap -- which it
+coalesces on purpose; and the wait was for a word the shell's own echo of the
+command carries, so the slice under test could be the echo. Six runs in a row
+pass now.
+
+### The pictures are drawn for the screen they live on
+
+At 1024x768 with the classic 8x16 console cell the terminal is 128x48
+characters and the desktop is that less the menu and status rows: 128x46.
+The pictures were 74x22, barely a third of the width, so they were either
+stretched or stranded in a corner. They are drawn at 128x46 now by
+`tools/mkbackgrounds.py`, which is in the tree so they can be redrawn or
+added to rather than hand-edited.
+
+Two of them are converted from real artwork rather than drawn: the 7kas
+phoenix, from the brand's own vector file, and Goody, the Opera Soft loading
+screen, which is new.
+
+### Only the full block, never a half one
+
+Half blocks, quadrants and the shade characters all come apart the moment
+the terminal font is stretched -- which is what a maximised window, or
+simply a different console font, does to them. Every picture is now drawn
+with two glyphs and no others: the full block, in one colour, and the space
+where there is nothing at all. Stretching samples whole cells, so a
+stretched picture is made of whole blocks too.
+
+That halves the pixels a picture has, so the drawing earns them back
+elsewhere: ordered dithering where a colour is snapped to the palette (sixty
+-two colours cannot hold a long gradient and snapping banded it), textures
+that blend rather than toss a coin per pixel, and a soft pass over the
+layers that should read as continuous. Alaska's snow settles by altitude on
+the range instead of by a threshold per column; London is rebuilt around
+Westminster, with the Eye as a true circle rather than an ellipse of spider
+web.
+
+One old bug came out with it: the reader takes a row from its third
+character, which is what the hand-written tile patterns have always been
+written for, and the generated pictures had no space after the marker. Every
+one of them had its first column eaten and the rest shifted one to the left.
+
+### The desktop's colour is a choice
+
+The desktop was filled with attribute 0 -- black, always. `Options >
+Desktop colour...` now opens a picker with the sixteen text-mode colours as
+swatches. Black stays the default, and the colour fills the desktop and the
+empty cells of a picture alike.
+
+A picture keeps its own colours in every palette, including black and white
+and monochrome. It was tried the other way -- no picture at all outside the
+colour palette -- and it is worse: what shows through between the windows is
+the picture the user chose, and taking it away is not what a palette is for.
+
+### The ground is ours to paint
+
+A screenshot showed superterm tinted green from top to bottom -- panes,
+menus and status line alike -- and nothing here emits green. It was the host
+terminal answering for the parts superterm did not answer for itself: a cell
+whose background is the palette's black went out as "colour 0", which a
+themed terminal paints as whatever it calls black, and a pane cell whose
+background is the terminal default went out with no background at all, which
+on a transparent terminal is a hole straight through the application.
+
+Every background is explicit now. Only black is forced, so a themed terminal
+keeps its own blue and cyan, and the text colour is never touched -- it is
+the ground that has to be solid, not the letters. `Options > Solid
+background` turns it off for anyone who wants that transparency.
+
+### A shadow over a picture looks like a shadow
+
+FreeVision casts a shadow by keeping the character underneath and forcing
+its attribute to the shadow one. The rich overlay gates every cell on the
+buffer word the pane wrote there still standing, so that attribute change
+dropped the cell to its CP437 fallback: the shadow of a menu over a desktop
+picture came out as the picture's own block characters in dark grey, which
+is how it had looked from the beginning. The cell is now recognised for what
+it is, kept, and darkened -- over a picture and over a pane's own truecolor
+output alike.
+
 ## 3.4.1 - 2026-08
 
 Everything the history needed to actually work, found by using it.

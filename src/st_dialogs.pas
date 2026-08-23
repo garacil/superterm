@@ -59,6 +59,10 @@ type
 function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
   out ASelected: integer): boolean;
 
+// Desktop colour: a visual picker over the sixteen text-mode colours.
+// AColor is both the colour to start on and, on True, the one chosen.
+function RunDesktopColorPick(var AColor: integer): boolean;
+
 function RunSessionPicker(AllowStartNew: boolean;
   out ASocketPath: string): TSessionPickAction;
 
@@ -1116,6 +1120,153 @@ begin
     Result := (ASelected >= 0) and (ASelected < Length(ATitles));
   end;
   LB^.NewList(nil); // NewList(nil) frees the previous collection
+  Dispose(D, Done);
+end;
+
+
+type
+  // The sixteen text-mode colours as swatches, two rows of eight. Drawn with
+  // raw attributes rather than through the palette chain: the whole point is
+  // to show the colours themselves, not the dialog's idea of them.
+  PColorGrid = ^TColorGrid;
+  TColorGrid = object(TView)
+    Color: integer;
+    constructor Init(var Bounds: Objects.TRect; AColor: integer);
+    procedure Draw; virtual;
+    procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
+const
+  CG_COLS = 8;                  // swatches across
+  CG_CELL = 5;                  // cells per swatch
+  CG_ROWS = 2;                  // swatches down
+  CG_HIGH = 2;                  // rows per swatch
+
+constructor TColorGrid.Init(var Bounds: Objects.TRect; AColor: integer);
+begin
+  inherited Init(Bounds);
+  Options := Options or ofSelectable or ofFirstClick;
+  EventMask := EventMask or evMouseMove;
+  Color := AColor;
+  if (Color < 0) or (Color > 15) then
+    Color := 0;
+end;
+
+procedure TColorGrid.Draw;
+var
+  B: TDrawBuffer;
+  y, x, sw, col, row: integer;
+  Attr: byte;
+  Mark: char;
+begin
+  for y := 0 to Size.Y - 1 do
+  begin
+    row := y div CG_HIGH;
+    B := Default(TDrawBuffer);
+    MoveChar(B, ' ', 0, Size.X);
+    for x := 0 to Size.X - 1 do
+    begin
+      col := x div CG_CELL;
+      if (col >= CG_COLS) or (row >= CG_ROWS) then
+        Continue;
+      sw := row * CG_COLS + col;
+      // the swatch is its own colour as background; the marker on the chosen
+      // one is drawn in whatever contrasts with it
+      Attr := byte(sw shl 4);
+      if sw < 8 then
+        Attr := Attr or $0F
+      else
+        Attr := Attr or $00;
+      Mark := ' ';
+      if (sw = Color) and (x mod CG_CELL = CG_CELL div 2) and
+         (y mod CG_HIGH = 0) then
+        Mark := #254;                  { the solid square marker }
+      MoveChar(B[x], Mark, Attr, 1);
+    end;
+    WriteLine(0, y, Size.X, 1, B);
+  end;
+end;
+
+procedure TColorGrid.HandleEvent(var Event: TEvent);
+var
+  P: Objects.TPoint;
+  sw, col, row: integer;
+begin
+  inherited HandleEvent(Event);
+  case Event.What of
+    evMouseDown:
+      begin
+        P := Default(Objects.TPoint);
+        MakeLocal(Event.Where, P);
+        col := P.X div CG_CELL;
+        row := P.Y div CG_HIGH;
+        if (col >= 0) and (col < CG_COLS) and (row >= 0) and (row < CG_ROWS) then
+        begin
+          sw := row * CG_COLS + col;
+          if sw <> Color then
+          begin
+            Color := sw;
+            DrawView;
+          end;
+          if Event.Double then
+          begin
+            Event.What := evCommand;
+            Event.Command := cmOK;
+            PutEvent(Event);
+          end;
+        end;
+        ClearEvent(Event);
+      end;
+    evKeyDown:
+      begin
+        sw := Color;
+        case Event.KeyCode of
+          kbLeft:  if sw > 0 then Dec(sw);
+          kbRight: if sw < 15 then Inc(sw);
+          kbUp:    if sw >= CG_COLS then Dec(sw, CG_COLS);
+          kbDown:  if sw < CG_COLS then Inc(sw, CG_COLS);
+        else
+          Exit;
+        end;
+        Color := sw;
+        DrawView;
+        ClearEvent(Event);
+      end;
+  end;
+end;
+
+// Desktop colour: swatches, a live sample, OK/Cancel.
+function RunDesktopColorPick(var AColor: integer): boolean;
+var
+  D: PDialog;
+  R: Objects.TRect;
+  G: PColorGrid;
+  C: word;
+begin
+  Result := False;
+  R.Assign(0, 0, 48, 13);
+  D := New(PDialog, Init(R, UiText('Desktop colour',
+    'Color del escritorio')));
+  D^.Options := D^.Options or ofCentered;
+  with D^ do
+  begin
+    R.Assign(3, 2, 45, 3);
+    Insert(New(PStaticText, Init(R, UiText(
+      'The colour behind the windows, and behind a picture.',
+      'El color tras las ventanas, y tras una imagen.'))));
+    NewButton(10, 10, 12, 2, 'OK', cmOK, hcNoContext, bfDefault);
+    NewButton(26, 10, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
+    R.Assign(4, 4, 4 + CG_COLS * CG_CELL, 4 + CG_ROWS * CG_HIGH);
+    G := New(PColorGrid, Init(R, AColor));
+    Insert(G);
+  end;
+  C := Desktop^.ExecView(D);
+  if C = cmOK then
+  begin
+    AColor := G^.Color;
+    Result := True;
+  end;
   Dispose(D, Done);
 end;
 

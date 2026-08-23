@@ -1,4 +1,4 @@
-# superterm 3.3
+# superterm 3
 
 **Project site: [www.superterm.org](https://www.superterm.org)**
 
@@ -100,7 +100,7 @@ panes in a normal GNU/Linux or macOS terminal window.
 
 ## Screenshots
 
-**superterm 3.3: a picture on the desktop, behind the windows.** Eight ship and
+**A picture on the desktop, behind the windows.** Eight ship and
 your own drop into `~/.superterm/backgrounds/` without rebuilding. The colours
 are real RGB, not the 16-colour grid.
 
@@ -114,7 +114,7 @@ are real RGB, not the 16-colour grid.
 The last three are seamless patterns meant for the tiled layout: they repeat
 across the desktop with no visible join.
 
-**superterm 3.2: a workspace, and `F5` giving one pane the whole terminal.**
+**A workspace, and `F5` giving one pane the whole terminal.**
 Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
 in the centre, and a fourth minimized to a title bar at the bottom. `F5`
 maximizes the focused pane and hands it the entire terminal, so `top` reflows
@@ -124,7 +124,7 @@ where it was. The expanding outline is the optional zoom transition
 
 ![The F5 zoom transition](screenshots/zoom-transition.gif)
 
-**superterm 3.0 in action — one capture per feature.**
+**superterm in action — one capture per feature.**
 
 Two clients attached to the same session at once: everything typed in client
 A (left) appears live in client B (right), including the `print` injected
@@ -561,7 +561,13 @@ units plus the project-specific wide-screen and tmux mouse fixes.
 
 ## Installation
 
-For a system install:
+Prebuilt x86_64 packages for every release are on the
+[releases page](https://github.com/garacil/superterm/releases/latest): a
+portable tarball for any GNU/Linux, plus `.deb`, `.rpm` and Arch
+`.pkg.tar.zst`. The only dependency is glibc, and each file ships with its
+`.sha256`. macOS and ARM builds are published separately.
+
+To build from source instead, for a system install:
 
 ```sh
 ./configure --prefix=/usr/local --sysconfdir=/etc

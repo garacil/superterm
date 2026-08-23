@@ -5,3 +5,9 @@
 /config.status
 __pycache__/
 AUDIT-3x.md
+# compiler output, wherever it lands: a hand-run fpc with -FU src drops
+# units next to the sources and they are not part of the project
+*.o
+*.ppu
+*.a
+*.compiled
