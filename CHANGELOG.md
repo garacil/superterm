@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.4.3 - 2026-08
+
+Two things a real workspace found in an afternoon.
+
+### A pane created in the daemon got no window of its own
+
+Attached to a session, creating a pane -- from a class, from the menu, from
+the CLI -- made the focus jump to a window that was already open, and closing
+that window killed the client with a segmentation fault in `SyncScrollBar`.
+
+The client mirrors the daemon's panes in four parallel arrays. Inserting one
+shifts them up, and the slot the shift vacates has to be cleared. Three of
+them were: `Panes`, `Scr` and `PaneTerm`. `Win` was not, so it still held the
+pointer the shift had just copied up -- the neighbour's window, now in the
+array twice. `CreateWindowForPane` refuses to build a window where `Win` is
+not nil, so the new pane never got one, the focus landed on the neighbour's,
+and closing either index freed the shared window through one slot and left
+the other dangling. The next repaint walked into it and died.
+
+The local path had always cleared all four. Only the remote one had not,
+which is why it took a daemon to see it, and only when the new pane landed in
+the middle of the order -- appended at the end, nothing shifts and nothing
+breaks. `test/remote_newpane_test.py` reproduces exactly that.
+
+### Maximising a window is not the same as taking the terminal
+
+Any zoom put the pane into passthrough, so maximising a window with its own
+icon threw the whole IDE off the screen. They are two things now:
+
+- **Maximise** -- the window's `[↑]` icon, or `Panes > Maximize/restore` --
+  fills the desktop and leaves the frame, the menu bar and the status line
+  exactly where they are.
+- **`F5`** -- and only `F5` -- hands the whole terminal to the pane, which is
+  what a full-fidelity TUI wants. `F5` again puts the window back where it
+  was.
+
+Also: entering passthrough turned any-motion mouse reporting off at the
+terminal without recording that it had, so superterm and the terminal could
+disagree about it afterwards. The flag now says what is true.
+
 ## 3.4.2 - 2026-08
 
 The desktop: its pictures, its colour, and the shadows cast on it.
