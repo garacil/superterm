@@ -11,9 +11,6 @@ procedure RestoreConsoleCursor;
 // bracketed paste off, and anything the terminal already reported dropped.
 // Call at the very end, after the application is done.
 procedure ReleaseConsoleInput;
-// True on a real Linux virtual console (TERM=linux), where the mouse can only
-// come from gpm and never from terminal escape sequences.
-function IsLinuxConsole: boolean;
 
 // Passthrough: while active the FreeVision screen driver stays silent and the
 // client writes a pane's raw PTY bytes straight to the host terminal, so a
@@ -977,14 +974,6 @@ end;
 // Disabling is not quite enough on its own either: reports the terminal
 // already sent are sitting in the tty input buffer and would be read by the
 // shell as typed characters. Flush them.
-function IsLinuxConsole: boolean;
-var
-  T: string;
-begin
-  T := LowerCase(GetEnvironmentVariable('TERM'));
-  Result := (T = 'linux') or (Copy(T, 1, 6) = 'linux-');
-end;
-
 procedure ReleaseConsoleInput;
 begin
   // order matters: SGR last, so the tracking modes are already off and
