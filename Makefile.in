@@ -65,10 +65,18 @@ test: release
 	fi
 	@$(PYTHON) -c 'import pyte' 2>/dev/null || \
 		(printf '%s\n' 'Python module pyte is required; install python3-pyte or run pip install pyte'; exit 1)
-	@set -e; for test in $(TESTS); do \
+	@failed=''; total=0; for test in $(TESTS); do \
 		printf '\n==> test/%s\n' "$$test"; \
-		$(PYTHON) "$(PROJECT_DIR)/test/$$test"; \
-	done
+		total=$$((total + 1)); \
+		$(PYTHON) "$(PROJECT_DIR)/test/$$test" || failed="$$failed $$test"; \
+	done; \
+	printf '\n---------------------------------------------\n'; \
+	if [ -n "$$failed" ]; then \
+		printf 'FAILED suites (of %s):\n' "$$total"; \
+		for t in $$failed; do printf '  test/%s\n' "$$t"; done; \
+		exit 1; \
+	fi; \
+	printf 'all %s suites passed\n' "$$total"
 
 # Regenerate this Makefile when its template or configure changes. An existing
 # checkout otherwise keeps a stale Makefile after a pull -- which is how a new
