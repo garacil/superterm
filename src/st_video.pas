@@ -340,6 +340,20 @@ type
 
 const
   COALESCE_MS = 40;   // never defer a frame longer than this: ~25 fps floor
+  // FreeVision draws a view's shadow by KEEPING the character underneath and
+  // forcing its attribute to ShadowAttr (vendor/fv322/views.pas:688, applied
+  // in do_writeViewRec1). Naming the unit from here would be circular, so the
+  // value is mirrored. Cells that match this are rendered as the rich cell
+  // they were, dimmed -- see FRAME below.
+  FV_SHADOW_ATTR = $08;
+  // how much of a colour survives in a shadow, in hundredths
+  SHADOW_LIGHT = 34;
+  // the sixteen VGA colours as RGB, and the six levels of the xterm cube:
+  // only used to work out what a colour looks like once it is in shadow
+  Vga16Rgb: array[0..15] of LongWord = (
+    $000000, $0000AA, $00AA00, $00AAAA, $AA0000, $AA00AA, $AA5500, $AAAAAA,
+    $555555, $5555FF, $55FF55, $55FFFF, $FF5555, $FF55FF, $FFFF55, $FFFFFF);
+  Xterm6: array[0..5] of LongWord = (0, 95, 135, 175, 215, 255);
 
 var
   LastEmitTick: QWord = 0;
@@ -465,6 +479,83 @@ begin
     3: Result := Result + ';48;5;' + IntToStr(ABg and $FF);
   end;
   Result := Result + 'm';
+end;
+
+// A colour as it looks in a view's shadow. The 16- and 256-colour forms are
+// resolved to RGB first: a shadow has to be DARKER than what it covers, and
+// "index 4, but dimmer" is not something the terminal can be asked for.
+function DimColor(AColor, ADefault: LongWord): LongWord;
+var
+  r, g, b, n: LongWord;
+begin
+  case AColor shr 24 of
+    1: begin
+         r := (AColor shr 16) and $FF;
+         g := (AColor shr 8) and $FF;
+         b := AColor and $FF;
+       end;
+    2: begin
+         n := AColor and $0F;
+         r := Vga16Rgb[n] shr 16;
+         g := (Vga16Rgb[n] shr 8) and $FF;
+         b := Vga16Rgb[n] and $FF;
+       end;
+    3: begin
+         n := AColor and $FF;
+         if n < 16 then
+         begin
+           r := Vga16Rgb[n] shr 16;
+           g := (Vga16Rgb[n] shr 8) and $FF;
+           b := Vga16Rgb[n] and $FF;
+         end
+         else if n < 232 then
+         begin
+           n := n - 16;
+           r := Xterm6[(n div 36) mod 6];
+           g := Xterm6[(n div 6) mod 6];
+           b := Xterm6[n mod 6];
+         end
+         else
+         begin
+           r := 8 + (n - 232) * 10;
+           g := r;
+           b := r;
+         end;
+       end;
+  else
+    begin
+      r := (ADefault shr 16) and $FF;
+      g := (ADefault shr 8) and $FF;
+      b := ADefault and $FF;
+    end;
+  end;
+  r := (r * SHADOW_LIGHT) div 100;
+  g := (g * SHADOW_LIGHT) div 100;
+  b := (b * SHADOW_LIGHT) div 100;
+  DimColor := $01000000 or (r shl 16) or (g shl 8) or b;
+end;
+
+// Does the rich cell at AIndex still own that position? Either untouched, or
+// repainted as a view's shadow -- same character, ShadowAttr over it.
+function RichStands(AIndex: LongInt; out AShadowed: Boolean): Boolean;
+var
+  W: Word;
+begin
+  AShadowed := False;
+  if (AIndex < 0) or (AIndex > High(RichScreen)) or
+     (not RichScreen[AIndex].Valid) then
+    Exit(False);
+  W := Word(VideoCellAt(VideoBuf, AIndex));
+  if W = RichScreen[AIndex].Oracle then
+    Exit(True);
+  if (Byte(W and $FF) = Byte(RichScreen[AIndex].Oracle and $FF)) and
+     (Byte(W shr 8) = FV_SHADOW_ATTR) and
+     (Byte(RichScreen[AIndex].Oracle shr 8) <> FV_SHADOW_ATTR) then
+  begin
+    AShadowed := True;
+    Exit(True);
+  end;
+  RichStands := False;
 end;
 
 function EffEqual(const A, B: TEffCell): Boolean;
@@ -686,7 +777,7 @@ var
   X, Y, Index, Nx: LongInt;
   VCell: TVideoCell;
   Eff: TEffCell;
-  NeedMove: Boolean;
+  NeedMove, Shadowed, NShadow: Boolean;
   OutCursorX, OutCursorY: Word;
   Body, Frame, CurSGR, LastSGR: AnsiString;
   ChangedCells, Runs, RHit, RMiss: LongInt;
@@ -736,7 +827,7 @@ begin
       // VideoBuf (visible top cell), otherwise the CP437/16-color chrome
       if RichScreen[Index].Valid then
         if Word(VCell) = RichScreen[Index].Oracle then Inc(RHit) else Inc(RMiss);
-      if RichScreen[Index].Valid and (Word(VCell) = RichScreen[Index].Oracle) then
+      if RichStands(Index, Shadowed) then
       begin
         Eff.Skip := RichScreen[Index].Skip;
         Eff.Wide := RichScreen[Index].Wide;
@@ -746,6 +837,16 @@ begin
         Eff.Bg := RichScreen[Index].Bg;
         Eff.Flags := RichScreen[Index].Flags;
         Eff.Attr := 0;
+        if Shadowed then
+        begin
+          // a menu or a dialog is casting its shadow over this cell. Dropping
+          // to the chrome fallback here painted the picture underneath as raw
+          // CP437 blocks in dark grey, which is what the shadow of the menu
+          // looked like over a desktop picture. Keep the cell and darken it.
+          Eff.Fg := DimColor(Eff.Fg, $00AAAAAA);
+          Eff.Bg := DimColor(Eff.Bg, $00000000);
+          Eff.Flags := 0;
+        end;
       end
       else
       begin
@@ -766,9 +867,8 @@ begin
       if Eff.Rich and Eff.Wide then
       begin
         Nx := Index + 1;
-        if (X + 1 >= ScreenWidth) or (not RichScreen[Nx].Valid) or
-           (not RichScreen[Nx].Skip) or
-           (Word(VideoCellAt(VideoBuf, Nx)) <> RichScreen[Nx].Oracle) then
+        if (X + 1 >= ScreenWidth) or (not RichScreen[Nx].Skip) or
+           (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
         begin
           Eff.Glyph := ' ';    // split pair: never overflow into a foreign cell
           Eff.Wide := False;
@@ -777,9 +877,8 @@ begin
       else if Eff.Rich and Eff.Skip then
       begin
         Nx := Index - 1;
-        if (X = 0) or (not RichScreen[Nx].Valid) or
-           (not RichScreen[Nx].Wide) or
-           (Word(VideoCellAt(VideoBuf, Nx)) <> RichScreen[Nx].Oracle) then
+        if (X = 0) or (not RichScreen[Nx].Wide) or
+           (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
         begin
           // orphan continuation: fall back to the chrome cell so the column is
           // painted instead of staying blank
