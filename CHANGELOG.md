@@ -24,7 +24,7 @@ The base modes are re-asserted immediately after now. Three sequences, a
 no-op on a terminal that kept them, and the difference between a working
 pointer and a dead one everywhere else.
 
-### A picture is painted, not typed
+### A picture is painted by the terminal, not by the font
 
 The desktop pictures were drawn with the full block glyph, U+2588, in the
 cell's colour. That should look like a solid rectangle and does not: the
@@ -45,6 +45,22 @@ picture back through its own body. Dialogs looked transparent for as long as
 that lasted, which was one build. `test/dialog_opaque_test.py` opens three of
 them over a picture, in colour and in monochrome, and counts what shows
 through.
+
+### Every picture is typed with one character
+
+A picture is drawn with the dark shade block, `▓`, in the cell's own colour --
+every cell of every picture, always the same character. The colours are
+exactly the ones the filled version had; what you gain is seeing the grid a
+picture is made of. There is one Goody, and it is this one.
+
+The grid behind it still gets the full block, whatever the picture is drawn
+with: that word is what tells the renderer a cell is still the picture's, and
+it has to be a word nothing else on the screen writes. A space in some
+attribute is written by every dialog; the shade blocks are written by every
+scrollbar trough. Both were tried, and both let a picture show through the
+body of a dialog -- the second one in exactly the column its scrollbar was
+in. `test/dialog_opaque_test.py` opens three dialogs over a picture, in
+colour and in monochrome, and counts what comes through.
 
 ### A pane created in the daemon got no window of its own
 
