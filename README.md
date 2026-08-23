@@ -308,7 +308,10 @@ The compatibility wrapper remains available:
 
 Use `make info` to inspect the selected compiler, target, prefix, and paths.
 See [`docs/BUILDING.md`](docs/BUILDING.md) for the source tree, vendor units,
-build modes, installation, debugging, and platform boundaries.
+build modes, installation, and platform boundaries, and
+[`docs/DEBUGGING.md`](docs/DEBUGGING.md) for the tracing build, how to read a
+trace, the crash report with its backtrace, and how to reproduce a problem
+from a script.
 
 ## Tests
 
@@ -400,6 +403,10 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q s` | Session picker: attach to or close detached sessions |
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `Ctrl-Q [` | Enter pane copy mode. Move with arrows/PgUp/PgDn, press Space to start a selection and Enter to copy; mouse drag also copies |
+| `Ctrl-Q ]` | Paste the newest clipboard-history item into the focused pane |
+| `Ctrl-Q h` | Choose one of the ten most recent clipboard items to paste |
+| Host terminal Paste | Add the pasted UTF-8 text to history and send it atomically to the focused local or SSH pane |
 | `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
@@ -410,13 +417,27 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
 
+Changing pane focus changes only the window border/title and cursor. Terminal
+content keeps exactly the same colors and attributes in every pane, focused or
+not, and unchanged interiors are not retransmitted on a focus switch.
+
 The same actions are available from the `Panes`, `Windows`, `Classes`,
-`Profiles`, `Sessions`, `Options`, and `Help` menus. The `Panes` menu also
-offers classic `Tile`, `Cascade`, and `Refresh display` operations. `Options`
-holds the language (`English`/`Espanol`, applied immediately), the color
-palette (color, black and white, monochrome), and the autosave/autorestore
-toggles. In Spanish mode the menus are `Paneles`, `Ventanas`, `Clases`,
-`Perfiles`, `Sesiones`, `Opciones`, and `Ayuda`.
+`Profiles`, `Sessions`, `Options`, `Clipboard`, and `Help` menus. The
+`Windows` menu contains `Minimize all windows`, `Restore all windows`, `Tile`,
+`Organize`, `Cascade`, `List`, and `Refresh display`. `Options` holds the
+language (`English`/`Espanol`, applied immediately), the color palette (color,
+black and white, monochrome), and the autosave/autorestore toggles. In Spanish
+mode the menus are `Paneles`, `Ventanas`, `Clases`, `Perfiles`, `Sesiones`,
+`Opciones`, `Portapapeles`, and `Ayuda`.
+
+Clipboard history is client-local, kept only in memory, deduplicated and
+limited to ten UTF-8 items. Copying from a pane also writes the outer host
+clipboard with OSC 52, so it works when the pane is an SSH connection and
+when SuperTerm itself is reached over SSH, provided the terminal emulator
+allows OSC 52 writes. OSC 52 writes produced by applications in a pane are
+added to the same history; clipboard-read queries from panes are not answered.
+The outer terminal's normal paste action is received through bracketed-paste
+mode and is re-wrapped only when the focused application requested it.
 
 ## Session Wizard
 
@@ -575,6 +596,7 @@ src/
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
 ├── st_pty.pas      POSIX PTYs, fork/exec, I/O, resize, and process cleanup.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
+├── st_clipboard.pas Ten-item client clipboard history and OSC 52 helpers.
 ├── st_server.pas   Detached session daemon, protocol and enumeration.
 ├── st_session.pas  Session serialization and restore.
 ├── st_wclass.pas   Window classes ([class.*], legacy [t-*] reader).

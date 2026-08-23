@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """superterm test: named detached sessions, picker, --attach and --list-sessions."""
-import os, pty, time, select, sys, fcntl, termios, struct, shutil, subprocess
+import os, pty, time, select, sys, fcntl, termios, struct, subprocess
 import pyte
 
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib  # noqa: E402
+
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-HOME = '/tmp/opencode/sthome-multi'
+HOME = stlib.fresh_home('multisession')
 SYSINI = HOME + '/no.ini'
 SESSDIR = HOME + '/.superterm/sessions'
 W, H = 110, 35
-
-# clean isolated environment (removes sockets/sidecars from previous runs)
-shutil.rmtree(HOME, ignore_errors=True)
-os.makedirs(HOME + '/.superterm', exist_ok=True)
 
 def spath(name):
     return os.path.join(SESSDIR, name + '.sock')

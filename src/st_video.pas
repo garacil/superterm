@@ -7,6 +7,9 @@ interface
 procedure InstallWideVideoOutput;
 procedure CaptureConsoleCursor;
 procedure RestoreConsoleCursor;
+// Ask the outer terminal to delimit paste operations. st_kbd consumes those
+// delimiters and delivers the payload atomically to the application.
+procedure HostPasteOn;
 // Hand the terminal back exactly as it was found: every mouse mode off,
 // bracketed paste off, and anything the terminal already reported dropped.
 // Call at the very end, after the application is done.
@@ -36,12 +39,14 @@ function InputPending: Boolean;
 // pane area is presented richly. Colors: $01RRGGBB = truecolor;
 // $02000000 or index (0..15, 8..15 = bright) = the 16-color fallback;
 // $03000000 or index (16..255) = an xterm-256 palette index; 0 = the
-// terminal default. Flags: 1 = bold, 2 = underline, 4 = reverse. ASkip marks
-// a wide-glyph continuation cell (its lead already emitted the 2-wide glyph,
-// so nothing is written here).
+// terminal default. Flags: 1 = bold, 2 = underline, 4 = reverse, 8 = faint.
+// ASkip marks a wide-glyph continuation cell (its lead already emitted the
+// 2-wide glyph, so nothing is written here). AShadowable is for desktop art:
+// FreeVision may dim it below a menu/dialog shadow. Terminal panes pass False
+// because their content colours never represent window focus or chrome.
 procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
   AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean;
-  AWide: Boolean);
+  AWide, AShadowable: Boolean);
 // Drop the whole overlay (nothing renders rich until panes repopulate it).
 procedure RichInvalidate;
 // Forget one cell. A view that covers ground it does not colour richly says
@@ -130,6 +135,11 @@ begin
   end;
   if DebugActive then
     DebugLog(Format('pass: raw %d bytes straight to terminal', [ALen]));
+end;
+
+procedure HostPasteOn;
+begin
+  WriteRaw(#27'[?2004h');
 end;
 
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
@@ -336,6 +346,7 @@ type
     Valid: Boolean;
     Skip: Boolean;      // wide-glyph continuation: emit nothing here
     Wide: Boolean;      // lead of a two-column glyph
+    Shadowable: Boolean; // desktop art may dim; terminal content never does
     Oracle: Word;       // the VideoBuf word the pane wrote at this cell
     Glyph: string[7];   // UTF-8 bytes to emit
     Fg, Bg: LongWord;
@@ -358,13 +369,10 @@ const
   // FreeVision draws a view's shadow by KEEPING the character underneath and
   // forcing its attribute to ShadowAttr (vendor/fv322/views.pas:688, applied
   // in do_writeViewRec1). Naming the unit from here would be circular, so the
-  // value is mirrored. Cells that match this are rendered as the rich cell
-  // they were, dimmed -- see FRAME below.
+  // value is mirrored. Only rich cells explicitly registered as Shadowable
+  // are dimmed; pane content keeps its exact colours in every focus state.
   FV_SHADOW_ATTR = $08;
-  // how much of a colour survives in a shadow, in hundredths
-  SHADOW_LIGHT = 34;
-  // the sixteen VGA colours as RGB, and the six levels of the xterm cube:
-  // only used to work out what a colour looks like once it is in shadow
+  SHADOW_LIGHT = 34;   // percentage of an art colour left under a shadow
   Vga16Rgb: array[0..15] of LongWord = (
     $000000, $0000AA, $00AA00, $00AAAA, $AA0000, $AA00AA, $AA5500, $AAAAAA,
     $555555, $5555FF, $55FF55, $55FFFF, $FF5555, $FF55FF, $FFFF55, $FFFFFF);
@@ -439,7 +447,7 @@ end;
 
 procedure RichSetCell(AX, AY: LongInt; const AGlyph: AnsiString;
   AFg, ABg: LongWord; AFlags: Byte; AOracle: Word; ASkip: Boolean;
-  AWide: Boolean);
+  AWide, AShadowable: Boolean);
 var
   idx: LongInt;
 begin
@@ -451,6 +459,7 @@ begin
   RichScreen[idx].Valid := True;
   RichScreen[idx].Skip := ASkip;
   RichScreen[idx].Wide := AWide;
+  RichScreen[idx].Shadowable := AShadowable;
   RichScreen[idx].Oracle := AOracle;
   if Length(AGlyph) > 7 then
     RichScreen[idx].Glyph := Copy(AGlyph, 1, 7)
@@ -508,9 +517,8 @@ begin
   Result := Result + 'm';
 end;
 
-// A colour as it looks in a view's shadow. The 16- and 256-colour forms are
-// resolved to RGB first: a shadow has to be DARKER than what it covers, and
-// "index 4, but dimmer" is not something the terminal can be asked for.
+// A rich colour as it looks below a desktop menu/dialog shadow. Pane cells do
+// not call this path: their colours are application state, not window chrome.
 function DimColor(AColor, ADefault: LongWord): LongWord;
 var
   r, g, b, n: LongWord;
@@ -562,8 +570,9 @@ begin
   DimColor := $01000000 or (r shl 16) or (g shl 8) or b;
 end;
 
-// Does the rich cell at AIndex still own that position? Either untouched, or
-// repainted as a view's shadow -- same character, ShadowAttr over it.
+// Does the rich cell at AIndex still own that position? A matching
+// FreeVision shadow keeps ownership. AShadowed is True only for cells whose
+// producer explicitly allows dimming (desktop art, never a terminal pane).
 function RichStands(AIndex: LongInt; out AShadowed: Boolean): Boolean;
 var
   W: Word;
@@ -579,7 +588,7 @@ begin
      (Byte(W shr 8) = FV_SHADOW_ATTR) and
      (Byte(RichScreen[AIndex].Oracle shr 8) <> FV_SHADOW_ATTR) then
   begin
-    AShadowed := True;
+    AShadowed := RichScreen[AIndex].Shadowable;
     Exit(True);
   end;
   RichStands := False;
@@ -866,10 +875,6 @@ begin
         Eff.Attr := 0;
         if Shadowed then
         begin
-          // a menu or a dialog is casting its shadow over this cell. Dropping
-          // to the chrome fallback here painted the picture underneath as raw
-          // CP437 blocks in dark grey, which is what the shadow of the menu
-          // looked like over a desktop picture. Keep the cell and darken it.
           Eff.Fg := DimColor(Eff.Fg, $00AAAAAA);
           Eff.Bg := DimColor(Eff.Bg, $00000000);
           Eff.Flags := 0;

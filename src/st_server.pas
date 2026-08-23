@@ -3074,6 +3074,7 @@ procedure TDetachedSession.HandlePaneOutput(APane: integer);
 var
   Buf: array[0..MAXREAD - 1] of byte;
   N: integer;
+  OscSelection, OscPayload: RawByteString;
 begin
   if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
      (not FPanes[APane].Alive) then
@@ -3082,7 +3083,15 @@ begin
   if N > 0 then
   begin
     if FScreens[APane] <> nil then
+    begin
       FScreens[APane].WriteBytes(Buf, N);
+      // Clipboard ownership belongs to each attached UI client and its host
+      // terminal. The daemon parses the same bytes for snapshots but must not
+      // retain client-only OSC 52 events (up to 16 large payloads per pane).
+      OscSelection := '';
+      OscPayload := '';
+      while FScreens[APane].TakeOsc52(OscSelection, OscPayload) do ;
+    end;
     Broadcast(FRAME_OUTPUT, APane, Buf, N, False, -1);
   end
   else if (N = 0) or (fpgeterrno <> ESysEAGAIN) then

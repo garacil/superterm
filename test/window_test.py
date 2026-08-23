@@ -112,12 +112,25 @@ try:
     s.send(b'\x1b\x1b[20~')            # Alt-F9: minimize focused window
     check('window minimized', windows() == 1)
 
-    s.send(b'\x1bp')                  # Alt-P: Panes (restore lives here)
+    s.send(b'\x1bw')                  # Alt-W: whole-window actions live here
     menu = s.text()
-    check('restore entries listed',
-          'Restore all' in menu and 'Restore 2' in menu)
+    check('window-wide actions listed',
+          'Minimize all windows' in menu and 'Restore all windows' in menu)
     s.send(b'r')                      # mnemonic: Restore all
     check('all windows restored', windows() == 2)
+
+    # Exercise both batch commands from Windows. Per-pane restore entries stay
+    # in Panes, and prove that both windows reached the minimized state.
+    s.send(b'\x1bw')
+    s.send(b'a')                      # Minimize all windows
+    s.send(b'\x1bp')
+    menu = s.text()
+    check('all windows minimized',
+          'Restore 1' in menu and 'Restore 2' in menu)
+    s.send(b'\x1b')
+    s.send(b'\x1bw')
+    s.send(b'r')                      # Restore all windows
+    check('batch restore shows all windows', windows() == 2)
 finally:
     try:
         s.send(b'\x1bq', 0.5)          # Alt-Q: quit without saving

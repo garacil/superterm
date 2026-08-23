@@ -1,5 +1,50 @@
 # Changelog
 
+## 3.5.0 - 2026-08
+
+Text that moves between panes, a pane that keeps its colours when you look
+away, and the tracing written down at last.
+
+### Clipboard history across local and SSH panes
+
+The new `Clipboard` / `Portapapeles` menu keeps the ten most recent items in
+memory and lets one be selected for paste. `Ctrl-Q [` enters pane copy mode,
+`Ctrl-Q ]` pastes the newest item, and `Ctrl-Q h` opens the history. Host
+terminal paste is captured atomically with bracketed-paste mode, while pane
+copies and pane-generated OSC 52 writes reach the host clipboard without
+allowing a pane to query and read it. UTF-8, scrollback, attached sessions,
+and mouse selection use the same client-local history.
+
+### Focus changes the border, not the terminal
+
+An unfocused pane no longer has its terminal cells darkened into greyscale.
+Every pane keeps the application's exact foreground, background and text
+attributes whether focused or not; only the window border/title and terminal
+cursor indicate focus. Because the pane interior is unchanged, focus switches
+also leave those cells out of the terminal delta instead of retransmitting
+content over a local or SSH connection.
+
+### Minimize or restore every window
+
+The `Windows` / `Ventanas` menu now contains `Minimize all windows` and
+`Restore all windows`. Both commands update the complete workspace together;
+individual minimize and restore entries remain in `Panes` / `Paneles`.
+
+### How to trace superterm, written down
+
+`docs/DEBUGGING.md` is new. It says what `SUPERTERM_DEBUG` and
+`SUPERTERM_DEBUG_FULL` turn on, that a debug build traces by itself while a
+release build only traces when asked, and how to read a line of trace and the
+prefixes it uses. It documents the crash report -- reason, role, pid, uptime,
+a backtrace with file and line, and the last of the trace -- and that the
+release build keeps `-gl` so that backtrace still names a line. It explains
+how to trace a session someone else is attached to, and how to drive a
+reproduction from a script with `test/stlib.py`, the same harness the suite
+runs on. It ends with three ways of measuring that quietly lie: a shell that
+echoes the marker you are waiting for, a line ending in a carriage return that
+the next prompt paints over, and a picture read from where it is installed
+rather than from the tree you just edited.
+
 ## 3.4.3 - 2026-08
 
 What an afternoon of real use asked for, and the crash it found.
@@ -24,7 +69,7 @@ The base modes are re-asserted immediately after now. Three sequences, a
 no-op on a terminal that kept them, and the difference between a working
 pointer and a dead one everywhere else.
 
-### A picture is painted, not typed
+### A picture is painted by the terminal, not by the font
 
 The desktop pictures were drawn with the full block glyph, U+2588, in the
 cell's colour. That should look like a solid rectangle and does not: the
@@ -45,6 +90,22 @@ picture back through its own body. Dialogs looked transparent for as long as
 that lasted, which was one build. `test/dialog_opaque_test.py` opens three of
 them over a picture, in colour and in monochrome, and counts what shows
 through.
+
+### Every picture is typed with one character
+
+A picture is drawn with the dark shade block, `▓`, in the cell's own colour --
+every cell of every picture, always the same character. The colours are
+exactly the ones the filled version had; what you gain is seeing the grid a
+picture is made of. There is one Goody, and it is this one.
+
+The grid behind it still gets the full block, whatever the picture is drawn
+with: that word is what tells the renderer a cell is still the picture's, and
+it has to be a word nothing else on the screen writes. A space in some
+attribute is written by every dialog; the shade blocks are written by every
+scrollbar trough. Both were tried, and both let a picture show through the
+body of a dialog -- the second one in exactly the column its scrollbar was
+in. `test/dialog_opaque_test.py` opens three dialogs over a picture, in
+colour and in monochrome, and counts what comes through.
 
 ### A pane created in the daemon got no window of its own
 

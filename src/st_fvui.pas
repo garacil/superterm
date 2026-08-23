@@ -14,7 +14,8 @@ uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
-  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg, st_mouse;
+  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
+  st_mouse, st_clipboard;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -44,6 +45,10 @@ const
   cmRedrawAll   = 2114;    // refresh the screen
   cmPaneOrganize = 2115;   // vendor NxM grid (TDeskTop.Tile)
   cmRenameWindow = 2116;   // custom title of the focused window
+  cmClipboardCopy = 2117;
+  cmClipboardPaste = 2118;
+  cmClipboardHistory = 2119;
+  cmClipboardClear = 2120;
   cmInfoRow    = 2199;     // informational menu rows, always disabled
   cmProfileBase = 2200;   // + profile index (0..39)
   cmProfileSaveAs = 2250;  // save the workspace as a profile
@@ -76,6 +81,9 @@ const
   cmFullScreen        = 2766;   // F5: hand the terminal to the pane
 
 type
+  TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
+    pfsDropOsc, pfsDropOscEsc);
+
   PSuperApp = ^TSuperApp;
 
   PTermView = ^TTermView;
@@ -206,6 +214,16 @@ type
     MouseGrabButton: integer;
     HostAnyMotion: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
+    PassFilterState: TPassFilterState;
+    PassFilterBuf: RawByteString;
+    PassFilterLen: integer;
+    ClipHistory: TClipboardHistory;
+    CopyMode: boolean;
+    CopySelecting: boolean;
+    CopyMouseSelecting: boolean;
+    CopyPane: integer;
+    CopyAnchorRow, CopyAnchorCol: integer;
+    CopyCursorRow, CopyCursorCol: integer;
     // startup: hold one LockScreenUpdate across the whole build+promote+
     // attach so the screen is flushed ONCE at the end, not several times
     FBootLocked: boolean;
@@ -298,6 +316,21 @@ type
     procedure RequestPaneSize(i, ACols, ARows: integer);
     procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
+    procedure PassthroughFiltered(const Data; ALen: integer);
+    function PaneClipboardTitle(i: integer): string;
+    procedure AddClipboard(const AText: RawByteString;
+      AOrigin: TClipboardOrigin; i: integer; AExportHost: boolean);
+    procedure PasteClipboardText(const AText: RawByteString);
+    procedure PasteLatestClipboard;
+    procedure ShowClipboardHistory;
+    procedure BeginCopyMode;
+    procedure EndCopyMode(ACommit: boolean);
+    procedure MoveCopyCursor(ADX, ADY: integer);
+    procedure UpdateCopyCursorFromView(APane, ACol, AViewRow: integer;
+      AStart, ACommit: boolean);
+    function ClipboardCellMarked(APane, AAbsRow, ACol: integer): boolean;
+    function HandleCopyKey(var Event: TEvent): boolean;
+    procedure DrainPaneOsc52(i: integer; AAlreadyPassed: boolean);
     function AttachRemoteSession(const APath: string): boolean;
     // why the last attach attempt failed (empty = generic/none)
     // server-always: converts the freshly built local workspace into a
@@ -324,7 +357,7 @@ type
 implementation
 
 uses
-  st_keys;
+  st_keys, st_kbd;
 
 var
   CursorPhase: boolean = False;
@@ -489,6 +522,7 @@ begin
     SuppressFlush := False;
     FBootLocked := False;
   end;
+  HostPasteOn;
   UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
   if not PassthroughActive then
   begin
@@ -739,6 +773,8 @@ var
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
   DefCell: TCell;    // a true default blank, for trimmed history rows
   DefWord: word;
+  AbsY: integer;
+  Marked, InvertCell: boolean;
 
   // Register one cell in the rich overlay at its global screen position, with
   // B[x] (the word just written to VideoBuf) as the oracle. The full UTF-8
@@ -820,7 +856,7 @@ var
     // by a pane edge.
     isWide := (not isSkip) and nextCont;
     RichSetCell(GOrig.X + lx, GOrig.Y + ly, g, ffg, fbg, byte(fl),
-      oracle, isSkip, isWide);
+      oracle, isSkip, isWide, False);
   end;
 
   function VideoColor(AAnsiColor: byte): byte;
@@ -888,6 +924,7 @@ begin
   cy := App^.Scr[PaneIdx].CursorY;
   // DECSCUSR 2/4/6 = steady style (no blink); 0/1/3/5 blinks
   ShowBlk := GetState(sfSelected) and (not Scrolled) and
+    (not (App^.CopyMode and (App^.CopyPane = PaneIdx))) and
     App^.Scr[PaneIdx].CursorVisible and
     (CursorPhase or (App^.Scr[PaneIdx].CursorStyle in [2, 4, 6]));
   NonBlank := 0;
@@ -932,6 +969,11 @@ begin
   PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
   for y := 0 to h - 1 do
   begin
+    if Scrolled then
+      AbsY := App^.Scr[PaneIdx].HistoryRows -
+        App^.Scr[PaneIdx].ViewOffset + y
+    else
+      AbsY := App^.Scr[PaneIdx].HistoryRows + y;
     RowLen := 0;
     if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
     begin
@@ -943,21 +985,30 @@ begin
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
-           if ShowBlk and (x = cx) and (y = cy) then
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           InvertCell := Marked or (ShowBlk and (x = cx) and (y = cy));
+           if InvertCell then
            begin
              fg := (B[x] shr 8) and $0F;
              bg := (B[x] shr 12) and $0F;
              B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
                word(TranslitByte(cell));
            end;
-           RichReg(x, y, cell, B[x], ShowBlk and (x = cx) and (y = cy),
+           RichReg(x, y, cell, B[x], InvertCell,
              (x + 1 < App^.Scr[PaneIdx].Width) and
              App^.Scr[PaneIdx].Grid[y][x + 1].Cont);
          end
          else
          begin
            B[x] := BlankWord or word(' ');
-           RichReg(x, y, PadCell, B[x], false, false);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           if Marked then
+           begin
+             fg := (B[x] shr 8) and $0F;
+             bg := (B[x] shr 12) and $0F;
+             B[x] := (word(fg) shl 12) or (word(bg) shl 8) or word(' ');
+           end;
+           RichReg(x, y, PadCell, B[x], Marked, false);
          end;
       end;
     end
@@ -973,7 +1024,15 @@ begin
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
-           RichReg(x, y, cell, B[x], false,
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           if Marked then
+           begin
+             fg := (B[x] shr 8) and $0F;
+             bg := (B[x] shr 12) and $0F;
+             B[x] := (word(fg) shl 12) or (word(bg) shl 8) or
+               word(TranslitByte(cell));
+           end;
+           RichReg(x, y, cell, B[x], Marked,
              (x + 1 < RowLen) and Row[x + 1].Cont);
          end
          else
@@ -982,7 +1041,14 @@ begin
            // default blank, not the pane's CURRENT attribute -- that would
            // bleed a coloured background over the trimmed tail
            B[x] := DefWord or word(' ');
-           RichReg(x, y, DefCell, B[x], false, false);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           if Marked then
+           begin
+             fg := (B[x] shr 8) and $0F;
+             bg := (B[x] shr 12) and $0F;
+             B[x] := (word(fg) shl 12) or (word(bg) shl 8) or word(' ');
+           end;
+           RichReg(x, y, DefCell, B[x], Marked, false);
          end;
        end;
     end
@@ -990,7 +1056,14 @@ begin
       for x := 0 to w - 1 do
       begin
         B[x] := BlankWord or word(' ');
-        RichReg(x, y, PadCell, B[x], false, false);
+        Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+        if Marked then
+        begin
+          fg := (B[x] shr 8) and $0F;
+          bg := (B[x] shr 12) and $0F;
+          B[x] := (word(fg) shl 12) or (word(bg) shl 8) or word(' ');
+        end;
+        RichReg(x, y, PadCell, B[x], Marked, false);
       end;
     WriteLine(0, y, w, 1, B);
   end;
@@ -1011,7 +1084,7 @@ begin
   // terminal cursor in the focused pane
   if (cx >= w) then cx := w - 1;
   if (cy >= h) then cy := h - 1;
-  if Scrolled then
+  if Scrolled or (App^.CopyMode and (App^.CopyPane = PaneIdx)) then
   begin
     SetCursor(0, 0);
     HideCursor;
@@ -1036,6 +1109,29 @@ begin
   if (App = nil) then
   begin
     inherited HandleEvent(Event);
+    Exit;
+  end;
+  if App^.CopyMode and (App^.CopyPane = PaneIdx) and
+     ((Event.What and (evMouseDown or evMouseUp or evMouseMove)) <> 0) then
+  begin
+    if (Event.What = evMouseDown) and ((Event.Buttons and (8 or 16)) <> 0) then
+    begin
+      if (Event.Buttons and 8) <> 0 then
+        App^.MoveCopyCursor(0, -WHEEL_LINES)
+      else
+        App^.MoveCopyCursor(0, +WHEEL_LINES);
+      ClearEvent(Event);
+      Exit;
+    end;
+    Local := Default(Objects.TPoint);
+    MakeLocal(Event.Where, Local);
+    if (Event.What = evMouseDown) and ((Event.Buttons and 1) <> 0) then
+      App^.UpdateCopyCursorFromView(PaneIdx, Local.X, Local.Y, True, False)
+    else if (Event.What = evMouseMove) and App^.CopyMouseSelecting then
+      App^.UpdateCopyCursorFromView(PaneIdx, Local.X, Local.Y, False, False)
+    else if (Event.What = evMouseUp) and App^.CopyMouseSelecting then
+      App^.UpdateCopyCursorFromView(PaneIdx, Local.X, Local.Y, False, True);
+    ClearEvent(Event);
     Exit;
   end;
   // The application's mouse. This view is strictly the interior of the
@@ -1605,6 +1701,11 @@ begin
   SuppressFlush := True;
   inherited Init;
   FBootLocked := True;
+  ClipHistory := TClipboardHistory.Create;
+  CopyMode := False;
+  CopySelecting := False;
+  CopyMouseSelecting := False;
+  CopyPane := -1;
   LoadConfig(Cfg);
   if Cfg.Palette = 'bw' then
     AppPalette := apBlackWhite
@@ -1666,6 +1767,9 @@ begin
   HostAnyMotion := False;
   PassReqW := 0;
   PassReqH := 0;
+  PassFilterState := pfsGround;
+  PassFilterBuf := '';
+  PassFilterLen := 0;
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -1896,6 +2000,8 @@ begin
   if not DetachRequested and not RemoteMode then
     StopRuntime;
   Lay.Free;
+  ClipHistory.Free;
+  ClipHistory := nil;
   if Remote <> nil then
     Remote.Free;
   inherited Done;
@@ -2325,6 +2431,8 @@ end;
 
 procedure TSuperApp.KillPane(i: integer);
 begin
+  if CopyMode and (CopyPane = i) then
+    EndCopyMode(False);
   if Win[i] <> nil then
   begin
     Desktop^.Delete(Win[i]);
@@ -2548,41 +2656,59 @@ end;
 procedure TSuperApp.MinimizeAllWindows;
 var
   i: integer;
+  SavedSuppress: boolean;
 begin
-  for i := 0 to MAX_PANES - 1 do
-    if Win[i] <> nil then
-      Win[i]^.Minimize;
-  Lay.Focused := -1;
-  ArrangeIcons;   // place all icons at the bottom, without re-tiling
-  RebuildMenu;
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    for i := 0 to MAX_PANES - 1 do
+      if Win[i] <> nil then
+        Win[i]^.Minimize;
+    Lay.Focused := -1;
+    ArrangeIcons;   // place all icons at the bottom, without re-tiling
+    RebuildMenu;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 procedure TSuperApp.RestoreAllWindows;
 var
   i, LastRestored: integer;
+  SavedSuppress: boolean;
 begin
   // each window returns to its pre-minimize position; nothing re-tiles.
   // Windows may overlap now, so the ones coming back are brought to the
   // front and the last of them takes the focus: the user asked to see them,
   // and focusing whatever was already visible would put it on top of them.
-  LastRestored := -1;
-  for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and Win[i]^.Minimized then
-    begin
-      Win[i]^.Restore;
-      if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
-         (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
-        Win[i]^.Locate(Win[i]^.SavedRect);
-      Win[i]^.MakeFirst;
-      LastRestored := i;
-    end;
-  if LastRestored >= 0 then
-    Lay.Focused := LastRestored
-  else if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
-     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
-    Lay.Focused := FirstVisiblePane;
-  FocusPane(Lay.Focused);
-  RebuildMenu;
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    LastRestored := -1;
+    for i := 0 to MAX_PANES - 1 do
+      if (Win[i] <> nil) and Win[i]^.Minimized then
+      begin
+        Win[i]^.Restore;
+        if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+           (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+          Win[i]^.Locate(Win[i]^.SavedRect);
+        Win[i]^.MakeFirst;
+        LastRestored := i;
+      end;
+    if LastRestored >= 0 then
+      Lay.Focused := LastRestored
+    else if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
+       (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+      Lay.Focused := FirstVisiblePane;
+    FocusPane(Lay.Focused);
+    RebuildMenu;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 procedure TSuperApp.DoSplit(ADir: TSplitDir; ASysIdx: integer);
@@ -2591,6 +2717,8 @@ var
   DirB: byte;
   ClassS: string;
 begin
+  if CopyMode then
+    EndCopyMode(False);
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
   // With no panes at all there is nothing to focus and nothing to split, and
@@ -2779,6 +2907,478 @@ begin
   end
   else if (Panes[i] <> nil) and Panes[i].Alive then
     Panes[i].WriteStr(S);
+end;
+
+// Raw passthrough keeps every terminal sequence except an OSC 52 clipboard
+// query. Letting an SSH pane ask the outer terminal for its clipboard would
+// send the reply back toward an untrusted process. Writes remain byte-for-byte
+// raw and are also observed by TScreen for history; only reads are removed.
+procedure TSuperApp.PassthroughFiltered(const Data; ALen: integer);
+const
+  MAX_PASS_OSC = 2 * 1024 * 1024;
+var
+  P: PByte;
+  B: byte;
+  OutBuf: RawByteString;
+  OutLen, OutCap, NewCap: integer;
+
+  procedure EnsureOut(ANeed: integer);
+  begin
+    if OutLen + ANeed <= OutCap then
+      Exit;
+    NewCap := OutCap;
+    if NewCap = 0 then NewCap := 4096;
+    while NewCap < OutLen + ANeed do
+      NewCap := NewCap * 2;
+    SetLength(OutBuf, NewCap);
+    OutCap := NewCap;
+  end;
+
+  procedure EmitByte(AB: byte);
+  begin
+    EnsureOut(1);
+    Inc(OutLen);
+    OutBuf[OutLen] := AnsiChar(AB);
+  end;
+
+  procedure EmitString(const S: RawByteString);
+  begin
+    if S = '' then Exit;
+    EnsureOut(Length(S));
+    Move(S[1], OutBuf[OutLen + 1], Length(S));
+    Inc(OutLen, Length(S));
+  end;
+
+  procedure ResetPassBuffer;
+  begin
+    PassFilterBuf := '';
+    PassFilterLen := 0;
+  end;
+
+  function BufferByte(AB: byte): boolean;
+  begin
+    Result := PassFilterLen < MAX_PASS_OSC;
+    if not Result then Exit;
+    if PassFilterLen = Length(PassFilterBuf) then
+    begin
+      NewCap := Length(PassFilterBuf);
+      if NewCap = 0 then NewCap := 1024 else NewCap := NewCap * 2;
+      if NewCap > MAX_PASS_OSC then NewCap := MAX_PASS_OSC;
+      SetLength(PassFilterBuf, NewCap);
+    end;
+    Inc(PassFilterLen);
+    PassFilterBuf[PassFilterLen] := AnsiChar(AB);
+  end;
+
+  function IsClipboardQuery: boolean;
+  var
+    Body, Rest: RawByteString;
+    BodyLen, Sep: integer;
+  begin
+    Result := False;
+    if PassFilterLen < 6 then Exit;
+    if byte(PassFilterBuf[PassFilterLen]) = 7 then
+      BodyLen := PassFilterLen - 3
+    else
+      BodyLen := PassFilterLen - 4; // ESC ] body ESC \
+    if BodyLen < 3 then Exit;
+    Body := Copy(PassFilterBuf, 3, BodyLen);
+    if Copy(Body, 1, 3) <> '52;' then Exit;
+    Rest := Copy(Body, 4, MaxInt);
+    Sep := Pos(';', Rest);
+    Result := (Sep > 0) and (Copy(Rest, Sep + 1, MaxInt) = '?');
+  end;
+
+  procedure FinishPassOsc;
+  begin
+    SetLength(PassFilterBuf, PassFilterLen);
+    if not IsClipboardQuery then
+      EmitString(PassFilterBuf);
+    ResetPassBuffer;
+    PassFilterState := pfsGround;
+  end;
+
+begin
+  if ALen <= 0 then Exit;
+  P := @Data;
+  OutBuf := '';
+  OutLen := 0;
+  OutCap := 0;
+  while ALen > 0 do
+  begin
+    B := P^;
+    Inc(P);
+    Dec(ALen);
+    case PassFilterState of
+      pfsGround:
+        if B = 27 then
+        begin
+          ResetPassBuffer;
+          BufferByte(B);
+          PassFilterState := pfsEsc;
+        end
+        else
+          EmitByte(B);
+      pfsEsc:
+        if B = Ord(']') then
+        begin
+          BufferByte(B);
+          PassFilterState := pfsOsc;
+        end
+        else if B = 27 then
+        begin
+          SetLength(PassFilterBuf, PassFilterLen);
+          EmitString(PassFilterBuf);
+          ResetPassBuffer;
+          BufferByte(B);
+        end
+        else
+        begin
+          SetLength(PassFilterBuf, PassFilterLen);
+          EmitString(PassFilterBuf);
+          EmitByte(B);
+          ResetPassBuffer;
+          PassFilterState := pfsGround;
+        end;
+      pfsOsc:
+        begin
+          if not BufferByte(B) then
+          begin
+            ResetPassBuffer;
+            PassFilterState := pfsDropOsc;
+          end
+          else if B = 7 then
+            FinishPassOsc
+          else if B = 27 then
+            PassFilterState := pfsOscEsc;
+        end;
+      pfsOscEsc:
+        begin
+          if not BufferByte(B) then
+          begin
+            ResetPassBuffer;
+            PassFilterState := pfsDropOsc;
+          end
+          else if B = Ord('\') then
+            FinishPassOsc
+          else if B <> 27 then
+            PassFilterState := pfsOsc;
+        end;
+      pfsDropOsc:
+        if B = 7 then PassFilterState := pfsGround
+        else if B = 27 then PassFilterState := pfsDropOscEsc;
+      pfsDropOscEsc:
+        if B = Ord('\') then PassFilterState := pfsGround
+        else if B <> 27 then PassFilterState := pfsDropOsc;
+    end;
+  end;
+  if OutLen > 0 then
+    PassthroughRaw(OutBuf[1], OutLen);
+end;
+
+function TSuperApp.PaneClipboardTitle(i: integer): string;
+begin
+  Result := '';
+  if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) then
+    Result := Trim(Win[i]^.GetTitle(48));
+end;
+
+procedure TSuperApp.AddClipboard(const AText: RawByteString;
+  AOrigin: TClipboardOrigin; i: integer; AExportHost: boolean);
+var
+  Seq: RawByteString;
+begin
+  if (ClipHistory = nil) or
+     (not ClipHistory.Add(AText, AOrigin, PaneClipboardTitle(i))) then
+    Exit;
+  if AExportHost then
+  begin
+    Seq := EncodeOsc52(AText);
+    if Seq <> '' then
+      WriteRaw(Seq);
+  end;
+end;
+
+procedure TSuperApp.PasteClipboardText(const AText: RawByteString);
+var
+  i: integer;
+  S: RawByteString;
+begin
+  if AText = '' then
+    Exit;
+  i := Lay.Focused;
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  if CopyMode then
+    EndCopyMode(False);
+  if Scr[i].ViewOffset > 0 then
+  begin
+    Scr[i].SetViewOffset(0);
+    RepaintPane(i);
+  end;
+  if Scr[i].BracketedPaste then
+    S := #27'[200~' + AText + #27'[201~'
+  else
+    S := AText;
+  WritePaneInput(i, S);
+end;
+
+procedure TSuperApp.PasteLatestClipboard;
+begin
+  if (ClipHistory = nil) or (ClipHistory.Count = 0) then
+  begin
+    MessageBox(UiText('Clipboard history is empty.',
+      'El historial del portapapeles esta vacio.'), nil,
+      mfInformation or mfOKButton);
+    Exit;
+  end;
+  PasteClipboardText(ClipHistory.Latest);
+end;
+
+procedure TSuperApp.ShowClipboardHistory;
+var
+  Sel: integer;
+begin
+  if (ClipHistory = nil) or (ClipHistory.Count = 0) then
+  begin
+    MessageBox(UiText('Clipboard history is empty.',
+      'El historial del portapapeles esta vacio.'), nil,
+      mfInformation or mfOKButton);
+    Exit;
+  end;
+  Sel := 0;
+  if RunClipboardHistory(ClipHistory, Sel) then
+    PasteClipboardText(ClipHistory.Item(Sel).Text);
+end;
+
+procedure TSuperApp.BeginCopyMode;
+var
+  i, FirstRow: integer;
+begin
+  i := Lay.Focused;
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) or (Win[i] = nil) then
+    Exit;
+  // The passthrough path now keeps the screen mirror current. Reclaim the
+  // window manager before showing a selection over that mirror.
+  if PassthroughActive then
+  begin
+    Win[i]^.FullScreen := False;
+    if Win[i]^.Zoomed then
+      Win[i]^.Zoom;
+    UpdatePassthrough;
+  end;
+  CopyMode := True;
+  CopySelecting := False;
+  CopyMouseSelecting := False;
+  CopyPane := i;
+  if Scr[i].ViewOffset = 0 then
+  begin
+    CopyCursorRow := Scr[i].HistoryRows + Scr[i].CursorY;
+    CopyCursorCol := Scr[i].CursorX;
+  end
+  else
+  begin
+    FirstRow := Scr[i].HistoryRows - Scr[i].ViewOffset;
+    CopyCursorRow := FirstRow + Scr[i].Height - 1;
+    CopyCursorCol := 0;
+  end;
+  if CopyCursorRow >= Scr[i].HistoryRows + Scr[i].Height then
+    CopyCursorRow := Scr[i].HistoryRows + Scr[i].Height - 1;
+  if CopyCursorCol >= Scr[i].Width then
+    CopyCursorCol := Scr[i].Width - 1;
+  RepaintPane(i);
+end;
+
+procedure TSuperApp.EndCopyMode(ACommit: boolean);
+var
+  i, R1, C1, R2, C2: integer;
+  Text: RawByteString;
+begin
+  if not CopyMode then
+    Exit;
+  i := CopyPane;
+  Text := '';
+  if ACommit and (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) then
+  begin
+    if CopySelecting then
+    begin
+      R1 := CopyAnchorRow; C1 := CopyAnchorCol;
+      R2 := CopyCursorRow; C2 := CopyCursorCol;
+    end
+    else
+    begin
+      R1 := CopyCursorRow; C1 := 0;
+      R2 := CopyCursorRow; C2 := Scr[i].Width - 1;
+    end;
+    Text := Scr[i].RenderSelection(R1, C1, R2, C2);
+  end;
+  CopyMode := False;
+  CopySelecting := False;
+  CopyMouseSelecting := False;
+  CopyPane := -1;
+  if (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) then
+  begin
+    Scr[i].SetViewOffset(0);
+    RepaintPane(i);
+  end;
+  if Text <> '' then
+    AddClipboard(Text, coPaneSelection, i, True);
+end;
+
+procedure TSuperApp.MoveCopyCursor(ADX, ADY: integer);
+var
+  S: TScreen;
+  Total, FirstRow, NewOffset: integer;
+  NewRow, NewCol: Int64;
+begin
+  if (not CopyMode) or (CopyPane < 0) or (CopyPane >= MAX_PANES) then
+    Exit;
+  S := Scr[CopyPane];
+  if S = nil then
+  begin
+    EndCopyMode(False);
+    Exit;
+  end;
+  Total := S.HistoryRows + S.Height;
+  NewRow := Int64(CopyCursorRow) + ADY;
+  NewCol := Int64(CopyCursorCol) + ADX;
+  if NewRow < 0 then NewRow := 0;
+  if NewRow >= Total then NewRow := Total - 1;
+  if NewCol < 0 then NewCol := 0;
+  if NewCol >= S.Width then NewCol := S.Width - 1;
+  CopyCursorRow := NewRow;
+  CopyCursorCol := NewCol;
+
+  FirstRow := S.HistoryRows - S.ViewOffset;
+  if CopyCursorRow < FirstRow then
+    NewOffset := S.HistoryRows - CopyCursorRow
+  else if CopyCursorRow >= FirstRow + S.Height then
+    NewOffset := S.HistoryRows - (CopyCursorRow - S.Height + 1)
+  else
+    NewOffset := S.ViewOffset;
+  S.SetViewOffset(NewOffset);
+  RepaintPane(CopyPane);
+end;
+
+procedure TSuperApp.UpdateCopyCursorFromView(APane, ACol, AViewRow: integer;
+  AStart, ACommit: boolean);
+var
+  S: TScreen;
+begin
+  if (not CopyMode) or (APane <> CopyPane) or
+     (APane < 0) or (APane >= MAX_PANES) then
+    Exit;
+  S := Scr[APane];
+  if S = nil then
+    Exit;
+  if ACol < 0 then ACol := 0;
+  if ACol >= S.Width then ACol := S.Width - 1;
+  if AViewRow < 0 then AViewRow := 0;
+  if AViewRow >= S.Height then AViewRow := S.Height - 1;
+  CopyCursorCol := ACol;
+  CopyCursorRow := S.HistoryRows - S.ViewOffset + AViewRow;
+  if AStart then
+  begin
+    CopyAnchorCol := CopyCursorCol;
+    CopyAnchorRow := CopyCursorRow;
+    CopySelecting := True;
+    CopyMouseSelecting := True;
+  end;
+  if ACommit then
+  begin
+    CopyMouseSelecting := False;
+    EndCopyMode(True);
+  end
+  else
+    RepaintPane(APane);
+end;
+
+function TSuperApp.ClipboardCellMarked(APane, AAbsRow,
+  ACol: integer): boolean;
+var
+  R1, C1, R2, C2, T: integer;
+begin
+  Result := False;
+  if (not CopyMode) or (APane <> CopyPane) then
+    Exit;
+  if not CopySelecting then
+    Exit((AAbsRow = CopyCursorRow) and (ACol = CopyCursorCol));
+  R1 := CopyAnchorRow; C1 := CopyAnchorCol;
+  R2 := CopyCursorRow; C2 := CopyCursorCol;
+  if (R2 < R1) or ((R2 = R1) and (C2 < C1)) then
+  begin
+    T := R1; R1 := R2; R2 := T;
+    T := C1; C1 := C2; C2 := T;
+  end;
+  if (AAbsRow < R1) or (AAbsRow > R2) then
+    Exit;
+  if R1 = R2 then
+    Result := (ACol >= C1) and (ACol <= C2)
+  else if AAbsRow = R1 then
+    Result := ACol >= C1
+  else if AAbsRow = R2 then
+    Result := ACol <= C2
+  else
+    Result := True;
+end;
+
+function TSuperApp.HandleCopyKey(var Event: TEvent): boolean;
+var
+  S: TScreen;
+begin
+  Result := CopyMode and (Event.What = evKeyDown);
+  if not Result then
+    Exit;
+  S := nil;
+  if (CopyPane >= 0) and (CopyPane < MAX_PANES) then
+    S := Scr[CopyPane];
+  if S = nil then
+  begin
+    EndCopyMode(False);
+    ClearEvent(Event);
+    Exit;
+  end;
+  case Event.KeyCode of
+    kbEsc: EndCopyMode(False);
+    kbEnter: EndCopyMode(True);
+    kbSpaceBar:
+      begin
+        CopyAnchorRow := CopyCursorRow;
+        CopyAnchorCol := CopyCursorCol;
+        CopySelecting := True;
+        RepaintPane(CopyPane);
+      end;
+    kbLeft: MoveCopyCursor(-1, 0);
+    kbRight: MoveCopyCursor(+1, 0);
+    kbUp: MoveCopyCursor(0, -1);
+    kbDown: MoveCopyCursor(0, +1);
+    kbPgUp: MoveCopyCursor(0, -S.Height);
+    kbPgDn: MoveCopyCursor(0, +S.Height);
+    kbHome: MoveCopyCursor(-MaxInt, 0);
+    kbEnd: MoveCopyCursor(+MaxInt, 0);
+    kbCtrlHome: MoveCopyCursor(0, -MaxInt);
+    kbCtrlEnd: MoveCopyCursor(0, +MaxInt);
+  end;
+  ClearEvent(Event);
+end;
+
+procedure TSuperApp.DrainPaneOsc52(i: integer; AAlreadyPassed: boolean);
+var
+  Selection, Payload, Text: RawByteString;
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  Selection := '';
+  Payload := '';
+  Text := '';
+  while Scr[i].TakeOsc52(Selection, Payload) do
+  begin
+    // A pane may set the clipboard, but it may not query and read the host's
+    // clipboard through us. Host clipboard import happens only when the user
+    // pastes into the outer terminal.
+    if (Payload <> '?') and DecodeOsc52(Payload, Text) then
+      AddClipboard(Text, coRemoteOsc52, i, not AAlreadyPassed);
+  end;
 end;
 
 function TSuperApp.AttachRemoteSession(const APath: string): boolean;
@@ -3703,7 +4303,7 @@ procedure TSuperApp.ShowHelp;
 var
   R: Objects.TRect;
   D: PDialog;
-  Lines: array[0..6] of string;
+  Lines: array[0..7] of string;
   I: integer;
 begin
   // standard dialog: dialog palette with proper contrast (the old
@@ -3730,12 +4330,19 @@ begin
     PrefixKeyLabel(Cfg.PrefixKey) + ' d separa; superterm --attach ' +
     'vuelve; Ctrl-S guarda');
   Lines[5] := UiText(
+    PrefixKeyLabel(Cfg.PrefixKey) + ' [ copy; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' ] paste; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' h clipboard history',
+    PrefixKeyLabel(Cfg.PrefixKey) + ' [ copia; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' ] pega; ' +
+    PrefixKeyLabel(Cfg.PrefixKey) + ' h historial portapapeles');
+  Lines[6] := UiText(
     'Profiles menu saves and restores named workspaces',
     'El menu Perfiles guarda y restaura areas de trabajo con nombre');
-  Lines[6] := UiText(
+  Lines[7] := UiText(
     'Alt-X save and exit; Alt-Q quit without saving',
     'Alt-X guarda y sale; Alt-Q sale sin guardar');
-  R.Assign(0, 0, 74, 13);
+  R.Assign(0, 0, 74, 14);
   D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
   D^.Options := D^.Options or ofCentered;
   for I := 0 to High(Lines) do
@@ -3743,7 +4350,7 @@ begin
     R.Assign(3, 2 + I, 71, 3 + I);
     D^.Insert(New(PStaticText, Init(R, Lines[I])));
   end;
-  D^.NewButton(31, 10, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+  D^.NewButton(31, 11, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
     hcNoContext, bfDefault);
   Desktop^.ExecView(D);
   Dispose(D, Done);
@@ -4055,6 +4662,9 @@ begin
   PassPane := i;
   PassReqW := ScreenWidth;
   PassReqH := ScreenHeight;
+  PassFilterState := pfsGround;
+  PassFilterBuf := '';
+  PassFilterLen := 0;
   PassthroughActive := True;   // silences all FreeVision screen writes
   // hand a clean surface to the app: show cursor, reset attrs, clear.
   // Also RELEASE the mouse: turn superterm's own tracking off so, in
@@ -4126,6 +4736,9 @@ begin
   PassPane := -1;
   PassReqW := 0;
   PassReqH := 0;
+  PassFilterState := pfsGround;
+  PassFilterBuf := '';
+  PassFilterLen := 0;
   // undo modes a full-screen app commonly leaves set, and make sure we are
   // on superterm's (alternate) screen with sane defaults before repainting.
   // The mouse must be RE-ENABLED, not disabled: FreeVision turned it on once
@@ -4144,7 +4757,7 @@ begin
   // never called and the RTL's event queue is a pair of nil pointers: asking
   // for reports there is asking for a SIGSEGV on the first one.
   if ButtonCount <> 0 then
-    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h'#27'[?2004l' +
+    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
       #27']22;default'#27'\');
   // and re-assert exactly what the mouse driver wants. The pane that owned
   // the screen wrote straight to the host terminal while it did, and a pane
@@ -4152,6 +4765,7 @@ begin
   // left this terminal reporting nothing at all, with no way to notice.
   if ButtonCount <> 0 then
     HostMouseOn;
+  HostPasteOn;
   // HostMouseOn restores normal and button tracking; any-motion belongs to
   // whatever the focused pane asks for, so let the one place that knows decide
   SyncHostMouse;
@@ -4362,6 +4976,8 @@ var
   OldCount, j: integer;
   SDir: TSplitDir;
 begin
+  if CopyMode then
+    EndCopyMode(False);
   if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
     TitleS, TermS) then
     Exit;
@@ -4793,6 +5409,8 @@ begin
   end;
   if Event.What = evKeyDown then
   begin
+    if HandleCopyKey(Event) then
+      Exit;
     PrefixByte := Event.KeyCode and $00FF;
     if PrefixPending then
     begin
@@ -4836,6 +5454,24 @@ begin
       if (PrefixByte = Ord('t')) or (PrefixByte = Ord('T')) then
       begin
         Message(@Self, evCommand, cmPaneTile, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if PrefixByte = Ord('[') then
+      begin
+        BeginCopyMode;
+        ClearEvent(Event);
+        Exit;
+      end;
+      if PrefixByte = Ord(']') then
+      begin
+        PasteLatestClipboard;
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('h')) or (PrefixByte = Ord('H')) then
+      begin
+        Message(@Self, evCommand, cmClipboardHistory, nil);
         ClearEvent(Event);
         Exit;
       end;
@@ -4949,6 +5585,15 @@ begin
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
       cmPaneList: DoPaneList;
+      cmClipboardCopy: BeginCopyMode;
+      cmClipboardPaste: PasteLatestClipboard;
+      cmClipboardHistory: ShowClipboardHistory;
+      cmClipboardClear:
+        if (ClipHistory <> nil) and (ClipHistory.Count > 0) and
+           (MessageBox(UiText('Clear clipboard history?',
+             'Borrar el historial del portapapeles?'), nil,
+             mfConfirmation or mfYesButton or mfNoButton) = cmYes) then
+          ClipHistory.Clear;
       cmRedrawAll:
         begin
           ResetVideoSurface;
@@ -5159,13 +5804,23 @@ var
   Deadline: QWord;
   Touched: TTouchedPanes;
   FullRedraw: boolean;
+  HostPaste: RawByteString;
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
 begin
+  HostPaste := '';
     inherited Idle;
+  if Current = PView(Desktop) then
+    while TakeHostPaste(HostPaste) do
+    begin
+      if CopyMode then
+        EndCopyMode(False);
+      AddClipboard(HostPaste, coHostPaste, Lay.Focused, False);
+      PasteClipboardText(HostPaste);
+    end;
   Tick := GetTickCount64;
   RemoteEvent.Data := nil;
   RemoteEvent.Text := '';
@@ -5211,12 +5866,21 @@ begin
              (Length(RemoteEvent.Data) > 0) then
           begin
             if PassthroughActive and (RemoteEvent.Pane = PassPane) then
-              // no parsing: the pane owns the terminal, write bytes verbatim
-              PassthroughRaw(RemoteEvent.Data[0], Length(RemoteEvent.Data))
+            begin
+              // Keep a mirror for copy mode while preserving raw passthrough.
+              if Scr[RemoteEvent.Pane] <> nil then
+              begin
+                Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
+                  Length(RemoteEvent.Data));
+                DrainPaneOsc52(RemoteEvent.Pane, True);
+              end;
+              PassthroughFiltered(RemoteEvent.Data[0], Length(RemoteEvent.Data));
+            end
             else if Scr[RemoteEvent.Pane] <> nil then
             begin
               Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
                 Length(RemoteEvent.Data));
+              DrainPaneOsc52(RemoteEvent.Pane, False);
               // mark, do not draw: one repaint after the batch instead of one
               // per 64 KB frame, each of which is a blocking write to the tty
               Touched[RemoteEvent.Pane] := True;
@@ -5350,10 +6014,15 @@ begin
           if n > 0 then
           begin
             if PassthroughActive and (i = PassPane) then
-              PassthroughRaw(Buf[0], n)
+            begin
+              Scr[i].WriteBytes(Buf, n);
+              DrainPaneOsc52(i, True);
+              PassthroughFiltered(Buf[0], n);
+            end
             else
             begin
               Scr[i].WriteBytes(Buf, n);
+              DrainPaneOsc52(i, False);
               if Win[i] <> nil then
                 RepaintPane(i);
             end;
@@ -5472,8 +6141,9 @@ end;
 // Options > Desktop colour -- with a picture or without one, and the empty
 // cells of a picture take that same colour rather than blue dots.
 const
-  // U+2588, the glyph the pictures are drawn with
+  // U+2588 as UTF-8, and the CP437 code for it
   FULL_BLOCK = #$E2#$96#$88;
+  CP437_FULL_BLOCK = 219;
 
 function TArtBackground.DeskAttr: byte;
 var
@@ -5499,7 +6169,7 @@ end;
 procedure TArtBackground.Draw;
 var
   B: TDrawBuffer;
-  x, y: integer;
+  x, y, FrontN: integer;
   App: PSuperApp;
   Idx: integer;
   Mode: TArtMode;
@@ -5508,7 +6178,23 @@ var
   W: integer;
   GOrig: Objects.TPoint;
   Word0: word;
+  PW, MyView: PView;
+  FrontR: array of Objects.TRect;
+
+  function CoveredByFrontView(AGlobalX, AGlobalY: integer): boolean;
+  var
+    I: integer;
+  begin
+    Result := False;
+    for I := 0 to FrontN - 1 do
+      if (AGlobalX >= FrontR[I].A.X) and
+         (AGlobalX < FrontR[I].B.X) and
+         (AGlobalY >= FrontR[I].A.Y) and
+         (AGlobalY < FrontR[I].B.Y) then
+        Exit(True);
+  end;
 begin
+  FrontR := nil;
   App := PSuperApp(Application);
   // With no picture this must cost exactly what it cost before the feature
   // existed: one string compare and the ancestor's single WriteLine. Nothing
@@ -5536,11 +6222,44 @@ begin
   GOrig.X := 0;
   GOrig.Y := 0;
   MakeGlobal(GOrig, GOrig);
-  // The background owns the entire desktop, so nothing registered here by a
-  // previous layout may survive: clear the whole region before painting.
+  // Rich entries are not clipped by FreeVision's WriteLine machinery. Record
+  // every visible sibling in front of the background so this draw updates only
+  // exposed desktop cells. Without this, a focus repaint replaced both panes'
+  // truecolor entries with the artwork before WriteLine clipped the artwork,
+  // and the pane that lost focus fell back to its gray 16-color oracle.
+  FrontN := 0;
+  MyView := @Self;
+  if Owner <> nil then
+  begin
+    PW := Owner^.First;
+    while (PW <> nil) and (PW <> MyView) do
+    begin
+      if PW^.GetState(sfVisible) then
+        Inc(FrontN);
+      PW := PW^.NextView;
+    end;
+    SetLength(FrontR, FrontN);
+    FrontN := 0;
+    PW := Owner^.First;
+    while (PW <> nil) and (PW <> MyView) do
+    begin
+      if PW^.GetState(sfVisible) then
+      begin
+        FrontR[FrontN].A.X := GOrig.X - Origin.X + PW^.Origin.X;
+        FrontR[FrontN].A.Y := GOrig.Y - Origin.Y + PW^.Origin.Y;
+        FrontR[FrontN].B.X := FrontR[FrontN].A.X + PW^.Size.X;
+        FrontR[FrontN].B.Y := FrontR[FrontN].A.Y + PW^.Size.Y;
+        Inc(FrontN);
+      end;
+      PW := PW^.NextView;
+    end;
+  end;
+  // Nothing registered on exposed desktop ground by a previous layout may
+  // survive. Covered cells still belong to their pane or dialog.
   for y := 0 to Size.Y - 1 do
     for x := 0 to W - 1 do
-      RichClear(GOrig.X + x, GOrig.Y + y);
+      if not CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
+        RichClear(GOrig.X + x, GOrig.Y + y);
   for y := 0 to Size.Y - 1 do
   begin
     B := Default(TDrawBuffer);
@@ -5555,7 +6274,8 @@ begin
         // coincidence and resurrect as a stale glyph.
         Word0 := (word(DeskAttr) shl 8) or word(' ');
         B[x] := Word0;
-        RichClear(GOrig.X + x, GOrig.Y + y);
+        if not CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
+          RichClear(GOrig.X + x, GOrig.Y + y);
       end
       else
       begin
@@ -5567,32 +6287,31 @@ begin
         // cell and the next, which is what a picture drawn out of them looks
         // blurred by. A background colour is painted by the terminal itself
         // and covers the cell exactly, whatever the font is doing.
-        if C.Glyph = FULL_BLOCK then
-        begin
-          // The GRID keeps the block glyph: that word is the overlay's
-          // oracle, and a cell that says "space in some attribute" is a word
-          // any dialog or menu writes too. Registering the picture under it
-          // made a dialog drawn on top match the oracle by coincidence and
-          // bring the picture back through its own body, in colour. The block
-          // is a word nothing else here writes, so the oracle stays unique --
-          // and the terminal never sees it, because the overlay below says
-          // what is actually emitted.
-          Attr := Vga16FromRgb(C.Fg);
-          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
-          B[x] := Word0;
+        // The GRID always gets the full block, whatever the picture is
+        // drawn with. That word is the overlay's oracle -- what says a cell
+        // is still the picture's -- so it has to be a word nothing else on
+        // this screen writes. "A space in some attribute" is written by every
+        // dialog and menu; the shade characters are written by every
+        // scrollbar trough, which is where a picture last showed through the
+        // body of a dialog, in colour, at exactly the column its scrollbar
+        // was in. The block is written by nobody, and the terminal never sees
+        // it: the overlay below says what is actually emitted.
+        Attr := Vga16FromRgb(C.Fg);
+        if (C.Bg <> 0) and (C.Glyph <> FULL_BLOCK) then
+          Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
+        Word0 := (word(Attr) shl 8) or word(CP437_FULL_BLOCK);
+        B[x] := Word0;
+        if CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
+          Continue
+        else if C.Glyph = FULL_BLOCK then
+          // a cell painted whole goes out as a SPACE on a coloured
+          // background: the terminal fills that exactly, where a block glyph
+          // is only as solid as the font's idea of it
           RichSetCell(GOrig.X + x, GOrig.Y + y, ' ', 0, C.Fg, 0,
-            Word0, False, False);
-        end
+            Word0, False, False, True)
         else
-        begin
-          Attr := Vga16FromRgb(C.Fg);
-          if C.Bg <> 0 then
-            Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
-          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
-          B[x] := Word0;
           RichSetCell(GOrig.X + x, GOrig.Y + y, C.Glyph, C.Fg, C.Bg, 0,
-            Word0, False, False);
-        end;
+            Word0, False, False, True);
       end;
     end;
     WriteLine(0, y, W, 1, B);
@@ -5627,9 +6346,10 @@ end;
 procedure TSuperApp.InitMenuBar;
 var
   R: Objects.TRect;
-  MPanes, MWindows, MClasses, MProfiles, MSessMenu, MOptions, MHelp: PMenu;
+  MPanes, MWindows, MClipboard, MClasses, MProfiles, MSessMenu, MOptions,
+    MHelp: PMenu;
   Chain: PMenuItem;
-  PaneItems, WindowItems, ClassItems, ProfileItems, SessItems,
+  PaneItems, WindowItems, ClipboardItems, ClassItems, ProfileItems, SessItems,
     LanguageItems: PMenuItem;
   i, Num: integer;
   TitleS: string;
@@ -5676,10 +6396,6 @@ begin
       if Chain <> nil then
         PaneItems := Chain;
     end;
-  PaneItems := NewItem(UiText('~R~estore all', '~R~estaurar todos'), '',
-    kbNoKey, cmWindowRestoreAll, hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('Minimize ~a~ll', 'Minimizar to~d~os'), '',
-    kbNoKey, cmWindowMinimizeAll, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
     kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~F~ull screen', '~P~antalla completa'),
@@ -5727,7 +6443,14 @@ begin
   else
     WindowItems := NewInfoItem(UiText('(no profile active)',
       '(sin perfil activo)'), '', nil);
-  // window arrangement on screen (like the classic IDE's Window menu)
+  // whole-workspace visibility and arrangement (classic IDE Window menu)
+  WindowItems := NewLine(WindowItems);
+  WindowItems := NewItem(UiText('~R~estore all windows',
+    '~R~estaurar todas las ventanas'), '', kbNoKey, cmWindowRestoreAll,
+    hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('Minimize ~a~ll windows',
+    'Minimizar to~d~as las ventanas'), '', kbNoKey, cmWindowMinimizeAll,
+    hcNoContext, WindowItems);
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
     '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
@@ -5740,6 +6463,22 @@ begin
   WindowItems := NewItem(UiText('~T~ile', '~M~osaico'), '', kbNoKey,
     cmPaneTile, hcNoContext, WindowItems);
   MWindows := NewMenu(WindowItems);
+
+  // ---- Clipboard: copy mode and the ten client-local history entries ----
+  ClipboardItems := NewItem(UiText('~C~lear history...',
+    '~B~orrar historial...'), '', kbNoKey, cmClipboardClear,
+    hcNoContext, nil);
+  ClipboardItems := NewLine(ClipboardItems);
+  ClipboardItems := NewItem(UiText('Paste from ~h~istory...',
+    'Pegar del ~h~istorial...'), PrefixKeyLabel(Cfg.PrefixKey) + ' h',
+    kbNoKey, cmClipboardHistory, hcNoContext, ClipboardItems);
+  ClipboardItems := NewItem(UiText('Paste ~l~atest', 'Pegar ~u~ltimo'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' ]', kbNoKey, cmClipboardPaste,
+    hcNoContext, ClipboardItems);
+  ClipboardItems := NewItem(UiText('~C~opy from pane...',
+    '~C~opiar del panel...'), PrefixKeyLabel(Cfg.PrefixKey) + ' [',
+    kbNoKey, cmClipboardCopy, hcNoContext, ClipboardItems);
+  MClipboard := NewMenu(ClipboardItems);
 
   // ---- Classes: opens a new pane of each configured class ----
   ClassItems := nil;
@@ -5903,8 +6642,9 @@ begin
     NewSubMenu(UiText('P~r~ofiles', 'Pe~r~files'), 0, MProfiles,
     NewSubMenu(UiText('~S~essions', '~S~esiones'), 0, MSessMenu,
     NewSubMenu(UiText('~O~ptions', '~O~pciones'), 0, MOptions,
+    NewSubMenu(UiText('Clip~b~oard', 'Por~t~apapeles'), 0, MClipboard,
     NewSubMenu(UiText('~H~elp', '~A~yuda'), 0, MHelp,
-    nil))))))))));
+    nil)))))))))));
 end;
 
 procedure TSuperApp.InitStatusLine;

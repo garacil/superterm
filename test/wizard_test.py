@@ -11,11 +11,12 @@ import time
 
 import pyte
 
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib  # noqa: E402
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-ROOT = '/tmp/opencode/stwizard'
+ROOT = stlib.fresh_home('wizard')
 W, H = 110, 35
-os.makedirs(ROOT, exist_ok=True)
 
 
 class Session:
@@ -97,6 +98,7 @@ try:
     check('help dialog opens', 'F2/F3 split' in s.text())
 finally:
     s.close()
+    stlib.close_all_daemons(ROOT)
 
 
 sys.exit(1 if fails else 0)

@@ -155,6 +155,9 @@ character grid.
   expanding and contracting outline between the pane and the full desktop
   (about 350 ms). Purely cosmetic; the instant transition is the fast one.
 - All four flags can also be toggled at runtime from the `Options` menu.
+- Pane focus is deliberately not a content effect: focused and unfocused
+  terminal interiors keep identical colors and attributes. Only the window
+  border/title and cursor change, so unchanged pane cells are not sent again.
 - `default_profile` names the profile activated at startup.
 - The legacy keys `default_template`, `default_session`, and
   `default_window` are still read. The startup profile is resolved as
@@ -170,6 +173,22 @@ output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
 at full fidelity instead of being approximated to the CP437 grid. Press F5
 again to un-maximize and bring the window manager back. This assumes a single
 client is attached to the session.
+
+## Clipboard and SSH
+
+The `Clipboard` / `Portapapeles` menu owns a client-local, in-memory history
+of ten UTF-8 items. It is deliberately absent from `superterm.ini`, session
+files, snapshots, debug logs, and the daemon protocol, so attaching from a
+second host does not expose the first host's clipboard.
+
+The outer terminal's normal Paste action is captured with bracketed-paste
+mode, added to history, and sent to the focused pane. If that pane requested
+DECSET 2004, SuperTerm restores the bracketed-paste delimiters before sending
+the text. A pane copy writes OSC 52 to the outer terminal; this supports an
+SSH pane and SuperTerm itself running across SSH when the final terminal
+emulator permits OSC 52 clipboard writes. Pane-generated OSC 52 writes are
+also recorded and forwarded. OSC 52 clipboard-read queries from panes are
+discarded and never receive host clipboard contents.
 
 ## Window classes
 

@@ -38,8 +38,23 @@ def truecolor_inside(c, title, height=16):
         return None
     top = rows[0]
     line = c.screen.display[top]
-    xs = [i for i, ch in enumerate(line) if ch != ' ']
-    x0, x1 = min(xs), max(xs)
+    # The dialog's extent is its FRAME, walked out from the title. Taking
+    # "everything that is not a space" was right only while a picture was
+    # made of spaces on coloured backgrounds; drawn with a shade character it
+    # covers the row, and the box became the whole screen.
+    FRAME = set('═─╔╗┌┐║│[]■ ')
+    mid = line.index(title)
+    x0 = mid
+    while x0 > 0 and (line[x0 - 1] in FRAME or line[x0 - 1] == title[0]):
+        x0 -= 1
+    x1 = mid + len(title) - 1
+    while x1 < len(line) - 1 and line[x1 + 1] in FRAME:
+        x1 += 1
+    # a run of blanks means we walked off the dialog and into the desktop
+    while x0 < mid and line[x0] == ' ' and line[x0 + 1] == ' ':
+        x0 += 1
+    while x1 > mid and line[x1] == ' ' and line[x1 - 1] == ' ':
+        x1 -= 1
     n = 0
     for y in range(top, min(c.h, top + height)):
         for x in range(x0, x1 + 1):
