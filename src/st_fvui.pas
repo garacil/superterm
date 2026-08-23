@@ -5472,8 +5472,9 @@ end;
 // Options > Desktop colour -- with a picture or without one, and the empty
 // cells of a picture take that same colour rather than blue dots.
 const
-  // U+2588, the glyph the pictures are drawn with
+  // U+2588 as UTF-8, and the CP437 code for it
   FULL_BLOCK = #$E2#$96#$88;
+  CP437_FULL_BLOCK = 219;
 
 function TArtBackground.DeskAttr: byte;
 var
@@ -5567,32 +5568,29 @@ begin
         // cell and the next, which is what a picture drawn out of them looks
         // blurred by. A background colour is painted by the terminal itself
         // and covers the cell exactly, whatever the font is doing.
+        // The GRID always gets the full block, whatever the picture is
+        // drawn with. That word is the overlay's oracle -- what says a cell
+        // is still the picture's -- so it has to be a word nothing else on
+        // this screen writes. "A space in some attribute" is written by every
+        // dialog and menu; the shade characters are written by every
+        // scrollbar trough, which is where a picture last showed through the
+        // body of a dialog, in colour, at exactly the column its scrollbar
+        // was in. The block is written by nobody, and the terminal never sees
+        // it: the overlay below says what is actually emitted.
+        Attr := Vga16FromRgb(C.Fg);
+        if (C.Bg <> 0) and (C.Glyph <> FULL_BLOCK) then
+          Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
+        Word0 := (word(Attr) shl 8) or word(CP437_FULL_BLOCK);
+        B[x] := Word0;
         if C.Glyph = FULL_BLOCK then
-        begin
-          // The GRID keeps the block glyph: that word is the overlay's
-          // oracle, and a cell that says "space in some attribute" is a word
-          // any dialog or menu writes too. Registering the picture under it
-          // made a dialog drawn on top match the oracle by coincidence and
-          // bring the picture back through its own body, in colour. The block
-          // is a word nothing else here writes, so the oracle stays unique --
-          // and the terminal never sees it, because the overlay below says
-          // what is actually emitted.
-          Attr := Vga16FromRgb(C.Fg);
-          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
-          B[x] := Word0;
+          // a cell painted whole goes out as a SPACE on a coloured
+          // background: the terminal fills that exactly, where a block glyph
+          // is only as solid as the font's idea of it
           RichSetCell(GOrig.X + x, GOrig.Y + y, ' ', 0, C.Fg, 0,
-            Word0, False, False);
-        end
+            Word0, False, False)
         else
-        begin
-          Attr := Vga16FromRgb(C.Fg);
-          if C.Bg <> 0 then
-            Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
-          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
-          B[x] := Word0;
           RichSetCell(GOrig.X + x, GOrig.Y + y, C.Glyph, C.Fg, C.Bg, 0,
             Word0, False, False);
-        end;
       end;
     end;
     WriteLine(0, y, W, 1, B);
