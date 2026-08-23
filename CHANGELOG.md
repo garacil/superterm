@@ -1,5 +1,195 @@
 # Changelog
 
+## 3.4.1 - 2026-08
+
+Everything the history needed to actually work, found by using it.
+
+### The history was empty in a session opened from a profile
+
+There was no scrollbar and nothing scrolled, because those panes were
+created with a scrollback ring of **zero lines**: the profile reader
+defaulted the per-pane `scrollback` key to 0 while the window-class reader
+defaults it to 10000. The writer only stores that key when it is greater
+than zero, so a missing key never meant a deliberate zero -- it meant "not
+stated". It now means the normal default, and a pane is never created with
+no ring at all whatever the caller passed.
+
+### The scrollbar drove another pane after opening or closing a window
+
+Clicking the bar moved the thumb and it snapped straight back, and the text
+never moved -- while the wheel worked. A window points at its pane from
+three places: itself, the terminal view and the scrollbar. Panes are
+renumbered whenever one is inserted or closed, and the six sites that do it
+updated the first two and left the scrollbar on the old index, so it scrolled
+a different pane's viewport. All six now move the three together.
+
+### The scrollbar is there from the start
+
+Hiding it until the first line scrolled off made a window with a fresh shell
+look like a build without the feature -- which is exactly how it was
+reported. It now shows with the thumb filling the trough, as every terminal
+does, and still goes away on an icon, on a window too short for it, and while
+an application owns the alternate screen.
+
+Plain `PgUp`/`PgDn` scroll as well now, but only where nothing else wants
+them: on the normal screen, and only once there is history. An application on
+the alternate screen keeps them, and so does a shell before anything has
+scrolled off.
+
+### Opening a window never touches the ones already open
+
+`F2`/`F3` still split the focused window in two in 3.4: the new pane took
+half of it. That is still "creating a window changed the window I was
+using", and repeating it halves a window until nothing fits -- measured
+going from 28 columns to 25 in six rounds. There is now one rule for every
+way of opening a window: centred, at the size its class asks for, on top,
+and nothing already open is moved or resized. Tiling stays on demand:
+`Windows -> Tile`, or prefix + `t`.
+
+## 3.4 - 2026-08
+
+Four things you asked for, and the repairs they turned up on the way.
+
+### Opening a window no longer resizes the ones already open
+
+Creating a pane ended in a full re-tile: opening a third window resized the
+two you had and sent each of their programs a size change. Every other
+operation had already been taught not to do this -- minimize, restore, close
+and leaving a maximised pane all leave the rest alone. Creation was the last
+one left.
+
+- **One rule, every way of opening a window.** It appears centred, at the
+  size its class asks for, on top of whatever is there, and nothing already
+  open is moved or resized -- `F2`/`F3` included. Splitting the focused
+  window in two was tried first and is not what is wanted: creating a window
+  must not change the window you were using, and repeated splits halve a
+  window until it is unusable. Classes gain
+  `cols` and `rows` in cells, editable in the class dialog; unset, they fall
+  back to `[ui] newwincols`/`newwinrows`, and unset too, to two thirds of the
+  desktop. The first window of a session still takes the whole desktop.
+- **Tiling is one keystroke away** when you want it: `Windows -> Tile`, or
+  prefix + `t`.
+
+### The history is reachable
+
+The scrollback engine was complete and nothing let you use it: the only way
+in was an undocumented `Alt-PgUp`.
+
+- **A scrollbar** in each window's right frame column. It costs the pane no
+  column and no resize, and appears only while there is history and the
+  application is not on the alternate screen.
+- **The mouse wheel**, three lines a notch, without taking the focus. On the
+  alternate screen -- `less`, `man`, `vim` -- it sends arrow keys instead,
+  which is what makes the wheel work there at all.
+- **`Alt-PgUp`/`PgDn`/`Home`/`End`**, with `Ctrl-` and `Shift-` aliases for
+  terminals that let them through. Any key meant for the application returns
+  the view to live first.
+- **The view stays where you are reading** while output keeps arriving,
+  instead of being dragged toward the bottom.
+- History rows are stored trimmed, which cuts the memory a long history costs
+  by roughly six times and ships less in an attach snapshot. The wire format
+  is unchanged.
+
+### The arrow keys work in `top` and `htop`
+
+Every curses program puts the terminal in application cursor keys mode and
+from then on expects `ESC O A` for Up, ignoring the form superterm was
+sending. The emulator now follows that mode, and the keypad modes with it.
+
+### superterm inside a superterm pane
+
+Nesting was refused outright, because a pane attaching to its own session
+mirrors forever. It is now refused by identity rather than by presence: each
+pane carries the chain of sessions it lives inside, each daemon publishes its
+own, and only the sessions on that chain are rejected -- at any depth,
+including a loop that goes out through a second session and back. A new
+session, or a different one, is as safe from a pane as from any terminal.
+
+And **the mouse reaches the application inside a pane**: presses, releases,
+drags, hover and the wheel, re-encoded at pane coordinates in the protocol
+the application asked for. The frame, the title bar, the menu and the status
+line stay superterm's, with no rule to learn -- so a nested superterm's own
+window manager works inside the pane.
+
+### Repairs found on the way
+
+- **superterm could hang at startup, before its first line ran.** On a
+  terminal the RTL does not recognise it tried to reach gpm with a blocking
+  connect during unit initialisation; with gpm installed but not accepting,
+  that never returned. superterm now installs its own mouse driver: every
+  terminal gets a mouse, and on the console gpm is probed without blocking.
+  That is also why the console had no mouse at all before.
+- **A client could lose visible content when another client resized a pane.**
+  It resized its own copy optimistically instead of waiting for the daemon's
+  answer, and shrinking sends the top rows to the history.
+- **`Restore all` left the restored windows behind the big one.**
+- The middle and right mouse buttons were crossed against the RTL's numbering.
+- The 4096-column "stale corners" reported in 3.3 was the test sampling the
+  screen before the resize had finished painting. There is no such defect; see
+  the correction under 3.3.1.
+
+### Upgrading
+
+Sessions from 3.3.x reattach unchanged: no frame changed shape and
+`ATTACH_PROTO_VER` stays at 3.
+
+## 3.3.1 - 2026-08
+
+A maintenance release: the session daemon no longer dies under heavy output,
+and the debug build now explains itself when something does go wrong.
+
+### The daemon survives a flood, and the interface stays alive with it
+
+Running something that writes without pause -- `ls -R /` from the root, a large
+build -- could kill the session daemon and take every pane down with it, leaving
+attached clients saying only "connection lost". Two independent faults were
+behind it.
+
+- **The daemon detached with its standard descriptors closed.** The first write
+  to a freed descriptor raised an error, whose own reporting wrote to the same
+  descriptor, and so on until the process died. Descriptors 0, 1 and 2 are now
+  reopened on `/dev/null`, which is what every well-behaved daemon does.
+- **The main loop had no guard.** An unexpected error anywhere inside it ended
+  the process. The body now catches, records what happened, writes a report and
+  carries on; fifty consecutive failures still stop the session, so a genuinely
+  broken daemon does not spin forever.
+- **The interface froze while the flood lasted.** The client drained every
+  pending frame in one pass and repainted per frame, so keyboard and mouse were
+  never read: Ctrl-C did not arrive, the menu did not open, a window could not be
+  minimised. The drain is now bounded -- at most 32 frames or 20 ms -- and marks
+  which panes changed, repainting each one once at the end.
+
+### A debug build that explains itself
+
+- **Crash reports.** With `make debug`, a fatal signal writes
+  `/tmp/superterm-crash-<role>-<pid>-<time>.log` before the process goes down:
+  the signal, how long it had been running, a backtrace with file and line, and
+  the last few hundred trace lines from a ring buffer that is kept even when
+  tracing is switched off. The default handler is then restored and the signal
+  re-raised, so the system core dump still happens.
+- **A quieter flow log.** `SUPERTERM_DEBUG` records the milestones; the chatty
+  per-read, per-frame detail moved behind `SUPERTERM_DEBUG_FULL=1`, so a long
+  trace stays readable.
+
+### Leaving superterm no longer leaves the mouse reporting
+
+Quitting or detaching could drop you back at the shell prompt and then, as
+soon as you moved the mouse, fill it with line noise like
+`35;65;64M35;64;64M`. Those are mouse reports: the terminal was still being
+told to send them.
+
+The RTL's mouse driver turns only two of the tracking modes on and off, but
+superterm enables two more by hand when it reclaims the screen from a
+maximised pane, and nothing turned those back off. Every mode superterm can
+enable is now disabled on the way out, and whatever the terminal already
+reported is flushed instead of being read by the shell as typed input.
+
+### Also
+
+- **A desktop with no picture costs exactly what it did before 3.3.** The
+  background code now short-circuits on `none` instead of walking every cell.
+- The README links the project site, <https://www.superterm.org>.
+
 ## 3.3 - 2026-08
 
 ### A picture on the desktop, behind the windows
@@ -34,13 +224,15 @@ FreeVision is untouched, as ever: the desktop, its background and the
 application's desktop factory are all virtual, so they are replaced by
 subclassing.
 
-### Known issue
+### Correction to the 3.3 notes
 
-- `large_screen_test`'s 4096-column restore case leaves a stale window border
-  one row below the real one when a picture is on. It is confined to that
-  synthetic width -- no real terminal is anywhere near 4096 character columns --
-  and does not affect normal use. Traced to the overlay registration the
-  background performs; the cause inside the per-cell delta is still open.
+3.3 shipped with a "known issue" saying that a 4096-column restore left a
+stale window border. There is no such defect. The test sampled the screen a
+fixed 1.2 seconds after the resize, and a resize that wide takes a little
+over two seconds to reach its final paint: what it read was the previous
+layout, still on screen. The test now waits for the layout instead of for a
+clock, and every assertion passes. The resize is genuinely slow at those
+widths, which is a performance matter and is being worked on separately.
 
 ## 3.2 - 2026-08
 

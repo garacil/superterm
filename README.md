@@ -1,5 +1,7 @@
 # superterm 3.3
 
+**Project site: [www.superterm.org](https://www.superterm.org)**
+
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
 visible pane remains a real PTY-backed terminal.
@@ -350,8 +352,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 
 | Key | Action |
 | --- | --- |
-| `F2` | Vertical split, side by side |
-| `F3` | Horizontal split, stacked |
+| `F2` / `F3` | Open a window; it appears centred and nothing already open is moved or resized |
 | `Alt-F3` / `Alt-F4` | Close the focused pane; exit when one remains |
 | `F6` / `F7` | Next / previous pane |
 | `Alt-1..9` | Go to pane N |
@@ -365,8 +366,14 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q` arrows | Resize the focused pane |
 | `Ctrl-Q c` | Open a window class in a new pane |
 | `Ctrl-Q s` | Session picker: attach to or close detached sessions |
+| `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
+| Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
+| `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
+| `Alt-Home` / `Alt-End` | History: oldest line / back to live |
 | `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
 | `Alt-X` | Exit and save when autosave is enabled |
 | `Alt-Q` | Exit without saving |
@@ -592,6 +599,10 @@ Planned platform and runtime work includes a native Windows ConPTY backend,
 better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author
+
+Project site: <https://www.superterm.org> · Documentation:
+[the wiki](https://github.com/garacil/superterm/wiki) · Releases:
+[GitHub](https://github.com/garacil/superterm/releases)
 
 Author: Germán Luis Aracil Boned — August 2026.
 

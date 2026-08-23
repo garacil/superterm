@@ -60,9 +60,10 @@ default_profile=daily
 ### [keymap]
 
 `prefix` selects the prefix key for tmux-style chords (`Ctrl-Q d` detach,
-`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q 1..9` go to
-window, `Ctrl-Q n`/`p` next/previous window, `Ctrl-Q` arrows resize the
-pane, prefix twice sends one literal prefix byte). Accepted values:
+`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q t` tile the
+windows, `Ctrl-Q 1..9` go to window, `Ctrl-Q n`/`p` next/previous window,
+`Ctrl-Q` arrows resize the pane, prefix twice sends one literal prefix
+byte). Accepted values:
 
 - `ctrl-a` .. `ctrl-z`, for example `prefix=ctrl-q`.
 - A single letter `a` .. `z`, shorthand for the same Ctrl key.
@@ -86,6 +87,13 @@ palette, the default), `bw` (black and white), or `mono` (monochrome). Any
 other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed.
+
+### [ui] new window size
+
+- `newwincols`, `newwinrows` — size, in cells, of a window opened from a class
+  that does not set its own `cols`/`rows`. `0` (the default) means two thirds
+  of the desktop. The first window of a session always takes the whole
+  desktop.
 
 ### [ui] desktop background
 
@@ -179,6 +187,8 @@ port=22
 key=~/.ssh/id_ed25519
 postconnect=tmux new -A -s main
 scrollback=20000
+cols=100
+rows=30
 
 [class.monitor]
 name=monitor
@@ -204,6 +214,15 @@ Fields:
 - `connect` — free connection command; takes precedence over `host`.
 - `postconnect` — command sent after connecting; see the semantics below.
 - `scrollback` — scrollback lines; default `10000`, maximum `100000`.
+- `cols`, `rows` — preferred size, in cells, of a window opened from this
+  class. `0` (the default) falls back to `[ui] newwincols`/`newwinrows`, and
+  when those are unset too, to two thirds of the desktop. The window frame
+  adds one cell on each side, and the size is clamped to the desktop.
+
+Every way of opening a window behaves the same: it appears centred on the
+desktop at that size, on top of whatever is there, and nothing already open is
+moved or resized -- `F2`/`F3` included. Tiling is on demand (`Windows -> Tile`,
+or prefix + `t`).
 
 The class type is derived when loading and is never stored:
 

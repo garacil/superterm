@@ -116,6 +116,8 @@ type
     CwdLine: PInputLine;
     ShellLine: PInputLine;
     ScrollLine: PInputLine;
+    ColsLine: PInputLine;
+    RowsLine: PInputLine;
     TitleLine: PInputLine;
     TypeRadio: PRadioButtons;
     EnabledBox: PCheckBoxes;
@@ -317,6 +319,28 @@ begin
       Exit(False);
     end;
   end;
+  S := Trim(LineText(ColsLine));
+  if S <> '' then
+  begin
+    V := StrToIntDef(S, -1);
+    if (V < 0) or (V > MAX_WIN_COLS) then
+    begin
+      ErrorBox(Format(UiText('Invalid width (0..%d).',
+        'Ancho invalido (0..%d).'), [MAX_WIN_COLS]));
+      Exit(False);
+    end;
+  end;
+  S := Trim(LineText(RowsLine));
+  if S <> '' then
+  begin
+    V := StrToIntDef(S, -1);
+    if (V < 0) or (V > MAX_WIN_ROWS) then
+    begin
+      ErrorBox(Format(UiText('Invalid height (0..%d).',
+        'Alto invalido (0..%d).'), [MAX_WIN_ROWS]));
+      Exit(False);
+    end;
+  end;
 end;
 
 // modal editor for one class; SkipIndex = index of C in AllClasses to
@@ -396,6 +420,14 @@ begin
     Insert(New(PStaticText, Init(R, Format('(0..%d)', [MAX_SCROLLBACK]))));
     TitleLine := NewInputLine(22, 13, 41, 40, hcNoContext, nil);
     NewLabel(2, 13, UiText('Default title', 'Titulo por defecto'), TitleLine);
+    ColsLine := NewInputLine(22, 14, 7, 4, hcNoContext, nil);
+    NewLabel(2, 14, UiText('Window size', 'Tamano ventana'), ColsLine);
+    R.Assign(30, 14, 32, 15);
+    Insert(New(PStaticText, Init(R, 'x')));
+    RowsLine := NewInputLine(32, 14, 7, 4, hcNoContext, nil);
+    R.Assign(41, 14, 63, 15);
+    Insert(New(PStaticText, Init(R,
+      UiText('(cells, 0 = automatic)', '(celdas, 0 = automatico)'))));
     // Name last: initial focus (coordinates are absolute, the
     // insertion order does not change the layout)
     NameLine := NewInputLine(22, 1, 25, 40, hcNoContext, nil);
@@ -415,6 +447,10 @@ begin
     SetLineText(CwdLine, C.Cwd);
     SetLineText(ShellLine, C.Shell);
     SetLineText(ScrollLine, IntToStr(C.ScrollBack));
+    if C.Cols > 0 then
+      SetLineText(ColsLine, IntToStr(C.Cols));
+    if C.Rows > 0 then
+      SetLineText(RowsLine, IntToStr(C.Rows));
     SetLineText(TitleLine, C.Title);
     W := Sw_Word(Ord(C.Kind));   // preselection of the derived type
     TypeRadio^.SetData(W);
@@ -444,6 +480,8 @@ begin
       C.ScrollBack := DEFAULT_SCROLLBACK
     else
       C.ScrollBack := StrToIntDef(S, DEFAULT_SCROLLBACK);
+    C.Cols := StrToIntDef(Trim(LineText(D^.ColsLine)), 0);
+    C.Rows := StrToIntDef(Trim(LineText(D^.RowsLine)), 0);
     W := 0;
     D^.EnabledBox^.GetData(W);
     C.Enabled := (W and 1) <> 0;
@@ -1098,7 +1136,12 @@ begin
   repeat
     // re-enumerate on each pass: purges orphans and reflects closures;
     // with no sessions no dialog is shown (third button action)
-    if (not EnumerateSessions(Infos)) or (Length(Infos) = 0) then
+    if not EnumerateSessions(Infos) then
+      Exit;
+    // inside a pane, the session this pane belongs to (and its ancestors)
+    // are not offered: attaching to them is the mirror that never ends
+    KeepAllowedSessions(Infos);
+    if Length(Infos) = 0 then
       Exit;
     Cmd := ExecSessionPicker(Infos, AllowStartNew, FocusRow);
     Idx := FocusRow;   // rows map 1:1 to Infos

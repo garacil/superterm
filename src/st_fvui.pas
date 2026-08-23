@@ -14,7 +14,7 @@ uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
-  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg;
+  st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg, st_mouse;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -26,6 +26,7 @@ const
   // Ranges: 2100-2199 panes/app - 2200-2259 templates - 2300-2349
   // terminals (cmOpenClass+i) - 2400-2439 windows - 2500-2539 minimized
   // - 2550-2569 session (detach/wizard) - 2600 help - 2700 language.
+  WHEEL_LINES = 3;   // history lines per wheel notch
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -89,8 +90,22 @@ type
   end;
 
   PTermWindow = ^TTermWindow;
+  // The window's history scrollbar. The vendor funnels arrows, trough and
+  // thumb drag through ScrollDraw, called only when Value really changed, so
+  // this one override is the whole integration. Syncing breaks the echo when
+  // the model is being pushed INTO the bar.
+  PTermScrollBar = ^TTermScrollBar;
+  TTermScrollBar = object(TScrollBar)
+    PaneIdx: integer;
+    Syncing: boolean;
+    constructor Init(var Bounds: Objects.TRect; APane: integer);
+    procedure ScrollDraw; virtual;
+  end;
+
   TTermWindow = object(TWindow)
     Term: PTermView;
+    SB: PTermScrollBar;        // right-edge history scrollbar
+    SBShown: boolean;
     PaneIdx: integer;
     Minimized: boolean;
     Zoomed: boolean;
@@ -106,6 +121,16 @@ type
     procedure Minimize;
     procedure Restore;
     procedure SetTitle(const S: string);
+    // show/hide and position the scrollbar from the pane's history state.
+    // AValueOnly skips Show/Hide, which redraw the owner and must not be
+    // called from inside a Draw.
+    procedure SyncScrollBar(AValueOnly: boolean);
+    // A window points at its pane from three places: itself, the terminal
+    // view and the scrollbar. Panes are renumbered whenever one is inserted
+    // or closed, and a scrollbar left on the old index drives ANOTHER
+    // pane's viewport: the thumb moves, snaps back on the next sync, and
+    // the text of this window never scrolls.
+    procedure SetPaneIdx(APane: integer);
   end;
 
   // Desktop background that paints an ASCII art picture behind the windows.
@@ -153,6 +178,22 @@ type
     // terminal and its raw PTY bytes are written straight through, so a
     // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
     PassPane: integer;
+    // size last REQUESTED from the daemon per pane. In remote mode the
+    // mirror is only resized when the daemon answers, so the request gate
+    // cannot use the mirror's size: a daemon that keeps a pane smaller than
+    // this client's window would otherwise be asked again on every drag step.
+    ReqCols, ReqRows: array[0..MAX_PANES - 1] of integer;
+    // rectangle for the next window StartPaneEx creates, when the caller has
+    // already decided where it goes (a split); consumed by NewWindowRect
+    NextRect: Objects.TRect;
+    NextRectSet: boolean;
+    // mouse forwarding: the pane a button went down in (-1 none) and which
+    // button, so the release and the drag reach the same application even
+    // if the pointer wanders; the host's any-motion tracking (?1003) is
+    // switched on only while the focused pane asks for it
+    MouseGrabPane: integer;
+    MouseGrabButton: integer;
+    HostAnyMotion: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
     // startup: hold one LockScreenUpdate across the whole build+promote+
     // attach so the screen is flushed ONCE at the end, not several times
@@ -223,7 +264,28 @@ type
     procedure DoProfileManage;
     procedure StopRuntime;
     procedure ReleaseRuntime;
-    procedure CreateWindowForPane(i: integer; const ATitle: string);
+    function NewWindowRect(ASysIdx: integer): Objects.TRect;
+    procedure CreateWindowForPane(i: integer; const ATitle: string;
+      const ARect: Objects.TRect);
+    procedure SyncPaneToWindow(i: integer);
+    // repaint one pane and bring its scrollbar up to date
+    procedure RepaintPane(i: integer);
+    // DECCKM state of a pane, nil-safe
+    function PaneWantsAppCursor(i: integer): boolean;
+    // mouse forwarding to the application inside pane i. Returns True when
+    // the event was the application's and has been sent; False when the
+    // window manager keeps it (the pane asked for no mouse, or the kind of
+    // event is not one it asked for)
+    function ForwardMouse(i: integer; const Event: TEvent;
+      const ALocal: Objects.TPoint): boolean;
+    // keep the host terminal's ?1003 in step with the focused pane
+    procedure SyncHostMouse;
+    // ask the daemon for a pane size (remote) or apply it (local). The
+    // remote mirror is left alone: it follows FRAME_RESIZE_EV, the
+    // authoritative answer, so it never grows on a request the daemon then
+    // trims -- which pushed the top rows of the mirror into its history.
+    procedure RequestPaneSize(i, ACols, ARows: integer);
+    procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
     // why the last attach attempt failed (empty = generic/none)
@@ -385,10 +447,24 @@ end;
 // screen the way ResetVideoSurface (blanks OldVideoBuf) + ReDraw
 // (drawscreenbuf TRUE, forced) does. Reserve the sledgehammer for real
 // video-mode/size changes and coming back from raw passthrough.
+procedure TSuperApp.RepaintPane(i: integer);
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
+    Exit;
+  Win[i]^.SyncScrollBar(False);
+  if Win[i]^.Term <> nil then
+    Win[i]^.Term^.DrawView;
+end;
+
 procedure TSuperApp.RepaintChanges;
+var
+  i: integer;
 begin
   if DebugActive then
     DebugLog('fvui: RepaintChanges (incremental DrawView -> diff)');
+  for i := 0 to MAX_PANES - 1 do
+    if Win[i] <> nil then
+      Win[i]^.SyncScrollBar(False);
   DrawView;
 end;
 
@@ -624,7 +700,9 @@ begin
   inherited Init(Bounds);
   PaneIdx := APane;
   Options := Options or ofSelectable or ofTileable;
-  EventMask := EventMask or evKeyDown or evCommand;
+  // releases and motion too: an application that asked for the mouse gets
+  // drags and hover, not just presses
+  EventMask := EventMask or evKeyDown or evCommand or evMouseUp or evMouseMove;
 end;
 
 procedure TTermView.Draw;
@@ -648,6 +726,8 @@ var
   FrontN: integer;
   MyWin, PW: PView;
   PadCell: TCell;    // synthetic blank for padding cells (pane default color)
+  DefCell: TCell;    // a true default blank, for trimmed history rows
+  DefWord: word;
 
   // Register one cell in the rich overlay at its global screen position, with
   // B[x] (the word just written to VideoBuf) as the oracle. The full UTF-8
@@ -832,6 +912,9 @@ begin
       PW := PW^.NextView;
     end;
   end;
+  DefCell := Default(TCell);
+  DefCell.Attr := A_FGDEF or A_BGDEF;
+  DefWord := RenderAttr(A_FGDEF or A_BGDEF);
   PadCell := Default(TCell);
   PadCell.Attr := App^.Scr[PaneIdx].Attr;
   PadCell.FgRGB := App^.Scr[PaneIdx].AttrFgRGB;
@@ -884,8 +967,11 @@ begin
          end
          else
          begin
-           B[x] := BlankWord or word(' ');
-           RichReg(x, y, PadCell, B[x], false, false);
+           // history rows are stored trimmed: what follows is a true
+           // default blank, not the pane's CURRENT attribute -- that would
+           // bleed a coloured background over the trimmed tail
+           B[x] := DefWord or word(' ');
+           RichReg(x, y, DefCell, B[x], false, false);
          end;
        end;
     end
@@ -897,15 +983,20 @@ begin
       end;
     WriteLine(0, y, w, 1, B);
   end;
-  if Scrolled then
+  // per-draw detail is FULL-mode only, for the same reason
+  if not DebugFull then
+  else if Scrolled then
     DebugLog(Format('draw pane=%d scrolled=%d', [PaneIdx, App^.Scr[PaneIdx].ViewOffset]))
   else if NonBlank > 0 then
     DebugLog(Format('draw pane=%d %dx%d nonblank=%d cur=(%d,%d) selected=%d',
       [PaneIdx, w, h, NonBlank, App^.Scr[PaneIdx].CursorX, App^.Scr[PaneIdx].CursorY,
        Ord(GetState(sfSelected))]))
   else
-    DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d',
-      [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height]));
+    DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d hist=%d off=%d alt=%d cur=%d,%d',
+      [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height,
+       App^.Scr[PaneIdx].HistoryRows, App^.Scr[PaneIdx].ViewOffset,
+       Ord(App^.Scr[PaneIdx].UsingAlt), App^.Scr[PaneIdx].CursorX,
+       App^.Scr[PaneIdx].CursorY]));
   // terminal cursor in the focused pane
   if (cx >= w) then cx := w - 1;
   if (cy >= h) then cy := h - 1;
@@ -928,11 +1019,60 @@ procedure TTermView.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
   seq: RawByteString;
+  Local: Objects.TPoint;
 begin
   App := PSuperApp(Application);
   if (App = nil) then
   begin
     inherited HandleEvent(Event);
+    Exit;
+  end;
+  // The application's mouse. This view is strictly the interior of the
+  // window, and FreeVision routes positional events to the innermost view
+  // under the pointer, so the frame, the title, the menu and the status
+  // line never get here: those stay the window manager's with no code at
+  // all. Inside, if the application asked for the mouse, it is its --
+  // presses, releases, drags, the wheel -- after the click has focused us.
+  if ((Event.What and (evMouseDown or evMouseUp or evMouseMove)) <> 0) and
+     (App^.Scr[PaneIdx] <> nil) and (App^.Scr[PaneIdx].MouseTrack <> mtOff) then
+  begin
+    if Event.What = evMouseDown then
+      App^.FocusPane(PaneIdx);
+    Local := Default(Objects.TPoint);
+    MakeLocal(Event.Where, Local);
+    if App^.ForwardMouse(PaneIdx, Event, Local) then
+    begin
+      ClearEvent(Event);
+      Exit;
+    end;
+  end;
+  // The wheel. st_kbd maps SGR button 64 (up) to 8 and 65 (down) to 16 --
+  // the RTL's numbering; the vendor's mbScrollWheel* names are the other way
+  // round, so the literals are used on purpose. It scrolls without taking
+  // the focus, like any terminal.
+  if (Event.What = evMouseDown) and ((Event.Buttons and (8 or 16)) <> 0) and
+     (App^.Scr[PaneIdx] <> nil) then
+  begin
+    if App^.Scr[PaneIdx].UsingAlt then
+    begin
+      // no history on the alternate screen: send arrows instead, which is
+      // what xterm's alternateScroll does and what makes the wheel work in
+      // less, man and vim
+      if (Event.Buttons and 8) <> 0 then
+        seq := TranslateKey(kbUp, App^.Scr[PaneIdx].AppCursorKeys)
+      else
+        seq := TranslateKey(kbDown, App^.Scr[PaneIdx].AppCursorKeys);
+      App^.WritePaneInput(PaneIdx, seq + seq + seq);
+    end
+    else
+    begin
+      if (Event.Buttons and 8) <> 0 then
+        App^.Scr[PaneIdx].ScrollViewport(+WHEEL_LINES)
+      else
+        App^.Scr[PaneIdx].ScrollViewport(-WHEEL_LINES);
+      App^.RepaintPane(PaneIdx);
+    end;
+    ClearEvent(Event);
     Exit;
   end;
   if Event.What = evMouseDown then
@@ -943,32 +1083,52 @@ begin
   end;
   if (Event.What = evKeyDown) and (App^.Scr[PaneIdx] <> nil) then
   begin
+    // Plain PgUp/PgDn scroll the history too, but only where nothing else
+    // wants them: on the normal screen, and only once there is history to
+    // move through. An application on the alternate screen (less, vim, a
+    // pager) keeps them, and so does a shell before anything has scrolled
+    // off. Shift- is the conventional binding where the host terminal lets
+    // it through -- most keep it for their own history; Alt- and Ctrl-
+    // always work and are the ones to document.
+    if ((Event.KeyCode = kbPgUp) or (Event.KeyCode = kbPgDn)) and
+       (((Event.KeyShift and kbBothShifts) <> 0) or
+        ((not App^.Scr[PaneIdx].UsingAlt) and
+         (App^.Scr[PaneIdx].HistoryRows > 0))) then
+    begin
+      if Event.KeyCode = kbPgUp then
+        App^.Scr[PaneIdx].ScrollViewport(+Size.Y)
+      else
+        App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
+      App^.RepaintPane(PaneIdx);
+      ClearEvent(Event);
+      Exit;
+    end;
     case Event.KeyCode of
-      kbAltPgUp:
+      kbAltPgUp, kbCtrlPgUp:
         begin
           App^.Scr[PaneIdx].ScrollViewport(+Size.Y);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
-      kbAltPgDn:
+      kbAltPgDn, kbCtrlPgDn:
         begin
           App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
       kbAltHome:
         begin
           App^.Scr[PaneIdx].ScrollViewport(MaxInt);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
       kbAltEnd:
         begin
           App^.Scr[PaneIdx].ScrollViewport(-MaxInt);
-          DrawView;
+          App^.RepaintPane(PaneIdx);
           ClearEvent(Event);
           Exit;
         end;
@@ -976,9 +1136,16 @@ begin
   end;
   if (Event.What = evKeyDown) then
   begin
-    seq := TranslateKey(Event.KeyCode);
+    seq := TranslateKey(Event.KeyCode,
+      (App^.Scr[PaneIdx] <> nil) and App^.Scr[PaneIdx].AppCursorKeys);
     if seq <> '' then
     begin
+      // a key for the application means "I am done reading": back to live
+      if (App^.Scr[PaneIdx] <> nil) and (App^.Scr[PaneIdx].ViewOffset > 0) then
+      begin
+        App^.Scr[PaneIdx].SetViewOffset(0);
+        App^.RepaintPane(PaneIdx);
+      end;
       if (App^.Panes[PaneIdx] <> nil) and App^.Panes[PaneIdx].Alive then
       begin
         DebugLog(Format('key pane=%d code=$%.4x len=%d', [PaneIdx, Event.KeyCode, Length(seq)]));
@@ -1086,6 +1253,39 @@ end;
 
 { ---------------- TTermWindow ---------------- }
 
+constructor TTermScrollBar.Init(var Bounds: Objects.TRect; APane: integer);
+begin
+  inherited Init(Bounds);
+  PaneIdx := APane;
+  Syncing := False;
+  // never focused: its key handler would eat the arrows the pane needs
+  Options := Options and (not ofSelectable);
+end;
+
+procedure TTermScrollBar.ScrollDraw;
+var
+  App: PSuperApp;
+  W: PTermWindow;
+begin
+  // the vendor's ScrollDraw only broadcasts cmScrollBarChanged; nobody here
+  // listens, and the window it would reach is the one we update directly
+  if DebugActive then
+    DebugLog(Format('scrollbar: ScrollDraw pane=%d value=%d min=%d max=%d syncing=%d',
+      [PaneIdx, Value, Min, Max, Ord(Syncing)]));
+  if Syncing then
+    Exit;
+  App := PSuperApp(Application);
+  if (App = nil) or (PaneIdx < 0) or (PaneIdx >= MAX_PANES) or
+     (App^.Scr[PaneIdx] = nil) then
+    Exit;
+  // Value counts from the oldest line (0) to live (Max); the model counts
+  // lines back from live, so the two are mirror images of each other
+  App^.Scr[PaneIdx].SetViewOffset(Max - Value);
+  W := PTermWindow(Owner);
+  if (W <> nil) and (W^.Term <> nil) then
+    W^.Term^.DrawView;
+end;
+
 constructor TTermWindow.Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
 var
   R: Objects.TRect;
@@ -1098,6 +1298,63 @@ begin
   R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
   Term := New(PTermView, Init(R, APane));
   Insert(Term);
+  // the right frame column, rows 1..Size.Y-2: the same rectangle the vendor's
+  // StandardScrollBar uses. It paints over the border, costs the pane no
+  // column (Term keeps its rectangle, so no PTY resize), leaves the title
+  // row and the resize grip alone, and TScrollBar.Init's grow mode keeps it
+  // glued to the right edge on every resize. Hidden until there is history.
+  R.Assign(Bounds.B.X - Bounds.A.X - 1, 1,
+           Bounds.B.X - Bounds.A.X, Bounds.B.Y - Bounds.A.Y - 1);
+  SB := New(PTermScrollBar, Init(R, APane));
+  Insert(SB);
+  SB^.Hide;
+  SBShown := False;
+end;
+
+procedure TTermWindow.SetPaneIdx(APane: integer);
+begin
+  PaneIdx := APane;
+  Number := APane + 1;
+  if Term <> nil then
+    Term^.PaneIdx := APane;
+  if SB <> nil then
+    SB^.PaneIdx := APane;
+end;
+
+procedure TTermWindow.SyncScrollBar(AValueOnly: boolean);
+var
+  App: PSuperApp;
+  Want: boolean;
+  Hist, Page: integer;
+begin
+  if SB = nil then
+    Exit;
+  App := PSuperApp(Application);
+  if (App = nil) or (PaneIdx < 0) or (PaneIdx >= MAX_PANES) or
+     (App^.Scr[PaneIdx] = nil) then
+    Exit;
+  Hist := App^.Scr[PaneIdx].HistoryRows;
+  // The bar is shown whenever the pane can have history, even while there is
+  // none: hiding it until the first line scrolls off makes a window with a
+  // fresh shell look like a build where the feature is missing. With no
+  // history the thumb simply fills the trough, which is what every terminal
+  // does. It goes away on an icon, on a window too short to hold it, and
+  // while the app owns the alternate screen (vim, less, Claude Code): there
+  // is no history there and the column is theirs.
+  Want := (not Minimized) and (Size.Y > 3) and
+          (not App^.Scr[PaneIdx].UsingAlt);
+  if (not AValueOnly) and (Want <> SBShown) then
+  begin
+    if Want then SB^.Show else SB^.Hide;
+    SBShown := Want;
+  end;
+  if not SBShown then
+    Exit;
+  Page := Size.Y - 2;
+  if Page < 1 then Page := 1;
+  SB^.Syncing := True;
+  SB^.SetParams(Hist - App^.Scr[PaneIdx].ViewOffset, 0, Hist, Page, 1);
+  SB^.Syncing := False;
 end;
 
 procedure TTermWindow.HandleEvent(var Event: TEvent);
@@ -1123,7 +1380,8 @@ begin
   App := PSuperApp(Application);
   Dragging := (App <> nil) and (not App^.Cfg.DragContent) and (not Minimized) and
     (((Event.What = evMouseDown) and (Term <> nil) and
-      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where))) or
+      MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where)) and
+      ((SB = nil) or (not SBShown) or (not SB^.MouseInView(Event.Where)))) or
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
@@ -1234,14 +1492,12 @@ begin
     ph := Size.Y - 2;
     if pw < 4 then pw := 4;
     if ph < 2 then ph := 2;
-    if (pw <> App^.Scr[PaneIdx].Width) or (ph <> App^.Scr[PaneIdx].Height) then
-    begin
-      App^.Scr[PaneIdx].Resize(pw, ph);
-      if App^.RemoteMode then
-        App^.Remote.SendResize(PaneIdx, pw, ph)
-      else if App^.Panes[PaneIdx] <> nil then
-        App^.Panes[PaneIdx].Resize(pw, ph);
-    end;
+    if DebugActive and
+       ((pw <> App^.Scr[PaneIdx].Width) or (ph <> App^.Scr[PaneIdx].Height)) then
+      DebugLog(Format('resize: pane=%d window %dx%d -> request %dx%d (mirror %dx%d)',
+        [PaneIdx, Size.X, Size.Y, pw, ph, App^.Scr[PaneIdx].Width,
+         App^.Scr[PaneIdx].Height]));
+    App^.RequestPaneSize(PaneIdx, pw, ph);
   end;
 end;
 
@@ -1284,6 +1540,11 @@ begin
     Options := Options and (not ofTileable); // out of the vendor Tile
     if Term <> nil then
       Term^.Hide; // the icon is only frame and title
+    if (SB <> nil) and SBShown then
+    begin
+      SB^.Hide;
+      SBShown := False;   // the next sync decides again once restored
+    end;
   end;
 end;
 
@@ -1383,6 +1644,9 @@ begin
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
   PassPane := -1;
+  MouseGrabPane := -1;
+  MouseGrabButton := MB_NONE;
+  HostAnyMotion := False;
   PassReqW := 0;
   PassReqH := 0;
 
@@ -1695,9 +1959,9 @@ var
 begin
   if Win[i] <> nil then
     Exit;
-  R.Assign(0, 0, 40, 15);
-  if i = 0 then
-    Desktop^.GetExtent(R);
+  // one rect decides both the window and the PTY, so they agree from the
+  // start and nothing has to resize the pane afterwards
+  R := NewWindowRect(ASysIdx);
   pw := R.B.X - R.A.X - 2;
   ph := R.B.Y - R.A.Y - 2;
   if pw < 4 then pw := 4;
@@ -1747,6 +2011,11 @@ begin
   if ACommandOverride <> '' then
     CmdS := ACommandOverride;
   CwdS := ExpandUserPath(CwdS);
+  // last resort: a pane with no scrollback keeps no history at all, and
+  // nothing in the interface would say why. Only an explicit setting can
+  // ask for that, and none of the callers can express it as zero.
+  if AMaxSB <= 0 then
+    AMaxSB := DEFAULT_SCROLLBACK;
   PaneTerm[i] := ASysIdx;
   PaneConnect[i] := ''; // callers with a free connection set it afterwards
   Scr[i] := TScreen.Create(pw, ph, AMaxSB);
@@ -1796,7 +2065,7 @@ begin
       Exit;
     end;
   end;
-  CreateWindowForPane(i, TitleS);
+  CreateWindowForPane(i, TitleS, R);
   // a class pane keeps its title (class name/title); the periodic
   // cwd refresh must not overwrite it
   if (ASysIdx >= 0) and (Win[i] <> nil) then
@@ -1805,16 +2074,220 @@ begin
     [i, ASysIdx, Win[i], Win[i]^.Term, Win[i]^.Term^.PaneIdx, pw, ph]));
 end;
 
-procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string);
+// Where a NEW window goes, without moving a single existing one: at the size
+// its class asks for (or the configured default, or two thirds of the
+// desktop), centred. It lands in front of whatever is already there, which is
+// what Insert + Select do on their own.
+function TSuperApp.NewWindowRect(ASysIdx: integer): Objects.TRect;
+var
+  RD: Objects.TRect;
+  Slot: st_layout.TRect;
+  DW, DH, WantW, WantH, i, Placed, Cols, Rows: integer;
+begin
+  Result := Default(Objects.TRect);
+  if NextRectSet then
+  begin
+    NextRectSet := False;
+    Result := NextRect;
+    Exit;
+  end;
+  if Desktop = nil then
+  begin
+    Result.Assign(0, 0, 40, 15);
+    Exit;
+  end;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  DW := RD.B.X - RD.A.X;
+  DH := RD.B.Y - RD.A.Y;
+  Cols := 0;
+  Rows := 0;
+  if (ASysIdx >= 0) and (ASysIdx <= High(WClasses)) then
+  begin
+    Cols := WClasses[ASysIdx].Cols;
+    Rows := WClasses[ASysIdx].Rows;
+  end;
+  if Cols <= 0 then
+    Cols := Cfg.NewWinCols;
+  if Rows <= 0 then
+    Rows := Cfg.NewWinRows;
+  Placed := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if Win[i] <> nil then
+      Inc(Placed);
+  // The first window of a session that asks for no particular size keeps the
+  // whole desktop, exactly as every session has always looked.
+  if (Placed = 0) and (Cols <= 0) and (Rows <= 0) then
+  begin
+    Result := RD;
+    Exit;
+  end;
+  WantedWindowSize(Cols, Rows, DW, DH, WantW, WantH);
+  Slot := CentredRect(WantW, WantH, DW, DH);
+  Result.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
+    RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
+end;
+
+procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string;
+  const ARect: Objects.TRect);
 var
   R: Objects.TRect;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] <> nil) then
     Exit;
-  R.Assign(0, 0, 40, 15);
-  Desktop^.GetExtent(R);
+  R := ARect;
   Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
   Desktop^.Insert(Win[i]);
+end;
+
+function TSuperApp.PaneWantsAppCursor(i: integer): boolean;
+begin
+  Result := (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) and
+    Scr[i].AppCursorKeys;
+end;
+
+procedure TSuperApp.ResetSizeRequests;
+var
+  i: integer;
+begin
+  for i := 0 to MAX_PANES - 1 do
+  begin
+    ReqCols[i] := 0;
+    ReqRows[i] := 0;
+  end;
+  // same reason: a grab held across a renumbering would write the drag
+  // into another application's pty
+  MouseGrabPane := -1;
+  MouseGrabButton := MB_NONE;
+end;
+
+function TSuperApp.ForwardMouse(i: integer; const Event: TEvent;
+  const ALocal: Objects.TPoint): boolean;
+var
+  Track: TMouseTrack;
+  Btn, Col, Row: integer;
+  Seq: RawByteString;
+begin
+  Result := False;
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  Track := Scr[i].MouseTrack;
+  if Track = mtOff then
+    Exit;
+  Col := ALocal.X + 1;
+  Row := ALocal.Y + 1;
+  case Event.What of
+    evMouseDown:
+      begin
+        if (Event.Buttons and (8 or 16)) <> 0 then
+        begin
+          // the wheel: a press with no release, as xterm sends it
+          if Track = mtX10 then
+            Exit;
+          if (Event.Buttons and 8) <> 0 then Btn := MB_WHEEL_UP
+          else Btn := MB_WHEEL_DOWN;
+          Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+          if Seq <> '' then WritePaneInput(i, Seq);
+          Exit(True);
+        end;
+        if (Event.Buttons and 1) <> 0 then Btn := MB_LEFT
+        else if (Event.Buttons and 4) <> 0 then Btn := MB_MIDDLE
+        else if (Event.Buttons and 2) <> 0 then Btn := MB_RIGHT
+        else Exit;
+        MouseGrabPane := i;
+        MouseGrabButton := Btn;
+        Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+    evMouseUp:
+      begin
+        // the fabricated release after a wheel notch has no grab: drop it
+        if (MouseGrabPane <> i) or (Track = mtX10) then
+        begin
+          MouseGrabPane := -1;
+          Exit(MouseGrabPane = i);
+        end;
+        Seq := EncodeMouseReport(Scr[i].MouseProto, MouseGrabButton, Col, Row, False);
+        MouseGrabPane := -1;
+        MouseGrabButton := MB_NONE;
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+    evMouseMove:
+      begin
+        if (MouseGrabPane = i) and (Track >= mtButton) then
+          Btn := MouseGrabButton + MB_MOTION
+        else if (MouseGrabPane < 0) and (Track = mtAny) then
+          Btn := MB_NONE + MB_MOTION
+        else
+          Exit(Track <> mtOff);   // a motion the app did not ask for: ours to drop
+        Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+  end;
+end;
+
+procedure TSuperApp.SyncHostMouse;
+var
+  Want: boolean;
+begin
+  Want := (not PassthroughActive) and (Lay.Focused >= 0) and
+    (Lay.Focused < MAX_PANES) and (Scr[Lay.Focused] <> nil) and
+    (Scr[Lay.Focused].MouseTrack = mtAny);
+  if Want = HostAnyMotion then
+    Exit;
+  HostAnyMotion := Want;
+  // the RTL queue holds 16 events and FreeVision drains one per loop, so
+  // every-motion reporting is asked for only while an application wants it
+  if Want then WriteRaw(#27'[?1003h') else WriteRaw(#27'[?1003l');
+end;
+
+procedure TSuperApp.RequestPaneSize(i, ACols, ARows: integer);
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  if RemoteMode then
+  begin
+    if (ACols = ReqCols[i]) and (ARows = ReqRows[i]) then
+      Exit;
+    ReqCols[i] := ACols;
+    ReqRows[i] := ARows;
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, ACols, ARows);
+    Exit;
+  end;
+  if (ACols = Scr[i].Width) and (ARows = Scr[i].Height) then
+    Exit;
+  Scr[i].Resize(ACols, ARows);
+  if Panes[i] <> nil then
+    Panes[i].Resize(ACols, ARows);
+end;
+
+// Match a pane to the window it was just given. TTermWindow.Init does not go
+// through ChangeBounds, so a pane the daemon created at its own size would
+// otherwise sit inside a frame of a different one -- a class asking for
+// 100x30 got a 100x30 frame around an 80x24 terminal. Only for a pane born
+// remotely: a local one is spawned at the window's size to begin with, and
+// the attach path must NOT do this -- it creates every window at the full
+// desktop and then settles them in one pass, and a request here would be
+// exactly the transient that bounces everyone else's screens.
+procedure TSuperApp.SyncPaneToWindow(i: integer);
+var
+  pw, ph: integer;
+begin
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or (Scr[i] = nil) or
+     (PassPane = i) or Win[i]^.Minimized then
+    Exit;
+  pw := Win[i]^.Size.X - 2;
+  ph := Win[i]^.Size.Y - 2;
+  if pw < 4 then pw := 4;
+  if ph < 2 then ph := 2;
+  if DebugActive then
+    DebugLog(Format('resize: pane=%d sync to window -> %dx%d (mirror %dx%d)',
+      [i, pw, ph, Scr[i].Width, Scr[i].Height]));
+  RequestPaneSize(i, pw, ph);
 end;
 
 procedure TSuperApp.KillPane(i: integer);
@@ -1842,7 +2315,19 @@ begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (Scr[i] = nil) then
     Exit;
-  TitleS := WClasses[PaneTerm[i]].Name;
+  // PaneTerm is -1 for a pane with no class and -2 for one whose class
+  // failed to start -- and this routine runs exactly when a class pane could
+  // not be brought up, so both are the normal case here, not the exception.
+  // Reading WClasses at a negative index is a segfault, and it was the one
+  // reported: open an ssh class that does not come up, and the client dies.
+  // The bound matters too: a class deleted while its pane lives leaves the
+  // index past the end of the array.
+  if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+    TitleS := WClasses[PaneTerm[i]].Name
+  else
+    TitleS := Trim(Win[i]^.GetTitle(80));
+  if TitleS = '' then
+    TitleS := UiText('terminal', 'terminal');
   Cmd := 'printf ' + ShellQuote(
     UiText('superterm: remote terminal unavailable: ',
       'superterm: terminal remoto no disponible: ') + TitleS + #10) +
@@ -2041,9 +2526,13 @@ end;
 
 procedure TSuperApp.RestoreAllWindows;
 var
-  i: integer;
+  i, LastRestored: integer;
 begin
-  // each window returns to its pre-minimize position; nothing re-tiles
+  // each window returns to its pre-minimize position; nothing re-tiles.
+  // Windows may overlap now, so the ones coming back are brought to the
+  // front and the last of them takes the focus: the user asked to see them,
+  // and focusing whatever was already visible would put it on top of them.
+  LastRestored := -1;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
@@ -2051,8 +2540,12 @@ begin
       if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
          (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
         Win[i]^.Locate(Win[i]^.SavedRect);
+      Win[i]^.MakeFirst;
+      LastRestored := i;
     end;
-  if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
+  if LastRestored >= 0 then
+    Lay.Focused := LastRestored
+  else if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
   FocusPane(Lay.Focused);
@@ -2107,20 +2600,22 @@ begin
     PaneTerm[j] := PaneTerm[j - 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[NewIdx] := nil;
   Scr[NewIdx] := nil;
   Win[NewIdx] := nil;
   PaneTerm[NewIdx] := -1;
+  // one rule for every way of creating a window: centred, at the size its
+  // class asks for, and nothing already open is touched
+  NextRect := NewWindowRect(ASysIdx);
+  NextRectSet := True;
   if ASysIdx >= 0 then
     StartPaneEx(NewIdx, '', '', ASysIdx, '', '', '', 0)
   else
     StartPane(NewIdx, GetEnvironmentVariable('HOME'), '');
+  NextRectSet := False;
   if Win[NewIdx] = nil then
   begin
     // Roll the layout and runtime arrays back together when the new PTY
@@ -2134,10 +2629,7 @@ begin
       PaneTerm[j] := PaneTerm[j + 1];
       if Win[j] <> nil then
       begin
-        Win[j]^.PaneIdx := j;
-        Win[j]^.Number := j + 1;
-        if Win[j]^.Term <> nil then
-          Win[j]^.Term^.PaneIdx := j;
+        Win[j]^.SetPaneIdx(j);
       end;
     end;
     Panes[OldCount] := nil;
@@ -2146,11 +2638,13 @@ begin
     PaneTerm[OldCount] := -1;
     if Lay.Focused >= OldCount then
       Lay.Focused := OldCount - 1;
-    RelayoutAll;
+    // nothing was added, so no window moved: nothing to re-tile
     FocusPane(Lay.Focused);
     Exit;
   end;
-  RelayoutAll;
+  // do NOT re-tile, and do not touch the window this was opened from: the
+  // windows already open keep the size and position the user gave them.
+  // Window|Tile (prefix + t) is how you ask for a re-tile.
   Lay.Focused := NewIdx;
   FocusPane(Lay.Focused);
 end;
@@ -2212,6 +2706,7 @@ procedure TSuperApp.ReleaseRuntime;
 var
   i: integer;
 begin
+  ResetSizeRequests;
   // Release only the client-side objects. PTy objects are deliberately left
   // untouched when the detached server owns them.
   for i := 0 to MAX_PANES - 1 do
@@ -2325,7 +2820,9 @@ begin
     TitleS := Trim(Snapshot.Panes[I].Title);
     if TitleS = '' then
       TitleS := UiText('session pane', 'panel de sesion');
-    CreateWindowForPane(I, TitleS);
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    CreateWindowForPane(I, TitleS, GR);
     if Win[I] = nil then
     begin
       Loaded := False;
@@ -2353,6 +2850,19 @@ begin
   RelayoutAll;
   // window geometry the daemon keeps (moved, maximized, minimized);
   // only applicable if the desktop size matches the one at save time
+  if DebugActive then
+  begin
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    DebugLog(Format('attach: panes=%d geom=%d desk=%dx%d snapshot desk=%dx%d focused=%d',
+      [Lay.PaneCount, Length(Snapshot.Geom), GR.B.X - GR.A.X, GR.B.Y - GR.A.Y,
+       Snapshot.DeskW, Snapshot.DeskH, Lay.Focused]));
+    for I := 0 to High(Snapshot.Geom) do
+      DebugLog(Format('attach: geom[%d]=%d,%d %dx%d zoom=%d min=%d',
+        [I, Snapshot.Geom[I].BX, Snapshot.Geom[I].BY, Snapshot.Geom[I].BW,
+         Snapshot.Geom[I].BH, Ord(Snapshot.Geom[I].Zoomed),
+         Ord(Snapshot.Geom[I].Minimized)]));
+  end;
   if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
   begin
     GR := Default(Objects.TRect);
@@ -2391,11 +2901,10 @@ begin
       PH := Win[I]^.Size.Y - 2;
       if PW < 4 then PW := 4;
       if PH < 2 then PH := 2;
-      if (PW <> Scr[I].Width) or (PH <> Scr[I].Height) then
-      begin
-        Scr[I].Resize(PW, PH);
-        Remote.SendResize(I, PW, PH);
-      end;
+      if DebugActive then
+        DebugLog(Format('resize: pane=%d attach final request %dx%d (mirror %dx%d)',
+          [I, PW, PH, Scr[I].Width, Scr[I].Height]));
+      RequestPaneSize(I, PW, PH);
     end;
   RepaintChanges;
   FocusPane(Lay.Focused);
@@ -3402,10 +3911,7 @@ begin
     PaneTerm[j] := PaneTerm[j + 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[MAX_PANES - 1] := nil;
@@ -3585,9 +4091,19 @@ begin
   // full-screen app may also have pinned the pointer shape via OSC 22); the
   // mouse re-enable above brings the arrow back, and OSC 22 with the default
   // shape undoes any explicit override. Terminals without OSC 22 ignore it.
-  WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
-    #27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h'#27'[?2004l' +
-    #27']22;default'#27'\');
+  // Only re-assert tracking when FreeVision actually has a mouse. Where the
+  // RTL did not recognise the terminal, ButtonCount is 0, Mouse.InitMouse was
+  // never called and the RTL's event queue is a pair of nil pointers: asking
+  // for reports there is asking for a SIGSEGV on the first one.
+  if ButtonCount <> 0 then
+    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h'#27'[?2004l' +
+      #27']22;default'#27'\');
+  // and re-assert exactly what the mouse driver wants. The pane that owned
+  // the screen wrote straight to the host terminal while it did, and a pane
+  // running its own superterm resets every mouse mode when it exits -- which
+  // left this terminal reporting nothing at all, with no way to notice.
+  if ButtonCount <> 0 then
+    HostMouseOn;
   // Resize ONLY the pane that owned the screen, to the bounds its window
   // already has. Un-zooming (F5) restored those bounds itself, but the
   // ChangeBounds guard suppressed the PTY resize while passthrough was active,
@@ -3765,10 +4281,7 @@ begin
     PaneTerm[j] := PaneTerm[j + 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[MAX_PANES - 1] := nil;
@@ -3826,10 +4339,7 @@ begin
     PaneTerm[j] := PaneTerm[j - 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[NewIdx] := nil;
@@ -3837,7 +4347,10 @@ begin
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
-  CreateWindowForPane(NewIdx, Trim(TitleS));
+  // same rule, applied by every client to its own window: centred, and
+  // nothing already open is moved
+  CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
+  SyncPaneToWindow(NewIdx);
   if Win[NewIdx] = nil then
   begin
     FreeAndNil(Scr[NewIdx]);
@@ -3850,10 +4363,7 @@ begin
       PaneTerm[j] := PaneTerm[j + 1];
       if Win[j] <> nil then
       begin
-        Win[j]^.PaneIdx := j;
-        Win[j]^.Number := j + 1;
-        if Win[j]^.Term <> nil then
-          Win[j]^.Term^.PaneIdx := j;
+        Win[j]^.SetPaneIdx(j);
       end;
     end;
     Panes[OldCount] := nil;
@@ -3862,7 +4372,7 @@ begin
     PaneTerm[OldCount] := -1;
     Exit;
   end;
-  RelayoutAll;
+  // same rule as the local path: a new pane does not disturb the others
   Lay.Focused := NewIdx;
   FocusPane(NewIdx);
   RemoteLayoutHash := ComputeLayoutHash;
@@ -3882,6 +4392,9 @@ begin
   R := 0;
   Move(AData[0], C, SizeOf(C));
   Move(AData[SizeOf(C)], R, SizeOf(R));
+  if DebugActive then
+    DebugLog(Format('resize: pane=%d daemon says %dx%d (mirror was %dx%d)',
+      [APane, C, R, Scr[APane].Width, Scr[APane].Height]));
   if (C < 4) or (R < 2) then
     Exit;
   // while a pane is drawn raw its size is owned by EnterPassthrough; ignore
@@ -3894,7 +4407,7 @@ begin
   begin
     Scr[APane].Resize(C, R);
     if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
-      Win[APane]^.Term^.DrawView;
+      RepaintPane(APane);
   end;
 end;
 
@@ -3939,7 +4452,8 @@ end;
 procedure TSuperApp.DoCascadePanes;
 var
   RD, R: Objects.TRect;
-  i, k, w, h, maxoff: integer;
+  i, k, w, h: integer;
+  Slot: st_layout.TRect;
 begin
   if Desktop = nil then
     Exit;
@@ -3949,16 +4463,13 @@ begin
   h := (RD.B.Y - RD.A.Y) * 2 div 3;
   if w < 20 then w := 20;
   if h < 6 then h := 6;
-  maxoff := RD.B.Y - RD.A.Y - h - 1;
-  if maxoff < 1 then maxoff := 1;
   k := 0;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
-      R.Assign(RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w),
-        RD.A.Y + k mod maxoff,
-        RD.A.X + (k * 3) mod (RD.B.X - RD.A.X - w) + w,
-        RD.A.Y + k mod maxoff + h);
+      Slot := CascadeRect(k, w, h, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
+      R.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
+        RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
       Win[i]^.Locate(R);
       Inc(k);
     end;
@@ -4062,7 +4573,9 @@ begin
     Pin[i].Title := '';
     if Panes[i] <> nil then
     begin
-      if PaneTerm[i] >= 0 then
+      // the upper bound matters: deleting a class leaves the panes that used
+      // it, and the ones after it, pointing past the end of the array
+      if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
         Pin[i].Term := WClasses[PaneTerm[i]].Name
       else
       begin
@@ -4191,8 +4704,10 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
-      // prefix chords (tmux style): d=detach, n/p=window +-,
-      // 1..9=window N, arrows=pane size, double prefix=literal
+      // prefix chords (tmux style): d=detach, c=class, s=session,
+      // n/p=window +-, t=tile, 1..9=window N, arrows=pane size,
+      // F5=bare F5 into the pane (for a superterm running inside one),
+      // double prefix=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
@@ -4220,6 +4735,14 @@ begin
       if (PrefixByte = Ord('p')) or (PrefixByte = Ord('P')) then
       begin
         Message(@Self, evCommand, cmWindowPrev, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      // t=tile: creating a window no longer re-tiles, so there has to be a
+      // quick way to ask for it
+      if (PrefixByte = Ord('t')) or (PrefixByte = Ord('T')) then
+      begin
+        Message(@Self, evCommand, cmPaneTile, nil);
         ClearEvent(Event);
         Exit;
       end;
@@ -4260,9 +4783,24 @@ begin
         ClearEvent(Event);
         Exit;
       end;
+      if Event.KeyCode = kbF5 then
+      begin
+        // prefix + F5: a BARE F5 into the pane. Plain F5 is kept by this
+        // superterm as the way out of a maximised pane, so a superterm
+        // running inside a pane could never be told to un-maximise: its own
+        // F5 never reached it and it stayed full-screen for ever. The
+        // generic chord below would send prefix+F5, which the inner one
+        // reads as its own prefix, so F5 needs its own rule. It composes:
+        // at two levels, prefix prefix F5 reaches the innermost.
+        WritePaneInput(Lay.Focused,
+          TranslateKey(kbF5, PaneWantsAppCursor(Lay.Focused)));
+        ClearEvent(Event);
+        Exit;
+      end;
       // Preserve the normal terminal meaning when the prefix is followed by
       // an unbound key.
-      PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) + TranslateKey(Event.KeyCode);
+      PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) +
+        TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
       WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);
       Exit;
@@ -4280,7 +4818,7 @@ begin
     // the way OUT of passthrough -- so F5 falls through to the zoom handler.
     if PassthroughActive and (Event.KeyCode <> kbF5) then
     begin
-      PrefixSeq := TranslateKey(Event.KeyCode);
+      PrefixSeq := TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
       if PrefixSeq <> '' then
         WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);
@@ -4488,6 +5026,10 @@ begin
 end;
 
 procedure TSuperApp.Idle;
+type
+  // named so the marks can be cleared with Default(): FillChar takes an
+  // untyped var parameter, which the compiler cannot see as initialisation
+  TTouchedPanes = array[0..MAX_PANES - 1] of boolean;
 var
   fdset: TFDSet;
   tv: TTimeVal;
@@ -4498,12 +5040,18 @@ var
   p: TPid;
   Tick: cardinal;
   RemoteEvent: TSessionEvent;
+  // bounded drain of the session socket, so a flooding pane cannot starve
+  // the keyboard, plus the marks for the single repaint that follows it
+  Drained: integer;
+  Deadline: QWord;
+  Touched: TTouchedPanes;
+  FullRedraw: boolean;
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
-  begin
+begin
     inherited Idle;
   Tick := GetTickCount64;
   RemoteEvent.Data := nil;
@@ -4515,14 +5063,35 @@ var
   end;
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
+  SyncHostMouse;
+  // a local pane's master is non-blocking, so a program that was not reading
+  // when input arrived left some of it queued; push it now
+  for i := 0 to MAX_PANES - 1 do
+    if (Panes[i] <> nil) and Panes[i].Alive and Panes[i].InputPending then
+      Panes[i].FlushInput;
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
     // creating panes, output) wait in order for the modal to finish,
     // so pane indexes never desync in the middle of a dialog
+    // BOUND THIS LOOP. A pane under a flood (think 'ls -R /') keeps the
+    // socket readable on every single poll, and each turn of the body parses
+    // 64 KB and repaints, which is slower than the daemon produces -- so the
+    // loop never ran dry and never returned. FreeVision only reads the
+    // keyboard AFTER Idle returns, so the whole interface went dead: no keys,
+    // no mouse, no menu, and Ctrl-C never even reached the pane. Take a
+    // bounded batch and come back next tick; the daemon queues the rest and
+    // throttles the pane if we genuinely fall behind.
     if Current = PView(Desktop) then
-      while (Remote <> nil) and Remote.Poll(RemoteEvent) do
+    begin
+      Drained := 0;
+      Deadline := GetTickCount64 + 20;
+      Touched := Default(TTouchedPanes);
+      FullRedraw := False;
+      while (Remote <> nil) and (Drained < 32) and
+            (GetTickCount64 < Deadline) and Remote.Poll(RemoteEvent) do
       begin
+        Inc(Drained);
       case RemoteEvent.Kind of
         sekOutput:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
@@ -4535,8 +5104,9 @@ var
             begin
               Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
                 Length(RemoteEvent.Data));
-              if Win[RemoteEvent.Pane] <> nil then
-                Win[RemoteEvent.Pane]^.Term^.DrawView;
+              // mark, do not draw: one repaint after the batch instead of one
+              // per 64 KB frame, each of which is a blocking write to the tty
+              Touched[RemoteEvent.Pane] := True;
             end;
           end;
         sekExit:
@@ -4549,9 +5119,29 @@ var
           end;
         sekError:
           DebugLog('remote session error: ' + RemoteEvent.Text);
-        sekLayoutEv: ApplyRemoteLayoutEv(RemoteEvent.Data);
-        sekKillPaneEv: ApplyRemoteKillPane(RemoteEvent.Pane);
-        sekNewPaneEv: ApplyRemoteNewPane(RemoteEvent.Data);
+        sekLayoutEv:
+          begin
+            ApplyRemoteLayoutEv(RemoteEvent.Data);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            Touched := Default(TTouchedPanes);
+            FullRedraw := True;
+          end;
+        sekKillPaneEv:
+          begin
+            ApplyRemoteKillPane(RemoteEvent.Pane);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            Touched := Default(TTouchedPanes);
+            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
+            FullRedraw := True;
+          end;
+        sekNewPaneEv:
+          begin
+            ApplyRemoteNewPane(RemoteEvent.Data);
+            // panes were renumbered: a stale mark would repaint the wrong one
+            Touched := Default(TTouchedPanes);
+            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
+            FullRedraw := True;
+          end;
         sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
         sekTitleEv: ApplyRemoteTitle(RemoteEvent.Pane, RemoteEvent.Data);
         sekFocusEv:
@@ -4585,9 +5175,23 @@ var
             Message(@Self, evCommand, cmQuit, nil);
           end;
       end;
-      if not RemoteMode then
-        Break;   // shutdown/lost: stop draining
+        if not RemoteMode then
+          Break;   // shutdown/lost: stop draining
       end;
+      // ONE repaint for the whole batch. Doing it per frame meant a full
+      // pane redraw and a blocking write to the terminal for every 64 KB the
+      // pane produced, which over SSH is a round trip each -- that is what
+      // turned a flood from slow into completely unresponsive.
+      if RemoteMode then
+      begin
+        if FullRedraw then
+          RepaintChanges
+        else
+          for i := 0 to MAX_PANES - 1 do
+            if Touched[i] and (Win[i] <> nil) and (Win[i]^.Term <> nil) then
+              RepaintPane(i);
+      end;
+    end;
     // debounced layout push: moving, minimizing or renaming here gets
     // mirrored in the daemon (and from there to the other clients)
     // without hooking every single UI action
@@ -4605,7 +5209,7 @@ var
       i := Lay.Focused;
       if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
          (Win[i]^.Term <> nil) then
-        Win[i]^.Term^.DrawView;
+        RepaintPane(i);
     end;
     Exit;
   end;
@@ -4638,7 +5242,7 @@ var
             begin
               Scr[i].WriteBytes(Buf, n);
               if Win[i] <> nil then
-                Win[i]^.Term^.DrawView;
+                RepaintPane(i);
             end;
           end
           else if (n = 0) or (fpgeterrno <> ESysEAGAIN) then
@@ -4676,7 +5280,7 @@ var
     i := Lay.Focused;
     if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
        (Win[i]^.Term <> nil) then
-      Win[i]^.Term^.DrawView;
+      RepaintPane(i);
   end;
   // periodic titles
   if Tick - LastTitle > 1500 then

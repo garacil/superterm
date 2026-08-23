@@ -38,6 +38,10 @@ type
     Connect: string;       // free-command connection (wins over host)
     PostConnect: string;   // command after connecting
     ScrollBack: integer;
+    // preferred size, in cells, of a window opened from this class.
+    // 0 = automatic: the global default, or two thirds of the desktop when
+    // that is unset too. The window frame adds one cell on each side.
+    Cols, Rows: integer;
   end;
   TWindowClassArray = array of TWindowClass;
 
@@ -182,6 +186,12 @@ begin
         C.ScrollBack := 0;
       if C.ScrollBack > MAX_SCROLLBACK then
         C.ScrollBack := MAX_SCROLLBACK;
+      C.Cols := Ini.ReadInteger(Sec, 'cols', 0);
+      if (C.Cols < 0) or (C.Cols > MAX_WIN_COLS) then
+        C.Cols := 0;
+      C.Rows := Ini.ReadInteger(Sec, 'rows', 0);
+      if (C.Rows < 0) or (C.Rows > MAX_WIN_ROWS) then
+        C.Rows := 0;
       S := Ini.ReadString(Sec, 'password', '');
       if S <> '' then
       begin
@@ -288,6 +298,10 @@ begin
       if (AClasses[i].ScrollBack > 0) and
          (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
         Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
+      if AClasses[i].Cols > 0 then
+        Ini.WriteInteger(Sec, 'cols', AClasses[i].Cols);
+      if AClasses[i].Rows > 0 then
+        Ini.WriteInteger(Sec, 'rows', AClasses[i].Rows);
     end;
     Ini.UpdateFile;
     // the file may contain passwords

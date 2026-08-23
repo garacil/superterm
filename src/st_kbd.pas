@@ -28,11 +28,25 @@ procedure InstallSuperKeyboard;
 implementation
 
 uses
-  BaseUnix, termio, SysUtils, Keyboard, Mouse;
+  BaseUnix, termio, SysUtils, Keyboard, Mouse, Drivers;
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
   SEQ_TIMEOUT_MS = 120;  // middle bytes of an already started sequence
+
+// The RTL's mouse queue is allocated by Mouse.InitMouse, which FreeVision
+// only calls when it believes a mouse exists (Drivers.InitEvents, gated on
+// ButtonCount). On a terminal the RTL does not recognise -- alacritty, foot,
+// wezterm, st-256color -- ButtonCount stays 0, the queue's head and tail
+// pointers stay nil, and PutMouseEvent writes straight through a nil pointer.
+// Reports can still arrive there: any program that left tracking enabled on
+// this tty is enough. Drop them instead of dying.
+procedure QueueMouse(const AEvent: TMouseEvent);
+begin
+  if ButtonCount = 0 then
+    Exit;
+  PutMouseEvent(AEvent);
+end;
 
 var
   SavedTio: termios;
@@ -197,8 +211,8 @@ begin
   Ev := Default(TMouseEvent);
   case (b - 32) and 67 of
     0: Ev.Buttons := 1;
-    1: Ev.Buttons := 2;
-    2: Ev.Buttons := 4;
+    1: Ev.Buttons := 4;   // middle (RTL: 4)
+    2: Ev.Buttons := 2;   // right (RTL: 2)
     3: Ev.Buttons := 0;
     64: Ev.Buttons := 8;
     65: Ev.Buttons := 16;
@@ -210,14 +224,14 @@ begin
     Ev.Action := MouseActionDown;
   if (LastMouse.Buttons <> 0) and (Ev.Buttons = 0) then
     Ev.Action := MouseActionUp;
-  PutMouseEvent(Ev);
+  QueueMouse(Ev);
   if (Ev.Buttons and (8 + 16)) <> 0 then
   begin
     // the wheel sends no release event in X10: fabricate it
     LastMouse := Ev;
     Ev.Action := MouseActionUp;
     Ev.Buttons := 0;
-    PutMouseEvent(Ev);
+    QueueMouse(Ev);
   end;
   LastMouse := Ev;
 end;
@@ -269,8 +283,8 @@ begin
   begin
     case nums[0] and 67 of
       0: mask := 1;
-      1: mask := 2;
-      2: mask := 4;
+      1: mask := 4;   // middle (RTL: 4)
+      2: mask := 2;   // right (RTL: 2)
       64: mask := 8;
       65: mask := 16;
     end;
@@ -285,14 +299,14 @@ begin
       Ev.Buttons := LastMouse.Buttons and not mask;
     end;
   end;
-  PutMouseEvent(Ev);
+  QueueMouse(Ev);
   LastMouse := Ev;
   if press and ((mask and (8 + 16)) <> 0) then
   begin
     // wheel: fabricate the release in SGR too to not leave stuck buttons
     Ev.Action := MouseActionUp;
     Ev.Buttons := LastMouse.Buttons and not mask;
-    PutMouseEvent(Ev);
+    QueueMouse(Ev);
     LastMouse := Ev;
   end;
 end;

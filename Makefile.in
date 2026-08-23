@@ -3,6 +3,10 @@ SHELL := /bin/sh
 PROJECT_DIR := @PROJECT_DIR@
 FPC := @FPC@
 PYTHON := @PYTHON@
+# DESTDIR: the standard staging prefix every packaging tool sets. Without it
+# 'make install' wrote to the real /usr even inside a fakeroot, so no package
+# could be built from this Makefile.
+DESTDIR ?=
 PREFIX := @PREFIX@
 BINDIR := @BINDIR@
 SYSCONFDIR := @SYSCONFDIR@
@@ -14,17 +18,25 @@ TARGET ?= $(PROJECT_DIR)/bin/superterm
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 
-BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm6058,11030,11031 \
+# -vewnh: errors, warnings, notes and hints all on -- the project builds with
+# none of them. -vm11030,11031 silences the two FPC emits about reading its
+# own /etc/fpc.cfg, which say nothing about this code and made a clean build
+# look like it had something to report.
+BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm11030,11031 \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
 
-# macOS: FPC 3.2.4 invokes Xcode's ld64 with a duplicate -lc; pass -w to the
-# linker to silence that warning. (Linux uses GNU ld, which lacks -w, so guard
-# it.) The "-macosx_version_min renamed" note ld prints is an FPC 3.2.4 artifact
-# and is not suppressible without upgrading FPC.
+# macOS-only build noise (Linux is already clean, so keep these guarded):
+#  -vm6058: the aarch64-darwin RTL does not inline FillChar/Move inside vendored
+#           FreeVision, so it emits ~69 "inline is not inlined" notes that Linux
+#           never produces. Mute the note; the code is unaffected.
+#  -k-w:    FPC 3.2.4 invokes Xcode's ld64 with a duplicate -lc; pass -w to the
+#           linker to silence that warning. (GNU ld lacks -w.) The
+#           "-macosx_version_min renamed" note ld still prints is an FPC 3.2.4
+#           artifact, not suppressible without upgrading FPC.
 ifeq ($(shell uname -s),Darwin)
-BASE_FLAGS += -k-w
+BASE_FLAGS += -vm6058 -k-w
 endif
 
 ifeq ($(MODE),debug)
@@ -32,7 +44,11 @@ ifeq ($(MODE),debug)
 # el build no debe depender del config global para sus checks de runtime
 MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
 else ifeq ($(MODE),release)
-MODE_FLAGS := -O4
+# -gl: line information, kept in the optimised build on purpose. A crash
+# report from a release binary carried bare addresses that resolved to
+# nothing, which is exactly when the report matters most; with this the
+# backtrace names the file and line. It does not change the code generated.
+MODE_FLAGS := -O4 -gl
 else
 $(error MODE must be release or debug)
 endif
@@ -45,7 +61,7 @@ SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
 TESTS := drive_test.py large_screen_test.py mouse_test.py \
   mouse_focus_test.py restore_test.py sysconfig_test.py \
   template_test.py sqlite_test.py wizard_test.py language_test.py \
-  window_test.py cursor_test.py wclass_test.py profile_test.py multisession_test.py prefix_test.py title_test.py detach_test.py control_test.py cli_test.py control_wm_test.py multiclient_test.py alwaysserver_test.py passthrough_test.py
+  window_test.py cursor_test.py wclass_test.py profile_test.py multisession_test.py prefix_test.py title_test.py detach_test.py control_test.py cli_test.py control_wm_test.py multiclient_test.py alwaysserver_test.py passthrough_test.py exit_clean_test.py newwindow_test.py appcursor_test.py scrollback_test.py nesting_test.py mouseforward_test.py
 
 .PHONY: all release debug test install uninstall install-deps clean distclean info
 
@@ -73,10 +89,18 @@ test: release
 	fi
 	@$(PYTHON) -c 'import pyte' 2>/dev/null || \
 		(printf '%s\n' 'Python module pyte is required; install python3-pyte or run pip install pyte'; exit 1)
-	@set -e; for test in $(TESTS); do \
+	@failed=''; total=0; for test in $(TESTS); do \
 		printf '\n==> test/%s\n' "$$test"; \
-		$(PYTHON) "$(PROJECT_DIR)/test/$$test"; \
-	done
+		total=$$((total + 1)); \
+		$(PYTHON) "$(PROJECT_DIR)/test/$$test" || failed="$$failed $$test"; \
+	done; \
+	printf '\n---------------------------------------------\n'; \
+	if [ -n "$$failed" ]; then \
+		printf 'FAILED suites (of %s):\n' "$$total"; \
+		for t in $$failed; do printf '  test/%s\n' "$$t"; done; \
+		exit 1; \
+	fi; \
+	printf 'all %s suites passed\n' "$$total"
 
 # Regenerate this Makefile when its template or configure changes. An existing
 # checkout otherwise keeps a stale Makefile after a pull -- which is how a new
@@ -86,31 +110,31 @@ Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
 	@cd "$(PROJECT_DIR)" && ./configure
 
 install: release
-	@mkdir -p "$(BINDIR)" "$(DOCDIR)" "$(SYSCONFDIR)/superterm"
-	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(BINDIR)/superterm"
-	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DOCDIR)/README.md"
+	@mkdir -p "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DOCDIR)" "$(DESTDIR)$(SYSCONFDIR)/superterm"
+	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(DESTDIR)$(BINDIR)/superterm"
+	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DESTDIR)$(DOCDIR)/README.md"
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
-		install -m 0644 "$$doc" "$(DOCDIR)/$$(basename "$$doc")"; \
+		install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \
 	done
-	@mkdir -p "$(DATADIR)/backgrounds"
-	@rm -f "$(DATADIR)"/backgrounds/*.art
+	@mkdir -p "$(DESTDIR)$(DATADIR)/backgrounds"
+	@rm -f "$(DESTDIR)$(DATADIR)"/backgrounds/*.art
 	@for art in "$(PROJECT_DIR)"/backgrounds/*.art; do \
-		install -m 0644 "$$art" "$(DATADIR)/backgrounds/$$(basename "$$art")"; \
+		install -m 0644 "$$art" "$(DESTDIR)$(DATADIR)/backgrounds/$$(basename "$$art")"; \
 	done
 	@printf '%s\n' "Desktop backgrounds installed in $(DATADIR)/backgrounds"
-	@if [ ! -f "$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
+	@if [ ! -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini" ]; then \
 		install -m 0644 "$(PROJECT_DIR)/examples/superterm.ini.example" \
-			"$(SYSCONFDIR)/superterm/superterm.ini.example"; \
+			"$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"; \
 	else \
 		printf '%s\n' "Keeping existing $(SYSCONFDIR)/superterm/superterm.ini"; \
 	fi
 
 uninstall:
-	rm -f "$(BINDIR)/superterm"
-	rm -f "$(DOCDIR)/README.md" "$(DOCDIR)/BUILDING.md" \
-		"$(DOCDIR)/CONFIGURATION.md" "$(DOCDIR)/WIZARD.md"
-	rm -f "$(SYSCONFDIR)/superterm/superterm.ini.example"
-	rm -rf "$(DATADIR)/backgrounds"
+	rm -f "$(DESTDIR)$(BINDIR)/superterm"
+	rm -f "$(DESTDIR)$(DOCDIR)/README.md" "$(DESTDIR)$(DOCDIR)/BUILDING.md" \
+		"$(DESTDIR)$(DOCDIR)/CONFIGURATION.md" "$(DESTDIR)$(DOCDIR)/WIZARD.md"
+	rm -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"
+	rm -rf "$(DESTDIR)$(DATADIR)/backgrounds"
 
 install-deps:
 	@if [ "$$(uname -s)" = "Darwin" ]; then \

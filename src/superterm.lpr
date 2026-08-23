@@ -9,8 +9,10 @@ program superterm;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, Objects, Drivers, App, st_fvui, st_server, st_video, st_kbd,
-  st_config, st_cli, st_debug;
+  // st_mouse BEFORE Drivers: it must register its mouse driver before the
+  // Drivers unit initialises and asks the RTL whether a mouse exists
+  SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server, st_video,
+  st_kbd, st_config, st_cli, st_debug;
 
 var
   STApp: PSuperApp;
@@ -107,37 +109,60 @@ begin
         WriteLn(StdErr, 'superterm: no session named "', AttachName, '"');
         Halt(1);
       end;
-    end
-    else if Length(Infos) = 1 then
-      AttachSocket := Infos[0].SocketPath;
-    // with several sessions and no name, the app selector decides
-  end;
-  // refuse to nest: launching the interactive UI (attach or a new session)
-  // inside a superterm pane would attach the pane to its own session and
-  // mirror forever. The control CLI (list/send/capture/...) already ran and
-  // Halted in RunCli, so those still work inside a pane; only the TUI start
-  // reaches here. Escape hatch mirrors tmux's $TMUX: SUPERTERM_ALLOW_NESTED.
-  if (GetEnvironmentVariable('SUPERTERM') <> '') and
-     (GetEnvironmentVariable('SUPERTERM_ALLOW_NESTED') = '') then
-  begin
-    if CurrentLanguage = ulSpanish then
-    begin
-      WriteLn(StdErr, 'superterm: ya estas dentro de una sesion de superterm; ' +
-        'no se anida.');
-      WriteLn(StdErr, '  Usa list/send/capture desde aqui, o Ctrl-Q d para ' +
-        'separarte primero.');
-      WriteLn(StdErr, '  (exporta SUPERTERM_ALLOW_NESTED=1 para forzar el anidado)');
+      // inside a pane: never the session this pane belongs to, nor one
+      // above it (see st_server.SessionAllowedFromHere)
+      for i := 0 to High(Infos) do
+        if (Infos[i].SocketPath = AttachSocket) and
+           (not SessionAllowedFromHere(Infos[i], Infos)) then
+        begin
+          if CurrentLanguage = ulSpanish then
+            WriteLn(StdErr, 'superterm: "', Infos[i].Name,
+              '" es la sesion de este panel (o una de sus antecesoras); ',
+              'engancharse a ella seria un espejo sin fin.')
+          else
+            WriteLn(StdErr, 'superterm: "', Infos[i].Name,
+              '" is the session this pane belongs to (or one above it); ',
+              'attaching to it would be a mirror without end.');
+          Halt(2);
+        end;
     end
     else
     begin
-      WriteLn(StdErr, 'superterm: already inside a superterm session; ' +
-        'refusing to nest.');
-      WriteLn(StdErr, '  Use list/send/capture from here, or Ctrl-Q d to ' +
-        'detach first.');
-      WriteLn(StdErr, '  (export SUPERTERM_ALLOW_NESTED=1 to force nesting)');
+      // no name: the one session that is safe from here, if there is
+      // exactly one; several leave the choice to the picker
+      KeepAllowedSessions(Infos);
+      if Length(Infos) = 1 then
+        AttachSocket := Infos[0].SocketPath
+      else if Length(Infos) = 0 then
+      begin
+        if CurrentLanguage = ulSpanish then
+          WriteLn(StdErr, 'superterm: no hay ninguna sesion a la que ',
+            'engancharse desde aqui.')
+        else
+          WriteLn(StdErr, 'superterm: no session can be attached from here.');
+        Halt(1);
+      end;
     end;
-    Halt(2);
+    // with several sessions and no name, the app selector decides
   end;
+  // Nesting. A superterm inside a pane used to be refused outright, because
+  // attaching the pane to its own session mirrors forever. The guard is now
+  // by identity: every pane carries SUPERTERM_SESSION_CHAIN, each daemon
+  // writes its id in the sidecar, and only the sessions on the chain are
+  // refused -- above, for an explicit name; in KeepAllowedSessions for the
+  // auto-pick and the picker. A new session, or another session, is as safe
+  // from a pane as from any terminal. SUPERTERM_ALLOW_NESTED=1 disables it.
+  // a crash here loses the visible terminal only, but the report is just as
+  // useful and costs nothing when nothing goes wrong
+  DebugSetRole('client');
+  InstallCrashHandler;
+  // st_mouse already decided whether there is a mouse (see that unit); what
+  // is left is to say so in the trace, which is the one line that explains a
+  // machine where the mouse is missing
+  if DebugActive then
+    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d',
+      [GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
+       Drivers.ButtonCount]));
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
@@ -157,6 +182,9 @@ begin
       STApp^.Run;
   end;
   Dispose(STApp, Done);
+  // stop the terminal reporting to whatever runs next, and drop anything it
+  // already reported, before putting the cursor back
+  ReleaseConsoleInput;
   // leave the cursor where it was at program launch (quit or detach)
   RestoreConsoleCursor;
 end.

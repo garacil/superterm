@@ -68,6 +68,14 @@ type
   TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc,
     psDcs, psDcsEsc);
   TCharBuf = array[0..7] of AnsiChar; // buffer for one UTF-8 codepoint
+  // what the application asked the terminal to report about the mouse.
+  // ?9 X10 presses | ?1000 presses and releases | ?1002 plus motion while a
+  // button is held | ?1003 plus every motion. Kept as a bitmask, so that
+  // "?1002h ?1003h ?1003l" falls back to ?1002 the way xterm does.
+  TMouseTrack = (mtOff, mtX10, mtNormal, mtButton, mtAny);
+  // and in which encoding: X10 bytes (the default), UTF-8 (?1005), SGR
+  // (?1006), urxvt (?1015) or pixels (?1016, reported in cells here)
+  TMouseProto = (mpX10, mpUtf8, mpSGR, mpUrxvt, mpPixel);
 
   TScreen = class
   private
@@ -110,6 +118,17 @@ type
     FAltSaveFgRGB, FAltSaveBgRGB: LongWord;
     FInterm: AnsiChar;      // CSI intermediate byte (e.g. ' ' of DECSCUSR)
     FAutoWrap: boolean;     // DECAWM ?7 (default on)
+    // DECCKM ?1: the cursor keys send SS3 (ESC O A) instead of CSI (ESC [ A).
+    // Every curses program sets it (keypad(TRUE)), and then IGNORES the CSI
+    // form -- which is why the arrows did nothing in top and htop.
+    FAppCursor: boolean;
+    // DECKPAM (ESC =) / DECKPNM (ESC >): numeric keypad in application mode.
+    // Parsed and kept so it does not leak as text; FreeVision cannot tell a
+    // keypad arrow from a cursor arrow, so there is nothing to translate.
+    FAppKeypad: boolean;
+    FMouseBits: word;          // bit0 ?9, bit1 ?1000, bit2 ?1002, bit3 ?1003
+    FMouseProto: TMouseProto;
+    function GetMouseTrack: TMouseTrack;
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
       NewWidth, NewHeight: integer);
@@ -148,8 +167,19 @@ type
     // soft reset it also ERASES the screen, leaves the alternate buffer and
     // drops the scrollback.
     procedure ResetHard;
+    // what the application asked the keyboard to send (see the fields)
+    property AppCursorKeys: boolean read FAppCursor;
+    property AppKeypad: boolean read FAppKeypad;
+    // mouse reporting the application asked for (mtOff = it wants none)
+    property MouseTrack: TMouseTrack read GetMouseTrack;
+    property MouseProto: TMouseProto read FMouseProto;
     function ViewOffset: integer;
+    // absolute viewport position: 0 = live screen, N = N lines back
+    procedure SetViewOffset(AOffset: integer);
     procedure ScrollViewport(ADelta: integer);  // + back, - forward
+    // the application is on the alternate screen (?1049): there is no
+    // history there, and the scrollbar and the wheel behave accordingly
+    property UsingAlt: boolean read FUsingAlt;
     function DisplayRow(y: integer): TRow;
     procedure SaveToStream(Stream: TStream);
     function LoadFromStream(Stream: TStream): boolean;
@@ -162,6 +192,9 @@ type
   end;
 
 implementation
+
+// history rows are stored without their trailing blanks (see below)
+function TrimRow(const R: TRow): TRow; forward;
 
 constructor TScreen.Create(AWidth, AHeight: integer; AMaxScrollBack: integer);
 begin
@@ -188,6 +221,10 @@ begin
   Dirty := True;
   FUsingAlt := False;
   FAutoWrap := True;
+  FAppCursor := False;
+  FAppKeypad := False;
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   FInterm := #0;
   MaxScrollBack := AMaxScrollBack;
   if MaxScrollBack < 0 then
@@ -292,9 +329,12 @@ begin
     Lost := OldHeight - ch;
     if Lost < 0 then
       Lost := 0;
+    // blank rows are not worth keeping: a fresh pane shrunk by the tiler
+    // would otherwise start life with "history" and grow a scrollbar for it
     if Lost > 0 then
       for y := 0 to Lost - 1 do
-        PushScrollRow(Copy(FGrid[y], 0, OldWidth));
+        if Length(TrimRow(FGrid[y])) > 0 then
+          PushScrollRow(Copy(FGrid[y], 0, OldWidth));
     for y := 0 to ch - 1 do
     begin
       if ch < OldHeight then
@@ -323,20 +363,43 @@ begin
   Dirty := True;
 end;
 
+function TScreen.GetMouseTrack: TMouseTrack;
+begin
+  if (FMouseBits and 8) <> 0 then Result := mtAny
+  else if (FMouseBits and 4) <> 0 then Result := mtButton
+  else if (FMouseBits and 2) <> 0 then Result := mtNormal
+  else if (FMouseBits and 1) <> 0 then Result := mtX10
+  else Result := mtOff;
+end;
+
 function TScreen.ViewOffset: integer;
 begin
   Result := FViewTop;
 end;
 
-procedure TScreen.ScrollViewport(ADelta: integer);
+procedure TScreen.SetViewOffset(AOffset: integer);
 begin
-  if FSBCount <= 0 then
-  begin
-    FViewTop := 0;
+  if (FSBCount <= 0) or (AOffset < 0) then
+    AOffset := 0;
+  if AOffset > FSBCount then
+    AOffset := FSBCount;
+  if AOffset = FViewTop then
     Exit;
-  end;
-  FViewTop := EnsureRange(FViewTop + ADelta, 0, FSBCount);
+  FViewTop := AOffset;
   Dirty := True;
+end;
+
+procedure TScreen.ScrollViewport(ADelta: integer);
+var
+  T: Int64;
+begin
+  // Int64: ScrollViewport(MaxInt) is the "go to the top" idiom, and
+  // FViewTop + MaxInt overflowed, wrapped negative, and landed on 0 --
+  // the bottom -- whenever the view was already scrolled
+  T := Int64(FViewTop) + ADelta;
+  if T < 0 then T := 0;
+  if T > FSBCount then T := FSBCount;
+  SetViewOffset(T);
 end;
 
 function TScreen.DisplayRow(y: integer): TRow;
@@ -545,6 +608,13 @@ begin
           Stream.WriteBuffer(FSBRing[(FSBHead - FSBCount + I + MaxScrollBack) mod MaxScrollBack][X],
             SizeOf(TCell));
     end;
+  // tolerant tail: keyboard modes. An old reader stops after the ring and
+  // never sees this; a new reader checks there is something left to read.
+  N := 0;
+  if FAppCursor then N := N or 1;
+  if FAppKeypad then N := N or 2;
+  N := N or (Longint(FMouseBits and $F) shl 4) or (Longint(Ord(FMouseProto)) shl 8);
+  Stream.WriteBuffer(N, SizeOf(N));
 end;
 
 function TScreen.LoadFromStream(Stream: TStream): boolean;
@@ -634,6 +704,21 @@ begin
     end;
     if MaxScrollBack > 0 then
       FSBHead := FSBCount mod MaxScrollBack;
+    // tolerant tail (see SaveToStream): absent in a snapshot from an older
+    // daemon, in which case the modes are learned from the live stream
+    FAppCursor := False;
+    FAppKeypad := False;
+    FMouseBits := 0;
+    FMouseProto := mpX10;
+    if Stream.Position + SizeOf(Cols) <= Stream.Size then
+    begin
+      Stream.ReadBuffer(Cols, SizeOf(Cols));
+      FAppCursor := (Cols and 1) <> 0;
+      FAppKeypad := (Cols and 2) <> 0;
+      FMouseBits := (Cols shr 4) and $F;
+      if ((Cols shr 8) and 7) <= Ord(High(TMouseProto)) then
+        FMouseProto := TMouseProto((Cols shr 8) and 7);
+    end;
     Result := True;
   except
     Result := False;
@@ -738,14 +823,44 @@ begin
   end;
 end;
 
+// A history row without its trailing default blanks. A cell is 24 bytes and
+// a typical shell line uses a fraction of the width, so keeping whole rows
+// made a 10000-line history cost tens of megabytes per pane -- twice, daemon
+// and client -- and the attach snapshot shipped all of it. The readers are
+// already length-agnostic (DisplayRow pads, the serialiser writes a length
+// per row), so this changes nothing on the wire.
+function TrimRow(const R: TRow): TRow;
+var
+  Last, x: integer;
+begin
+  Last := -1;
+  for x := 0 to High(R) do
+    if R[x].Cont or (R[x].FgRGB <> 0) or (R[x].BgRGB <> 0) or
+       (R[x].Attr <> (A_FGDEF or A_BGDEF)) or
+       ((R[x].Len > 0) and ((R[x].Len <> 1) or (R[x].Txt[0] <> ' '))) then
+      Last := x;
+  Result := Copy(R, 0, Last + 1);
+end;
+
 procedure TScreen.PushScrollRow(const R: TRow);
 begin
   if MaxScrollBack <= 0 then
     Exit;
-  FSBRing[FSBHead] := R;
+  FSBRing[FSBHead] := TrimRow(R);
   FSBHead := (FSBHead + 1) mod MaxScrollBack;
   if FSBCount < MaxScrollBack then
     Inc(FSBCount);
+  // A reader scrolled back stays on what they are reading, like xterm and
+  // tmux: new output must not drag the view. While the ring still grows the
+  // count and the offset rise together and the view is unchanged; once it is
+  // full, the oldest row is destroyed and everything shifts one slot, so the
+  // offset rises to follow the same content. The clamp is the natural stop.
+  if FViewTop > 0 then
+  begin
+    Inc(FViewTop);
+    if FViewTop > FSBCount then
+      FViewTop := FSBCount;
+  end;
 end;
 
 procedure TScreen.ScrollUp(n: integer);
@@ -1365,6 +1480,23 @@ begin
               case n of
                 25: CursorVisible := (final = 'h');
                 7: FAutoWrap := (final = 'h');
+                1: FAppCursor := (final = 'h');
+                9: if final = 'h' then FMouseBits := FMouseBits or 1
+                   else FMouseBits := FMouseBits and not 1;
+                1000: if final = 'h' then FMouseBits := FMouseBits or 2
+                      else FMouseBits := FMouseBits and not 2;
+                1002: if final = 'h' then FMouseBits := FMouseBits or 4
+                      else FMouseBits := FMouseBits and not 4;
+                1003: if final = 'h' then FMouseBits := FMouseBits or 8
+                      else FMouseBits := FMouseBits and not 8;
+                1005: if final = 'h' then FMouseProto := mpUtf8
+                      else FMouseProto := mpX10;
+                1006: if final = 'h' then FMouseProto := mpSGR
+                      else FMouseProto := mpX10;
+                1015: if final = 'h' then FMouseProto := mpUrxvt
+                      else FMouseProto := mpX10;
+                1016: if final = 'h' then FMouseProto := mpPixel
+                      else FMouseProto := mpX10;
                 47, 1047, 1049:
                 begin
                   if final = 'h' then
@@ -1373,6 +1505,7 @@ begin
                     begin
                        CopyGrid(FGrid, FAltGrid);
                       FUsingAlt := True;
+                      FViewTop := 0;   // a scrolled-back view would paint history over the app
                       if n = 1049 then
                       begin
                         // xterm: ?1049h saves the cursor AND the graphic
@@ -1393,6 +1526,7 @@ begin
                     if FUsingAlt then
                     begin
                       FUsingAlt := False;
+                      FViewTop := 0;
                       if FAltGrid <> nil then
                         FGrid := Copy(FAltGrid, 0, Height);
                       FAltGrid := nil;
@@ -1494,6 +1628,8 @@ begin
         CursorX := 0;
         LineFeed;
       end;
+    '=': FAppKeypad := True;    // DECKPAM
+    '>': FAppKeypad := False;   // DECKPNM
     'c': ResetHard;   // RIS: `reset` expects the screen cleared, not just homed
   else
     ; // =, >, etc: ignore
@@ -1525,6 +1661,10 @@ begin
   CursorVisible := True;
   CursorStyle := 0;
   FAutoWrap := True;
+  FAppCursor := False;
+  FAppKeypad := False;
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   FPendingWrap := False;
 end;
 
@@ -1532,6 +1672,8 @@ procedure TScreen.ResetHard;
 var
   y: integer;
 begin
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   // back to the normal screen buffer (discard the alternate one)
   FUsingAlt := False;
   FAltGrid := nil;

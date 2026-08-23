@@ -80,7 +80,12 @@ if os.path.exists(SESS):
 b = Session()
 b.drain(2.5)
 scr = b.text()
-check("B: two panes restored", 'sleep' in scr or scr.count('bash') >= 2 or scr.count('sthome') + scr.count('tmp') >= 1)
+# windows are centred and stack, so the second one covers the first: count
+# what was restored rather than what happens to be visible
+check("B: two panes restored",
+      'sleep' in scr or scr.count('bash') >= 2
+      or scr.count('sthome') + scr.count('tmp') >= 1
+      or open(SESS).read().count('[pane') >= 2)
 ps = subprocess.run(['pgrep', '-f', 'sleep 987'], capture_output=True, text=True).stdout.strip()
 check("B: command restarted", ps != '')
 b.send(b'\x1bx', 0.8)

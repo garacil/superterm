@@ -16,6 +16,15 @@ uses
 const
   MAXREAD = 65536;
 
+const
+  // how long a write may wait for the pane's program to make room before
+  // the rest is left queued: long enough that a program which is reading
+  // never notices, short enough that one which is not cannot stall a loop
+  WRITE_GRACE_MS = 100;
+  // more than this waiting for one pane's program means the program is not
+  // reading at all; refuse rather than grow without bound
+  PENDING_INPUT_MAX = 1 shl 20;
+
 type
   TStringArray = array of string;
 
@@ -23,6 +32,7 @@ type
   private
     FMaster: cint;
     FPid: TPid;
+    FPendingInput: RawByteString;
     FAlive: boolean;
     FShellBase: string;
     FPendingSecret: RawByteString;
@@ -45,6 +55,9 @@ type
       const AExtraEnv: string = ''; const ASecret: string = ''): boolean;
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
+    // push queued input toward the pane; safe to call at any time
+    procedure FlushInput(AGraceMs: integer = 0);
+    function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
     // releases the PTY without touching the child: the process becomes
@@ -70,6 +83,15 @@ function unlockpt(fd: cint): cint; cdecl; external 'c' name 'unlockpt';
 function ptsname(fd: cint): PAnsiChar; cdecl; external 'c' name 'ptsname';
 {$ENDIF}
 
+// Identity of the session the panes belong to, handed to every pane as
+// SUPERTERM_SESSION_CHAIN = <ancestors>:<this>. Generated once, before the
+// first spawn; the daemon is a fork of the client, so both use one value and
+// panes spawned later by the daemon carry the same id. A superterm started
+// inside a pane reads the chain and refuses to attach to any session on it:
+// attaching to an ancestor is the mirror that never ends, at any depth.
+function PaneSessionId: string;
+function PaneSessionChain: string;
+
 function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
 function ProcArgs(Pid: TPid): TStringArray;
 function ProcCmdLine(Pid: TPid): string;
@@ -90,6 +112,27 @@ begin
   i := Pos(' ', Result);
   if i > 0 then
     Result := Copy(Result, 1, i - 1);
+end;
+
+var
+  SessionIdCache: string = '';
+
+function PaneSessionId: string;
+begin
+  if SessionIdCache = '' then
+    SessionIdCache := IntToHex(fpGetPid, 8) + '-' +
+      IntToHex(GetTickCount64 and $FFFFFFFFFFFF, 12);
+  Result := SessionIdCache;
+end;
+
+function PaneSessionChain: string;
+var
+  Above: string;
+begin
+  Result := PaneSessionId;
+  Above := GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN');
+  if (Above <> '') and (Pos(Result, Above) = 0) then
+    Result := Above + ':' + Result;
 end;
 
 function BuildEnv(const AExtra: string): PPAnsiChar;
@@ -120,9 +163,14 @@ begin
     Add('XDG_RUNTIME_DIR', GetEnvironmentVariable('XDG_RUNTIME_DIR'));
     Add('DISPLAY', GetEnvironmentVariable('DISPLAY'));
     Add('WAYLAND_DISPLAY', GetEnvironmentVariable('WAYLAND_DISPLAY'));
+    // SUPERTERM_INI: a pane's own superterm must read the same system
+    // configuration as its parent (and tests can keep a nested client
+    // isolated); SUPERTERM_ALLOW_NESTED is deliberately NOT inherited
+    Add('SUPERTERM_INI', GetEnvironmentVariable('SUPERTERM_INI'));
     if AExtra <> '' then
       L.Add(AExtra);
     L.Add('SUPERTERM=1');
+    L.Add('SUPERTERM_SESSION_CHAIN=' + PaneSessionChain);
     GetMem(P, (L.Count + 1) * SizeOf(Pointer));
     for i := 0 to L.Count - 1 do
       // The list is freed below. Keep independent copies for execve.
@@ -235,6 +283,10 @@ var
   SecretPtr: PAnsiChar;
   UseSecretPipe: boolean;
 begin
+  // settle the session identity in THIS process before forking: BuildEnv
+  // runs in the child, and an id first generated there would die with the
+  // exec -- leaving every pane, and the daemon, with a different one
+  PaneSessionId;
   Result := False;
   FAlive := False;
   FMaster := -1;
@@ -427,6 +479,14 @@ begin
     Exit;
   end;
 
+  // The master must not block. A pane's program that has stopped reading
+  // fills the line discipline in a few kilobytes, and a blocking write from
+  // the daemon's event loop then freezes every pane and every client of the
+  // session until that one program reads again. Both readers already treat
+  // EAGAIN as "nothing to read", so this only makes the writers honest.
+  N := FpFcntl(Mfd, F_GETFL, 0);
+  if N >= 0 then
+    FpFcntl(Mfd, F_SETFL, N or O_NONBLOCK);
   FMaster := Mfd;
   FPid := NewPid;
   FAlive := True;
@@ -528,27 +588,72 @@ begin
   end;
 end;
 
+// Feed the pane's program. The master is non-blocking, so a program that has
+// stopped reading gives EAGAIN instead of parking the caller for ever; what
+// does not fit is held here and pushed out by FlushInput as the program
+// drains it. False means the input was refused outright (dead pane, or more
+// pending than PENDING_INPUT_MAX), and callers must say so rather than
+// reporting success.
 function TPty.WriteStr(const S: RawByteString): boolean;
-var
-  N, Left, Offset: integer;
 begin
   Result := False;
   if (FMaster < 0) or (S = '') then
     Exit;
-  Left := Length(S);
-  Offset := 0;
-  while Left > 0 do
-  begin
-    N := FpWrite(FMaster, PAnsiChar(S) + Offset, Left);
+  if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
+    Exit;
+  FPendingInput := FPendingInput + S;
+  // Give the program a bounded moment to take it. Nearly always it takes
+  // everything at once and this behaves exactly as the old blocking write;
+  // what it will not do is wait for ever on a program that has stopped
+  // reading, which used to freeze the daemon and every other pane with it.
+  FlushInput(WRITE_GRACE_MS);
+  Result := True;
+end;
+
+// Push whatever is still queued toward the pane. With AGraceMs > 0 it waits
+// that long in total for the program to make room; with 0 it writes what
+// fits and returns. A partial write simply leaves the rest for the next
+// turn of the caller's loop.
+procedure TPty.FlushInput(AGraceMs: integer);
+var
+  N: integer;
+  Deadline: QWord;
+  SetW: TFDSet;
+  TV: TTimeVal;
+  Left: QWord;
+begin
+  if (FMaster < 0) or (FPendingInput = '') then
+    Exit;
+  Deadline := GetTickCount64 + QWord(AGraceMs);
+  repeat
+    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Length(FPendingInput));
     if N > 0 then
     begin
-      Inc(Offset, N);
-      Dec(Left, N);
-    end
-    else if fpgeterrno <> ESysEINTR then
+      Delete(FPendingInput, 1, N);
+      if FPendingInput = '' then
+        Exit;
+      continue;
+    end;
+    if (N < 0) and (fpgeterrno = ESysEINTR) then
+      continue;
+    if (N < 0) and (fpgeterrno <> ESysEAGAIN) then
+      Exit;                       // the pane is gone; drop what is left
+    if GetTickCount64 >= Deadline then
+      Exit;                       // not reading: try again next turn
+    Left := Deadline - GetTickCount64;
+    fpFD_ZERO(SetW);
+    if fpFD_SET(FMaster, SetW) <> 0 then
       Exit;
-  end;
-  Result := True;
+    TV.tv_sec := Left div 1000;
+    TV.tv_usec := (Left mod 1000) * 1000;
+    if fpSelect(FMaster + 1, nil, @SetW, nil, @TV) <= 0 then
+      Exit;
+  until False;
+end;
+
+function TPty.InputPending: boolean;
+begin
+  Result := FPendingInput <> '';
 end;
 
 procedure TPty.Resize(ACols, ARows: integer);

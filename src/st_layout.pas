@@ -15,6 +15,11 @@ uses
 
 const
   MAX_PANES = 16;
+  // FreeVision's MinWinSize (vendor/fv322/views.pas). A window smaller than
+  // this cannot be dragged or resized by hand, so nothing should place one.
+  MIN_WIN_W = 16;
+  MIN_WIN_H = 6;
+  CASCADE_STEP_X = 3;   // horizontal stagger between cascaded windows
 
 type
   TSplitDir = (sdV, sdH); // sdV: side by side | sdH: top/bottom
@@ -60,7 +65,77 @@ type
     procedure Reindex;
   end;
 
+// Staggered slot AK for an AW x AH window on an ADeskW x ADeskH desktop.
+// The span the slots are spread over is clamped to at least 1: a window as
+// wide (or as tall) as the desktop then lands at the origin instead of
+// dividing by zero, which used to raise SIGFPE and kill the whole session.
+function CascadeRect(AK, AW, AH, ADeskW, ADeskH: integer): TRect;
+
+// Outer size, in cells, that a new window wants: ACols x ARows plus the frame,
+// or two thirds of the desktop when they are 0 (automatic). Floored at the
+// smallest window the user can still drag and resize, then clamped to the
+// desktop -- in that order, so a desktop smaller than the floor yields the
+// desktop rather than something that does not fit on it.
+procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
+  out AW, AH: integer);
+
+// Same size, centred on the desktop. Placing a new window must never move an
+// existing one, so it is placed on its own merits and simply lands on top.
+function CentredRect(AW, AH, ADeskW, ADeskH: integer): TRect;
+
+
 implementation
+
+procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
+  out AW, AH: integer);
+begin
+  if ACols > 0 then
+    AW := ACols + 2          // the frame takes one cell on each side
+  else
+    AW := ADeskW * 2 div 3;
+  if ARows > 0 then
+    AH := ARows + 2
+  else
+    AH := ADeskH * 2 div 3;
+  if AW < MIN_WIN_W then
+    AW := MIN_WIN_W;
+  if AH < MIN_WIN_H then
+    AH := MIN_WIN_H;
+  if AW > ADeskW then
+    AW := ADeskW;
+  if AH > ADeskH then
+    AH := ADeskH;
+end;
+
+function CentredRect(AW, AH, ADeskW, ADeskH: integer): TRect;
+begin
+  Result.W := AW;
+  Result.H := AH;
+  Result.X := (ADeskW - AW) div 2;
+  Result.Y := (ADeskH - AH) div 2;
+  if Result.X < 0 then
+    Result.X := 0;
+  if Result.Y < 0 then
+    Result.Y := 0;
+end;
+
+function CascadeRect(AK, AW, AH, ADeskW, ADeskH: integer): TRect;
+var
+  SpanX, SpanY: integer;
+begin
+  if AK < 0 then
+    AK := 0;
+  SpanX := ADeskW - AW;
+  if SpanX < 1 then
+    SpanX := 1;
+  SpanY := ADeskH - AH - 1;
+  if SpanY < 1 then
+    SpanY := 1;
+  Result.X := (AK * CASCADE_STEP_X) mod SpanX;
+  Result.Y := AK mod SpanY;
+  Result.W := AW;
+  Result.H := AH;
+end;
 
 constructor TNode.CreateLeaf(AIndex: integer);
 begin

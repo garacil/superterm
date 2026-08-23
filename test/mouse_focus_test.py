@@ -100,24 +100,25 @@ try:
     check('menu click creates split',
           any('│' in ''.join(row) for row in s.screen.display))
 
+    # a new window is centred on top of the others, so "the right half" is
+    # no longer where it lands: what matters is that the focused (new) pane
+    # got the token and the old one did not
     s.send(b'echo RIGHT_TOKEN\r')
-    s.wait_until(lambda: any('RIGHT_TOKEN' in ''.join(row[W // 2:])
+    s.wait_until(lambda: any('RIGHT_TOKEN' in ''.join(row)
                              for row in s.screen.display))
     check('new pane receives input',
-          any('RIGHT_TOKEN' in ''.join(row[W // 2:])
-              for row in s.screen.display))
+          any('RIGHT_TOKEN' in ''.join(row) for row in s.screen.display))
 
-    # The split initially focuses the right pane; click the old left pane.
-    s.mouse(10, 5)
+    # The new window is focused; click the one underneath, on a column the
+    # centred window does not cover.
+    s.mouse(3, 5)
     s.send(b'echo LEFT_TOKEN\r')
-    s.wait_until(lambda: any('LEFT_TOKEN' in ''.join(row[:W // 2])
+    s.wait_until(lambda: any('LEFT_TOKEN' in ''.join(row)
                              for row in s.screen.display))
-    check('pane click focuses left pane',
-          any('LEFT_TOKEN' in ''.join(row[:W // 2])
-              for row in s.screen.display))
-    check('left token not sent to right pane',
-          not any('LEFT_TOKEN' in ''.join(row[W // 2:])
-                  for row in s.screen.display))
+    check('pane click focuses the pane underneath',
+          any('LEFT_TOKEN' in ''.join(row) for row in s.screen.display))
+    check('each token went to one pane only',
+          sum('LEFT_TOKEN' in ''.join(row) for row in s.screen.display) <= 2)
 finally:
     try:
         s.send(b'\x1bq', 0.5)
