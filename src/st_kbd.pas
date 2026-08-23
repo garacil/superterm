@@ -211,8 +211,8 @@ begin
   Ev := Default(TMouseEvent);
   case (b - 32) and 67 of
     0: Ev.Buttons := 1;
-    1: Ev.Buttons := 2;
-    2: Ev.Buttons := 4;
+    1: Ev.Buttons := 4;   // middle (RTL: 4)
+    2: Ev.Buttons := 2;   // right (RTL: 2)
     3: Ev.Buttons := 0;
     64: Ev.Buttons := 8;
     65: Ev.Buttons := 16;
@@ -283,8 +283,8 @@ begin
   begin
     case nums[0] and 67 of
       0: mask := 1;
-      1: mask := 2;
-      2: mask := 4;
+      1: mask := 4;   // middle (RTL: 4)
+      2: mask := 2;   // right (RTL: 2)
       64: mask := 8;
       65: mask := 16;
     end;

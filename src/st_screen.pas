@@ -68,6 +68,14 @@ type
   TParserState = (psGround, psEsc, psCsi, psOsc, psCharset, psOscEsc,
     psDcs, psDcsEsc);
   TCharBuf = array[0..7] of AnsiChar; // buffer for one UTF-8 codepoint
+  // what the application asked the terminal to report about the mouse.
+  // ?9 X10 presses | ?1000 presses and releases | ?1002 plus motion while a
+  // button is held | ?1003 plus every motion. Kept as a bitmask, so that
+  // "?1002h ?1003h ?1003l" falls back to ?1002 the way xterm does.
+  TMouseTrack = (mtOff, mtX10, mtNormal, mtButton, mtAny);
+  // and in which encoding: X10 bytes (the default), UTF-8 (?1005), SGR
+  // (?1006), urxvt (?1015) or pixels (?1016, reported in cells here)
+  TMouseProto = (mpX10, mpUtf8, mpSGR, mpUrxvt, mpPixel);
 
   TScreen = class
   private
@@ -118,6 +126,9 @@ type
     // Parsed and kept so it does not leak as text; FreeVision cannot tell a
     // keypad arrow from a cursor arrow, so there is nothing to translate.
     FAppKeypad: boolean;
+    FMouseBits: word;          // bit0 ?9, bit1 ?1000, bit2 ?1002, bit3 ?1003
+    FMouseProto: TMouseProto;
+    function GetMouseTrack: TMouseTrack;
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
       NewWidth, NewHeight: integer);
@@ -159,6 +170,9 @@ type
     // what the application asked the keyboard to send (see the fields)
     property AppCursorKeys: boolean read FAppCursor;
     property AppKeypad: boolean read FAppKeypad;
+    // mouse reporting the application asked for (mtOff = it wants none)
+    property MouseTrack: TMouseTrack read GetMouseTrack;
+    property MouseProto: TMouseProto read FMouseProto;
     function ViewOffset: integer;
     // absolute viewport position: 0 = live screen, N = N lines back
     procedure SetViewOffset(AOffset: integer);
@@ -209,6 +223,8 @@ begin
   FAutoWrap := True;
   FAppCursor := False;
   FAppKeypad := False;
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   FInterm := #0;
   MaxScrollBack := AMaxScrollBack;
   if MaxScrollBack < 0 then
@@ -345,6 +361,15 @@ begin
   if FViewTop > FSBCount then
     FViewTop := FSBCount;
   Dirty := True;
+end;
+
+function TScreen.GetMouseTrack: TMouseTrack;
+begin
+  if (FMouseBits and 8) <> 0 then Result := mtAny
+  else if (FMouseBits and 4) <> 0 then Result := mtButton
+  else if (FMouseBits and 2) <> 0 then Result := mtNormal
+  else if (FMouseBits and 1) <> 0 then Result := mtX10
+  else Result := mtOff;
 end;
 
 function TScreen.ViewOffset: integer;
@@ -588,6 +613,7 @@ begin
   N := 0;
   if FAppCursor then N := N or 1;
   if FAppKeypad then N := N or 2;
+  N := N or (Longint(FMouseBits and $F) shl 4) or (Longint(Ord(FMouseProto)) shl 8);
   Stream.WriteBuffer(N, SizeOf(N));
 end;
 
@@ -682,11 +708,16 @@ begin
     // daemon, in which case the modes are learned from the live stream
     FAppCursor := False;
     FAppKeypad := False;
+    FMouseBits := 0;
+    FMouseProto := mpX10;
     if Stream.Position + SizeOf(Cols) <= Stream.Size then
     begin
       Stream.ReadBuffer(Cols, SizeOf(Cols));
       FAppCursor := (Cols and 1) <> 0;
       FAppKeypad := (Cols and 2) <> 0;
+      FMouseBits := (Cols shr 4) and $F;
+      if ((Cols shr 8) and 7) <= Ord(High(TMouseProto)) then
+        FMouseProto := TMouseProto((Cols shr 8) and 7);
     end;
     Result := True;
   except
@@ -1450,6 +1481,22 @@ begin
                 25: CursorVisible := (final = 'h');
                 7: FAutoWrap := (final = 'h');
                 1: FAppCursor := (final = 'h');
+                9: if final = 'h' then FMouseBits := FMouseBits or 1
+                   else FMouseBits := FMouseBits and not 1;
+                1000: if final = 'h' then FMouseBits := FMouseBits or 2
+                      else FMouseBits := FMouseBits and not 2;
+                1002: if final = 'h' then FMouseBits := FMouseBits or 4
+                      else FMouseBits := FMouseBits and not 4;
+                1003: if final = 'h' then FMouseBits := FMouseBits or 8
+                      else FMouseBits := FMouseBits and not 8;
+                1005: if final = 'h' then FMouseProto := mpUtf8
+                      else FMouseProto := mpX10;
+                1006: if final = 'h' then FMouseProto := mpSGR
+                      else FMouseProto := mpX10;
+                1015: if final = 'h' then FMouseProto := mpUrxvt
+                      else FMouseProto := mpX10;
+                1016: if final = 'h' then FMouseProto := mpPixel
+                      else FMouseProto := mpX10;
                 47, 1047, 1049:
                 begin
                   if final = 'h' then
@@ -1616,6 +1663,8 @@ begin
   FAutoWrap := True;
   FAppCursor := False;
   FAppKeypad := False;
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   FPendingWrap := False;
 end;
 
@@ -1623,6 +1672,8 @@ procedure TScreen.ResetHard;
 var
   y: integer;
 begin
+  FMouseBits := 0;
+  FMouseProto := mpX10;
   // back to the normal screen buffer (discard the alternate one)
   FUsingAlt := False;
   FAltGrid := nil;

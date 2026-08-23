@@ -181,6 +181,13 @@ type
     // already decided where it goes (a split); consumed by NewWindowRect
     NextRect: Objects.TRect;
     NextRectSet: boolean;
+    // mouse forwarding: the pane a button went down in (-1 none) and which
+    // button, so the release and the drag reach the same application even
+    // if the pointer wanders; the host's any-motion tracking (?1003) is
+    // switched on only while the focused pane asks for it
+    MouseGrabPane: integer;
+    MouseGrabButton: integer;
+    HostAnyMotion: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
     // startup: hold one LockScreenUpdate across the whole build+promote+
     // attach so the screen is flushed ONCE at the end, not several times
@@ -266,6 +273,14 @@ type
     procedure RepaintPane(i: integer);
     // DECCKM state of a pane, nil-safe
     function PaneWantsAppCursor(i: integer): boolean;
+    // mouse forwarding to the application inside pane i. Returns True when
+    // the event was the application's and has been sent; False when the
+    // window manager keeps it (the pane asked for no mouse, or the kind of
+    // event is not one it asked for)
+    function ForwardMouse(i: integer; const Event: TEvent;
+      const ALocal: Objects.TPoint): boolean;
+    // keep the host terminal's ?1003 in step with the focused pane
+    procedure SyncHostMouse;
     // ask the daemon for a pane size (remote) or apply it (local). The
     // remote mirror is left alone: it follows FRAME_RESIZE_EV, the
     // authoritative answer, so it never grows on a request the daemon then
@@ -686,7 +701,9 @@ begin
   inherited Init(Bounds);
   PaneIdx := APane;
   Options := Options or ofSelectable or ofTileable;
-  EventMask := EventMask or evKeyDown or evCommand;
+  // releases and motion too: an application that asked for the mouse gets
+  // drags and hover, not just presses
+  EventMask := EventMask or evKeyDown or evCommand or evMouseUp or evMouseMove;
 end;
 
 procedure TTermView.Draw;
@@ -1003,12 +1020,32 @@ procedure TTermView.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
   seq: RawByteString;
+  Local: Objects.TPoint;
 begin
   App := PSuperApp(Application);
   if (App = nil) then
   begin
     inherited HandleEvent(Event);
     Exit;
+  end;
+  // The application's mouse. This view is strictly the interior of the
+  // window, and FreeVision routes positional events to the innermost view
+  // under the pointer, so the frame, the title, the menu and the status
+  // line never get here: those stay the window manager's with no code at
+  // all. Inside, if the application asked for the mouse, it is its --
+  // presses, releases, drags, the wheel -- after the click has focused us.
+  if ((Event.What and (evMouseDown or evMouseUp or evMouseMove)) <> 0) and
+     (App^.Scr[PaneIdx] <> nil) and (App^.Scr[PaneIdx].MouseTrack <> mtOff) then
+  begin
+    if Event.What = evMouseDown then
+      App^.FocusPane(PaneIdx);
+    Local := Default(Objects.TPoint);
+    MakeLocal(Event.Where, Local);
+    if App^.ForwardMouse(PaneIdx, Event, Local) then
+    begin
+      ClearEvent(Event);
+      Exit;
+    end;
   end;
   // The wheel. st_kbd maps SGR button 64 (up) to 8 and 65 (down) to 16 --
   // the RTL's numbering; the vendor's mbScrollWheel* names are the other way
@@ -1587,6 +1624,9 @@ begin
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
   PassPane := -1;
+  MouseGrabPane := -1;
+  MouseGrabButton := MB_NONE;
+  HostAnyMotion := False;
   PassReqW := 0;
   PassReqH := 0;
 
@@ -2123,6 +2163,93 @@ begin
     ReqCols[i] := 0;
     ReqRows[i] := 0;
   end;
+  // same reason: a grab held across a renumbering would write the drag
+  // into another application's pty
+  MouseGrabPane := -1;
+  MouseGrabButton := MB_NONE;
+end;
+
+function TSuperApp.ForwardMouse(i: integer; const Event: TEvent;
+  const ALocal: Objects.TPoint): boolean;
+var
+  Track: TMouseTrack;
+  Btn, Col, Row: integer;
+  Seq: RawByteString;
+begin
+  Result := False;
+  if (i < 0) or (i >= MAX_PANES) or (Scr[i] = nil) then
+    Exit;
+  Track := Scr[i].MouseTrack;
+  if Track = mtOff then
+    Exit;
+  Col := ALocal.X + 1;
+  Row := ALocal.Y + 1;
+  case Event.What of
+    evMouseDown:
+      begin
+        if (Event.Buttons and (8 or 16)) <> 0 then
+        begin
+          // the wheel: a press with no release, as xterm sends it
+          if Track = mtX10 then
+            Exit;
+          if (Event.Buttons and 8) <> 0 then Btn := MB_WHEEL_UP
+          else Btn := MB_WHEEL_DOWN;
+          Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+          if Seq <> '' then WritePaneInput(i, Seq);
+          Exit(True);
+        end;
+        if (Event.Buttons and 1) <> 0 then Btn := MB_LEFT
+        else if (Event.Buttons and 4) <> 0 then Btn := MB_MIDDLE
+        else if (Event.Buttons and 2) <> 0 then Btn := MB_RIGHT
+        else Exit;
+        MouseGrabPane := i;
+        MouseGrabButton := Btn;
+        Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+    evMouseUp:
+      begin
+        // the fabricated release after a wheel notch has no grab: drop it
+        if (MouseGrabPane <> i) or (Track = mtX10) then
+        begin
+          MouseGrabPane := -1;
+          Exit(MouseGrabPane = i);
+        end;
+        Seq := EncodeMouseReport(Scr[i].MouseProto, MouseGrabButton, Col, Row, False);
+        MouseGrabPane := -1;
+        MouseGrabButton := MB_NONE;
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+    evMouseMove:
+      begin
+        if (MouseGrabPane = i) and (Track >= mtButton) then
+          Btn := MouseGrabButton + MB_MOTION
+        else if (MouseGrabPane < 0) and (Track = mtAny) then
+          Btn := MB_NONE + MB_MOTION
+        else
+          Exit(Track <> mtOff);   // a motion the app did not ask for: ours to drop
+        Seq := EncodeMouseReport(Scr[i].MouseProto, Btn, Col, Row, True);
+        if Seq <> '' then WritePaneInput(i, Seq);
+        Exit(True);
+      end;
+  end;
+end;
+
+procedure TSuperApp.SyncHostMouse;
+var
+  Want: boolean;
+begin
+  Want := (not PassthroughActive) and (Lay.Focused >= 0) and
+    (Lay.Focused < MAX_PANES) and (Scr[Lay.Focused] <> nil) and
+    (Scr[Lay.Focused].MouseTrack = mtAny);
+  if Want = HostAnyMotion then
+    Exit;
+  HostAnyMotion := Want;
+  // the RTL queue holds 16 events and FreeVision drains one per loop, so
+  // every-motion reporting is asked for only while an application wants it
+  if Want then WriteRaw(#27'[?1003h') else WriteRaw(#27'[?1003l');
 end;
 
 procedure TSuperApp.RequestPaneSize(i, ACols, ARows: integer);
@@ -4941,6 +5068,7 @@ begin
   end;
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
+  SyncHostMouse;
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
@@ -4959,7 +5087,6 @@ begin
       Drained := 0;
       Deadline := GetTickCount64 + 20;
       Touched := Default(TTouchedPanes);
-      ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
       FullRedraw := False;
       while (Remote <> nil) and (Drained < 32) and
             (GetTickCount64 < Deadline) and Remote.Poll(RemoteEvent) do
@@ -4997,7 +5124,6 @@ begin
             ApplyRemoteLayoutEv(RemoteEvent.Data);
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
-            ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
             FullRedraw := True;
           end;
         sekKillPaneEv:

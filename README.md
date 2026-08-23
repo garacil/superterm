@@ -369,8 +369,10 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q s` | Session picker: attach to or close detached sessions |
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
 | `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
 | `Alt-Home` / `Alt-End` | History: oldest line / back to live |
 | `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
