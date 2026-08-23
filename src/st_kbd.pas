@@ -24,6 +24,10 @@ interface
 
 // install before creating the application (before Keyboard.InitKeyboard)
 procedure InstallSuperKeyboard;
+// Bracketed paste arrives as one payload instead of thousands of unrelated
+// key events. The application drains this queue from Idle and routes each
+// item to the focused pane.
+function TakeHostPaste(out AText: RawByteString): boolean;
 
 implementation
 
@@ -33,6 +37,9 @@ uses
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
   SEQ_TIMEOUT_MS = 120;  // middle bytes of an already started sequence
+  PASTE_TIMEOUT_MS = 2000;
+  MAX_HOST_PASTE = 1024 * 1024 - 16;
+  HOST_PASTE_QUEUE = 8;
 
 // The RTL's mouse queue is allocated by Mouse.InitMouse, which FreeVision
 // only calls when it believes a mouse exists (Drivers.InitEvents, gated on
@@ -56,6 +63,33 @@ var
   RTail: integer = 0;
   PendingEscape: boolean = False;
   LastMouse: TMouseEvent;
+  PasteQueue: array[0..HOST_PASTE_QUEUE - 1] of RawByteString;
+  PasteHead: integer = 0;
+  PasteTail: integer = 0;
+
+procedure QueueHostPaste(const AText: RawByteString);
+var
+  Next: integer;
+begin
+  Next := (PasteHead + 1) mod HOST_PASTE_QUEUE;
+  if Next = PasteTail then
+    PasteTail := (PasteTail + 1) mod HOST_PASTE_QUEUE;
+  PasteQueue[PasteHead] := AText;
+  PasteHead := Next;
+end;
+
+function TakeHostPaste(out AText: RawByteString): boolean;
+begin
+  Result := PasteTail <> PasteHead;
+  if not Result then
+  begin
+    AText := '';
+    Exit;
+  end;
+  AText := PasteQueue[PasteTail];
+  PasteQueue[PasteTail] := '';
+  PasteTail := (PasteTail + 1) mod HOST_PASTE_QUEUE;
+end;
 
 // waits up to TimeoutMs (negative = forever) for bytes in the buffer
 function FillBuf(TimeoutMs: integer): boolean;
@@ -311,6 +345,77 @@ begin
   end;
 end;
 
+// We have already consumed CSI 200~. Read through the matching CSI 201~ and
+// keep its contents byte-for-byte. A bounded queue and payload cap prevent a
+// hostile or broken terminal from growing memory without limit.
+procedure CaptureBracketedPaste;
+const
+  Terminator: RawByteString = #27'[201~';
+var
+  S: RawByteString;
+  B, Match, I, Used, Capacity, NewCapacity: integer;
+  Overflow, Complete: boolean;
+
+  procedure AppendByte(AB: byte);
+  begin
+    if Used >= MAX_HOST_PASTE then
+    begin
+      Overflow := True;
+      Exit;
+    end;
+    if Used = Capacity then
+    begin
+      if Capacity = 0 then NewCapacity := 4096
+      else NewCapacity := Capacity * 2;
+      if NewCapacity > MAX_HOST_PASTE then NewCapacity := MAX_HOST_PASTE;
+      Capacity := NewCapacity;
+      SetLength(S, Capacity);
+    end;
+    Inc(Used);
+    S[Used] := AnsiChar(AB);
+  end;
+
+begin
+  S := '';
+  Used := 0;
+  Capacity := 0;
+  Match := 0;
+  Overflow := False;
+  Complete := False;
+  repeat
+    B := NextByte(PASTE_TIMEOUT_MS);
+    if B < 0 then
+      Break;
+    if B = byte(Terminator[Match + 1]) then
+    begin
+      Inc(Match);
+      if Match = Length(Terminator) then
+      begin
+        Complete := True;
+        Break;
+      end;
+      Continue;
+    end;
+    if Match > 0 then
+    begin
+      for I := 1 to Match do
+        AppendByte(byte(Terminator[I]));
+      Match := 0;
+      if B = byte(Terminator[1]) then
+      begin
+        Match := 1;
+        Continue;
+      end;
+    end;
+    AppendByte(B);
+  until False;
+  if Complete and (not Overflow) then
+  begin
+    SetLength(S, Used);
+    QueueHostPaste(S);
+  end;
+end;
+
 // ESC [ params final -- 0 if the sequence is consumed with no key;
 // ExtraMods is added to the xterm modifiers (2 = Alt via meta prefix)
 function DecodeCSI(ExtraMods: integer): TKeyEvent;
@@ -376,17 +481,20 @@ begin
     'Z': Result := KEv(#0, $0F, kbShift);
     'P'..'S': Result := FKeyEvent(Ord(AnsiChar(c)) - Ord('P') + 1, p2);
     '~':
-      case p1 of
-        1, 7: Result := NavEvent($47, $77, $97, p2);
-        2: Result := NavEvent($52, $04, $A2, p2);
-        3: Result := NavEvent($53, $06, $A3, p2);
-        4, 8: Result := NavEvent($4F, $75, $9F, p2);
-        5: Result := NavEvent($49, $84, $99, p2);
-        6: Result := NavEvent($51, $76, $A1, p2);
-        11..15: Result := FKeyEvent(p1 - 10, p2);
-        17..21: Result := FKeyEvent(p1 - 11, p2);
-        23, 24: Result := FKeyEvent(p1 - 12, p2);
-      end;
+      if p1 = 200 then
+        CaptureBracketedPaste
+      else
+        case p1 of
+          1, 7: Result := NavEvent($47, $77, $97, p2);
+          2: Result := NavEvent($52, $04, $A2, p2);
+          3: Result := NavEvent($53, $06, $A3, p2);
+          4, 8: Result := NavEvent($4F, $75, $9F, p2);
+          5: Result := NavEvent($49, $84, $99, p2);
+          6: Result := NavEvent($51, $76, $A1, p2);
+          11..15: Result := FKeyEvent(p1 - 10, p2);
+          17..21: Result := FKeyEvent(p1 - 11, p2);
+          23, 24: Result := FKeyEvent(p1 - 12, p2);
+        end;
   end;
   // unrecognized sequences are swallowed whole (final byte consumed)
 end;
@@ -505,6 +613,8 @@ begin
   RTail := 0;
   PendingEscape := False;
   LastMouse := Default(TMouseEvent);
+  PasteHead := 0;
+  PasteTail := 0;
   if TCGetAttr(0, SavedTio) = 0 then
   begin
     TioSaved := True;

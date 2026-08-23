@@ -4,6 +4,31 @@
 
 What an afternoon of real use asked for, and the crash it found.
 
+### Clipboard history across local and SSH panes
+
+The new `Clipboard` / `Portapapeles` menu keeps the ten most recent items in
+memory and lets one be selected for paste. `Ctrl-Q [` enters pane copy mode,
+`Ctrl-Q ]` pastes the newest item, and `Ctrl-Q h` opens the history. Host
+terminal paste is captured atomically with bracketed-paste mode, while pane
+copies and pane-generated OSC 52 writes reach the host clipboard without
+allowing a pane to query and read it. UTF-8, scrollback, attached sessions,
+and mouse selection use the same client-local history.
+
+### Focus changes the border, not the terminal
+
+An unfocused pane no longer has its terminal cells darkened into greyscale.
+Every pane keeps the application's exact foreground, background and text
+attributes whether focused or not; only the window border/title and terminal
+cursor indicate focus. Because the pane interior is unchanged, focus switches
+also leave those cells out of the terminal delta instead of retransmitting
+content over a local or SSH connection.
+
+### Minimize or restore every window
+
+The `Windows` / `Ventanas` menu now contains `Minimize all windows` and
+`Restore all windows`. Both commands update the complete workspace together;
+individual minimize and restore entries remain in `Panes` / `Paneles`.
+
 ### The mouse died after moving the focus away from Claude Code or Codex
 
 Open a full-screen program that wants hover -- Claude Code, Codex -- in a

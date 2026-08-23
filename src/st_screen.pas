@@ -77,6 +77,12 @@ type
   // (?1006), urxvt (?1015) or pixels (?1016, reported in cells here)
   TMouseProto = (mpX10, mpUtf8, mpSGR, mpUrxvt, mpPixel);
 
+  TOsc52Event = record
+    Selection: RawByteString;
+    Payload: RawByteString;
+  end;
+  TOsc52EventArray = array of TOsc52Event;
+
   TScreen = class
   private
     FGrid: TGridArray;
@@ -103,6 +109,7 @@ type
     FUtfLen: byte;
     FUtfNeed: byte;
     FOscBuf: RawByteString;
+    FOscLen: integer;
     FSaveX, FSaveY: integer;
     // DECSC (ESC 7) saves cursor AND graphic rendition; DECRC (ESC 8) restores
     // both. Keeping only the position left attributes leaking across a restore.
@@ -126,8 +133,11 @@ type
     // Parsed and kept so it does not leak as text; FreeVision cannot tell a
     // keypad arrow from a cursor arrow, so there is nothing to translate.
     FAppKeypad: boolean;
+    FBracketedPaste: boolean;
     FMouseBits: word;          // bit0 ?9, bit1 ?1000, bit2 ?1002, bit3 ?1003
     FMouseProto: TMouseProto;
+    FOscOverflow: boolean;
+    FOsc52Queue: TOsc52EventArray;
     function GetMouseTrack: TMouseTrack;
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
@@ -142,6 +152,8 @@ type
     procedure PutCharByte(b: byte);
     procedure DoCSI(final: AnsiChar);
     procedure DispatchEsc(c: AnsiChar);
+    procedure FinishOsc;
+    procedure QueueOsc52(const ASelection, APayload: RawByteString);
     function GetParam(i, def: integer): integer;
     procedure SetCellStr(x, y: integer; const S: RawByteString; AAttr: word);
     function CellWidth(const S: RawByteString): integer;
@@ -170,6 +182,7 @@ type
     // what the application asked the keyboard to send (see the fields)
     property AppCursorKeys: boolean read FAppCursor;
     property AppKeypad: boolean read FAppKeypad;
+    property BracketedPaste: boolean read FBracketedPaste;
     // mouse reporting the application asked for (mtOff = it wants none)
     property MouseTrack: TMouseTrack read GetMouseTrack;
     property MouseProto: TMouseProto read FMouseProto;
@@ -188,10 +201,18 @@ type
     function HistoryRows: integer;
     function AbsRow(AIndex: integer): TRow;
     procedure RenderTextRange(AFrom, ACount: integer; AOut: TStream);
+    function RenderSelection(AStartRow, AStartCol, AEndRow,
+      AEndCol: integer): RawByteString;
+    function TakeOsc52(out ASelection, APayload: RawByteString): boolean;
     property Grid: TGridArray read FGrid;
   end;
 
 implementation
+
+const
+  MAX_OSC_BYTES = 2 * 1024 * 1024;
+  MAX_OSC52_EVENTS = 16;
+  MAX_SELECTION_BYTES = 1024 * 1024 - 16;
 
 // history rows are stored without their trailing blanks (see below)
 function TrimRow(const R: TRow): TRow; forward;
@@ -223,8 +244,12 @@ begin
   FAutoWrap := True;
   FAppCursor := False;
   FAppKeypad := False;
+  FBracketedPaste := False;
   FMouseBits := 0;
   FMouseProto := mpX10;
+  FOscOverflow := False;
+  FOscLen := 0;
+  FOsc52Queue := nil;
   FInterm := #0;
   MaxScrollBack := AMaxScrollBack;
   if MaxScrollBack < 0 then
@@ -441,7 +466,7 @@ begin
   S := '';
   L := Default(Longint);
   Stream.ReadBuffer(L, SizeOf(L));
-  if (L < 0) or (L > 1024 * 1024) then
+  if (L < 0) or (L > MAX_OSC_BYTES) then
     Exit;
   SetLength(S, L);
   if L > 0 then
@@ -561,6 +586,115 @@ begin
   end;
 end;
 
+function TScreen.RenderSelection(AStartRow, AStartCol, AEndRow,
+  AEndCol: integer): RawByteString;
+var
+  R: TRow;
+  Row, X, I, C1, C2, T: integer;
+  Line: RawByteString;
+begin
+  Result := '';
+  if (AEndRow < AStartRow) or
+     ((AEndRow = AStartRow) and (AEndCol < AStartCol)) then
+  begin
+    T := AStartRow; AStartRow := AEndRow; AEndRow := T;
+    T := AStartCol; AStartCol := AEndCol; AEndCol := T;
+  end;
+  if AStartRow < 0 then AStartRow := 0;
+  if AEndRow >= FSBCount + Height then AEndRow := FSBCount + Height - 1;
+  if (AStartRow > AEndRow) or (AStartRow >= FSBCount + Height) then
+    Exit;
+
+  for Row := AStartRow to AEndRow do
+  begin
+    R := AbsRow(Row);
+    if Row = AStartRow then C1 := AStartCol else C1 := 0;
+    if Row = AEndRow then C2 := AEndCol else C2 := Width - 1;
+    if C1 < 0 then C1 := 0;
+    if C2 >= Width then C2 := Width - 1;
+    if (C1 < Length(R)) and R[C1].Cont then
+      while (C1 > 0) and R[C1].Cont do Dec(C1);
+    Line := '';
+    if C1 <= C2 then
+      for X := C1 to C2 do
+      begin
+        if (X >= Length(R)) or (R[X].Len = 0) then
+          Line := Line + ' '
+        else if not R[X].Cont then
+          for I := 0 to R[X].Len - 1 do
+            Line := Line + R[X].Txt[I];
+      end;
+    while (Line <> '') and (Line[Length(Line)] = ' ') do
+      SetLength(Line, Length(Line) - 1);
+    if Length(Result) + Length(Line) + Ord(Row < AEndRow) >
+       MAX_SELECTION_BYTES then
+      Exit('');
+    Result := Result + Line;
+    if Row < AEndRow then
+      Result := Result + #10;
+  end;
+end;
+
+procedure TScreen.QueueOsc52(const ASelection, APayload: RawByteString);
+var
+  I, N: integer;
+begin
+  N := Length(FOsc52Queue);
+  if N >= MAX_OSC52_EVENTS then
+  begin
+    for I := 1 to N - 1 do
+      FOsc52Queue[I - 1] := FOsc52Queue[I];
+    SetLength(FOsc52Queue, N - 1);
+    N := N - 1;
+  end;
+  SetLength(FOsc52Queue, N + 1);
+  FOsc52Queue[N].Selection := ASelection;
+  FOsc52Queue[N].Payload := APayload;
+end;
+
+function TScreen.TakeOsc52(out ASelection, APayload: RawByteString): boolean;
+var
+  I, N: integer;
+begin
+  N := Length(FOsc52Queue);
+  Result := N > 0;
+  if not Result then
+  begin
+    ASelection := '';
+    APayload := '';
+    Exit;
+  end;
+  ASelection := FOsc52Queue[0].Selection;
+  APayload := FOsc52Queue[0].Payload;
+  for I := 1 to N - 1 do
+    FOsc52Queue[I - 1] := FOsc52Queue[I];
+  SetLength(FOsc52Queue, N - 1);
+end;
+
+procedure TScreen.FinishOsc;
+var
+  Rest, Selection, Payload: RawByteString;
+  P: integer;
+begin
+  SetLength(FOscBuf, FOscLen);
+  if (not FOscOverflow) and (Copy(FOscBuf, 1, 3) = '52;') then
+  begin
+    Rest := Copy(FOscBuf, 4, MaxInt);
+    P := Pos(';', Rest);
+    if P > 0 then
+    begin
+      Selection := Copy(Rest, 1, P - 1);
+      if Selection = '' then Selection := 'c';
+      Payload := Copy(Rest, P + 1, MaxInt);
+      QueueOsc52(Selection, Payload);
+    end;
+  end;
+  FOscBuf := '';
+  FOscLen := 0;
+  FOscOverflow := False;
+  FPState := psGround;
+end;
+
 procedure TScreen.SaveToStream(Stream: TStream);
 var
   I, Slot, X, N: Longint;
@@ -586,7 +720,7 @@ begin
   Stream.WriteBuffer(FUtfBuf, SizeOf(FUtfBuf));
   Stream.WriteBuffer(FUtfLen, SizeOf(FUtfLen));
   Stream.WriteBuffer(FUtfNeed, SizeOf(FUtfNeed));
-  WriteScreenString(Stream, FOscBuf);
+  WriteScreenString(Stream, Copy(FOscBuf, 1, FOscLen));
   Stream.WriteBuffer(FSaveX, SizeOf(FSaveX));
   Stream.WriteBuffer(FSaveY, SizeOf(FSaveY));
   Stream.WriteBuffer(FInterm, SizeOf(FInterm));
@@ -613,6 +747,7 @@ begin
   N := 0;
   if FAppCursor then N := N or 1;
   if FAppKeypad then N := N or 2;
+  if FBracketedPaste then N := N or 4;
   N := N or (Longint(FMouseBits and $F) shl 4) or (Longint(Ord(FMouseProto)) shl 8);
   Stream.WriteBuffer(N, SizeOf(N));
 end;
@@ -663,6 +798,7 @@ begin
     Stream.ReadBuffer(FUtfNeed, SizeOf(FUtfNeed));
     if not ReadScreenString(Stream, FOscBuf) then
       Exit;
+    FOscLen := Length(FOscBuf);
     Stream.ReadBuffer(FSaveX, SizeOf(FSaveX));
     Stream.ReadBuffer(FSaveY, SizeOf(FSaveY));
     Stream.ReadBuffer(FInterm, SizeOf(FInterm));
@@ -708,6 +844,7 @@ begin
     // daemon, in which case the modes are learned from the live stream
     FAppCursor := False;
     FAppKeypad := False;
+    FBracketedPaste := False;
     FMouseBits := 0;
     FMouseProto := mpX10;
     if Stream.Position + SizeOf(Cols) <= Stream.Size then
@@ -715,6 +852,7 @@ begin
       Stream.ReadBuffer(Cols, SizeOf(Cols));
       FAppCursor := (Cols and 1) <> 0;
       FAppKeypad := (Cols and 2) <> 0;
+      FBracketedPaste := (Cols and 4) <> 0;
       FMouseBits := (Cols shr 4) and $F;
       if ((Cols shr 8) and 7) <= Ord(High(TMouseProto)) then
         FMouseProto := TMouseProto((Cols shr 8) and 7);
@@ -1481,6 +1619,7 @@ begin
                 25: CursorVisible := (final = 'h');
                 7: FAutoWrap := (final = 'h');
                 1: FAppCursor := (final = 'h');
+                2004: FBracketedPaste := (final = 'h');
                 9: if final = 'h' then FMouseBits := FMouseBits or 1
                    else FMouseBits := FMouseBits and not 1;
                 1000: if final = 'h' then FMouseBits := FMouseBits or 2
@@ -1579,6 +1718,8 @@ begin
       begin
         // Keep OSC payloads out of the visible grid until BEL or ST ends them.
         FOscBuf := '';
+        FOscLen := 0;
+        FOscOverflow := False;
         FPState := psOsc;
         Exit;
       end;
@@ -1663,6 +1804,7 @@ begin
   FAutoWrap := True;
   FAppCursor := False;
   FAppKeypad := False;
+  FBracketedPaste := False;
   FMouseBits := 0;
   FMouseProto := mpX10;
   FPendingWrap := False;
@@ -1695,6 +1837,9 @@ begin
   FUtfLen := 0;
   FUtfNeed := 0;
   FOscBuf := '';
+  FOscLen := 0;
+  FOscOverflow := False;
+  FOsc52Queue := nil;
   FSaveX := 0;
   FSaveY := 0;
   FSaveAttr := A_FGDEF or A_BGDEF;
@@ -1712,7 +1857,7 @@ procedure TScreen.WriteBytes(const Buf; Count: integer);
 var
   P: ^byte;
   b: byte;
-  i: integer;
+  i, NewCap: integer;
 begin
   P := @Buf;
   for i := 0 to Count - 1 do
@@ -1806,22 +1951,39 @@ begin
       psOsc:
         begin
           if b = 7 then
-            FPState := psGround // BEL ends OSC
+            FinishOsc            // BEL ends OSC
           else if b = 27 then
             FPState := psOscEsc
           else
           begin
-            if Length(FOscBuf) < 1024 then
-              FOscBuf := FOscBuf + AnsiChar(b);
+            if FOscLen < MAX_OSC_BYTES then
+            begin
+              if FOscLen = Length(FOscBuf) then
+              begin
+                NewCap := Length(FOscBuf);
+                if NewCap = 0 then NewCap := 1024
+                else NewCap := NewCap * 2;
+                if NewCap > MAX_OSC_BYTES then NewCap := MAX_OSC_BYTES;
+                SetLength(FOscBuf, NewCap);
+              end;
+              Inc(FOscLen);
+              FOscBuf[FOscLen] := AnsiChar(b);
+            end
+            else
+              FOscOverflow := True;
           end;
         end;
       psOscEsc:
         begin
           if b = Ord('\') then
-            FPState := psGround
+            FinishOsc
           else
+          begin
+            FOscBuf := '';
+            FOscLen := 0;
+            FOscOverflow := False;
             FPState := psGround;
-          FOscBuf := '';
+          end;
         end;
       psCharset:
         FPState := psGround;

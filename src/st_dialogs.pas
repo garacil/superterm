@@ -14,7 +14,7 @@ interface
 
 uses
   Objects, Drivers, Views, Dialogs, MsgBox, App, SysUtils,
-  st_config, st_wclass, st_profiles, st_server;
+  st_config, st_wclass, st_profiles, st_server, st_clipboard;
 
 // class manager: list + New/Edit/Duplicate/Delete/Close. Edits ONLY the
 // user-origin ones; system ones show '(system)' and only allow
@@ -57,6 +57,10 @@ type
 // Alt+0 pane list (like the classic IDE's Window|List): returns
 // True and the chosen index; the caller focuses or restores
 function RunPaneList(const ATitles: TStrArray; ACurrent: integer;
+  out ASelected: integer): boolean;
+
+// Pick one of the ten client-local clipboard entries, newest first.
+function RunClipboardHistory(AHistory: TClipboardHistory;
   out ASelected: integer): boolean;
 
 // Desktop colour: a visual picker over the sixteen text-mode colours.
@@ -1120,6 +1124,67 @@ begin
     Result := (ASelected >= 0) and (ASelected < Length(ATitles));
   end;
   LB^.NewList(nil); // NewList(nil) frees the previous collection
+  Dispose(D, Done);
+end;
+
+function RunClipboardHistory(AHistory: TClipboardHistory;
+  out ASelected: integer): boolean;
+var
+  D: PPaneListDialog;
+  R: Objects.TRect;
+  LB: PListBox;
+  SB: PScrollBar;
+  Col: PStringCollection;
+  It: TClipboardItem;
+  I, C: integer;
+  Source, RowText: string;
+begin
+  Result := False;
+  ASelected := -1;
+  if (AHistory = nil) or (AHistory.Count < 1) then
+    Exit;
+  R.Assign(0, 0, 70, 8 + AHistory.Count);
+  if R.B.Y > 20 then R.B.Y := 20;
+  D := New(PPaneListDialog, Init(R,
+    UiText('Clipboard history', 'Historial del portapapeles')));
+  D^.Options := D^.Options or ofCentered;
+  with D^ do
+  begin
+    NewButton(18, Size.Y - 3, 12, 2, UiText('~P~aste', '~P~egar'), cmOK,
+      hcNoContext, bfDefault);
+    NewButton(38, Size.Y - 3, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
+    R.Assign(Size.X - 3, 2, Size.X - 2, Size.Y - 4);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(2, 2, Size.X - 3, Size.Y - 4);
+    LB := New(PListBox, Init(R, 1, SB));
+    Col := New(PStringCollection, Init(AHistory.Count, 4));
+    for I := 0 to AHistory.Count - 1 do
+    begin
+      It := AHistory.Item(I);
+      case It.Origin of
+        coPaneSelection: Source := UiText('pane', 'panel');
+        coHostPaste: Source := UiText('host', 'host');
+        coRemoteOsc52: Source := 'OSC52';
+      else
+        Source := '';
+      end;
+      RowText := Format('%2d  %-6s  %s',
+        [I + 1, Source, AHistory.Preview(I, 50)]);
+      Col^.AtInsert(I, Objects.NewStr(RowText));
+    end;
+    LB^.NewList(Col);
+    LB^.FocusItem(0);
+    Insert(LB);
+  end;
+  C := Desktop^.ExecView(D);
+  if C = cmOK then
+  begin
+    ASelected := LB^.Focused;
+    Result := (ASelected >= 0) and (ASelected < AHistory.Count);
+  end;
+  LB^.NewList(nil);
   Dispose(D, Done);
 end;
 

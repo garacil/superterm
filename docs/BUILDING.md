@@ -12,6 +12,8 @@
 - `src/st_session.pas` persists the fallback session layout.
 - `src/st_layout.pas` calculates pane split trees.
 - `src/st_screen.pas` interprets terminal output for each pane.
+- `src/st_clipboard.pas` keeps the ten-item client history and OSC 52 helpers.
+- `src/st_kbd.pas` decodes keyboard, mouse, and bracketed-paste input.
 - `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol.
 
 `vendor/fv322/` is the local FreeVision source used by the build. It is not a

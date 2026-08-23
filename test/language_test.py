@@ -86,6 +86,12 @@ try:
     check('Spanish config selects Spanish UI',
           'Paneles' in s.text() and 'Opciones' in s.text())
 
+    s.send(b'\x1bv', 0.5)  # "Ventanas" menu
+    check('Spanish window-wide actions fit',
+          'Minimizar todas las ventanas' in s.text() and
+          'Restaurar todas las ventanas' in s.text())
+    s.send(b'\x1b', 0.3)
+
     s.send(b'\x1bs', 0.5)  # "Sesiones" menu
     s.send(b'a')  # -> "Asistente de sesion rapida" (quick session wizard)
     check('Spanish input dialog is localized',
