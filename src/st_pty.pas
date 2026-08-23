@@ -16,6 +16,11 @@ uses
 const
   MAXREAD = 65536;
 
+const
+  // more than this waiting for one pane's program means the program is not
+  // reading at all; refuse rather than grow without bound
+  PENDING_INPUT_MAX = 1 shl 20;
+
 type
   TStringArray = array of string;
 
@@ -23,6 +28,7 @@ type
   private
     FMaster: cint;
     FPid: TPid;
+    FPendingInput: RawByteString;
     FAlive: boolean;
     FShellBase: string;
     FPendingSecret: RawByteString;
@@ -45,6 +51,9 @@ type
       const AExtraEnv: string = ''; const ASecret: string = ''): boolean;
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
+    // push queued input toward the pane; safe to call at any time
+    procedure FlushInput;
+    function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
     // releases the PTY without touching the child: the process becomes
@@ -466,6 +475,14 @@ begin
     Exit;
   end;
 
+  // The master must not block. A pane's program that has stopped reading
+  // fills the line discipline in a few kilobytes, and a blocking write from
+  // the daemon's event loop then freezes every pane and every client of the
+  // session until that one program reads again. Both readers already treat
+  // EAGAIN as "nothing to read", so this only makes the writers honest.
+  N := FpFcntl(Mfd, F_GETFL, 0);
+  if N >= 0 then
+    FpFcntl(Mfd, F_SETFL, N or O_NONBLOCK);
   FMaster := Mfd;
   FPid := NewPid;
   FAlive := True;
@@ -567,27 +584,46 @@ begin
   end;
 end;
 
+// Feed the pane's program. The master is non-blocking, so a program that has
+// stopped reading gives EAGAIN instead of parking the caller for ever; what
+// does not fit is held here and pushed out by FlushInput as the program
+// drains it. False means the input was refused outright (dead pane, or more
+// pending than PENDING_INPUT_MAX), and callers must say so rather than
+// reporting success.
 function TPty.WriteStr(const S: RawByteString): boolean;
-var
-  N, Left, Offset: integer;
 begin
   Result := False;
   if (FMaster < 0) or (S = '') then
     Exit;
-  Left := Length(S);
-  Offset := 0;
-  while Left > 0 do
-  begin
-    N := FpWrite(FMaster, PAnsiChar(S) + Offset, Left);
-    if N > 0 then
-    begin
-      Inc(Offset, N);
-      Dec(Left, N);
-    end
-    else if fpgeterrno <> ESysEINTR then
-      Exit;
-  end;
+  if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
+    Exit;
+  FPendingInput := FPendingInput + S;
+  FlushInput;
   Result := True;
+end;
+
+// Push whatever is still queued for the pane. Called after every write and
+// from the daemon's loop; a partial write simply leaves the rest for the
+// next turn.
+procedure TPty.FlushInput;
+var
+  N: integer;
+begin
+  while FPendingInput <> '' do
+  begin
+    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Length(FPendingInput));
+    if N > 0 then
+      Delete(FPendingInput, 1, N)
+    else if (N < 0) and (fpgeterrno = ESysEINTR) then
+      continue
+    else
+      Exit;   // EAGAIN: the program is not reading; try again next turn
+  end;
+end;
+
+function TPty.InputPending: boolean;
+begin
+  Result := FPendingInput <> '';
 end;
 
 procedure TPty.Resize(ACols, ARows: integer);

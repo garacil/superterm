@@ -393,6 +393,33 @@ type
     procedure Run(AReadyFd: cint);
   end;
 
+// fd_set is exactly FD_MAXFDSET (1024) bits, and the RTL's helpers return -1
+// for anything outside it instead of raising (rtl/unix/genfdset.inc:17-24,
+// :54-63). Every test in this unit compared with <> 0, so a descriptor at or
+// above 1024 read as READY and was then processed -- and MaxFd was raised
+// past the set's storage, so the kernel wrote back more bytes than the
+// stack variable holds. These two say what was meant.
+function FDWatch(AFd: cint; var ASet: TFDSet): boolean;
+begin
+  Result := (AFd >= 0) and (AFd < FD_MAXFDSET) and (fpFD_SET(AFd, ASet) = 0);
+end;
+
+function FDReady(AFd: cint; const ASet: TFDSet): boolean;
+begin
+  Result := (AFd >= 0) and (AFd < FD_MAXFDSET) and (fpFD_ISSET(AFd, ASet) = 1);
+end;
+
+// close-on-exec on a descriptor the daemon owns. Without it every socket --
+// the listener and every attached client -- is inherited by every pane the
+// daemon spawns, so killing the daemon leaves its listening socket alive in
+// a shell and the session looks live when it is not. F_SETFD/FD_CLOEXEC are
+// not exported by the GNU/Linux RTL; the numeric form is what st_pty uses.
+procedure SetCloExec(AFd: cint);
+begin
+  if AFd >= 0 then
+    FpFcntl(AFd, 2 {F_SETFD}, 1 {FD_CLOEXEC});
+end;
+
 function WriteFull(AFd: cint; const Buffer; ASize: integer): boolean;
 var
   P: PByte;
@@ -1335,7 +1362,7 @@ begin
   MaxFd := fpSelect(FSocket + 1, @SetRead, nil, nil, @TV);
   if MaxFd <= 0 then
     Exit;
-  if fpFD_ISSET(FSocket, SetRead) = 0 then
+  if not FDReady(FSocket, SetRead) then
     Exit;
   if not ReadFrame(Kind, Pane, Event.Data) then
   begin
@@ -1616,6 +1643,7 @@ begin
   if not SocketAddress(FSocketPath, Addr, AddrLen) then
     Exit;
   FListener := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  SetCloExec(FListener);
   if FListener < 0 then
     Exit;
   if fpBind(FListener, @Addr, AddrLen) <> 0 then
@@ -1998,7 +2026,7 @@ begin
   TV.tv_usec := 0;
   if fpSelect(AFd + 1, @SetRead, nil, nil, @TV) <= 0 then
     Exit;
-  if fpFD_ISSET(AFd, SetRead) = 0 then
+  if not FDReady(AFd, SetRead) then
     Exit;
   Result := ReadFrame(AFd, AKind, APane, AData);
 end;
@@ -2812,7 +2840,11 @@ begin
         if Length(AData) > 0 then
         begin
           SetString(S, PAnsiChar(@AData[0]), Length(AData));
-          FPanes[APane].WriteStr(S);
+          if not FPanes[APane].WriteStr(S) then
+          begin
+            CtlReplyErr(AFd, 'pane is not reading its input');
+            Exit;
+          end;
         end;
         Data := nil;
         WriteFrameToTimeout(AFd, FRAME_CTL_OK, APane, Data, 5000);
@@ -3110,6 +3142,7 @@ end;
 
 procedure TDetachedSession.Run(AReadyFd: cint);
 var
+  KeepClient: boolean;
   ReadSet, WriteSet: TFDSet;
   TV: TTimeVal;
   MaxFd, I, NewClient, N: cint;
@@ -3162,13 +3195,27 @@ begin
       fpFD_ZERO(ReadSet);
       fpFD_ZERO(WriteSet);
       MaxFd := FListener;
-      fpFD_SET(FListener, ReadSet);
+      if not FDWatch(FListener, ReadSet) then
+      begin
+        // the listener itself is unusable in a select set: nothing can be
+        // served, and spinning would burn the CPU
+        DebugLog('daemon: listener descriptor is out of select range');
+        Break;
+      end;
       for I := 0 to MAX_CLIENTS - 1 do
         if FClients[I].Fd >= 0 then
         begin
-          fpFD_SET(FClients[I].Fd, ReadSet);
+          // a client whose descriptor cannot be watched is dropped rather
+          // than left in the table being reported ready for ever
+          if not FDWatch(FClients[I].Fd, ReadSet) then
+          begin
+            DebugLog(Format('daemon: client %d descriptor %d out of select range',
+              [I, FClients[I].Fd]));
+            DropClient(I);
+            continue;
+          end;
           if FClients[I].OutBuf <> '' then
-            fpFD_SET(FClients[I].Fd, WriteSet);
+            FDWatch(FClients[I].Fd, WriteSet);
           if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
         end;
       // flow control: with too much pending toward some client we do not
@@ -3186,8 +3233,8 @@ begin
           if (FPanes[I] <> nil) and FPanes[I].Alive and
              (FPanes[I].Master >= 0) then
           begin
-            fpFD_SET(FPanes[I].Master, ReadSet);
-            if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
+            if FDWatch(FPanes[I].Master, ReadSet) then
+              if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
           end;
       TV.tv_sec := 0;
       TV.tv_usec := 100000;
@@ -3198,50 +3245,64 @@ begin
           continue;
         Break;
       end;
-      if fpFD_ISSET(FListener, ReadSet) <> 0 then
+      if FDReady(FListener, ReadSet) then
       begin
         Addr := Default(TUnixSockAddr);
         AddrLen := SizeOf(Addr);
         NewClient := fpAccept(FListener, @Addr, @AddrLen);
         if NewClient >= 0 then
         begin
+          // the panes this daemon spawns must not inherit it: a pane holding
+          // the listening socket keeps a dead session looking alive
+          SetCloExec(NewClient);
+          KeepClient := False;
+          try
           // the first frame decides: FRAME_CLOSE shuts the daemon down
           // even on a brand-new connection (CloseSessionAt); FRAME_ATTACH
           // takes a slot if the versioned payload allows it; anything
           // else closes the connection
-          if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
-            FpClose(NewClient)
-          else if Kind = FRAME_CLOSE then
-          begin
-            if (Length(FirstData) > 0) and (FirstData[0] = 1) then
-              DaemonSaveSession;
-            FpClose(NewClient);
-            FStop := True;
-          end
-          else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
-          begin
-            // ephemeral control request: reply and close; takes no slot
-            HandleControlFrame(NewClient, Kind, FirstPane, FirstData);
-            FpClose(NewClient);
-          end
-          else if not HandleAttach(NewClient, Kind, FirstData) then
-            FpClose(NewClient);
+            if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
+              KeepClient := False   // the finally below closes it
+            else if Kind = FRAME_CLOSE then
+            begin
+              if (Length(FirstData) > 0) and (FirstData[0] = 1) then
+                DaemonSaveSession;
+              FStop := True;
+            end
+            else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
+              // ephemeral control request: reply and close; takes no slot
+              HandleControlFrame(NewClient, Kind, FirstPane, FirstData)
+            else if HandleAttach(NewClient, Kind, FirstData) then
+              KeepClient := True;    // the client table owns it now
+          finally
+            // every branch used to close by hand, so any exception raised
+            // while serving a request leaked the descriptor -- and with the
+            // main loop catching exceptions the daemon survives, one
+            // descriptor poorer each time, until it runs out
+            if not KeepClient then
+              FpClose(NewClient);
+          end;
         end;
       end;
       for I := 0 to MAX_CLIENTS - 1 do
         if (FClients[I].Fd >= 0) and
-           (fpFD_ISSET(FClients[I].Fd, WriteSet) <> 0) then
+           (FDReady(FClients[I].Fd, WriteSet)) then
           FlushClient(I);
       for I := 0 to MAX_CLIENTS - 1 do
         if (FClients[I].Fd >= 0) and
-           (fpFD_ISSET(FClients[I].Fd, ReadSet) <> 0) then
+           (FDReady(FClients[I].Fd, ReadSet)) then
           HandleClientFrame(I);
+      // push anything still queued toward a pane whose program was not
+      // reading when it was written
+      for I := 0 to FPaneCount - 1 do
+        if (FPanes[I] <> nil) and FPanes[I].Alive and FPanes[I].InputPending then
+          FPanes[I].FlushInput;
       ReapChildren;
       if not FlowBlocked then
         for I := 0 to FPaneCount - 1 do
           if (FPanes[I] <> nil) and FPanes[I].Alive and
              (FPanes[I].Master >= 0) and
-             (fpFD_ISSET(FPanes[I].Master, ReadSet) <> 0) then
+             (FDReady(FPanes[I].Master, ReadSet)) then
             HandlePaneOutput(I);
       // live titles: ad-hoc panes without a fixed title show the command
       // or the current directory, just as the UI does locally
