@@ -3203,7 +3203,7 @@ begin
     // so the reporter can finish and the process dies cleanly instead of
     // recursing. dup2 closes the old descriptor atomically, so there is no
     // window in which they are free.
-    NullFd := FpOpen('/dev/null', O_RDWR);
+    NullFd := FpOpen('/dev/null', O_RDWR, 0);
     if NullFd >= 0 then
     begin
       FpDup2(NullFd, 0);

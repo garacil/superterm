@@ -4496,6 +4496,10 @@ begin
 end;
 
 procedure TSuperApp.Idle;
+type
+  // named so the marks can be cleared with Default(): FillChar takes an
+  // untyped var parameter, which the compiler cannot see as initialisation
+  TTouchedPanes = array[0..MAX_PANES - 1] of boolean;
 var
   fdset: TFDSet;
   tv: TTimeVal;
@@ -4510,7 +4514,7 @@ var
   // the keyboard, plus the marks for the single repaint that follows it
   Drained: integer;
   Deadline: QWord;
-  Touched: array[0..MAX_PANES - 1] of boolean;
+  Touched: TTouchedPanes;
   FullRedraw: boolean;
   const
     LastTitle: cardinal = 0;
@@ -4546,7 +4550,7 @@ begin
     begin
       Drained := 0;
       Deadline := GetTickCount64 + 20;
-      FillChar(Touched, SizeOf(Touched), 0);
+      Touched := Default(TTouchedPanes);
       FullRedraw := False;
       while (Remote <> nil) and (Drained < 32) and
             (GetTickCount64 < Deadline) and Remote.Poll(RemoteEvent) do
@@ -4583,21 +4587,21 @@ begin
           begin
             ApplyRemoteLayoutEv(RemoteEvent.Data);
             // panes were renumbered: a stale mark would repaint the wrong one
-            FillChar(Touched, SizeOf(Touched), 0);
+            Touched := Default(TTouchedPanes);
             FullRedraw := True;
           end;
         sekKillPaneEv:
           begin
             ApplyRemoteKillPane(RemoteEvent.Pane);
             // panes were renumbered: a stale mark would repaint the wrong one
-            FillChar(Touched, SizeOf(Touched), 0);
+            Touched := Default(TTouchedPanes);
             FullRedraw := True;
           end;
         sekNewPaneEv:
           begin
             ApplyRemoteNewPane(RemoteEvent.Data);
             // panes were renumbered: a stale mark would repaint the wrong one
-            FillChar(Touched, SizeOf(Touched), 0);
+            Touched := Default(TTouchedPanes);
             FullRedraw := True;
           end;
         sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
