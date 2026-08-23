@@ -4,6 +4,16 @@
 
 The desktop: its pictures, its colour, and the shadows cast on it.
 
+### One long-standing test flake, gone
+
+`passthrough_test` failed about two runs in eight, and had done since before
+any of this. Both faults were in the test: the rich line it prints ended in a
+carriage return, so the shell's next prompt landed on top of it and the
+assertion depended on the renderer emitting a frame in the gap -- which it
+coalesces on purpose; and the wait was for a word the shell's own echo of the
+command carries, so the slice under test could be the echo. Six runs in a row
+pass now.
+
 ### The pictures are drawn for the screen they live on
 
 At 1024x768 with the classic 8x16 console cell the terminal is 128x48
@@ -40,19 +50,32 @@ character, which is what the hand-written tile patterns have always been
 written for, and the generated pictures had no space after the marker. Every
 one of them had its first column eaten and the rest shifted one to the left.
 
-### The desktop's colour is a choice, and monochrome means monochrome
+### The desktop's colour is a choice
 
 The desktop was filled with attribute 0 -- black, always. `Options >
 Desktop colour...` now opens a picker with the sixteen text-mode colours as
 swatches. Black stays the default, and the colour fills the desktop and the
 empty cells of a picture alike.
 
-A picture was also drawn in its own colours whatever palette was in force.
-With a window covering the desktop the only row left uncovered is the bottom
-one, where minimised windows sit, so on a monochrome screen that row showed
-a strip of coloured squares and went black again as soon as something was
-minimised over it. Under black-and-white or monochrome the desktop is now
-the flat colour and nothing else.
+A picture keeps its own colours in every palette, including black and white
+and monochrome. It was tried the other way -- no picture at all outside the
+colour palette -- and it is worse: what shows through between the windows is
+the picture the user chose, and taking it away is not what a palette is for.
+
+### The ground is ours to paint
+
+A screenshot showed superterm tinted green from top to bottom -- panes,
+menus and status line alike -- and nothing here emits green. It was the host
+terminal answering for the parts superterm did not answer for itself: a cell
+whose background is the palette's black went out as "colour 0", which a
+themed terminal paints as whatever it calls black, and a pane cell whose
+background is the terminal default went out with no background at all, which
+on a transparent terminal is a hole straight through the application.
+
+Every background is explicit now. Only black is forced, so a themed terminal
+keeps its own blue and cyan, and the text colour is never touched -- it is
+the ground that has to be solid, not the letters. `Options > Solid
+background` turns it off for anyone who wants that transparency.
 
 ### A shadow over a picture looks like a shadow
 
