@@ -101,6 +101,29 @@ history. Each pane keeps its own process, terminal state, focus and size.
 
 ## Screenshots
 
+**Copy and paste, with a history.** The `Clipboard` / `Portapapeles` menu keeps
+the ten most recent items. `Ctrl-Q [` copies from the pane, `Ctrl-Q ]` pastes
+the newest item, and `Ctrl-Q h` opens the history to choose one, each row saying
+where it came from. It works the same when the pane is an SSH connection,
+because a pane's own copy travels as OSC 52:
+
+| The menu | The history |
+|---|---|
+| ![The Clipboard menu](screenshots/clipboard-menu.png) | ![Choosing an item to paste](screenshots/clipboard-history.png) |
+
+**Focus changes the border, not the terminal.** An unfocused pane is no longer
+darkened into greyscale. Both panes below ran the same output and keep the
+application's exact colours; only the border and the title say which one has
+the focus. Nothing in the pane interior changes, so moving the focus sends
+nothing over a slow link:
+
+![Two panes keeping their colours, focused and not](screenshots/focus-colour.png)
+
+**Minimize or restore every window at once**, from the `Windows` / `Ventanas`
+menu. The per-window entries stay in `Panes` / `Paneles`:
+
+![Minimize all and restore all in the Windows menu](screenshots/windows-menu.png)
+
 **A picture on the desktop, behind the windows.** Nine ship, and your own drop
 into `~/.superterm/backgrounds/` without rebuilding. The colours are real RGB,
 not the 16-colour grid, and every picture is drawn with one glyph only -- the
