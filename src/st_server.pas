@@ -2102,7 +2102,11 @@ procedure TDetachedSession.DoKillPane(APane: integer);
 var
   I, C: integer;
 begin
-  if (APane < 0) or (APane >= FPaneCount) or (FPaneCount <= 1) then
+  // the last pane may go too: a session with no panes is a legitimate state,
+  // an empty desktop with the window manager still there. Nothing is attached
+  // to it and nothing alive in it, the self-cleanup below closes it after the
+  // grace period; with a client attached it simply waits for the next pane.
+  if (APane < 0) or (APane >= FPaneCount) then
     Exit;
   FLayout.ClosePane(APane);
   if FPanes[APane] <> nil then
@@ -2324,13 +2328,23 @@ begin
     AAt := 0;
   Cols := 80;
   Rows := 24;
-  if FScreens[AAt] <> nil then
+  if (FPaneCount > 0) and (FScreens[AAt] <> nil) then
   begin
     Cols := FScreens[AAt].Width;
     Rows := FScreens[AAt].Height;
   end;
   OldCount := FPaneCount;
-  if ADir = 1 then
+  // an empty session is a legitimate state now (the last pane can be closed),
+  // so the first pane back is a new root, not a split of something
+  if FPaneCount = 0 then
+  begin
+    if not FLayout.AddFirstPane then
+    begin
+      AErr := 'split failed';
+      Exit;
+    end;
+  end
+  else if ADir = 1 then
   begin
     if not FLayout.SplitPane(AAt, sdH) then
     begin
@@ -3002,7 +3016,7 @@ begin
         FStop := True;
       end;
     FRAME_KILLPANE:
-      if (Pane >= 0) and (Pane < FPaneCount) and (FPaneCount > 1) then
+      if (Pane >= 0) and (Pane < FPaneCount) then
       begin
         DoKillPane(Pane);
         Broadcast(FRAME_KILLPANE_EV, Pane, B0, 0, True, AIdx);

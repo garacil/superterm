@@ -57,7 +57,7 @@ check('windowed keeps the wide glyph', b'\xe6\xbc\xa2' in win)
 
 # ---- maximize (F5): the pane owns the terminal -> passthrough ----
 c.send(b'\x1b[15~', 1.4)
-check('maximize hides the menu', 'F5 Zoom' not in c.text())
+check('maximize hides the menu', 'Detach' not in c.text())
 base = len(c.raw())
 c.send(RICH, 0.5)
 c.wait_until(lambda t: b'END' in c.raw()[base:], 10.0)
@@ -69,7 +69,7 @@ check('passthrough keeps the wide glyph', b'\xe6\xbc\xa2' in mx)
 
 # ---- restore (F5): the window manager reclaims the screen ----
 c.send(b'\x1b[15~', 1.4)
-check('restore brings the menu back', 'F5 Zoom' in c.text())
+check('restore brings the menu back', 'Detach' in c.text())
 check('restore redraws a window frame',
       ('┌' in '\n'.join(c.screen.display)) or
       ('╔' in '\n'.join(c.screen.display)))

@@ -2577,7 +2577,11 @@ var
 begin
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
-  if Lay.Focused < 0 then
+  // With no panes at all there is nothing to focus and nothing to split, and
+  // that is exactly when a pane is most wanted: the desktop was emptied by
+  // closing the last window. Fall through with Focused = -1; both the local
+  // path and the daemon read an empty layout as "give me the first pane".
+  if (Lay.Focused < 0) and (Lay.PaneCount > 0) then
     Exit;
   if RemoteMode then
   begin
@@ -2600,7 +2604,13 @@ begin
     Exit;
   end;
   OldCount := Lay.PaneCount;
-  if not Lay.SplitPane(Lay.Focused, ADir) then
+  if (Lay.PaneCount = 0) and Lay.AddFirstPane then
+  begin
+    // the desktop was left empty: this is the first pane again, not a split
+    OldCount := 0;
+    NewIdx := 0;
+  end
+  else if not Lay.SplitPane(Lay.Focused, ADir) then
   begin
     MessageBox(UiText('Maximum 16 panes', 'Maximo 16 paneles'), nil,
       mfInformation or mfOKButton);
@@ -3908,11 +3918,10 @@ var
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
     Exit;
-  if PaneCount <= 1 then
-  begin
-    Message(@Self, evCommand, cmQuit, nil);
-    Exit;
-  end;
+  // Closing the last window used to end the program. It leaves an empty
+  // desktop instead: the menu, the status line and the picture stay, and
+  // Classes or Panes > Split open a pane again. Leaving is what Alt-X and
+  // Panes > Exit are for, said on purpose.
   OldFocused := Lay.Focused;
   // in remote mode the pane lives in the daemon: kill it there and
   // compact mirroring it (same indexes); locally KillPane does the job
@@ -4293,8 +4302,7 @@ procedure TSuperApp.ApplyRemoteKillPane(APane: integer);
 var
   j, OldFocused: integer;
 begin
-  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
-     (PaneCount <= 1) then
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) then
     Exit;
   OldFocused := Lay.Focused;
   Lay.ClosePane(APane);
@@ -4341,15 +4349,21 @@ begin
   if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
     TitleS, TermS) then
     Exit;
-  if (Lay.PaneCount + 1 <> PC) or (At < 0) or (At >= Lay.PaneCount) or
-     (PC > MAX_PANES) then
+  if (Lay.PaneCount + 1 <> PC) or (PC > MAX_PANES) or
+     ((Lay.PaneCount > 0) and ((At < 0) or (At >= Lay.PaneCount))) then
     Exit;   // out of sync: better not to touch anything
   OldCount := Lay.PaneCount;
   if Dir = 1 then
     SDir := sdH
   else
     SDir := sdV;
-  if not Lay.SplitPane(At, SDir) then
+  // the desktop was left empty: the daemon is giving us the first pane back
+  if Lay.PaneCount = 0 then
+  begin
+    if not Lay.AddFirstPane then
+      Exit;
+  end
+  else if not Lay.SplitPane(At, SDir) then
     Exit;
   if Lay.LastInsertedIndex <> NewIdx then
   begin
@@ -5583,6 +5597,12 @@ begin
 
   // ---- Panes: tile operations (split, focus, zoom, min, size) ----
   PaneItems := nil;
+  // Closing the last window leaves an empty desktop now, so leaving has to be
+  // something you ask for. It is on the Sessions menu too; this is where the
+  // hand already is after closing panes.
+  PaneItems := NewItem(UiText('E~x~it superterm', 'Sa~l~ir de superterm'),
+    'Alt-X', kbAltX, cmQuit, hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
     '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);

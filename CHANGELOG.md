@@ -2,7 +2,7 @@
 
 ## 3.4.3 - 2026-08
 
-Two things a real workspace found in an afternoon.
+What an afternoon of real use asked for, and the crash it found.
 
 ### A pane created in the daemon got no window of its own
 
@@ -35,6 +35,19 @@ icon threw the whole IDE off the screen. They are two things now:
 - **`F5`** -- and only `F5` -- hands the whole terminal to the pane, which is
   what a full-fidelity TUI wants. `F5` again puts the window back where it
   was.
+
+### Closing the last window empties the desktop, it does not end the program
+
+It used to quit. Now the menu bar, the status line and the picture stay
+exactly where they were and the desktop is simply empty; `Classes`, or
+`Panes > Split`, open a pane again -- the session, local or in a daemon, is
+perfectly happy holding none. A detached session with nothing alive in it and
+nobody attached still closes itself after the usual grace period, so nothing
+is left lying around.
+
+Leaving is something you ask for, and `Panes` carries a way out of its own
+now -- `Exit superterm`, `Alt-X` -- next to where the hand already is after
+closing everything.
 
 Also: entering passthrough turned any-motion mouse reporting off at the
 terminal without recording that it had, so superterm and the terminal could
