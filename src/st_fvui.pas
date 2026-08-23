@@ -158,6 +158,10 @@ type
     // cannot use the mirror's size: a daemon that keeps a pane smaller than
     // this client's window would otherwise be asked again on every drag step.
     ReqCols, ReqRows: array[0..MAX_PANES - 1] of integer;
+    // rectangle for the next window StartPaneEx creates, when the caller has
+    // already decided where it goes (a split); consumed by NewWindowRect
+    NextRect: Objects.TRect;
+    NextRectSet: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
     // startup: hold one LockScreenUpdate across the whole build+promote+
     // attach so the screen is flushed ONCE at the end, not several times
@@ -229,6 +233,13 @@ type
     procedure StopRuntime;
     procedure ReleaseRuntime;
     function NewWindowRect(ASysIdx: integer): Objects.TRect;
+    // where a pane opened FROM window AAt goes. With a class: centred at the
+    // class size, on top. Without one it is a split -- AAt gives up half of
+    // itself (AKeep) and the new window takes the other half -- and nothing
+    // else on the desktop moves. ASplit says which happened.
+    function PlaceNewPane(AAt: integer; ADir: TSplitDir; AHasClass: boolean;
+      ASysIdx: integer; out AKeep: Objects.TRect;
+      out ASplit: boolean): Objects.TRect;
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
     procedure SyncPaneToWindow(i: integer);
@@ -1830,6 +1841,12 @@ var
   DW, DH, WantW, WantH, i, Placed, Cols, Rows: integer;
 begin
   Result := Default(Objects.TRect);
+  if NextRectSet then
+  begin
+    NextRectSet := False;
+    Result := NextRect;
+    Exit;
+  end;
   if Desktop = nil then
   begin
     Result.Assign(0, 0, 40, 15);
@@ -1865,6 +1882,39 @@ begin
   Slot := CentredRect(WantW, WantH, DW, DH);
   Result.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
     RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
+end;
+
+function TSuperApp.PlaceNewPane(AAt: integer; ADir: TSplitDir;
+  AHasClass: boolean; ASysIdx: integer; out AKeep: Objects.TRect;
+  out ASplit: boolean): Objects.TRect;
+var
+  WR: Objects.TRect;
+  LR, K, N: st_layout.TRect;
+begin
+  ASplit := False;
+  AKeep := Default(Objects.TRect);
+  // a maximised or minimised window has no real rectangle to share
+  if (not AHasClass) and (AAt >= 0) and (AAt < MAX_PANES) and
+     (Win[AAt] <> nil) and (not Win[AAt]^.Minimized) and
+     (not Win[AAt]^.Zoomed) then
+  begin
+    WR := Default(Objects.TRect);
+    Win[AAt]^.GetBounds(WR);
+    LR.X := WR.A.X;
+    LR.Y := WR.A.Y;
+    LR.W := WR.B.X - WR.A.X;
+    LR.H := WR.B.Y - WR.A.Y;
+    if SplitWindowRect(LR, ADir, K, N) then
+    begin
+      ASplit := True;
+      AKeep.Assign(K.X, K.Y, K.X + K.W, K.Y + K.H);
+      Result := Default(Objects.TRect);
+      Result.Assign(N.X, N.Y, N.X + N.W, N.Y + N.H);
+      Exit;
+    end;
+  end;
+  // a class, or a window too small to split: centred on top
+  Result := NewWindowRect(ASysIdx);
 end;
 
 procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string;
@@ -2191,6 +2241,8 @@ var
   OldCount, NewIdx, j: integer;
   DirB: byte;
   ClassS: string;
+  KeepR: Objects.TRect;
+  SplitWin: boolean;
 begin
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
@@ -2244,10 +2296,15 @@ begin
   Scr[NewIdx] := nil;
   Win[NewIdx] := nil;
   PaneTerm[NewIdx] := -1;
+  // the focused window keeps its index: the new one is inserted after it
+  NextRect := PlaceNewPane(Lay.Focused, ADir, ASysIdx >= 0, ASysIdx,
+    KeepR, SplitWin);
+  NextRectSet := True;
   if ASysIdx >= 0 then
     StartPaneEx(NewIdx, '', '', ASysIdx, '', '', '', 0)
   else
     StartPane(NewIdx, GetEnvironmentVariable('HOME'), '');
+  NextRectSet := False;
   if Win[NewIdx] = nil then
   begin
     // Roll the layout and runtime arrays back together when the new PTY
@@ -2278,7 +2335,10 @@ begin
     Exit;
   end;
   // do NOT re-tile: the windows already open keep the size and position the
-  // user gave them. Window|Tile (prefix + t) is how you ask for a re-tile.
+  // user gave them. A split takes its half from the window it came from and
+  // from nowhere else. Window|Tile (prefix + t) is how you ask for a re-tile.
+  if SplitWin and (Win[Lay.Focused] <> nil) then
+    Win[Lay.Focused]^.Locate(KeepR);
   Lay.Focused := NewIdx;
   FocusPane(Lay.Focused);
 end;
@@ -3949,6 +4009,8 @@ var
   TitleS, TermS: string;
   OldCount, j: integer;
   SDir: TSplitDir;
+  KeepR: Objects.TRect;
+  SplitWin: boolean;
 begin
   if not DecodeNewPaneEv(AData, At, NewIdx, PC, Dir, Cols, Rows,
     TitleS, TermS) then
@@ -3988,8 +4050,14 @@ begin
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
-  CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
+  // same rule as a local split, applied by every client to its own window
+  // At: a pane with a class lands centred; one without splits At in two
+  CreateWindowForPane(NewIdx, Trim(TitleS),
+    PlaceNewPane(At, SDir, Trim(TermS) <> '', PaneTerm[NewIdx], KeepR,
+      SplitWin));
   SyncPaneToWindow(NewIdx);
+  if (Win[NewIdx] <> nil) and SplitWin and (Win[At] <> nil) then
+    Win[At]^.Locate(KeepR);
   if Win[NewIdx] = nil then
   begin
     FreeAndNil(Scr[NewIdx]);

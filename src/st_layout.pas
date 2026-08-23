@@ -83,6 +83,12 @@ procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
 // existing one, so it is placed on its own merits and simply lands on top.
 function CentredRect(AW, AH, ADeskW, ADeskH: integer): TRect;
 
+// A real split: the window R gives up half of itself and the new one takes
+// the other half. Nothing else on the desktop is involved. False when either
+// half would be smaller than a window the user can still handle.
+function SplitWindowRect(const R: TRect; ADir: TSplitDir;
+  out AKeep, ANew: TRect): boolean;
+
 implementation
 
 procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
@@ -104,6 +110,35 @@ begin
     AW := ADeskW;
   if AH > ADeskH then
     AH := ADeskH;
+end;
+
+function SplitWindowRect(const R: TRect; ADir: TSplitDir;
+  out AKeep, ANew: TRect): boolean;
+var
+  Half: integer;
+begin
+  Result := False;
+  AKeep := R;
+  ANew := R;
+  if ADir = sdV then
+  begin
+    Half := R.W div 2;
+    if (Half < MIN_WIN_W) or (R.W - Half < MIN_WIN_W) then
+      Exit;
+    AKeep.W := Half;
+    ANew.X := R.X + Half;
+    ANew.W := R.W - Half;
+  end
+  else
+  begin
+    Half := R.H div 2;
+    if (Half < MIN_WIN_H) or (R.H - Half < MIN_WIN_H) then
+      Exit;
+    AKeep.H := Half;
+    ANew.Y := R.Y + Half;
+    ANew.H := R.H - Half;
+  end;
+  Result := True;
 end;
 
 function CentredRect(AW, AH, ADeskW, ADeskH: integer): TRect;
