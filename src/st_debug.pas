@@ -64,8 +64,11 @@ uses
 
 const
   RING_SIZE = 400;      // lines of context kept for a crash report
-  // where a debug build traces when nothing says otherwise
+{$IFDEF DEBUG}
+  // where a debug build traces when nothing says otherwise; a release build
+  // has no such default, so the constant does not exist there either
   DEFAULT_DEBUG_LOG = '/tmp/st-crash.log';
+{$ENDIF}
 
 var
   Lock: TRTLCriticalSection;
