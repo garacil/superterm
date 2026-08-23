@@ -71,6 +71,7 @@ const
   cmToggleZoomAnim    = 2763;
   cmBackgroundBase    = 2800;   // + index into the pictures found on disk
   cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
+  cmDesktopColor      = 2764;   // visual picker for the desktop colour
 
 type
   PSuperApp = ^TSuperApp;
@@ -141,7 +142,8 @@ type
   TArtBackground = object(TBackground)
     procedure Draw; virtual;
     // paint the whole desktop black; see the comment on Draw
-    procedure FillBlack(AWidth: integer);
+    function DeskAttr: byte;
+    procedure FillDesk(AWidth: integer);
   end;
 
   PArtDesktop = ^TArtDesktop;
@@ -4631,6 +4633,7 @@ var
   ZoomF: integer;
   ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2: integer;
   ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
+  DeskCol: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -4874,6 +4877,17 @@ begin
           Cfg.DragContent := not Cfg.DragContent;
           SaveConfig(Cfg);
           RebuildMenu;
+        end;
+      cmDesktopColor:
+        begin
+          DeskCol := Cfg.DesktopColor;
+          if RunDesktopColorPick(DeskCol) then
+          begin
+            Cfg.DesktopColor := DeskCol;
+            SaveConfig(Cfg);
+            ResetVideoSurface;   // the whole desktop changes colour
+            ReDraw;
+          end;
         end;
       cmToggleZoomAnim:
         begin
@@ -5356,16 +5370,27 @@ end;
 // FreeVision's own background is the classic blue field of dotted shade. A
 // picture drawn on top of that had the blue showing through everywhere the
 // picture did not reach, and the pictures themselves are photographic: they
-// belong on black, the way a screen border does. So the desktop is black in
-// every mode, with a picture or without one, and the empty cells of a
-// picture are black too rather than blue dots.
-procedure TArtBackground.FillBlack(AWidth: integer);
+// belong on a plain ground, the way a screen border does. So the desktop is
+// one flat colour -- black unless the user picked another in
+// Options > Desktop colour -- with a picture or without one, and the empty
+// cells of a picture take that same colour rather than blue dots.
+function TArtBackground.DeskAttr: byte;
+var
+  App: PSuperApp;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  DeskAttr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+end;
+
+procedure TArtBackground.FillDesk(AWidth: integer);
 var
   B: TDrawBuffer;
   y: integer;
 begin
   B := Default(TDrawBuffer);
-  MoveChar(B, ' ', 0, AWidth);      // attribute 0: black on black
+  MoveChar(B, ' ', DeskAttr, AWidth);
   for y := 0 to Size.Y - 1 do
     WriteLine(0, y, AWidth, 1, B);
 end;
@@ -5392,20 +5417,25 @@ begin
     W := MaxViewWidth;
   if W < 0 then
     W := 0;
+  // A picture is drawn in its own colours, which is precisely what black and
+  // white and monochrome say the screen must not have: with a picture on, the
+  // strip of desktop left uncovered showed up as coloured squares along the
+  // bottom of an otherwise monochrome screen. In those palettes the desktop is
+  // the flat colour and nothing else.
   if (App = nil) or (App^.Cfg.Background = '') or
-     (App^.Cfg.Background = 'none') then
+     (App^.Cfg.Background = 'none') or (AppPalette <> apColor) then
   begin
     // With no picture this costs exactly what the ancestor cost: one filled
     // buffer and one WriteLine per row, nothing looked up or registered.
-    FillBlack(W);
+    FillDesk(W);
     Exit;
   end;
   Idx := ArtIndexOf(App^.Cfg.Background);
   // Clear first: this covers the view's whole extent, so nothing of a
   // previous layout can survive in a row the picture does not reach.
-  FillBlack(W);
+  FillDesk(W);
   if Idx <= 0 then
-    Exit;                // name not found on disk: a black desktop
+    Exit;                // name not found on disk: a plain desktop
   Mode := ArtModeOf(App^.Cfg.BackgroundMode);
   GOrig.X := 0;
   GOrig.Y := 0;
@@ -5427,7 +5457,7 @@ begin
         // covers the whole desktop, so registering every empty cell filled
         // the overlay with entries that a later layout could match by
         // coincidence and resurrect as a stale glyph.
-        Word0 := word(' ');
+        Word0 := (word(DeskAttr) shl 8) or word(' ');
         B[x] := Word0;
         RichClear(GOrig.X + x, GOrig.Y + y);
       end
@@ -5714,6 +5744,8 @@ begin
     NewItem(ActiveMark(Cfg.AutoRestore) +
       UiText('Auto~r~estore on start', 'Auto~r~estaurar al arrancar'), '',
       kbNoKey, cmToggleAutoRestore, hcNoContext,
+    NewItem(UiText('Desktop ~c~olour...', '~C~olor del escritorio...'), '',
+      kbNoKey, cmDesktopColor, hcNoContext,
     NewItem(ActiveMark(Cfg.DragContent) +
       UiText('Show contents while ~d~ragging',
              'Ver contenido al ~a~rrastrar'), '',
@@ -5721,7 +5753,7 @@ begin
     NewItem(ActiveMark(Cfg.ZoomAnim) +
       UiText('Zoom ~t~ransition (F5)',
              '~T~ransicion al hacer zoom (F5)'), '',
-      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))));
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil )))))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
