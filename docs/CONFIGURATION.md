@@ -88,6 +88,13 @@ other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed.
 
+### [ui] new window size
+
+- `newwincols`, `newwinrows` — size, in cells, of a window opened from a class
+  that does not set its own `cols`/`rows`. `0` (the default) means two thirds
+  of the desktop. The first window of a session always takes the whole
+  desktop.
+
 ### [ui] desktop background
 
 - `background` names the picture drawn on the desktop behind the windows, by
@@ -211,6 +218,11 @@ Fields:
   class. `0` (the default) falls back to `[ui] newwincols`/`newwinrows`, and
   when those are unset too, to two thirds of the desktop. The window frame
   adds one cell on each side, and the size is clamped to the desktop.
+
+A pane opened from a class lands centred on the desktop at that size, on top
+of whatever is there, and no other window moves. `F2`/`F3` are different: they
+split the focused window in two and leave the rest alone. Tiling is on demand
+(`Windows -> Tile`, or prefix + `t`).
 
 The class type is derived when loading and is never stored:
 
