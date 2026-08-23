@@ -59,6 +59,8 @@ uses
 
 const
   RING_SIZE = 400;      // lines of context kept for a crash report
+  // where a debug build traces when nothing says otherwise
+  DEFAULT_DEBUG_LOG = '/tmp/st-crash.log';
 
 var
   Lock: TRTLCriticalSection;
@@ -85,6 +87,16 @@ begin
   Resolved := True;
   FullMode := GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '1';
   FN := GetEnvironmentVariable('SUPERTERM_DEBUG');
+{$IFDEF DEBUG}
+  // A build made with 'make debug' traces by default: that is what it is
+  // for, and having to remember two environment variables meant the one
+  // crash worth catching was caught without any context. Either variable
+  // given from outside still wins, including SUPERTERM_DEBUG_FULL=0.
+  if FN = '' then
+    FN := DEFAULT_DEBUG_LOG;
+  if GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '' then
+    FullMode := True;
+{$ENDIF}
   if FN = '' then
     Exit;
   Enabled := True;
@@ -171,10 +183,17 @@ begin
   end;
 end;
 
+// One file per crash, never overwritten: role, pid, the time to the second
+// and a short tag drawn from the clock, so two crashes in the same second --
+// a client and its daemon going down together, or a fast retry -- both
+// survive to be read.
 function ReportPath: string;
+var
+  Tag: string;
 begin
+  Tag := IntToHex(GetTickCount64 and $FFFFFF, 6);
   Result := '/tmp/superterm-crash-' + Role + '-' + IntToStr(FpGetPid) + '-' +
-    FormatDateTime('yyyymmdd-hhnnss', Now) + '.log';
+    FormatDateTime('yyyymmdd-hhnnss', Now) + '-' + Tag + '.log';
 end;
 
 // Write everything known about this process to APath. Called from a signal
