@@ -1,5 +1,49 @@
 # Changelog
 
+## 3.3.1 - 2026-08
+
+A maintenance release: the session daemon no longer dies under heavy output,
+and the debug build now explains itself when something does go wrong.
+
+### The daemon survives a flood, and the interface stays alive with it
+
+Running something that writes without pause -- `ls -R /` from the root, a large
+build -- could kill the session daemon and take every pane down with it, leaving
+attached clients saying only "connection lost". Two independent faults were
+behind it.
+
+- **The daemon detached with its standard descriptors closed.** The first write
+  to a freed descriptor raised an error, whose own reporting wrote to the same
+  descriptor, and so on until the process died. Descriptors 0, 1 and 2 are now
+  reopened on `/dev/null`, which is what every well-behaved daemon does.
+- **The main loop had no guard.** An unexpected error anywhere inside it ended
+  the process. The body now catches, records what happened, writes a report and
+  carries on; fifty consecutive failures still stop the session, so a genuinely
+  broken daemon does not spin forever.
+- **The interface froze while the flood lasted.** The client drained every
+  pending frame in one pass and repainted per frame, so keyboard and mouse were
+  never read: Ctrl-C did not arrive, the menu did not open, a window could not be
+  minimised. The drain is now bounded -- at most 32 frames or 20 ms -- and marks
+  which panes changed, repainting each one once at the end.
+
+### A debug build that explains itself
+
+- **Crash reports.** With `make debug`, a fatal signal writes
+  `/tmp/superterm-crash-<role>-<pid>-<time>.log` before the process goes down:
+  the signal, how long it had been running, a backtrace with file and line, and
+  the last few hundred trace lines from a ring buffer that is kept even when
+  tracing is switched off. The default handler is then restored and the signal
+  re-raised, so the system core dump still happens.
+- **A quieter flow log.** `SUPERTERM_DEBUG` records the milestones; the chatty
+  per-read, per-frame detail moved behind `SUPERTERM_DEBUG_FULL=1`, so a long
+  trace stays readable.
+
+### Also
+
+- **A desktop with no picture costs exactly what it did before 3.3.** The
+  background code now short-circuits on `none` instead of walking every cell.
+- The README links the project site, <https://www.superterm.org>.
+
 ## 3.3 - 2026-08
 
 ### A picture on the desktop, behind the windows
