@@ -125,6 +125,12 @@ type
     // AValueOnly skips Show/Hide, which redraw the owner and must not be
     // called from inside a Draw.
     procedure SyncScrollBar(AValueOnly: boolean);
+    // A window points at its pane from three places: itself, the terminal
+    // view and the scrollbar. Panes are renumbered whenever one is inserted
+    // or closed, and a scrollbar left on the old index drives ANOTHER
+    // pane's viewport: the thumb moves, snaps back on the next sync, and
+    // the text of this window never scrolls.
+    procedure SetPaneIdx(APane: integer);
   end;
 
   // Desktop background that paints an ASCII art picture behind the windows.
@@ -1303,6 +1309,16 @@ begin
   Insert(SB);
   SB^.Hide;
   SBShown := False;
+end;
+
+procedure TTermWindow.SetPaneIdx(APane: integer);
+begin
+  PaneIdx := APane;
+  Number := APane + 1;
+  if Term <> nil then
+    Term^.PaneIdx := APane;
+  if SB <> nil then
+    SB^.PaneIdx := APane;
 end;
 
 procedure TTermWindow.SyncScrollBar(AValueOnly: boolean);
@@ -2572,10 +2588,7 @@ begin
     PaneTerm[j] := PaneTerm[j - 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[NewIdx] := nil;
@@ -2604,10 +2617,7 @@ begin
       PaneTerm[j] := PaneTerm[j + 1];
       if Win[j] <> nil then
       begin
-        Win[j]^.PaneIdx := j;
-        Win[j]^.Number := j + 1;
-        if Win[j]^.Term <> nil then
-          Win[j]^.Term^.PaneIdx := j;
+        Win[j]^.SetPaneIdx(j);
       end;
     end;
     Panes[OldCount] := nil;
@@ -3889,10 +3899,7 @@ begin
     PaneTerm[j] := PaneTerm[j + 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[MAX_PANES - 1] := nil;
@@ -4260,10 +4267,7 @@ begin
     PaneTerm[j] := PaneTerm[j + 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[MAX_PANES - 1] := nil;
@@ -4321,10 +4325,7 @@ begin
     PaneTerm[j] := PaneTerm[j - 1];
     if Win[j] <> nil then
     begin
-      Win[j]^.PaneIdx := j;
-      Win[j]^.Number := j + 1;
-      if Win[j]^.Term <> nil then
-        Win[j]^.Term^.PaneIdx := j;
+      Win[j]^.SetPaneIdx(j);
     end;
   end;
   Panes[NewIdx] := nil;
@@ -4348,10 +4349,7 @@ begin
       PaneTerm[j] := PaneTerm[j + 1];
       if Win[j] <> nil then
       begin
-        Win[j]^.PaneIdx := j;
-        Win[j]^.Number := j + 1;
-        if Win[j]^.Term <> nil then
-          Win[j]^.Term^.PaneIdx := j;
+        Win[j]^.SetPaneIdx(j);
       end;
     end;
     Panes[OldCount] := nil;
