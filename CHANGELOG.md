@@ -4,6 +4,48 @@
 
 What an afternoon of real use asked for, and the crash it found.
 
+### The mouse died after moving the focus away from Claude Code or Codex
+
+Open a full-screen program that wants hover -- Claude Code, Codex -- in a
+pane, click on another window, come back, and after a round or two the
+pointer turned from an arrow into an I-beam and not one click reached the
+window manager again. Only restarting superterm brought it back, and only
+until the next time. `top` and `htop` never showed it.
+
+That is the shape of the bug. Those two ask the terminal for **any-motion**
+tracking, `?1003h`, which `top` and `htop` do not; superterm passes it on to
+the host terminal while such a pane has the focus, and takes it back with
+`?1003l` when the focus moves. xterm keeps the three tracking modes as
+independent flags, so taking the highest one back leaves `?1000`/`?1002`
+standing. Konsole -- and it is not alone -- holds ONE mouse mode, so the same
+sequence leaves it reporting nothing at all.
+
+The base modes are re-asserted immediately after now. Three sequences, a
+no-op on a terminal that kept them, and the difference between a working
+pointer and a dead one everywhere else.
+
+### A picture is painted, not typed
+
+The desktop pictures were drawn with the full block glyph, U+2588, in the
+cell's colour. That should look like a solid rectangle and does not: the
+block comes from the terminal's font, and a font whose U+2588 does not quite
+fill its cell -- most of them, once the terminal stretches or hints it --
+leaves hairlines between one cell and the next, so a picture made of them
+reads as blurred.
+
+Every whole cell is a SPACE on a coloured background now. The terminal paints
+that itself, exactly, whatever the font is doing. The picture files do not
+change: it is the drawing that does.
+
+The word left in the grid is still the block, on purpose. That word is the
+overlay's oracle -- what says a cell is still the picture's -- and "a space in
+some attribute" is a word every dialog and menu writes too, so registering the
+picture under it made a dialog drawn on top match by coincidence and bring the
+picture back through its own body. Dialogs looked transparent for as long as
+that lasted, which was one build. `test/dialog_opaque_test.py` opens three of
+them over a picture, in colour and in monochrome, and counts what shows
+through.
+
 ### A pane created in the daemon got no window of its own
 
 Attached to a session, creating a pane -- from a class, from the menu, from

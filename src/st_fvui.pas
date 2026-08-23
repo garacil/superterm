@@ -2258,7 +2258,23 @@ begin
   HostAnyMotion := Want;
   // the RTL queue holds 16 events and FreeVision drains one per loop, so
   // every-motion reporting is asked for only while an application wants it
-  if Want then WriteRaw(#27'[?1003h') else WriteRaw(#27'[?1003l');
+  if Want then
+    WriteRaw(#27'[?1003h')
+  else
+  begin
+    // "?1003l" does not mean "fall back to ?1002" everywhere. xterm keeps the
+    // three tracking modes as independent flags, so turning the highest off
+    // leaves the lower ones standing; Konsole -- and it is not alone -- holds
+    // ONE mouse mode, so the same sequence leaves it reporting nothing at all.
+    // What that looks like: run any full-screen program that asks for
+    // every-motion tracking (Claude Code, Codex) in a pane, click on another
+    // window and the pointer turns from an arrow back into an I-beam and not
+    // one click reaches the window manager again until superterm is
+    // restarted. So the base modes are re-asserted immediately after, which
+    // costs three sequences and is a no-op on a terminal that kept them.
+    WriteRaw(#27'[?1003l');
+    HostMouseOn;
+  end;
 end;
 
 procedure TSuperApp.RequestPaneSize(i, ACols, ARows: integer);
@@ -5455,6 +5471,10 @@ end;
 // one flat colour -- black unless the user picked another in
 // Options > Desktop colour -- with a picture or without one, and the empty
 // cells of a picture take that same colour rather than blue dots.
+const
+  // U+2588, the glyph the pictures are drawn with
+  FULL_BLOCK = #$E2#$96#$88;
+
 function TArtBackground.DeskAttr: byte;
 var
   App: PSuperApp;
@@ -5539,13 +5559,40 @@ begin
       end
       else
       begin
-        Attr := Vga16FromRgb(C.Fg);
-        if C.Bg <> 0 then
-          Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
-        Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
-        B[x] := Word0;
-        RichSetCell(GOrig.X + x, GOrig.Y + y, C.Glyph, C.Fg, C.Bg, 0,
-          Word0, False, False);
+        // A cell painted whole is drawn as a SPACE on a coloured background,
+        // never as a full block glyph in that colour. They should look the
+        // same and do not: the block comes from the terminal's font, and a
+        // font whose U+2588 does not quite fill its cell -- most of them, once
+        // the terminal stretches or hints it -- leaves hairlines between one
+        // cell and the next, which is what a picture drawn out of them looks
+        // blurred by. A background colour is painted by the terminal itself
+        // and covers the cell exactly, whatever the font is doing.
+        if C.Glyph = FULL_BLOCK then
+        begin
+          // The GRID keeps the block glyph: that word is the overlay's
+          // oracle, and a cell that says "space in some attribute" is a word
+          // any dialog or menu writes too. Registering the picture under it
+          // made a dialog drawn on top match the oracle by coincidence and
+          // bring the picture back through its own body, in colour. The block
+          // is a word nothing else here writes, so the oracle stays unique --
+          // and the terminal never sees it, because the overlay below says
+          // what is actually emitted.
+          Attr := Vga16FromRgb(C.Fg);
+          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
+          B[x] := Word0;
+          RichSetCell(GOrig.X + x, GOrig.Y + y, ' ', 0, C.Fg, 0,
+            Word0, False, False);
+        end
+        else
+        begin
+          Attr := Vga16FromRgb(C.Fg);
+          if C.Bg <> 0 then
+            Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
+          Word0 := (word(Attr) shl 8) or word(Cp437ForGlyph(C.Glyph));
+          B[x] := Word0;
+          RichSetCell(GOrig.X + x, GOrig.Y + y, C.Glyph, C.Fg, C.Bg, 0,
+            Word0, False, False);
+        end;
       end;
     end;
     WriteLine(0, y, W, 1, B);
