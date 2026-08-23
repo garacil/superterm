@@ -48,6 +48,11 @@ type
     // client (controllable via CLI from startup); 'detach': classic mode,
     // the server only exists after detaching with prefix + d
     ServerMode: string;
+    // size, in cells, of a window opened from a class that does not fix its
+    // own. 0 = automatic, which is two thirds of the desktop. The window
+    // frame adds one cell on each side.
+    NewWinCols: integer;
+    NewWinRows: integer;
   end;
 
 function ConfigDir: string;
@@ -61,6 +66,9 @@ function UiLanguageCode(ALanguage: TUiLanguage): string;
 const
   DEFAULT_SCROLLBACK = 10000;
   MAX_SCROLLBACK = 100000;
+  // the same bounds the daemon validates a resize against (WINOP_RESIZE)
+  MAX_WIN_COLS = 1000;
+  MAX_WIN_ROWS = 500;
 
 {$I st_version.inc}
 
@@ -221,6 +229,8 @@ begin
   Cfg.Language := ulEnglish;
   Cfg.Palette := 'color';
   Cfg.ServerMode := 'always';
+  Cfg.NewWinCols := 0;
+  Cfg.NewWinRows := 0;
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -244,6 +254,12 @@ begin
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
     Cfg.DragContent := Ini.ReadBool('session', 'dragcontent', Cfg.DragContent);
     Cfg.ZoomAnim := Ini.ReadBool('session', 'zoomanim', Cfg.ZoomAnim);
+    Cfg.NewWinCols := Ini.ReadInteger('ui', 'newwincols', Cfg.NewWinCols);
+    Cfg.NewWinRows := Ini.ReadInteger('ui', 'newwinrows', Cfg.NewWinRows);
+    if (Cfg.NewWinCols < 0) or (Cfg.NewWinCols > MAX_WIN_COLS) then
+      Cfg.NewWinCols := 0;
+    if (Cfg.NewWinRows < 0) or (Cfg.NewWinRows > MAX_WIN_ROWS) then
+      Cfg.NewWinRows := 0;
     Cfg.Background := LowerCase(Trim(Ini.ReadString('ui', 'background',
       Cfg.Background)));
     Cfg.BackgroundMode := LowerCase(Trim(Ini.ReadString('ui', 'background_mode',
@@ -282,6 +298,8 @@ begin
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
     Ini.WriteBool('session', 'dragcontent', Cfg.DragContent);
     Ini.WriteBool('session', 'zoomanim', Cfg.ZoomAnim);
+    Ini.WriteInteger('ui', 'newwincols', Cfg.NewWinCols);
+    Ini.WriteInteger('ui', 'newwinrows', Cfg.NewWinRows);
     Ini.WriteString('ui', 'background', Cfg.Background);
     Ini.WriteString('ui', 'background_mode', Cfg.BackgroundMode);
     Ini.WriteString('session', 'default_profile', Cfg.DefaultProfile);

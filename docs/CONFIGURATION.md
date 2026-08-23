@@ -179,6 +179,8 @@ port=22
 key=~/.ssh/id_ed25519
 postconnect=tmux new -A -s main
 scrollback=20000
+cols=100
+rows=30
 
 [class.monitor]
 name=monitor
@@ -204,6 +206,10 @@ Fields:
 - `connect` — free connection command; takes precedence over `host`.
 - `postconnect` — command sent after connecting; see the semantics below.
 - `scrollback` — scrollback lines; default `10000`, maximum `100000`.
+- `cols`, `rows` — preferred size, in cells, of a window opened from this
+  class. `0` (the default) falls back to `[ui] newwincols`/`newwinrows`, and
+  when those are unset too, to two thirds of the desktop. The window frame
+  adds one cell on each side, and the size is clamped to the desktop.
 
 The class type is derived when loading and is never stored:
 
