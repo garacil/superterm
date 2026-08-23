@@ -41,11 +41,14 @@ check('outer session up', any('outer' in os.path.basename(s) for s in session_so
 check('the sidecar carries an id', sidecar('outer').get('session', 'id', fallback='') != '')
 
 # the pane's environment carries the chain
-a.send(b'echo CHAIN=$SUPERTERM_SESSION_CHAIN\r', 1.2)
+a.send(b'echo CHAIN=$SUPERTERM_SESSION_CHAIN\r', 1.5)
+# read it from the pane rather than from the screen: a window is only as wide
+# as its class asks for, so the line can be wrapped or clipped on screen while
+# the pane itself has it whole
 chain = ''
-for r in a.screen.display:
-    if 'CHAIN=' in r and '$' not in r:
-        chain = r.split('CHAIN=')[1].strip(' │║')
+for line in run_cli(['capture', 'outer:1'], home).stdout.splitlines():
+    if line.startswith('CHAIN='):
+        chain = line[len('CHAIN='):].strip()
 check('the pane knows its session chain', chain != '' and
       chain.endswith(sidecar('outer').get('session', 'id')))
 
