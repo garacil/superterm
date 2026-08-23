@@ -367,6 +367,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q` arrows | Resize the focused pane |
 | `Ctrl-Q c` | Open a window class in a new pane |
 | `Ctrl-Q s` | Session picker: attach to or close detached sessions |
+| `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |

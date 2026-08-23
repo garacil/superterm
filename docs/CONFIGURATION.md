@@ -60,9 +60,10 @@ default_profile=daily
 ### [keymap]
 
 `prefix` selects the prefix key for tmux-style chords (`Ctrl-Q d` detach,
-`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q 1..9` go to
-window, `Ctrl-Q n`/`p` next/previous window, `Ctrl-Q` arrows resize the
-pane, prefix twice sends one literal prefix byte). Accepted values:
+`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q t` tile the
+windows, `Ctrl-Q 1..9` go to window, `Ctrl-Q n`/`p` next/previous window,
+`Ctrl-Q` arrows resize the pane, prefix twice sends one literal prefix
+byte). Accepted values:
 
 - `ctrl-a` .. `ctrl-z`, for example `prefix=ctrl-q`.
 - A single letter `a` .. `z`, shorthand for the same Ctrl key.

@@ -223,7 +223,9 @@ type
     procedure DoProfileManage;
     procedure StopRuntime;
     procedure ReleaseRuntime;
-    procedure CreateWindowForPane(i: integer; const ATitle: string);
+    function NewWindowRect(ASysIdx: integer): Objects.TRect;
+    procedure CreateWindowForPane(i: integer; const ATitle: string;
+      const ARect: Objects.TRect);
     procedure WritePaneInput(i: integer; const S: RawByteString);
     function AttachRemoteSession(const APath: string): boolean;
     // why the last attach attempt failed (empty = generic/none)
@@ -1697,9 +1699,9 @@ var
 begin
   if Win[i] <> nil then
     Exit;
-  R.Assign(0, 0, 40, 15);
-  if i = 0 then
-    Desktop^.GetExtent(R);
+  // one rect decides both the window and the PTY, so they agree from the
+  // start and nothing has to resize the pane afterwards
+  R := NewWindowRect(ASysIdx);
   pw := R.B.X - R.A.X - 2;
   ph := R.B.Y - R.A.Y - 2;
   if pw < 4 then pw := 4;
@@ -1798,7 +1800,7 @@ begin
       Exit;
     end;
   end;
-  CreateWindowForPane(i, TitleS);
+  CreateWindowForPane(i, TitleS, R);
   // a class pane keeps its title (class name/title); the periodic
   // cwd refresh must not overwrite it
   if (ASysIdx >= 0) and (Win[i] <> nil) then
@@ -1807,16 +1809,84 @@ begin
     [i, ASysIdx, Win[i], Win[i]^.Term, Win[i]^.Term^.PaneIdx, pw, ph]));
 end;
 
-procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string);
+// Where a NEW window goes, without moving a single existing one: at the size
+// its class asks for (or the configured default, or two thirds of the
+// desktop), centred. It lands in front of whatever is already there, which is
+// what Insert + Select do on their own.
+function TSuperApp.NewWindowRect(ASysIdx: integer): Objects.TRect;
+var
+  RD: Objects.TRect;
+  Slot: st_layout.TRect;
+  DW, DH, WantW, WantH, i, Placed, Cols, Rows: integer;
+begin
+  Result := Default(Objects.TRect);
+  if Desktop = nil then
+  begin
+    Result.Assign(0, 0, 40, 15);
+    Exit;
+  end;
+  RD := Default(Objects.TRect);
+  Desktop^.GetExtent(RD);
+  DW := RD.B.X - RD.A.X;
+  DH := RD.B.Y - RD.A.Y;
+  Cols := 0;
+  Rows := 0;
+  if (ASysIdx >= 0) and (ASysIdx <= High(WClasses)) then
+  begin
+    Cols := WClasses[ASysIdx].Cols;
+    Rows := WClasses[ASysIdx].Rows;
+  end;
+  if Cols <= 0 then
+    Cols := Cfg.NewWinCols;
+  if Rows <= 0 then
+    Rows := Cfg.NewWinRows;
+  Placed := 0;
+  for i := 0 to MAX_PANES - 1 do
+    if Win[i] <> nil then
+      Inc(Placed);
+  // The first window of a session that asks for no particular size keeps the
+  // whole desktop, exactly as every session has always looked.
+  if (Placed = 0) and (Cols <= 0) and (Rows <= 0) then
+  begin
+    Result := RD;
+    Exit;
+  end;
+  WantedWindowSize(Cols, Rows, DW, DH, WantW, WantH);
+  Slot := CentredRect(WantW, WantH, DW, DH);
+  Result.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
+    RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
+end;
+
+procedure TSuperApp.CreateWindowForPane(i: integer; const ATitle: string;
+  const ARect: Objects.TRect);
 var
   R: Objects.TRect;
+  pw, ph: integer;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] <> nil) then
     Exit;
-  R.Assign(0, 0, 40, 15);
-  Desktop^.GetExtent(R);
+  R := ARect;
   Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
   Desktop^.Insert(Win[i]);
+  // Init does not go through ChangeBounds, so the pane is still whatever size
+  // it was created with. Match it to the window it just got, or a class that
+  // asks for 100x30 would get a 100x30 frame around an 80x24 terminal.
+  if RemoteAttachSettling or (PassPane = i) or (Scr[i] = nil) then
+    Exit;
+  pw := Win[i]^.Size.X - 2;
+  ph := Win[i]^.Size.Y - 2;
+  if pw < 4 then pw := 4;
+  if ph < 2 then ph := 2;
+  if (pw = Scr[i].Width) and (ph = Scr[i].Height) then
+    Exit;
+  Scr[i].Resize(pw, ph);
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, pw, ph);
+  end
+  else if Panes[i] <> nil then
+    Panes[i].Resize(pw, ph);
 end;
 
 procedure TSuperApp.KillPane(i: integer);
@@ -2148,11 +2218,12 @@ begin
     PaneTerm[OldCount] := -1;
     if Lay.Focused >= OldCount then
       Lay.Focused := OldCount - 1;
-    RelayoutAll;
+    // nothing was added, so no window moved: nothing to re-tile
     FocusPane(Lay.Focused);
     Exit;
   end;
-  RelayoutAll;
+  // do NOT re-tile: the windows already open keep the size and position the
+  // user gave them. Window|Tile (prefix + t) is how you ask for a re-tile.
   Lay.Focused := NewIdx;
   FocusPane(Lay.Focused);
 end;
@@ -2327,7 +2398,9 @@ begin
     TitleS := Trim(Snapshot.Panes[I].Title);
     if TitleS = '' then
       TitleS := UiText('session pane', 'panel de sesion');
-    CreateWindowForPane(I, TitleS);
+    GR := Default(Objects.TRect);
+    Desktop^.GetExtent(GR);
+    CreateWindowForPane(I, TitleS, GR);
     if Win[I] = nil then
     begin
       Loaded := False;
@@ -3847,7 +3920,7 @@ begin
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
-  CreateWindowForPane(NewIdx, Trim(TitleS));
+  CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
   if Win[NewIdx] = nil then
   begin
     FreeAndNil(Scr[NewIdx]);
@@ -3872,7 +3945,7 @@ begin
     PaneTerm[OldCount] := -1;
     Exit;
   end;
-  RelayoutAll;
+  // same rule as the local path: a new pane does not disturb the others
   Lay.Focused := NewIdx;
   FocusPane(NewIdx);
   RemoteLayoutHash := ComputeLayoutHash;
@@ -4199,8 +4272,9 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
-      // prefix chords (tmux style): d=detach, n/p=window +-,
-      // 1..9=window N, arrows=pane size, double prefix=literal
+      // prefix chords (tmux style): d=detach, c=class, s=session,
+      // n/p=window +-, t=tile, 1..9=window N, arrows=pane size,
+      // double prefix=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
@@ -4228,6 +4302,14 @@ begin
       if (PrefixByte = Ord('p')) or (PrefixByte = Ord('P')) then
       begin
         Message(@Self, evCommand, cmWindowPrev, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      // t=tile: creating a window no longer re-tiles, so there has to be a
+      // quick way to ask for it
+      if (PrefixByte = Ord('t')) or (PrefixByte = Ord('T')) then
+      begin
+        Message(@Self, evCommand, cmPaneTile, nil);
         ClearEvent(Event);
         Exit;
       end;
