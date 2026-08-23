@@ -75,8 +75,10 @@ def expect_after(notches):
     return int(target) if target.isdigit() else -1
 
 
-# --- no history yet: no scrollbar
-check('no scrollbar before there is history', not has_bar())
+# --- the bar is there from the start, even with nothing to scroll yet:
+# hiding it until the first line scrolls off made a fresh window look like a
+# build without the feature
+check('scrollbar is there before there is any history', has_bar())
 
 # --- make history
 c.send(b'seq 1 300\r', 2.5)
@@ -129,6 +131,27 @@ check('wheel on the alternate screen sends Up arrows',
 c.send(b'\x03', 0.8)
 c.send(b"printf '\\033[?1049l'\r", 1.2)
 check('scrollbar is back after the alternate screen', has_bar())
+
+# --- clicking the bar: the arrow steps a line, the trough pages
+col = right_col()
+glyphs = [(y, c.screen.display[y][col]) for y in range(2, H - 3)
+          if c.screen.display[y][col] in '▲▼■']
+up = [y for y, ch in glyphs if ch == '▲']
+thumb = [y for y, ch in glyphs if ch == '■']
+if up:
+    was = last()
+    c.send(('\x1b[<0;%d;%dM' % (col + 1, up[0] + 1)).encode(), 0.3)
+    c.send(('\x1b[<0;%d;%dm' % (col + 1, up[0] + 1)).encode(), 0.6)
+    # the vendor repeats the step while the button is held, so one click is
+    # one line or a few -- what matters is that it moved back
+    check('clicking the up arrow scrolls back', last() < was)
+if thumb and thumb[0] > 6:
+    was = last()
+    y = thumb[0] - 4
+    c.send(('\x1b[<0;%d;%dM' % (col + 1, y + 1)).encode(), 0.3)
+    c.send(('\x1b[<0;%d;%dm' % (col + 1, y + 1)).encode(), 0.8)
+    check('clicking the trough pages back', last() < was - 1)
+c.send(b'\x1b[1;3F', 0.6)
 
 c.send(b'\x1bq', 1.0)
 c.wait_exit(timeout=8.0)
