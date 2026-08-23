@@ -1,5 +1,90 @@
 # Changelog
 
+## 3.4 - 2026-08
+
+Four things you asked for, and the repairs they turned up on the way.
+
+### Opening a window no longer resizes the ones already open
+
+Creating a pane ended in a full re-tile: opening a third window resized the
+two you had and sent each of their programs a size change. Every other
+operation had already been taught not to do this -- minimize, restore, close
+and leaving a maximised pane all leave the rest alone. Creation was the last
+one left.
+
+- **`F2`/`F3` are real splits now.** The focused window gives up half of
+  itself and the new pane takes the other half. No other window moves.
+- **A pane opened from a class lands centred**, at the size the class asks
+  for, on top of whatever is there -- again moving nothing else. Classes gain
+  `cols` and `rows` in cells, editable in the class dialog; unset, they fall
+  back to `[ui] newwincols`/`newwinrows`, and unset too, to two thirds of the
+  desktop. The first window of a session still takes the whole desktop.
+- **Tiling is one keystroke away** when you want it: `Windows -> Tile`, or
+  prefix + `t`.
+
+### The history is reachable
+
+The scrollback engine was complete and nothing let you use it: the only way
+in was an undocumented `Alt-PgUp`.
+
+- **A scrollbar** in each window's right frame column. It costs the pane no
+  column and no resize, and appears only while there is history and the
+  application is not on the alternate screen.
+- **The mouse wheel**, three lines a notch, without taking the focus. On the
+  alternate screen -- `less`, `man`, `vim` -- it sends arrow keys instead,
+  which is what makes the wheel work there at all.
+- **`Alt-PgUp`/`PgDn`/`Home`/`End`**, with `Ctrl-` and `Shift-` aliases for
+  terminals that let them through. Any key meant for the application returns
+  the view to live first.
+- **The view stays where you are reading** while output keeps arriving,
+  instead of being dragged toward the bottom.
+- History rows are stored trimmed, which cuts the memory a long history costs
+  by roughly six times and ships less in an attach snapshot. The wire format
+  is unchanged.
+
+### The arrow keys work in `top` and `htop`
+
+Every curses program puts the terminal in application cursor keys mode and
+from then on expects `ESC O A` for Up, ignoring the form superterm was
+sending. The emulator now follows that mode, and the keypad modes with it.
+
+### superterm inside a superterm pane
+
+Nesting was refused outright, because a pane attaching to its own session
+mirrors forever. It is now refused by identity rather than by presence: each
+pane carries the chain of sessions it lives inside, each daemon publishes its
+own, and only the sessions on that chain are rejected -- at any depth,
+including a loop that goes out through a second session and back. A new
+session, or a different one, is as safe from a pane as from any terminal.
+
+And **the mouse reaches the application inside a pane**: presses, releases,
+drags, hover and the wheel, re-encoded at pane coordinates in the protocol
+the application asked for. The frame, the title bar, the menu and the status
+line stay superterm's, with no rule to learn -- so a nested superterm's own
+window manager works inside the pane.
+
+### Repairs found on the way
+
+- **superterm could hang at startup, before its first line ran.** On a
+  terminal the RTL does not recognise it tried to reach gpm with a blocking
+  connect during unit initialisation; with gpm installed but not accepting,
+  that never returned. superterm now installs its own mouse driver: every
+  terminal gets a mouse, and on the console gpm is probed without blocking.
+  That is also why the console had no mouse at all before.
+- **A client could lose visible content when another client resized a pane.**
+  It resized its own copy optimistically instead of waiting for the daemon's
+  answer, and shrinking sends the top rows to the history.
+- **`Restore all` left the restored windows behind the big one.**
+- The middle and right mouse buttons were crossed against the RTL's numbering.
+- The 4096-column "stale corners" reported in 3.3 was the test sampling the
+  screen before the resize had finished painting. There is no such defect; see
+  the correction under 3.3.1.
+
+### Upgrading
+
+Sessions from 3.3.x reattach unchanged: no frame changed shape and
+`ATTACH_PROTO_VER` stays at 3.
+
 ## 3.3.1 - 2026-08
 
 A maintenance release: the session daemon no longer dies under heavy output,
