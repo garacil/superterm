@@ -160,7 +160,12 @@ type
     property AppCursorKeys: boolean read FAppCursor;
     property AppKeypad: boolean read FAppKeypad;
     function ViewOffset: integer;
+    // absolute viewport position: 0 = live screen, N = N lines back
+    procedure SetViewOffset(AOffset: integer);
     procedure ScrollViewport(ADelta: integer);  // + back, - forward
+    // the application is on the alternate screen (?1049): there is no
+    // history there, and the scrollbar and the wheel behave accordingly
+    property UsingAlt: boolean read FUsingAlt;
     function DisplayRow(y: integer): TRow;
     procedure SaveToStream(Stream: TStream);
     function LoadFromStream(Stream: TStream): boolean;
@@ -173,6 +178,9 @@ type
   end;
 
 implementation
+
+// history rows are stored without their trailing blanks (see below)
+function TrimRow(const R: TRow): TRow; forward;
 
 constructor TScreen.Create(AWidth, AHeight: integer; AMaxScrollBack: integer);
 begin
@@ -305,9 +313,12 @@ begin
     Lost := OldHeight - ch;
     if Lost < 0 then
       Lost := 0;
+    // blank rows are not worth keeping: a fresh pane shrunk by the tiler
+    // would otherwise start life with "history" and grow a scrollbar for it
     if Lost > 0 then
       for y := 0 to Lost - 1 do
-        PushScrollRow(Copy(FGrid[y], 0, OldWidth));
+        if Length(TrimRow(FGrid[y])) > 0 then
+          PushScrollRow(Copy(FGrid[y], 0, OldWidth));
     for y := 0 to ch - 1 do
     begin
       if ch < OldHeight then
@@ -341,15 +352,29 @@ begin
   Result := FViewTop;
 end;
 
-procedure TScreen.ScrollViewport(ADelta: integer);
+procedure TScreen.SetViewOffset(AOffset: integer);
 begin
-  if FSBCount <= 0 then
-  begin
-    FViewTop := 0;
+  if (FSBCount <= 0) or (AOffset < 0) then
+    AOffset := 0;
+  if AOffset > FSBCount then
+    AOffset := FSBCount;
+  if AOffset = FViewTop then
     Exit;
-  end;
-  FViewTop := EnsureRange(FViewTop + ADelta, 0, FSBCount);
+  FViewTop := AOffset;
   Dirty := True;
+end;
+
+procedure TScreen.ScrollViewport(ADelta: integer);
+var
+  T: Int64;
+begin
+  // Int64: ScrollViewport(MaxInt) is the "go to the top" idiom, and
+  // FViewTop + MaxInt overflowed, wrapped negative, and landed on 0 --
+  // the bottom -- whenever the view was already scrolled
+  T := Int64(FViewTop) + ADelta;
+  if T < 0 then T := 0;
+  if T > FSBCount then T := FSBCount;
+  SetViewOffset(T);
 end;
 
 function TScreen.DisplayRow(y: integer): TRow;
@@ -767,14 +792,44 @@ begin
   end;
 end;
 
+// A history row without its trailing default blanks. A cell is 24 bytes and
+// a typical shell line uses a fraction of the width, so keeping whole rows
+// made a 10000-line history cost tens of megabytes per pane -- twice, daemon
+// and client -- and the attach snapshot shipped all of it. The readers are
+// already length-agnostic (DisplayRow pads, the serialiser writes a length
+// per row), so this changes nothing on the wire.
+function TrimRow(const R: TRow): TRow;
+var
+  Last, x: integer;
+begin
+  Last := -1;
+  for x := 0 to High(R) do
+    if R[x].Cont or (R[x].FgRGB <> 0) or (R[x].BgRGB <> 0) or
+       (R[x].Attr <> (A_FGDEF or A_BGDEF)) or
+       ((R[x].Len > 0) and ((R[x].Len <> 1) or (R[x].Txt[0] <> ' '))) then
+      Last := x;
+  Result := Copy(R, 0, Last + 1);
+end;
+
 procedure TScreen.PushScrollRow(const R: TRow);
 begin
   if MaxScrollBack <= 0 then
     Exit;
-  FSBRing[FSBHead] := R;
+  FSBRing[FSBHead] := TrimRow(R);
   FSBHead := (FSBHead + 1) mod MaxScrollBack;
   if FSBCount < MaxScrollBack then
     Inc(FSBCount);
+  // A reader scrolled back stays on what they are reading, like xterm and
+  // tmux: new output must not drag the view. While the ring still grows the
+  // count and the offset rise together and the view is unchanged; once it is
+  // full, the oldest row is destroyed and everything shifts one slot, so the
+  // offset rises to follow the same content. The clamp is the natural stop.
+  if FViewTop > 0 then
+  begin
+    Inc(FViewTop);
+    if FViewTop > FSBCount then
+      FViewTop := FSBCount;
+  end;
 end;
 
 procedure TScreen.ScrollUp(n: integer);
@@ -1403,6 +1458,7 @@ begin
                     begin
                        CopyGrid(FGrid, FAltGrid);
                       FUsingAlt := True;
+                      FViewTop := 0;   // a scrolled-back view would paint history over the app
                       if n = 1049 then
                       begin
                         // xterm: ?1049h saves the cursor AND the graphic
@@ -1423,6 +1479,7 @@ begin
                     if FUsingAlt then
                     begin
                       FUsingAlt := False;
+                      FViewTop := 0;
                       if FAltGrid <> nil then
                         FGrid := Copy(FAltGrid, 0, Height);
                       FAltGrid := nil;
