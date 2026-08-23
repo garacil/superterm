@@ -66,6 +66,13 @@ def last():
     return n[-1] if n else -1
 
 
+def first():
+    """topmost numbered row: it moves by exactly the scroll amount, while the
+    bottom one does not when the pane ends in a prompt"""
+    n = numbers()
+    return n[0] if n else -1
+
+
 def expect_after(notches):
     """what the bottom row will show after scrolling back 3 lines per notch,
     computed from the screen as it is now (prompt rows included)"""
@@ -139,19 +146,40 @@ glyphs = [(y, c.screen.display[y][col]) for y in range(2, H - 3)
 up = [y for y, ch in glyphs if ch == '▲']
 thumb = [y for y, ch in glyphs if ch == '■']
 if up:
-    was = last()
+    was = first()
     c.send(('\x1b[<0;%d;%dM' % (col + 1, up[0] + 1)).encode(), 0.3)
     c.send(('\x1b[<0;%d;%dm' % (col + 1, up[0] + 1)).encode(), 0.6)
     # the vendor repeats the step while the button is held, so one click is
     # one line or a few -- what matters is that it moved back
-    check('clicking the up arrow scrolls back', last() < was)
+    check('clicking the up arrow scrolls back', first() < was)
 if thumb and thumb[0] > 6:
-    was = last()
+    was = first()
     y = thumb[0] - 4
     c.send(('\x1b[<0;%d;%dM' % (col + 1, y + 1)).encode(), 0.3)
     c.send(('\x1b[<0;%d;%dm' % (col + 1, y + 1)).encode(), 0.8)
-    check('clicking the trough pages back', last() < was - 1)
+    check('clicking the trough pages back', first() < was - 1)
 c.send(b'\x1b[1;3F', 0.6)
+
+# --- after panes are renumbered, the bar must still drive THIS pane.
+# A window points at its pane from three places -- itself, the terminal view
+# and the scrollbar -- and the scrollbar kept the old index when panes were
+# inserted or closed. It then moved ANOTHER pane's viewport: the thumb
+# jumped and snapped back on the next sync and this window never scrolled.
+c.send(b'\x1b[1;3F', 0.5)
+c.send(b'\x1bOQ', 2.0)            # F2: a second window (panes renumber)
+c.send(b'\x1b[13;3~', 2.0)        # Alt-F3: close it (they renumber again)
+c.drain(1.0)
+col = right_col()
+glyphs = [(y, c.screen.display[y][col]) for y in range(2, H - 3)
+          if c.screen.display[y][col] in '\u25b2\u25bc\u25a0']
+up = [y for y, ch in glyphs if ch == '\u25b2']
+if up and first() > 0:
+    was = first()
+    c.send(('\x1b[<0;%d;%dM' % (col + 1, up[0] + 1)).encode(), 0.3)
+    c.send(('\x1b[<0;%d;%dm' % (col + 1, up[0] + 1)).encode(), 0.6)
+    check('the bar still drives this pane after renumbering', first() < was)
+else:
+    check('the bar still drives this pane after renumbering', False)
 
 c.send(b'\x1bq', 1.0)
 c.wait_exit(timeout=8.0)
