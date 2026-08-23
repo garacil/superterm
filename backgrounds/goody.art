@@ -1,0 +1,149 @@
+# superterm background picture.
+#   >  glyph row   ' '=empty  1=upper half  2=lower half  3=full block
+#                  4=light 5=medium 6=dark shade, anything else literal
+#   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
+#   .  background palette index (optional line)
+# Drawn by tools/mkbackgrounds.py for a 128x46 desktop
+# (1024x768 with an 8x16 console cell, less the menu and status rows).
+name: Goody
+name.es: Goody
+charset: quad
+palette: 000000 F80000 636100 630000 B80000 636163 F8615F 006163 636164 F86100 F8F800 680000 111711 570000 F8F8F8 0000D5 B3A762 3D3C17 2C2018 0D000B 040402 F86163 D5D9A6 F83C1A F2DAC6 025756 070840 575548 C55120 3B613E CF614B 63F800 006164 D40908 F3F3F3 63612C F86123 EE0000 F8F853 006100 ACF85A F8EAAB C3E99A F8F4F4 F50000 630001 63F8F7 0000F8
+>fffffffffffffffffffffffffffffffffff77cb33333333333333333333333333333333337c3bfffffffffffffffffffffffffffffffff7fdcc3b75fffffffff
+:000000000000000000000000000000000000jfqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqa00000000000000000000000000000000000dbbbbsbbd000000000
+.                                   b8if7777777777777777777777777777777777gkck                                 2 s55b220
+>ffffffffffffffffffffffffffffffffff79efaffffffff7333ccbbfffffffffffffffffff7daffffffffffffffffffffffffffffffff733ffff773bffffffff
+:000000000000000000000000000000000000ffw777777777777qq7777777777777777777777t0000000000000000000000000000000000dbbbbbbb0000000000
+.                                  dxx f        ppcc77qp                   tvc                                mCs    2vgi
+>ffffffffffffffffffffffffffffffffffd9bfafffff7ffc1ccc37df33bfffffffffbfffc3defffffffffffffffffffffffffffffff73cff5733fbfc2fffffff
+:000000000000000000000000000000000001ffw777777pp7cqci7p7p7777777777777777i7c000000000000000000000000000000000raaaa292avvvi0000000
+.                                  bj4 f     q  c7p77c7q ckp         q   7iEt                               8aC  haac a g8
+>fffffffffffffffffffffffffffffffffffdd3ebf3333ccceff3a2c33dcc333eff73d333c333ffffffffffffc3bcc33bfffffffffff55fff5af5f7f31fffffff
+:0000000000000000000000000000000000000fw777777js99993b0d77777qqq777777qqDt00000000000000002222000000000000000eaaaaaacaavve0000000
+.                                   b8xff pppc7pcb  s63pcpqkc777p  ppp777khic            200k02cc           8a   hh h v Ei
+>ffffffffffffffffffffffffffffffffffffff355e3f3c3c3333ca3313bccc7c33e3cdccb3bdcbfffffffffffffffd33367bffffffff5aff5af5f5faffffffff
+:00000000000000000000000000000000000000Jb43ss90x0999sudbssipdcbpuii6s000c7777v00000000000000000222ic0000000000aaaaaacaavo00000000
+.                                      j4ii9 dn0ndhhh6suhr6up77up66h6cpp7qppvcD               k000h22        oF  hh h v m
+>ffffffffffffffffffffffffffffffffffffffeaef31ffffffffccdcddbd1d73cce327bcdd1af5fffffff393333bfffffffffffffff75eff5af5f5f4bfffffff
+:00000000000000000000000000000000000000bb33910000000000000k6b36s6cc02qppt77c77v0000000220000000000000000000000aaaaaacaavE00000000
+.                                      0xb Bk        kkjjcuz39bg2ggg0kgE7pq7p D       cc22222               iFF  hh h v o8
+>ffffffffffffffffffffffffffffffffff73b3b2ef3644cc733c77b3fa5d1c3efff37d1c3ccccefffffffffffccd3effffffffffff7ceff77efcbdff6affffff
+:0000000000000000000000000000000000000kb433b31dcqcbiik0000Dz6bqv0000000a0D00c0000000000000000200000000000000eaaaa0aaaaavvv0000000
+.                                  d4b3434 3BkkkkGmgkpbjk k6u9l0D   khakk0tt75k           kk20c            ijH  2a2 i0v  yj
+>fffffffffffffffffffffffffffffffff55f7ccb5b55ef3ebacef5337bab71e7b3c3b1333cbfffffffffffffffbbff3777ffffffff3cfff55fff5f3ff7bfffff
+:00000000000000000000000000000000001999n44334000me3sd3dcc00DAAs00ccdc2200ja000000000000000000000000000000008aaaaa0aaa0avvvv000000
+.                                 jn s4js3bb3d q7om3j w80ppczzDhp53c0a0h46ja               qc  qpfh        oC   2a   g a  ym
+>ffffffffffffffffffffffffffffffffffa5dc3d4c3effa75d333ed3d5bccffcbe7e4173ebefffffffffff7c7cbe3bacbc6bff77b577bf3fefffbdfffd75ffff
+:0000000000000000000000000000000000419999904000we1erddeec0k00000mi33e02lu6s0000000000000wq8850qw7558000000rCaaaa2aaaa22avvvEr0000
+.                                  09sijb0bj4  plomooou8wk7qck  tuju8rlzzza2           q0fpff8rf578mo  qffmaCe 2 2   aa   Ee0
+>ffffffffffffffffffffffffffffffffff55bf321333ffaa52bffffdbdffbf17dceffe7bf5fffffffffff76db3ffc33d43dd6bcba5dcdb5fb7b3f55dff55ffff
+:00000000000000000000000000000000000199b9900000cgeeeeeeeek00000ileeee5sz66a000000000000f855555g88q55580q805Ceea2aaaaaaa2avvEr0000
+.                                  b9n 9d0nnb  0w1no    87k  k 8Iyyy  l0z 2           q858w  88mfww8oymwf8eaaFFc 202c 0av  e0
+>fffffffffffffffffffffffffffffffffff55fb5a3362bdda3d3ff33e773bbdbdb735a2eaefffffffffffeed8cffffd7aafffdc5aadbfd3de5acdcfffff7ffff
+:00000000000000000000000000000000000019b999bb0000m11eeeeek0czD00lneeo0ui6g000000000000w55cw5555550f5555y0yaaeee2aaaa2aaaavvvg0000
+.                                   x9 0jjbsnnbktpo6o  mt7D66u258oom0i56za2           qtw5f    8y8q   o8qfFCF Fa2002c2h     y
+>fffffffffffffffffffffffffffffffffff55fcd67af22bfdd3c63c6758fd1bdccef36323fffffffffff1affad5bfff5a55fff55dbb5bfc3fffffff3ff78ffff
+:000000000000000000000000000000000000199s90b910000koGGy000Ds6sv000000Du6ai00000000000q5550qf555550q7555y0iaaaeeeaaaaaaaaavvvi0000
+.                                   x9 diisj ssj pmp68c8khu6 g0dcmgm gii20           L8  hfrw   ymft   mqy8CCF FC       v  og
+>fffffffffffffff77333bffff333bffffffdaaffd336bdc3fffcef73e72fdd3c737d77effffffffffff2bc8afa5d8cc97aafffc39b33d3bd3bffff3f795effff
+:00000000000000000000000000000000000019999b9999s00000000c66s66sD200026a0000000000000L8t2k0ff5ggg580w55550fjFaaeeeaaaaaaavvvr00000
+.               kc8gyr    jjjk      kjn  b9dk010b   kk cuzs6 ugu0h2gvAha            jp852 p8fw55me8f   y8cp8CyaooFC    v Ey0k
+>fffffffffffff73e3fff33f7333d23fffffff3bff7a55f333333333f7deffadfefff5137fffffff733ceffff7332efffaaafffa55a3cbfcc34bf7ef76effffff
+:000000000000000fw555e000cog5c0000000019999d909szk00kkiz666666AA66666a2000000000000222222228g5555e0w555ge05ccaaaaeCaaavvvG0000000
+.             kcq5   8g ho55yoi       j1  1j39 96uzhuu66 ubs  66 g   20dc       ciiki    00f8g   88f   5rf85mm CHCHF va Ero
+>ffffff7738e3beff3bfffe25abbff32fffffffce3bb11fffcccffff7c4ccccc3bf5d55ffccccccceffff7bb855f5bff762af7ce1aafddc3333337cccffffffff
+:00000000c8800qff855555jifw555mc000000000d1s90966A99666669Asssss6666Aa0222222222222222hhdi0ff5555e0w55ggef555crCCaaaaEi0000000000
+.      cwwwqgc0  ft   o8p8ft  55       b40b98o   666    suu66666ss 962h  tcccchhh    ttzz0j 58  oi8f g55r08 rmghhggGgrEEg
+>fffff7ecfffc353bfdbffda2bfaff56b333b73332555afdcff7ffffcbbc3f7d3effb11bfffffffff33cce3ff3babc3e72c4313ccacbba5ffffc3bfffffffffff
+:000000f85555gyffff5555g00f85558c000000000b9099999996666692z999s96669a0222222222222333d33d0qff58gqz2gg5jdff58om22222c000000000000
+.     fwf   8888p wf  88y8 f  8eytickkkitinsgy AA  6    b6s9A z26s  622h         tithi3  3d0q585iif8ww8yqjtft52    tpk
+>fffff5fffffffd6bbf5bfff27bdbff55fffdecf5aad4aaff7efffffff7bfffffffffd1633fff33e3effffffffd3dce3d3ed333efdccceffffffd4bffffffffff
+:000000ff555555c0fff5555ggqq5555e2222222219jg8999966666666666666666666a222222223i3333333333d33bdbs33ddd3333dd22222222s00000000000
+.     w       mygw 88   8oh8w  m2   iit cjnroou  6A       AA         Asktt   hdt3d        d3kkjss3bd333d dqfwg      zcp
+>fffffdbfbfffffd7dffafffff3bb4fd9bffffff5aace6efeffffffffee2cfffffffffddb9333effffffffffff77bd3fffffffffff73d6bfffffff4bbffffffff
+:000000ff8555555rjff555555y08w55e2222222219bgy99A6666666699346666666666aj3iii3333333333333333b233333333333b23d2222222220000000000
+.     qq f     oef  w     8oc5 g5m      cjnj88m 9        6AA6         a02d333d            bsss3           2si7t       ppk
+>ffffff3bdbfffffcbcbfaffffda5dbfa5333bf37a27dbafbffffff7cfff3ccbfffffffd33fffffffffffffffff3fffffffffffff7d5fd6bf7b3fffccffffffff
+:000000qff5555555m8ff555555gm855em2222222j190y99666666669999bss6666666660333333333333333333b33333333333333sb332222222222p00000000
+.      0qwf     8gjq 8    88jff 5hhttt tdhdx8h6 A      AA   A66u       aaj                 3             sa3 p7z hha   7c
+>fff73bf3ffabffffd6bbfccc33bed3fd7bffd3fff329effdd3c73efffffffffc34ccb7ed3bffffffffff333333b3bffffffffff76efffddfd6bfffff2bffffff
+:0000000qff55555555cfffff588qww55gb333i333d4x999996A6699999999999s9ss6699id333333333333333333333333333333a33333p222a22222c0000000
+.   kii 0  w8    8yeq 855fKomj5 ge5  i3   3d0j  A696A96         A9u66uA6aa0          djjjjjjdd          93s   p2 c02     77
+>f7cb333733fc3ffff268c333c43fd3378effffffffdebbfffffffffff73374933bbf3eff55ffffff333eefffffffdc333bffff7befffff33fdaffffff4cbffff
+:00f8gggrqfff55555gr0d8ffzdffw55533333333333b999999999999999srebs9999s999a033333333300000000000d3333333b2333333i222a2222222p00000
+. frf555orp 58    8y8gzzmotm 588mmz        djjx           shgmzsbbzs 9A  gd      ddjdk       jj0jjj    2aa     37 02      t0c
+>7efcffff3b9bdcc3feaceffffdd3ccceffffffffffffddc33333333b423de69c51cc3b73c1ff77ccfff7cccc3bffffffffc3bbbeffffffd4af33ffffffaaffff
+:0ff55555g5kffff8ffid333333b8bbJ33333333333333dd999ss9999gggr8dbbnley9999d03333000000111100000000000d33233333333322a2222222700000
+.q0 w    8m8qwttf wqjd    b8b88gg            j4nbbb084bbbzz8go8nAum5z8222a3  dj3j   y55u5yi        j0kdas      dh7 ha      tc
+>d3bcb3ffffd2ccce333ffff77333333cccccc333333bbffffff32333337bde733d1adc6b333eefffff78effffc4fffffffff7533bbfffff5affffffffffa3fff
+:0fff5555555bb333qid3333333ddddd000000dddd3333333333dx9999999999a0dgeee33333000000001111111e00000000002d333333333222a2222222p0000
+.q0wtf8    yyqffp333    djj00000jjjjjj0000jjjd      3ddbbxx22sbajdghmmckdddjdk     mgn    lh         ca0jjd     i7          tk
+>f723ffbbffffb3fffffff71ef733cccccccccc333bffdc33b3bffffd3333c3eefddc3ed4fffffffff55efffff5abffffffffdefffd33ffff5aff1fffffff2bff
+:00ffff555555mb3333333330000knn1111111ni0000000d333333333dddd323333dio0ri0000000000e11111118000000000000000d33333322a02222222c000
+. 7pc  fw    5u       j0j c8nhhggggggghnuui  jj0jjdd    d3333h3hd dcgimcj         5nn     ner        a2   j0d    pp  2       7c
+>79ed33bf3377cbffffff3ff733efffffffffffffdc3f7b33bfdc33333333333333ecdbbc1ffffffffaeffffff7e5fffffffffffffffdbfff5af3ffffffff5abf
+:0222qfffw585f533333330000r11111111111111110000000000dddddd3333333d000rrqq00000000l11111111ee0000000000000000d333322a222222222k00
+.p7th2iq fftf5f      k  8l1m             mgg omlo8 jj000000kkkkkkk0djikp7k        yn      n60               j0   pp 2        t7c
+>5aff79ecc33cebfffff7e718efffffffffffffffffba55ffd4cff733ecccc3bffffffffffffffffffaffffffff86333bbffff333cc3ffd3fd6bfffffeffff52b
+:022222222ffwrd3333330001111111111111111111lr0b444xg000k81111l00000000000000000000l1111111130000000000000ll0000333222222222222200
+.p7  hkkhphqff7     0jhlgn                 1l34  ug0  coB8ll8jl5                  y        lyg888c    g8ujjg  dd ppz     4    ptc
+>aeff55fff5af5affff7ef11fffffffffffffffffffd4b5ffffbb73effffffd7bfffffffffffffffffafffffff74deffd63fffaafffc43bdbf5afffffffffded3
+:t222202222222i33333000e1111111111111111111110d4444e00r44111111l000000000000000000l11111111e04411i0000e111111k0033d22222222222220
+.7t  h2   ck z7    jd g1                   nle4    lrs4u      6o8                 y       nJog  oor   8n   6grikj 7t         rr7p
+>ffffaffff5af5afff75f31ffffffffffffffffffff7beef73c355fff5fffff5cbfffffffffffffff33fffffff555f1ff72ff55ffffff5aff25afffffff7ffffd
+:2222h22222222i3333300e11111111111111111111110444414e0444411111nl00000000000000000l11111111e04x111e00cl1111111000dd22222222222222
+.    0    ck z7   dk o1                    nogd xI41gb   B     lo8               o1       n84 1  ll  e1      om  07t       h    h
+>fff3cf7ffdeffbbf7ef73ffffffff778c3333bffff117b3cfff1bbf7c7bffffd1bfff7333333333baffffffff3cefbffaaffaafffff75eff5affffffff3bffff
+:222h222222222t333j00e111111111100ln11111111e0441111e0444n1111111e000000000000000e11111111l044111e000e111111110000222222222222222
+.   ci 4  ck  27 d3 e1        n8lu08lln    giyg14   l8d x4l6    I1e   cc888888cccm        o8b x  n8  cl     n8m  pp        rz
+>ffff3ced3baff5afef71efffffff7cfff3efdc3733cfdaaffff55a773d8bffff55b318cefffffcd2effffffffa5f7ef78effaafffff55ff79ef7bfff3fffffff
+:22222b3344222233d00r1111111115000c1111111n000e111111e44lr0e111111e000x111111111ie11111111m0441110000e1111111e0002222222222222222
+.    xxb433x  t7 3 g66       oo   oo 6llllrg r5n    6ijs80onn    lcih8g6n     6onm        o3 1B ogi  cl     lc  c7t h0   r
+>fff137b5bf5df5a3ef5afffffff77eff7cfffff79efff23ffff555deff23fffff5acff5fffffffffdfffffffa7efaff5afffa2fffff55ff5aff55fffcfffffff
+:2224b33b33b42233000111111111e00001111111c0000e111111ecg000e1111111r444411111111111111111er4411110000e1111111e0002222022222222222
+.   B3jj44 12 t7dj oo       oci  oo     oo8   jo    6iuec  jo     oyg  1         m       ljb 4  om   cg     lc  c7  hh   r
+>ff57fded5ff5f52ef76efffffff5afff5afffff5afffffaffffd5beffffcbffffd9bfff5ffffffffffffffffaaf7efd5affffaaffff55f51eff3ef3ffdefffff
+:222433331334223000e1111111110000r1111111000000o1111110000000111111e0444x1111111111111111ej44111100000e111111e00c222h222222222222
+.  13 ddj4  1 t7d 84u       y8   e6     oo     m    n8mh    oe    o88   1                lh 14 nom    8n    lc k7t  ki h  hh
+>ff555b77cf73ff5a711dbfffff5afff75ef7bf76efffffafffff5afffff55fffffaafffdbfffffffffffffffaaf5ffd5affffaaffff55fcafffaffffffffcfff
+:22243333b33x222000e4111111100000r111111e000000o1111110000000e11111e044441111111111111111ej44111100000e111111e0ct222c222222222222
+.  13djjx1 1b  7pcgx1B     oo   ho6 nn 6nm     m     om     i6     n8   1B               lh 1  nym    8n    lc 07   k        h
+>ffd2f7e1f79eff5a55ff5fffff5afff5af3ec31e333bffafffffd2bffff55fffff22bf73cccccbbfffffffffd2adafdc2b7332effff1affffffafffffdffffff
+:222b334433b022200e44B111111000001111161nrri000o1111110000000e11111e0b44sc0000n11111111111gb4111100000e111111c0p2222c222222222222
+.  xx 4b3 41b  7pcl  1     oo   ym lll1le11no  m     ogi    i6     1g0 ummggggg6         no0x4 nlorirunn    le      k     h
+>fffc3333c7e3ffd2e5ffeffff7aefff5af5fffffffd1bfc4fffffaaffffdbbfffffa571eeffffdd6bffffffffa5fdbffddccffffff55ffffff3cffff3fffcfff
+:222233334400222cce44111111r0000011e11111111e000e11111e000000e111111e044000000001111111111m04411111111111111e00p22222222222222222
+.   BBbbb3jbk  t7ku  x    6ec   ym l       6l8 gn     n8    i0e     ldugmj    jom6        ob 1B  noln      n8      0k    r   h
+>fffff333ccefaffaf5ffcffff75ffffd53effffffff5af55fffffaafffff55fffffd3aaffffffff55ffffffffcaafbffffffffffff55ffffff5fffdfff7dff5b
+:22222bbb2222c227ce44x11111e00000rn1111111111000e11111e0000000e111111cm000000000h6111111111r4411111111111111e00p222i2222222222222
+.     222dkh k  t l  1    mr    8leo        le il     n8     g1     og0o        m1        lg0 x            n8      0   h   hs  rz
+>ffffffffffffaff2f1fffffffaffffffdbffffffff11ff55ffff76ef583355ffffffad6bffffffffaffffffff555ffffffffffffff55f5afffdfffffffdfffff
+:222222222222c227ce4441111m0000000o111111111e000e11111e000pc00e111111g04000000000e111111111e0441111111111111e0c222222222222222222
+.            k  z l       o      mm        l5  il    mi8 r5tig1      ygm8        m        n84              n8 7t   h       h
+>fff3ffffffffbbfff5fffffffc3bf7375afffff778cfff31ffff7a8cae73cefffff8ce52bffffff18ffffffff557bf5fffffffffffd1b5affffffffff7f3f7bf
+:222222222222i222p044411111c00000r11111111j00000e111110y8p0kc1111111e04400000000c1111111111e0444111111111111e0c222222222222222222
+.   k        2k   d       gl8 jj8y6     6yug   gn    om8k5pjogn     ng0egj      8g        n8og x           nl87z          h k kc
+>fff5fe7133d3fffff5fff3ffffddcccefffffffffaaf73cfffff5a51e7dffffffffa5ff233bf771ceffffffff55fd2cc337c3bfffffdd1aff523e333537cbdef
+:222c222s44422222p0444B1111111111111111111e0000l11111103uk0441111111e044e000000011111111111e004us111ml1111111ec22222ik0000ii2h222
+.   k hx33321     d   4    688lll         lc igo     om4851l        ld  suii krggn        n8 og4Isnn1el     lc8z  0ihikkkch2hkcc
+>fff579e37bf32fffcbbffffffffffffffffffffffd23cccffff76eeafa5fffffff57cfff5ccccefffffffffff55fffd333ce23ffffffdadffdeffffffdffffff
+:222c2233333b42222d444411111111111111111111g844411111e04r01x4111111n84444B11111111111111111e0000rrr00e11111111pp22222222222222222
+.   k414d4x 3B   p70                      6o08u1    6ig35 j4       e0j   16g586           n8   i000gmk8      og2  0h      h
+>ff7c11fddaafaafffa5fff5fffffffffffffffffffa5fff5fff55af4b26f3fffffaafff3effffffff33bfffff55ffffffffffaaffffff25ffffffffffffdffff
+:2222213334334s222c044441111111111111111111m044441111e44sk144111111e04444111111111111111111e0000000000e1111111e822222222222222222
+.  kkB3 jdjB 31   74   B                   o3   x   6ij 5tkB 4     n8   BB        bb4     n8          8n      np            s
+>ffaa5f7bbaafe3fffa57fff5ffffffffffffffffffa5ffff5f715effaf5b9b7335d3fff5fffff773cccdccc33cc3333b33f7733fffffffc3fff3fffcffffffde
+:22021333343341222c044444111111111111111111m04444411e0444c0b4411111md444x1111111b1111111bb66c000000000jo1111111y2222h222222222222
+.  hh4 jdd3B 3d   74s   1                  ob    B mrdd  5 1xx4xxxm0s   1     4gg5ll888866br6ggggii igon       w7   c   h      fr
+>ffaabb3e3ef375fff5a5dffdbffffffffffffffff785333c3cccff724a2b797c866cb7ceffff555efffffffffffffffdcccceffffffff7c5fff55fffff5bffff
+:220213dbd333B02222khu44411111111111111111180444g1hc4444xx01140igi0ri4411111110e1111111111111111111111111111111t72222022222222222
+.  hh2x3d1x bbh   t7m4  xx                6obuu84ro8d  115rdxs5ud8r0moB4B    45nn               n66ggn        oyt   hh     ch
+>ffdeddb33f73e5fff5af33fffdffffffff77bbf777dc33efffcc4cc3cd3635dba5def33333333ef332affffffffffffff333333333333d1cc333cdccc3333b33
+:2222213bb331002222k0e44444111111111111111g00ii00000jj881lxid15cwi058855555555885irx11111111111111111111111111brbb222000002222222
+.  0h4b433 Bkjh   t7 ky   x        n88n 680i800k   8uux1g15ujk0gp5rct 888888885 8880              kbbbbbbbbbbbekptbbdihhhh0kkkkkk
+>fffffd333c1cc6bffd6bfdcc33b7f3373ceffccefffffffffffffffffff3c3bc3a5fffffffffc7cb3c5ffffffffffffff576c6ec63cc78b3ecdb5f7bb7b3755e
+:222222444hx222222220000044444B11100000000000000000000000000i0kkiirr000000000r0r0kr0111111111111113Ie1lelllln1lylele40bbjb00dbbB0
+.     shhhx00ihi  t7p i8l8ugx gloml8  8y8                   0ptt7000         kikhrk4              06nyelyyeyyoylylylnd j01B4BdBbj
+>fffffffffffff5afff5affffffd33effffffffffffffffffffffffffffffd3333efffffffffff5f55e5333fffffff3337ed3c3ccedcececd1ccedb3c32e3fdef
+:222222222222222222200000000rr00000000000000000000000000000000iiii00000000000h0riir0111111111111110Ionon111nn111ne1n40b40440B0000
+.             i0   pp      h00c                              c0000i           i 0rg4444       444d361m1H66oomlool16end0jjj0bj x4

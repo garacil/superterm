@@ -140,6 +140,8 @@ type
   PArtBackground = ^TArtBackground;
   TArtBackground = object(TBackground)
     procedure Draw; virtual;
+    // paint the whole desktop black; see the comment on Draw
+    procedure FillBlack(AWidth: integer);
   end;
 
   PArtDesktop = ^TArtDesktop;
@@ -5349,6 +5351,25 @@ begin
   else Result := Ord('.');
 end;
 
+// The desktop behind the windows, painted black.
+//
+// FreeVision's own background is the classic blue field of dotted shade. A
+// picture drawn on top of that had the blue showing through everywhere the
+// picture did not reach, and the pictures themselves are photographic: they
+// belong on black, the way a screen border does. So the desktop is black in
+// every mode, with a picture or without one, and the empty cells of a
+// picture are black too rather than blue dots.
+procedure TArtBackground.FillBlack(AWidth: integer);
+var
+  B: TDrawBuffer;
+  y: integer;
+begin
+  B := Default(TDrawBuffer);
+  MoveChar(B, ' ', 0, AWidth);      // attribute 0: black on black
+  for y := 0 to Size.Y - 1 do
+    WriteLine(0, y, AWidth, 1, B);
+end;
+
 procedure TArtBackground.Draw;
 var
   B: TDrawBuffer;
@@ -5366,31 +5387,29 @@ begin
   // With no picture this must cost exactly what it cost before the feature
   // existed: one string compare and the ancestor's single WriteLine. Nothing
   // is looked up, nothing is registered, no per-cell work happens at all.
-  if (App = nil) or (App^.Cfg.Background = '') or
-     (App^.Cfg.Background = 'none') then
-  begin
-    inherited Draw;
-    Exit;
-  end;
-  Idx := ArtIndexOf(App^.Cfg.Background);
-  // Clear through the ancestor first: it covers the view's whole extent in
-  // one call, so nothing of a previous layout can survive in a row this
-  // routine might not reach. The picture is then laid over that.
-  inherited Draw;
-  if Idx <= 0 then
-    Exit;                // name not found on disk: the plain pattern
-  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
-  GOrig.X := 0;
-  GOrig.Y := 0;
-  MakeGlobal(GOrig, GOrig);
-  // TDrawBuffer is a fixed-size array, so a row must be clamped exactly as
-  // TTermView.Draw does. Writing past it on a very wide terminal corrupted
-  // the tail of the row and left stale cells behind after a resize.
   W := Size.X;
   if W > MaxViewWidth then
     W := MaxViewWidth;
   if W < 0 then
     W := 0;
+  if (App = nil) or (App^.Cfg.Background = '') or
+     (App^.Cfg.Background = 'none') then
+  begin
+    // With no picture this costs exactly what the ancestor cost: one filled
+    // buffer and one WriteLine per row, nothing looked up or registered.
+    FillBlack(W);
+    Exit;
+  end;
+  Idx := ArtIndexOf(App^.Cfg.Background);
+  // Clear first: this covers the view's whole extent, so nothing of a
+  // previous layout can survive in a row the picture does not reach.
+  FillBlack(W);
+  if Idx <= 0 then
+    Exit;                // name not found on disk: a black desktop
+  Mode := ArtModeOf(App^.Cfg.BackgroundMode);
+  GOrig.X := 0;
+  GOrig.Y := 0;
+  MakeGlobal(GOrig, GOrig);
   // The background owns the entire desktop, so nothing registered here by a
   // previous layout may survive: clear the whole region before painting.
   for y := 0 to Size.Y - 1 do
@@ -5404,11 +5423,11 @@ begin
       C := ArtCellFor(Idx, Mode, W, Size.Y, x, y);
       if C.Glyph = '' then
       begin
-        // Empty cell: the plain pattern, and NOT registered in the overlay.
-        // A background covers the whole desktop, so registering every empty
-        // cell filled the overlay with entries that a later layout could
-        // match by coincidence and resurrect as a stale glyph.
-        Word0 := (word(GetColor($01)) shl 8) or word(Pattern);
+        // Empty cell: black, and NOT registered in the overlay. A background
+        // covers the whole desktop, so registering every empty cell filled
+        // the overlay with entries that a later layout could match by
+        // coincidence and resurrect as a stale glyph.
+        Word0 := word(' ');
         B[x] := Word0;
         RichClear(GOrig.X + x, GOrig.Y + y);
       end

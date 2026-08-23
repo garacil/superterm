@@ -19,6 +19,13 @@
     mode:  optional, the layout the picture is meant for (center, tile,
            stretch or fit). Choosing it from the menu adopts that layout.
 
+    charset: optional. 'quad' means a glyph row holds quadrant masks --
+           '0'..'9' then 'a'..'f', one bit per quarter of the cell: 1 upper
+           left, 2 upper right, 4 lower left, 8 lower right. A cell then
+           carries four pixels in its two colours instead of two, so a
+           picture holds twice the horizontal detail. Without the key the
+           glyph row means what it always did.
+
     >   a row of glyphs. ' ' leaves the cell empty so the desktop shows
         through; '1' '2' '3' are the block characters U+2580 (upper half),
         U+2584 (lower half) and U+2588 (full); '4' '5' '6' are the light,
@@ -95,6 +102,13 @@ type
     Title: string;        // name:
     TitleEs: string;      // name.es:
     Mode: string;         // mode: suggested layout, '' = leave the current one
+    // charset: 'quad' means a glyph row holds quadrant masks rather than the
+    // half-block shorthand. A cell then carries FOUR pixels instead of two --
+    // its own two colours split over a 2x2 grid -- which doubles the
+    // horizontal resolution a picture can hold. Anything else, including the
+    // key being absent, keeps the original meaning, so every picture written
+    // before this still loads exactly as it did.
+    Quad: boolean;
     Pal: array of LongWord;
     Rows: array of TArtRow;
     Width: integer;
@@ -197,6 +211,8 @@ begin
             P.TitleEs := Val
           else if Key = 'mode' then
             P.Mode := LowerCase(Val)
+          else if Key = 'charset' then
+            P.Quad := LowerCase(Val) = 'quad'
           else if Key = 'palette' then
           begin
             Body := Val;
@@ -384,6 +400,42 @@ begin
     Result := Pics[AIndex - 1].Mode;
 end;
 
+// The sixteen ways two colours can fill a 2x2 cell, indexed by a bit per
+// quarter: 1 upper-left, 2 upper-right, 4 lower-left, 8 lower-right. Written
+// in a glyph row as '0'..'9' then 'a'..'f'.
+function QuadGlyphOf(C: AnsiChar): RawByteString;
+const
+  QUADS: array[0..15] of RawByteString = (
+    '',                 // 0  nothing: the desktop shows through
+    #$E2#$96#$98,       // 1  upper left
+    #$E2#$96#$9D,       // 2  upper right
+    #$E2#$96#$80,       // 3  upper half
+    #$E2#$96#$96,       // 4  lower left
+    #$E2#$96#$8C,       // 5  left half
+    #$E2#$96#$9E,       // 6  upper right + lower left
+    #$E2#$96#$9B,       // 7  all but lower right
+    #$E2#$96#$97,       // 8  lower right
+    #$E2#$96#$9A,       // 9  upper left + lower right
+    #$E2#$96#$90,       // a  right half
+    #$E2#$96#$9C,       // b  all but lower left
+    #$E2#$96#$84,       // c  lower half
+    #$E2#$96#$99,       // d  all but upper right
+    #$E2#$96#$9F,       // e  all but upper left
+    #$E2#$96#$88);      // f  full block
+var
+  I: integer;
+begin
+  I := -1;
+  if (C >= '0') and (C <= '9') then
+    I := Ord(C) - Ord('0')
+  else if (C >= 'a') and (C <= 'f') then
+    I := 10 + Ord(C) - Ord('a');
+  if (I >= 0) and (I <= 15) then
+    Result := QUADS[I]
+  else
+    Result := '';
+end;
+
 function GlyphOf(C: AnsiChar): RawByteString;
 begin
   case C of
@@ -442,7 +494,10 @@ begin
     Exit;
   if (AX < 1) or (AX > Length(P^.Rows[AY].Glyphs)) then
     Exit;
-  Result.Glyph := GlyphOf(P^.Rows[AY].Glyphs[AX]);
+  if P^.Quad then
+    Result.Glyph := QuadGlyphOf(P^.Rows[AY].Glyphs[AX])
+  else
+    Result.Glyph := GlyphOf(P^.Rows[AY].Glyphs[AX]);
   if Result.Glyph = '' then
     Exit;
   k := AIndex;   // silence the unused warning on some compilers
