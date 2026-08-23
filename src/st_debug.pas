@@ -13,11 +13,16 @@
   SUPERTERM_DEBUG_FULL=1 additionally records the chatty events -- every PTY
   read, every protocol frame, every client event -- which is a lot of volume
   but is what you want when chasing something that only happens after hours.
+  A build made with 'make debug' does both by itself, writing to
+  /tmp/st-crash.log, because a crash report with no history is of no use and
+  remembering two variables is not something anyone does under pressure.
+  Either variable given from outside still wins; a release build is silent
+  unless asked.
 
   THE CRASH DUMP. A daemon that dies takes every pane with it and leaves the
   clients saying 'connection lost', with nothing to look at afterwards. So the
   fatal signals are trapped and, before the process goes down, a report is
-  written to /tmp/superterm-crash-<role>-<pid>-<time>.log containing the
+  written to /tmp/superterm-crash-<role>-<pid>-<time>-<tag>.log containing the
   signal, the faulting address, how long the process had been up, a stack
   backtrace with file and line when the binary carries debug info, and the
   last few hundred log lines from a ring buffer that is kept even when the
