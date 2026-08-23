@@ -72,6 +72,7 @@ const
   cmBackgroundBase    = 2800;   // + index into the pictures found on disk
   cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
   cmDesktopColor      = 2764;   // visual picker for the desktop colour
+  cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
 
 type
   PSuperApp = ^TSuperApp;
@@ -1602,6 +1603,9 @@ begin
     AppPalette := apMonochrome
   else
     AppPalette := apColor;
+  // the renderer paints our own ground unless the user wants the host
+  // terminal's -- see SolidBackground in st_video
+  st_video.SolidBackground := Cfg.SolidBg;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
   // window classes: user file + system file (user wins); if
@@ -4878,6 +4882,15 @@ begin
           SaveConfig(Cfg);
           RebuildMenu;
         end;
+      cmToggleSolidBg:
+        begin
+          Cfg.SolidBg := not Cfg.SolidBg;
+          st_video.SolidBackground := Cfg.SolidBg;
+          SaveConfig(Cfg);
+          RebuildMenu;
+          ResetVideoSurface;   // every cell's colour changes
+          ReDraw;
+        end;
       cmDesktopColor:
         begin
           DeskCol := Cfg.DesktopColor;
@@ -5417,13 +5430,8 @@ begin
     W := MaxViewWidth;
   if W < 0 then
     W := 0;
-  // A picture is drawn in its own colours, which is precisely what black and
-  // white and monochrome say the screen must not have: with a picture on, the
-  // strip of desktop left uncovered showed up as coloured squares along the
-  // bottom of an otherwise monochrome screen. In those palettes the desktop is
-  // the flat colour and nothing else.
   if (App = nil) or (App^.Cfg.Background = '') or
-     (App^.Cfg.Background = 'none') or (AppPalette <> apColor) then
+     (App^.Cfg.Background = 'none') then
   begin
     // With no picture this costs exactly what the ancestor cost: one filled
     // buffer and one WriteLine per row, nothing looked up or registered.
@@ -5746,6 +5754,9 @@ begin
       kbNoKey, cmToggleAutoRestore, hcNoContext,
     NewItem(UiText('Desktop ~c~olour...', '~C~olor del escritorio...'), '',
       kbNoKey, cmDesktopColor, hcNoContext,
+    NewItem(ActiveMark(Cfg.SolidBg) +
+      UiText('Sol~i~d background', 'Fondo sol~i~do'), '',
+      kbNoKey, cmToggleSolidBg, hcNoContext,
     NewItem(ActiveMark(Cfg.DragContent) +
       UiText('Show contents while ~d~ragging',
              'Ver contenido al ~a~rrastrar'), '',
@@ -5753,7 +5764,7 @@ begin
     NewItem(ActiveMark(Cfg.ZoomAnim) +
       UiText('Zoom ~t~ransition (F5)',
              '~T~ransicion al hacer zoom (F5)'), '',
-      kbNoKey, cmToggleZoomAnim, hcNoContext, nil )))))))))));
+      kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))))));
 
   MHelp := NewMenu(
     NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,

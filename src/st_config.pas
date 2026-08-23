@@ -58,6 +58,11 @@ type
     // than that, and staying inside the palette keeps it free: no per-cell
     // overlay entry for an area that covers the whole screen.
     DesktopColor: integer;
+    // paint our own black ground instead of leaving it to the host terminal.
+    // On by default: a terminal with a transparent background, or one whose
+    // palette calls something else 'black', otherwise shows through
+    // everything superterm draws. Turn it off to keep that transparency.
+    SolidBg: boolean;
   end;
 
 function ConfigDir: string;
@@ -237,6 +242,7 @@ begin
   Cfg.NewWinCols := 0;
   Cfg.NewWinRows := 0;
   Cfg.DesktopColor := 0;        // black
+  Cfg.SolidBg := True;
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -262,6 +268,7 @@ begin
     Cfg.ZoomAnim := Ini.ReadBool('session', 'zoomanim', Cfg.ZoomAnim);
     Cfg.DesktopColor := Ini.ReadInteger('ui', 'desktop_color',
       Cfg.DesktopColor);
+    Cfg.SolidBg := Ini.ReadBool('ui', 'solid_background', Cfg.SolidBg);
     if (Cfg.DesktopColor < 0) or (Cfg.DesktopColor > 15) then
       Cfg.DesktopColor := 0;
     Cfg.NewWinCols := Ini.ReadInteger('ui', 'newwincols', Cfg.NewWinCols);
@@ -309,6 +316,7 @@ begin
     Ini.WriteBool('session', 'dragcontent', Cfg.DragContent);
     Ini.WriteBool('session', 'zoomanim', Cfg.ZoomAnim);
     Ini.WriteInteger('ui', 'desktop_color', Cfg.DesktopColor);
+    Ini.WriteBool('ui', 'solid_background', Cfg.SolidBg);
     Ini.WriteInteger('ui', 'newwincols', Cfg.NewWinCols);
     Ini.WriteInteger('ui', 'newwinrows', Cfg.NewWinRows);
     Ini.WriteString('ui', 'background', Cfg.Background);

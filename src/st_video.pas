@@ -80,6 +80,15 @@ procedure OutlineEnterDiff(NX1, NY1, NX2, NY2, OX1, OY1, OX2, OY2: LongInt;
 procedure InvalidateFrame;
 
 var
+  // Paint our own ground instead of leaving it to the host terminal. A cell
+  // whose background is black -- or, for a pane, the terminal default -- is
+  // emitted as an explicit RGB black rather than as "colour 0" or "no colour
+  // at all". Host terminals with a transparent background, or with a palette
+  // that maps ANSI black to something else, otherwise show THEIR ground
+  // through everything superterm draws: menus, dialogs, the status line and
+  // the panes all came out tinted. Off leaves the old behaviour, which is
+  // what a deliberately transparent terminal wants.
+  SolidBackground: Boolean = True;
   PassthroughActive: Boolean = False;
   // startup: while True, FreeVision draws into the buffer normally but the
   // driver does NOT write to the terminal, so the whole build+promote+
@@ -211,8 +220,14 @@ var
 begin
   Foreground := AAttr and $0F;
   Background := (AAttr shr 4) and $0F;
-  Result := #27'[0;' + IntToStr(VgaColorToAnsi(Foreground, True)) + ';' +
-    IntToStr(VgaColorToAnsi(Background, False)) + 'm';
+  Result := #27'[0;' + IntToStr(VgaColorToAnsi(Foreground, True)) + ';';
+  // Only black is forced: every other colour is left as its palette index, so
+  // a themed terminal keeps its own idea of blue, cyan and the rest. The text
+  // colour is never touched either -- it is the ground that has to be solid.
+  if SolidBackground and (Background = 0) then
+    Result := Result + '48;2;0;0;0m'
+  else
+    Result := Result + IntToStr(VgaColorToAnsi(Background, False)) + 'm';
 end;
 
 function VgaChar(AChar: Byte): AnsiString;
@@ -471,12 +486,24 @@ begin
   case ABg shr 24 of
     1: Result := Result + ';48;2;' + IntToStr((ABg shr 16) and $FF) + ';' +
          IntToStr((ABg shr 8) and $FF) + ';' + IntToStr(ABg and $FF);
-    2: begin
+    2: if SolidBackground and ((ABg and $0F) = 0) then
+         Result := Result + ';48;2;0;0;0'
+       else
+       begin
          n := ABg and $0F;
          if n < 8 then Result := Result + ';' + IntToStr(40 + LongInt(n))
          else Result := Result + ';' + IntToStr(100 + (LongInt(n) - 8));
        end;
-    3: Result := Result + ';48;5;' + IntToStr(ABg and $FF);
+    3: if SolidBackground and ((ABg and $FF) = 0) then
+         Result := Result + ';48;2;0;0;0'
+       else
+         Result := Result + ';48;5;' + IntToStr(ABg and $FF);
+  else
+    // the pane said "whatever the terminal's background is". On a
+    // transparent terminal that is a hole straight through superterm, so
+    // we answer for it: our screen's ground is black.
+    if SolidBackground then
+      Result := Result + ';48;2;0;0;0';
   end;
   Result := Result + 'm';
 end;
