@@ -198,6 +198,46 @@ if SOCK:
     check('stalled snapshot does not block controls', ok and elapsed < 2.0)
     snapshot_peer.close()
 
+    # All 16 pending slots (MAX_PENDING_CONNECTIONS) held by silent peers:
+    # the next connection is closed at once instead of queueing behind them,
+    # and the slots return as soon as the first-frame deadline expires.
+    idlers = []
+    for _ in range(16):
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        peer.connect(SOCK)
+        idlers.append(peer)
+    time.sleep(0.3)
+    overflow = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    overflow.settimeout(2.0)
+    overflow.connect(SOCK)
+    try:
+        refused = overflow.recv(1) == b''
+    except (OSError, socket.timeout):
+        refused = False
+    overflow.close()
+    check('connection beyond the pending slots is closed', refused)
+    time.sleep(1.2)     # FIRST_FRAME_TIMEOUT_MS expires every idler
+    ok, elapsed = info_works(SOCK, timeout=2.0)
+    check('slots recover once silent peers expire', ok and elapsed < 1.5)
+    for peer in idlers:
+        peer.close()
+
+    # A header promising more than MAX_FRAME_SIZE is invalid on sight: the
+    # peer is dropped without the daemon ever reserving that buffer.
+    huge = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    huge.settimeout(2.0)
+    huge.connect(SOCK)
+    huge.sendall(struct.pack('<BBhI', FRAME_CTL_INFO, 0, -1,
+                             200 * 1024 * 1024))
+    try:
+        dropped = huge.recv(1) == b''
+    except (OSError, socket.timeout):
+        dropped = False
+    huge.close()
+    check('oversize frame header drops the peer', dropped)
+    ok, elapsed = info_works(SOCK, timeout=2.0)
+    check('daemon alive after oversize header', ok and elapsed < 1.5)
+
 
 # Integration coverage for the old select FD_SETSIZE failure. The UI, pane,
 # listener and accepted sockets all start above 1023 in the forked daemon.
