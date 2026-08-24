@@ -325,7 +325,7 @@ end;
 procedure TScreen.Resize(AWidth, AHeight: integer);
 var
   NewGrid: TGridArray;
-  x, y, cw, ch, Lost, SrcY, OldWidth, OldHeight: integer;
+  x, y, cw, ch, Lost, Spare, SrcY, OldWidth, OldHeight: integer;
 begin
   cw := AWidth;
   ch := AHeight;
@@ -354,6 +354,27 @@ begin
     Lost := OldHeight - ch;
     if Lost < 0 then
       Lost := 0;
+    // ...but give up the BOTTOM rows first, while they are blank and below the
+    // cursor. A pane is created at one size and laid out to its final, slightly
+    // smaller one a moment later (108x31 -> 106x30 here). If the program in it
+    // has already written its first line by then, scrolling the top away puts
+    // that line in the scrollback and off the visible screen -- for a shrink
+    // that had empty rows going spare. That is how a window class whose command
+    // starts `echo SOMETHING` lost its first line on macOS, where openpty lets
+    // the child write before the layout settles; GNU/Linux normally resized
+    // first and so never showed it. Sleeping before the echo "fixed" it for the
+    // same reason, which is what gave the ordering away.
+    // Real terminals shrink this way: empty space below the cursor goes before
+    // any content does.
+    Spare := 0;
+    y := OldHeight - 1;
+    while (Spare < Lost) and (y > CursorY) and
+          (Length(TrimRow(FGrid[y])) = 0) do
+    begin
+      Inc(Spare);
+      Dec(y);
+    end;
+    Dec(Lost, Spare);
     // blank rows are not worth keeping: a fresh pane shrunk by the tiler
     // would otherwise start life with "history" and grow a scrollbar for it
     if Lost > 0 then
