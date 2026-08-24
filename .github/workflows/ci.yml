@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, newfeatures]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GNU/Linux x86_64
+            os: ubuntu-24.04
+          - name: macOS Apple Silicon
+            os: macos-15
+          - name: macOS Intel
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install GNU/Linux dependencies
+        if: runner.os == 'Linux'  # GitHub's literal for the GNU/Linux runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            fp-compiler fp-units-fcl fp-units-db python3-venv
+
+      - name: Install Free Pascal on macOS
+        if: runner.os == 'macOS'
+        run: brew list fpc >/dev/null 2>&1 || brew install fpc
+
+      - name: Create Python test environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/superterm-python"
+          "$RUNNER_TEMP/superterm-python/bin/python" -m pip install pyte
+
+      - name: Configure
+        run: |
+          uname -a
+          ./configure \
+            --with-fpc="$(command -v fpc)" \
+            --with-python="$RUNNER_TEMP/superterm-python/bin/python"
+
+      - name: Build and run regression suite
+        run: make test

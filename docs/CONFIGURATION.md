@@ -42,6 +42,7 @@ background_mode=center
 
 [session]
 server=always
+resize_policy=session
 autosave=1
 autorestore=1
 dragcontent=1
@@ -140,6 +141,27 @@ character grid.
   with the control CLI (see [`CLI.md`](CLI.md)). `server=detach` restores
   the classic behaviour where the server only exists after detaching with
   the prefix + `d`.
+- `multithread=1` (default) keeps the session daemon on its original single
+  event-reactor thread. `multithread=N` sets the maximum **total** daemon
+  threads, including the permanent client/socket reactor; the effective cap
+  is also limited by the CPUs available to the process. `multithread=auto`
+  uses that CPU limit automatically. Pane workers are created on demand and
+  removed as panes close, so with `N=8` and two panes the daemon has three
+  threads, not eight. `SUPERTERM_MULTITHREAD=1|auto|N` overrides the file for
+  one launch, which is useful for deterministic debugging. Existing session
+  daemons keep the mode they started with until they are restarted.
+- `resize_policy=session` (default) gives every attached client its own
+  window geometry and viewport. Resizing, moving, minimizing or focusing a
+  window in one interactive client does not move it in another client and
+  does not send `TIOCSWINSZ` to the shared PTY. A client smaller than the
+  canonical screen crops it and follows the live cursor; a larger client pads
+  it. Mouse and copy-mode coordinates are translated through that viewport.
+  The pane-menu action `Set PTY to this window`, the control CLI `resize`
+  command, and F5 passthrough are explicit canonical resizes and are visible
+  to every client. `resize_policy=smallest` restores the previous common-
+  minimum negotiation, in which the smallest attached viewport determines
+  the PTY. `SUPERTERM_RESIZE_POLICY=session|smallest` overrides the file for
+  one launch. A running daemon keeps the policy it started with.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
   when no profile takes priority. Set it to `0` when every startup must

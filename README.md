@@ -52,6 +52,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
   is just the first attached client, and the whole workspace can be driven
   from another shell with the control CLI. `[session] server=detach`
   restores the classic detach-only flow.
+- Optional per-pane event reactors can parse independent PTY streams on
+  multiple CPU cores. `[session] multithread=1` preserves the original
+  single-threaded daemon; `auto` or a total thread limit enables dynamic
+  workers, each with its own `fpPoll`, on GNU/Linux and macOS.
 - A bilingual control CLI (commands and flags accepted in English AND
   Spanish, output in the configured UI language): `list/listar`,
   `send/enviar`, `capture/capturar` (visible screen, last N lines or the
@@ -61,9 +65,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
   `restore/restaurar`, `zoom/ampliar` and `organize/organizar`. See
   [`docs/CLI.md`](docs/CLI.md).
 - True multi-user sessions: up to 8 clients attached to the same session at
-  once, with output broadcast, live window events, per-pane smallest-size
-  negotiation, and slow-client flow control so one stalled client never
-  blocks the rest.
+  once, with output broadcast, live window events, client-local geometry and
+  viewports, and slow-client flow control so one stalled client never blocks
+  the rest. `[session] resize_policy=smallest` retains common-minimum sizing
+  for compatibility.
 - Named multi-session detach: several live sessions under
   `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
@@ -347,7 +352,10 @@ make test
 
 The suite covers pane operations, large terminal sizes, xterm and tmux mouse
 input, focus routing, session restore, configured terminals, templates,
-SQLite templates, the session wizard, language switching, and window controls.
+SQLite templates, the session wizard, language switching, window controls, and
+the nonblocking session daemon under partial frames, stalled readers and file
+descriptors above 1023. GitHub Actions runs it on GNU/Linux, macOS Apple Silicon
+and macOS Intel.
 
 Individual tests are also runnable directly:
 
@@ -365,6 +373,7 @@ python3 test/wizard_test.py
 python3 test/language_test.py
 python3 test/window_test.py
 python3 test/detach_test.py
+python3 test/nonblocking_server_test.py
 ```
 
 ## Run
@@ -389,11 +398,12 @@ sessions exist. Every launch starts a per-user session server at
 (the pre-existing single `~/.superterm/session.sock` from older builds is
 still recognized). The server owns the PTY masters, process groups,
 terminal parsers, and scrollback, so leaving the client — or losing it —
-does not close local shells or remote SSH connections. `Alt-X` and `Alt-Q`
-remain permanent exits that close the whole session: `Alt-X` asks the
-server to save `session.ini` first, `Alt-Q` skips saving. Inside the app,
-`Ctrl-Q s` opens the session picker to attach to or permanently close
-other sessions.
+does not close local shells or remote SSH connections. With several clients,
+`Alt-X` and `Alt-Q` close only the client that requested the exit; the session
+ends when its last attached client exits. `Alt-X` asks the server to save
+`session.ini` first, while `Alt-Q` skips saving. The explicit CLI `kill`
+command remains an immediate session-wide close. Inside the app, `Ctrl-Q s`
+opens the session picker to attach to or permanently close other sessions.
 
 Optional diagnostics:
 
@@ -526,6 +536,7 @@ palette=color               ; color (default), bw, or mono
 [session]
 autosave=1
 autorestore=1               ; use 0 for a fresh profile startup
+resize_policy=session       ; independent client viewports (default)
 default_profile=daily
 ```
 

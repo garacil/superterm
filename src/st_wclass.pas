@@ -13,7 +13,7 @@ unit st_wclass;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix, st_config;
+  Classes, SysUtils, StrUtils, IniFiles, BaseUnix, st_config;
 
 type
   // the kind is derived on load and never persisted:
@@ -403,15 +403,28 @@ end;
 
 function CommandWithInteractiveShell(const Command, AShell: string;
   LoginShell: boolean): string;
+var
+  Tail, RawTail, ModeArg: string;
 begin
   Result := Trim(Command);
   if Result = '' then
     Exit;
-  Result := Result + '; exec ' + ShellQuote(AShell);
   if LoginShell then
-    Result := Result + ' -l'
+    ModeArg := ' -l'
   else
-    Result := Result + ' -i';
+    ModeArg := ' -i';
+  Tail := '; exec ' + ShellQuote(AShell) + ModeArg;
+  RawTail := '; exec ' + AShell + ModeArg;
+  // Old profiles/classes often added their own fallback explicitly. Keep
+  // this idempotent so those configurations do not produce two nested
+  // shells that require `exit` twice.
+  if EndsText(Tail, Result) or EndsText(RawTail, Result) then
+    Exit;
+  // Run the application in a subshell. A saved launcher may itself start
+  // with `exec` (tmux profiles commonly do); without this boundary it
+  // replaces the only shell and the pane dies as soon as the application
+  // exits. The outer shell always survives to become an interactive prompt.
+  Result := '( ' + Result + ' )' + Tail;
 end;
 
 function ComposePaneCommand(const C: TWindowClass;
@@ -433,7 +446,8 @@ begin
   if EffConnect <> '' then
   begin
     // free-command connection: post goes via the connection's stdin
-    Result := WizardCommand(EffConnect, EffPost);
+    Result := CommandWithInteractiveShell(
+      WizardCommand(EffConnect, EffPost), AShell, ALoginShell);
     Exit;
   end;
   // local
@@ -443,6 +457,7 @@ begin
       Result := WizardCommand(EffCmd, EffPost)
     else
       Result := EffCmd;
+    Result := CommandWithInteractiveShell(Result, AShell, ALoginShell);
     Exit;
   end;
   if EffPost <> '' then

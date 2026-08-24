@@ -195,9 +195,12 @@ harness.
 ## Platform support
 
 superterm is a single cross-platform codebase that builds and runs natively on
-GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `select`, POSIX
-PTYs, and the bundled FreeVision text UI. The only conditionally compiled unit
-is `src/st_pty.pas`, which selects the PTY/process backend with `{$IFDEF DARWIN}`:
+GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `poll`, POSIX
+PTYs, and the bundled FreeVision text UI. The detached server registers its
+listener, handshakes, clients and PTY masters through `BaseUnix.fpPoll`, with no
+external event-library dependency and no `FD_SETSIZE` ceiling. The only
+conditionally compiled unit is `src/st_pty.pas`, which selects the PTY/process
+backend with `{$IFDEF DARWIN}`:
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free

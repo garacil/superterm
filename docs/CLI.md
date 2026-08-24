@@ -71,7 +71,7 @@ superterm new SESSION[:PANE]     open (split) a new pane
 superterm close TARGET           close a pane
 superterm focus TARGET           set the focused pane ('.' then points here)
 superterm rename TARGET NAME     set a pane title (survives reattach/save)
-superterm resize TARGET WxH      resize the pane terminal, e.g. 100x30
+superterm resize TARGET WxH      explicitly resize the shared PTY, e.g. 100x30
 superterm minimize TARGET        minimize the window
 superterm restore TARGET         undo minimize and zoom
 superterm zoom TARGET            maximize the window
@@ -98,11 +98,19 @@ superterm list prod
 ### Multi-user sessions
 
 Up to 8 clients can attach to one session (`superterm attach` from several
-terminals). Output is broadcast to everyone; window changes propagate as
-live events; each pane runs at the smallest size requested among the
-attached clients (tmux-style). A stalled client pauses output briefly and
-is disconnected after a grace period so it can never block the session.
-Legacy (pre-3.0) clients still attach exclusively, exactly as before.
+terminals). Output and shared pane events are broadcast to everyone, while
+the default `resize_policy=session` keeps each interactive client's focus,
+window geometry and viewport independent. Use `resize_policy=smallest` for
+the former tmux-style common-minimum PTY sizing. A stalled client pauses
+output briefly and is disconnected after a grace period so it can never
+block the session. Legacy (pre-3.0) clients still attach exclusively,
+exactly as before.
+
+Exiting an interactive client with `Alt-X` or `Alt-Q` disconnects only that
+client while another UI is attached. The last interactive client to exit
+closes the session. `Alt-X` saves first; `Alt-Q` does not. The explicit
+`superterm kill SESSION` command is always administrative and closes the
+whole session regardless of how many clients are attached.
 
 ---
 
@@ -167,7 +175,7 @@ superterm nueva SESION[:PANEL]   abre (divide) un panel nuevo
 superterm cerrar DESTINO         cierra un panel
 superterm foco DESTINO           fija el panel enfocado ('.' apunta a él)
 superterm renombrar DESTINO NOMBRE  fija el título (sobrevive al reattach)
-superterm tamano DESTINO WxH     redimensiona el terminal, ej. 100x30
+superterm tamano DESTINO WxH     redimensiona el PTY compartido, ej. 100x30
 superterm minimizar DESTINO      minimiza la ventana
 superterm restaurar DESTINO      deshace minimizar y zoom
 superterm ampliar DESTINO        maximiza la ventana
@@ -195,9 +203,16 @@ superterm listar prod
 
 Hasta 8 clientes pueden conectarse a una misma sesión (`superterm
 conectar` desde varios terminales). La salida se difunde a todos; los
-cambios de ventanas se propagan como eventos en vivo; cada panel corre al
-menor tamaño pedido entre los clientes conectados (estilo tmux). Un
-cliente atascado pausa la salida brevemente y se desconecta pasado un
-periodo de gracia, de modo que nunca bloquea la sesión. Los clientes
-antiguos (anteriores a 3.0) siguen conectando en exclusiva, igual que
-siempre.
+eventos compartidos del panel se propagan en vivo; y la política por defecto
+`resize_policy=session` mantiene independientes el foco, la geometría y el
+viewport de cada cliente interactivo. `resize_policy=smallest` recupera el
+anterior tamaño mínimo común del PTY al estilo tmux. Un cliente atascado
+pausa la salida brevemente y se desconecta pasado un periodo de gracia, de
+modo que nunca bloquea la sesión. Los clientes antiguos (anteriores a 3.0)
+siguen conectando en exclusiva, igual que siempre.
+
+Salir de un cliente interactivo con `Alt-X` o `Alt-Q` desconecta solo ese
+cliente mientras haya otra interfaz conectada. Cuando sale el último cliente
+interactivo, se cierra la sesión. `Alt-X` guarda antes; `Alt-Q` no. El comando
+administrativo explícito `superterm matar SESION` siempre cierra la sesión
+completa, independientemente del número de clientes conectados.

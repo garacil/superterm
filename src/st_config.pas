@@ -15,6 +15,9 @@ uses
 
 type
   TUiLanguage = (ulEnglish, ulSpanish);
+  // rpSession: one stable PTY geometry, independent client viewports.
+  // rpSmallest: compatibility policy, common minimum of attached clients.
+  TResizePolicy = (rpSession, rpSmallest);
 
   TConfig = record
     Shell: string;         // shell for autologin
@@ -48,6 +51,11 @@ type
     // client (controllable via CLI from startup); 'detach': classic mode,
     // the server only exists after detaching with prefix + d
     ServerMode: string;
+    // Maximum total threads in a session daemon, INCLUDING its permanent
+    // client/socket reactor. 1 is the original single-threaded event loop;
+    // 0 means automatic (bounded by the CPUs available to the process).
+    MultiThread: integer;
+    ResizePolicy: TResizePolicy;
     // size, in cells, of a window opened from a class that does not fix its
     // own. 0 = automatic, which is two thirds of the desktop. The window
     // frame adds one cell on each side.
@@ -72,6 +80,11 @@ function SystemConfigFile: string;   // /etc/superterm/superterm.ini (or $SUPERT
 function ExpandUserPath(const S: string): string;
 function ParseUiLanguage(const S: string): TUiLanguage;
 function UiLanguageCode(ALanguage: TUiLanguage): string;
+function MultiThreadCode(AValue: integer): string;
+function ParseMultiThread(const S: string; ADefault: integer = 1): integer;
+function ResizePolicyCode(AValue: TResizePolicy): string;
+function ParseResizePolicy(const S: string;
+  ADefault: TResizePolicy = rpSession): TResizePolicy;
 
 const
   DEFAULT_SCROLLBACK = 10000;
@@ -145,6 +158,55 @@ begin
     Result := 'es'
   else
     Result := 'en';
+end;
+
+function ParseMultiThread(const S: string; ADefault: integer): integer;
+var
+  V: integer;
+  T: string;
+begin
+  T := LowerCase(Trim(S));
+  if T = 'auto' then
+    Exit(0);
+  if (T = 'off') or (T = 'single') then
+    Exit(1);
+  if not TryStrToInt(T, V) or (V < 1) then
+    Exit(ADefault);
+  // There are at most MAX_PANES workers plus the socket reactor. Keep a
+  // generous parser ceiling here so st_config does not depend on st_layout;
+  // the daemon applies its tighter CPU/pane cap.
+  if V > 256 then
+    V := 256;
+  Result := V;
+end;
+
+function MultiThreadCode(AValue: integer): string;
+begin
+  if AValue = 0 then
+    Result := 'auto'
+  else
+    Result := IntToStr(AValue);
+end;
+
+function ParseResizePolicy(const S: string;
+  ADefault: TResizePolicy): TResizePolicy;
+var
+  T: string;
+begin
+  T := LowerCase(Trim(S));
+  if (T = 'session') or (T = 'independent') or (T = 'fixed') then
+    Exit(rpSession);
+  if (T = 'smallest') or (T = 'minimum') or (T = 'shared') then
+    Exit(rpSmallest);
+  Result := ADefault;
+end;
+
+function ResizePolicyCode(AValue: TResizePolicy): string;
+begin
+  if AValue = rpSmallest then
+    Result := 'smallest'
+  else
+    Result := 'session';
 end;
 
 function UiText(const EnglishText, SpanishText: string): string;
@@ -239,6 +301,8 @@ begin
   Cfg.Language := ulEnglish;
   Cfg.Palette := 'color';
   Cfg.ServerMode := 'always';
+  Cfg.MultiThread := 1;
+  Cfg.ResizePolicy := rpSession;
   Cfg.NewWinCols := 0;
   Cfg.NewWinRows := 0;
   Cfg.DesktopColor := 0;        // black
@@ -248,10 +312,19 @@ end;
 procedure LoadConfig(out Cfg: TConfig);
 var
   Ini: TIniFile;
+  EnvThreads, EnvResize: string;
 begin
   SetDefaults(Cfg);
   if not FileExists(ConfigFile) then
+  begin
+    EnvThreads := GetEnvironmentVariable('SUPERTERM_MULTITHREAD');
+    if EnvThreads <> '' then
+      Cfg.MultiThread := ParseMultiThread(EnvThreads, Cfg.MultiThread);
+    EnvResize := GetEnvironmentVariable('SUPERTERM_RESIZE_POLICY');
+    if EnvResize <> '' then
+      Cfg.ResizePolicy := ParseResizePolicy(EnvResize, Cfg.ResizePolicy);
     Exit;
+  end;
   Ini := TIniFile.Create(ConfigFile);
   try
     Cfg.Shell := Ini.ReadString('autologin', 'shell', Cfg.Shell);
@@ -262,6 +335,11 @@ begin
       Cfg.ServerMode)));
     if (Cfg.ServerMode <> 'always') and (Cfg.ServerMode <> 'detach') then
       Cfg.ServerMode := 'always';
+    Cfg.MultiThread := ParseMultiThread(Ini.ReadString('session',
+      'multithread', MultiThreadCode(Cfg.MultiThread)), Cfg.MultiThread);
+    Cfg.ResizePolicy := ParseResizePolicy(Ini.ReadString('session',
+      'resize_policy', ResizePolicyCode(Cfg.ResizePolicy)),
+      Cfg.ResizePolicy);
     Cfg.AutoSave := Ini.ReadBool('session', 'autosave', Cfg.AutoSave);
     Cfg.AutoRestore := Ini.ReadBool('session', 'autorestore', Cfg.AutoRestore);
     Cfg.DragContent := Ini.ReadBool('session', 'dragcontent', Cfg.DragContent);
@@ -298,6 +376,15 @@ begin
   finally
     Ini.Free;
   end;
+  // Per-launch override for deterministic debugging and concurrency tests.
+  // The detached daemon inherits it through fork, so the selected topology
+  // cannot diverge between the launching client and its session server.
+  EnvThreads := GetEnvironmentVariable('SUPERTERM_MULTITHREAD');
+  if EnvThreads <> '' then
+    Cfg.MultiThread := ParseMultiThread(EnvThreads, Cfg.MultiThread);
+  EnvResize := GetEnvironmentVariable('SUPERTERM_RESIZE_POLICY');
+  if EnvResize <> '' then
+    Cfg.ResizePolicy := ParseResizePolicy(EnvResize, Cfg.ResizePolicy);
 end;
 
 procedure SaveConfig(const Cfg: TConfig);
@@ -311,6 +398,10 @@ begin
     Ini.WriteString('autologin', 'user', Cfg.User);
     Ini.WriteString('keymap', 'prefix', PrefixKeyCode(Cfg.PrefixKey));
     Ini.WriteString('session', 'server', Cfg.ServerMode);
+    Ini.WriteString('session', 'multithread',
+      MultiThreadCode(Cfg.MultiThread));
+    Ini.WriteString('session', 'resize_policy',
+      ResizePolicyCode(Cfg.ResizePolicy));
     Ini.WriteBool('session', 'autosave', Cfg.AutoSave);
     Ini.WriteBool('session', 'autorestore', Cfg.AutoRestore);
     Ini.WriteBool('session', 'dragcontent', Cfg.DragContent);

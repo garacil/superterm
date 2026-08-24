@@ -11,11 +11,12 @@ import time
 
 import pyte
 
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib
+
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-ROOT = '/tmp/opencode/stlarge'
-HOME = ROOT + '/home'
-os.makedirs(HOME + '/.superterm', exist_ok=True)
+HOME = stlib.fresh_home('large-screen')
 
 
 class Session:
@@ -30,7 +31,7 @@ class Session:
                 'TERM': 'xterm',
                 'SHELL': '/bin/bash',
                 'HOME': HOME,
-                'SUPERTERM_INI': ROOT + '/none.ini',
+                'SUPERTERM_INI': HOME + '/no-sys.ini',
             })
             os.execv(BIN, [BIN])
         self.set_size(width, height, reset_screen=False)
@@ -167,5 +168,6 @@ finally:
     except OSError:
         pass
     s.close()
+    stlib.close_all_daemons(HOME)
 
 sys.exit(1 if fails else 0)

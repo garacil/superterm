@@ -3,12 +3,20 @@
 import os, pty, time, select, sys, fcntl, termios, struct, subprocess, re
 import pyte
 
+sys.path.insert(0, os.path.dirname(__file__))
+from stlib import close_all_daemons
+
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
 HOME = '/tmp/opencode/st-sysconfig'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
 SYSINI = HOME + '/sys_test.ini'
 W, H = 110, 35
+
+# This legacy test deliberately reuses one fixed HOME for four launches. An
+# interrupted earlier run, or the previous phase's daemon still completing
+# shutdown, must not turn the next launch into the live-session picker.
+close_all_daemons(HOME)
 
 class Session:
     def __init__(self, sysini=SYSINI):
@@ -95,6 +103,7 @@ s.send(b'\x1bq', 1.0)
 s.close()
 time.sleep(0.4)
 check("Alt-Q no guarda sesion", not os.path.exists(SESS))
+close_all_daemons(HOME)
 
 # ---- part 2: scrollback with a single terminal ----
 with open(SYSINI, 'w') as f:
@@ -137,17 +146,21 @@ s.send(b'\x1bq', 0.8)   # without saving
 s.close()
 time.sleep(0.3)
 check("sin sesion tras Alt-Q", not os.path.exists(SESS))
+close_all_daemons(HOME)
 
 # ---- part 3: saving with Alt-X restores the defined terminal ----
 s = Session()
 s.drain(2.0)
 s.send(b'\x1bx', 1.0)   # exit saving
 s.close()
-time.sleep(0.4)
+deadline = time.time() + 3.0
+while time.time() < deadline and not os.path.exists(SESS):
+    time.sleep(0.1)
 check("Alt-X guarda sesion", os.path.exists(SESS))
 if os.path.exists(SESS):
     txt = open(SESS).read()
     check("session referencia term=solo", 'term=solo' in txt)
+close_all_daemons(HOME)
 
 s = Session()
 s.drain(2.5)
@@ -155,5 +168,6 @@ scr = s.text()
 check("restaura terminal por nombre", "solo" in scr)
 s.send(b'\x1bq', 0.8)
 s.close()
+close_all_daemons(HOME)
 
 sys.exit(1 if fails else 0)

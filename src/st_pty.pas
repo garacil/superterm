@@ -17,13 +17,10 @@ const
   MAXREAD = 65536;
 
 const
-  // how long a write may wait for the pane's program to make room before
-  // the rest is left queued: long enough that a program which is reading
-  // never notices, short enough that one which is not cannot stall a loop
-  WRITE_GRACE_MS = 100;
-  // more than this waiting for one pane's program means the program is not
-  // reading at all; refuse rather than grow without bound
+  // More than this waiting for one pane's program means the program is not
+  // reading at all; refuse rather than grow without bound.
   PENDING_INPUT_MAX = 1 shl 20;
+  PTY_WRITE_BUDGET = 256 * 1024;
 
 type
   TStringArray = array of string;
@@ -56,7 +53,7 @@ type
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
     // push queued input toward the pane; safe to call at any time
-    procedure FlushInput(AGraceMs: integer = 0);
+    procedure FlushInput;
     function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
@@ -602,34 +599,33 @@ begin
   if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
     Exit;
   FPendingInput := FPendingInput + S;
-  // Give the program a bounded moment to take it. Nearly always it takes
-  // everything at once and this behaves exactly as the old blocking write;
-  // what it will not do is wait for ever on a program that has stopped
-  // reading, which used to freeze the daemon and every other pane with it.
-  FlushInput(WRITE_GRACE_MS);
+  // Write only what the non-blocking master accepts immediately. The event
+  // loop watches POLLOUT while a remainder exists, so input for one stopped
+  // program can never delay sockets or the other panes.
+  FlushInput;
   Result := True;
 end;
 
-// Push whatever is still queued toward the pane. With AGraceMs > 0 it waits
-// that long in total for the program to make room; with 0 it writes what
-// fits and returns. A partial write simply leaves the rest for the next
-// turn of the caller's loop.
-procedure TPty.FlushInput(AGraceMs: integer);
+// Push whatever is immediately accepted by the non-blocking master. A partial
+// write leaves the rest for its next POLLOUT event.
+procedure TPty.FlushInput;
 var
-  N: integer;
-  Deadline: QWord;
-  SetW: TFDSet;
-  TV: TTimeVal;
-  Left: QWord;
+  N, Want, Total: integer;
 begin
   if (FMaster < 0) or (FPendingInput = '') then
     Exit;
-  Deadline := GetTickCount64 + QWord(AGraceMs);
+  Total := 0;
   repeat
-    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Length(FPendingInput));
+    Want := Length(FPendingInput);
+    if Want > PTY_WRITE_BUDGET - Total then
+      Want := PTY_WRITE_BUDGET - Total;
+    if Want <= 0 then
+      Exit;
+    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Want);
     if N > 0 then
     begin
       Delete(FPendingInput, 1, N);
+      Inc(Total, N);
       if FPendingInput = '' then
         Exit;
       continue;
@@ -637,17 +633,11 @@ begin
     if (N < 0) and (fpgeterrno = ESysEINTR) then
       continue;
     if (N < 0) and (fpgeterrno <> ESysEAGAIN) then
-      Exit;                       // the pane is gone; drop what is left
-    if GetTickCount64 >= Deadline then
-      Exit;                       // not reading: try again next turn
-    Left := Deadline - GetTickCount64;
-    fpFD_ZERO(SetW);
-    if fpFD_SET(FMaster, SetW) <> 0 then
+    begin
+      FPendingInput := '';        // the pane is gone; drop what is left
       Exit;
-    TV.tv_sec := Left div 1000;
-    TV.tv_usec := (Left mod 1000) * 1000;
-    if fpSelect(FMaster + 1, nil, @SetW, nil, @TV) <= 0 then
-      Exit;
+    end;
+    Exit;                         // not reading: wait for POLLOUT
   until False;
 end;
 
@@ -895,6 +885,9 @@ const
   VNODE_INFO_PATH_OFFSET_  = 152;   { offsetof(struct vnode_info_path, vip_path) }
   PROC_VNODEPATHINFO_SIZE_ = 2352;  { sizeof(struct proc_vnodepathinfo) }
 
+type
+  TVnodePathBuf = array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
+
 function proc_listchildpids(ppid: cint; buffer: pointer; buffersize: cint): cint;
   cdecl; external 'c' name 'proc_listchildpids';
 function proc_pidinfo(pid, flavor: cint; arg: qword; buffer: pointer;
@@ -930,6 +923,8 @@ var
   argc, taken, p, lim, st: integer;
 begin
   Result := nil;
+  { the DFA cannot see that Move fills argc from the sysctl buffer }
+  argc := 0;
   if Pid <= 0 then
     Exit;
   mib[0] := CTL_KERN_;
@@ -949,7 +944,6 @@ begin
     Exit;
   if sz < SizeOf(cint) then
     Exit;
-  argc := 0;
   Move(buf[0], argc, SizeOf(cint));
   if argc <= 0 then
     Exit;
@@ -972,16 +966,14 @@ begin
 end;
 
 function DarwinProcCwd(Pid: TPid): string;
-type
-  TVNPBuf = array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
 var
-  buf: TVNPBuf;
+  buf: TVnodePathBuf;
   ret: cint;
 begin
   Result := '';
   if Pid <= 0 then
     Exit;
-  buf := Default(TVNPBuf);
+  buf := Default(TVnodePathBuf);
   ret := proc_pidinfo(Pid, PROC_PIDVNODEPATHINFO_, 0, @buf[0], SizeOf(buf));
   if ret <= VNODE_INFO_PATH_OFFSET_ then
     Exit;
@@ -1001,13 +993,28 @@ procedure TPty.QueryState;
 {$IFDEF DARWIN}
 var
   best: TPid;
+  ForegroundPgrp: cint;
   Args: TStringArray;
   cmdline, base: string;
   i: integer;
 begin
   if (not FAlive) or (FPid <= 0) then
     Exit;
-  best := DarwinDeepestChild(FPid);
+  // The process attached directly to the PTY may be a launcher which keeps
+  // an interactive shell ready for when the application exits. The terminal
+  // foreground process group identifies the application the user is actually
+  // interacting with, regardless of those extra parent shells.
+  best := 0;
+  ForegroundPgrp := 0;
+  if (FMaster >= 0) and (TCGetPGrp(FMaster, ForegroundPgrp) = 0) and
+     (ForegroundPgrp > 0) then
+  begin
+    Args := DarwinProcArgv(ForegroundPgrp);
+    if Length(Args) > 0 then
+      best := ForegroundPgrp;
+  end;
+  if best <= 0 then
+    best := DarwinDeepestChild(FPid);
   if best <= 0 then
     best := FPid;
   Args := DarwinProcArgv(best);
@@ -1019,7 +1026,7 @@ begin
       cmdline := cmdline + ' ';
     cmdline := cmdline + Args[i];
   end;
-  base := FirstWordOf(cmdline);
+  base := ExtractFileName(FirstWordOf(cmdline));
   if (base <> '') and (base[1] = '-') then
     Delete(base, 1, 1);
   if (base = '') or SameText(base, FShellBase) then
@@ -1038,6 +1045,7 @@ var
   Kids: array[0..15] of TPid;
   n, i: integer;
   best: TPid;
+  ForegroundPgrp: cint;
   cmdline: string;
   base: string;
   Args: TStringArray;
@@ -1045,10 +1053,20 @@ begin
   if (not FAlive) or (FPid <= 0) then
     Exit;
   best := 0;
-  n := FindChildProcs(FPid, Kids);
-  for i := 0 to n - 1 do
-    if Kids[i] > best then
-      best := Kids[i];
+  ForegroundPgrp := 0;
+  // Ask the PTY which job owns its foreground. Looking only at FPid's direct
+  // children loses the real application when a profile command is protected
+  // by an outer shell so the pane can return to a prompt after `exit`.
+  if (FMaster >= 0) and (TCGetPGrp(FMaster, ForegroundPgrp) = 0) and
+     (ForegroundPgrp > 0) and (Length(ProcArgs(ForegroundPgrp)) > 0) then
+    best := ForegroundPgrp;
+  if best <= 0 then
+  begin
+    n := FindChildProcs(FPid, Kids);
+    for i := 0 to n - 1 do
+      if Kids[i] > best then
+        best := Kids[i];
+  end;
   if best > 0 then
   begin
     Args := ProcArgs(best);
