@@ -15,7 +15,7 @@ interface
 uses
   Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
   st_config, st_wclass, st_layout, st_pty, st_screen, st_session, st_debug,
-  st_poll;
+  st_poll, st_cpu;
 
 const
   FRAME_ATTACH = 1;
@@ -119,6 +119,12 @@ const
   // normal live egress queue, but it is still bounded so one local peer cannot
   // make the daemon allocate until the process is killed by the OS.
   MAX_SNAPSHOT_EGRESS = 256 * 1024 * 1024;
+
+  // Workers feed the socket reactor through a bounded in-process queue. If
+  // the main reactor is busy producing a snapshot/capture, a full queue
+  // back-pressures only the worker's PTYs instead of growing without limit.
+  WORKER_RESULT_SLOTS = 512;
+  MAX_WORKER_RESULT_BYTES = 16 * 1024 * 1024;
 
   {$ifdef darwin}
   ST_MSG_DONTWAIT = $80;
@@ -347,6 +353,34 @@ type
 
   TFramePop = (fpNeedMore, fpReady, fpInvalid);
 
+  TDetachedSession = class;
+
+  TWorkerResult = record
+    Kind: byte;
+    Pane: integer;
+    Data: TByteArray;
+  end;
+
+  // One pane reactor owns a stable set of pane indexes for its whole
+  // lifetime. Pane insertion/removal stops and drains every worker before
+  // compacting arrays, then rebuilds the small pool with fresh assignments.
+  TPanePollWorker = class(TThread)
+  private
+    FOwner: TDetachedSession;
+    FWorkerIndex: integer;
+    FPaneIndexes: array[0..MAX_PANES - 1] of integer;
+    FPaneCount: integer;
+    FWakePipe: TFilDes;
+    procedure Wake;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AOwner: TDetachedSession; AWorkerIndex: integer;
+      const APaneIndexes: array of integer);
+    destructor Destroy; override;
+    procedure RequestStop;
+  end;
+
   TDetachedSession = class
   private
     FLayout: TLayout;
@@ -373,6 +407,19 @@ type
     FCtlCfg: TConfig;                 // config for daemon-side spawns
     FEmptySince: QWord;               // tick with no clients or live panes
     FLastTitleTick: QWord;            // periodic title derivation
+    FPaneLocks: array[0..MAX_PANES - 1] of TRTLCriticalSection;
+    FWorkers: array[0..MAX_PANES - 1] of TPanePollWorker;
+    FWorkerCount: integer;
+    FAvailableCPUs: integer;
+    FConfiguredThreads: integer;      // 0=auto; otherwise total daemon limit
+    FThreadLimit: integer;            // effective total, CPU/pane capped
+    FWorkerResultPipe: TFilDes;
+    FWorkerResultLock: TRTLCriticalSection;
+    FWorkerResultSpace: PRTLEvent;
+    FWorkerResults: array[0..WORKER_RESULT_SLOTS - 1] of TWorkerResult;
+    FWorkerResultHead: integer;
+    FWorkerResultCount: integer;
+    FWorkerResultBytes: integer;
     function CreateListener: boolean;
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
@@ -414,7 +461,18 @@ type
       const AFirstData: TByteArray): boolean;
     procedure HandleClientFrame(AIdx: integer; AKind: byte;
       APane: integer; const AData: TByteArray);
+    function ReadPaneEvent(APane: integer; out AKind: byte;
+      out AData: TByteArray): boolean;
     procedure HandlePaneOutput(APane: integer);
+    function QueueWorkerResult(AKind: byte; APane: integer;
+      const AData: TByteArray): boolean;
+    procedure DrainWorkerResults;
+    function WantedWorkerCount: integer;
+    procedure StartPaneWorkers;
+    procedure StopPaneWorkers;
+    procedure CheckPaneWorkers;
+    procedure LockPane(APane: integer);
+    procedure UnlockPane(APane: integer);
     procedure SignalReady(AFd: cint; AOk: boolean);
     procedure WriteSidecar;
     function ClientChainsUnion: string;
@@ -466,6 +524,27 @@ begin
   if Flags >= 0 then
     FpFcntl(AFd, F_SETFL, Flags or O_NONBLOCK);
 end;
+
+// FPC declares fpRead/fpWrite with untyped buffers and marks them inline; in
+// generic helper call sites 3.2.2 reports a compiler implementation note even
+// though there is nothing actionable in the project. Keep that noise inside
+// these two small wrappers so normal builds remain warning/note clean.
+{$push}{$notes off}{$hints off}
+function PipeWriteByte(AFd: cint; AValue: byte): boolean;
+begin
+  Result := (AFd >= 0) and (FpWrite(AFd, AValue, SizeOf(AValue)) > 0);
+end;
+
+procedure DrainPipe(AFd: cint);
+var
+  Buf: array[0..255] of byte;
+begin
+  FillChar(Buf, SizeOf(Buf), 0);
+  if AFd < 0 then
+    Exit;
+  while FpRead(AFd, Buf, SizeOf(Buf)) > 0 do ;
+end;
+{$pop}
 
 // Consume only what is immediately available. A short header or payload is
 // retained in ABuffer and completed by a later poll notification; no peer can
@@ -1601,8 +1680,48 @@ constructor TDetachedSession.Create(const AName, AProfile: string;
   ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray);
 var
   I: integer;
+  ServerCfg: TConfig;
 begin
   inherited Create;
+  FWorkerCount := 0;
+  FWorkerResultPipe[0] := -1;
+  FWorkerResultPipe[1] := -1;
+  FWorkerResultHead := 0;
+  FWorkerResultCount := 0;
+  FWorkerResultBytes := 0;
+  InitCriticalSection(FWorkerResultLock);
+  FWorkerResultSpace := RTLEventCreate;
+  if FWorkerResultSpace <> nil then
+    RTLEventSetEvent(FWorkerResultSpace);
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    InitCriticalSection(FPaneLocks[I]);
+    FWorkers[I] := nil;
+  end;
+  LoadConfig(ServerCfg);
+  FConfiguredThreads := ServerCfg.MultiThread;
+  FAvailableCPUs := AvailableCPUCount;
+  if FConfiguredThreads = 0 then
+    FThreadLimit := FAvailableCPUs
+  else
+    FThreadLimit := FConfiguredThreads;
+  if FThreadLimit > FAvailableCPUs then
+    FThreadLimit := FAvailableCPUs;
+  if FThreadLimit > MAX_PANES + 1 then
+    FThreadLimit := MAX_PANES + 1;
+  if FThreadLimit < 1 then
+    FThreadLimit := 1;
+  if (FThreadLimit > 1) and (FpPipe(FWorkerResultPipe) = 0) then
+  begin
+    SetCloExec(FWorkerResultPipe[0]);
+    SetCloExec(FWorkerResultPipe[1]);
+    SetNonBlocking(FWorkerResultPipe[0]);
+    SetNonBlocking(FWorkerResultPipe[1]);
+  end
+  else if FThreadLimit > 1 then
+    FThreadLimit := 1;
+  if (FThreadLimit > 1) and (FWorkerResultSpace = nil) then
+    FThreadLimit := 1;
   FLayout := ALay;
   FPaneCount := Length(APanes);
   if FPaneCount > MAX_PANES then
@@ -1647,6 +1766,7 @@ destructor TDetachedSession.Destroy;
 var
   I: integer;
 begin
+  StopPaneWorkers;
   for I := 0 to MAX_CLIENTS - 1 do
     if FClients[I].Fd >= 0 then
     begin
@@ -1677,6 +1797,17 @@ begin
     FScreens[I] := nil;
   end;
   FLayout.Free;
+  if FWorkerResultPipe[0] >= 0 then
+    FpClose(FWorkerResultPipe[0]);
+  if FWorkerResultPipe[1] >= 0 then
+    FpClose(FWorkerResultPipe[1]);
+  for I := 0 to WORKER_RESULT_SLOTS - 1 do
+    FWorkerResults[I].Data := nil;
+  if FWorkerResultSpace <> nil then
+    RTLEventDestroy(FWorkerResultSpace);
+  DoneCriticalSection(FWorkerResultLock);
+  for I := 0 to MAX_PANES - 1 do
+    DoneCriticalSection(FPaneLocks[I]);
   inherited Destroy;
 end;
 
@@ -2004,7 +2135,7 @@ var
   MinC, MinR: Longint;
   Pair: array[0..1] of Longint;
 begin
-  if (APane < 0) or (APane >= FPaneCount) or (FScreens[APane] = nil) then
+  if (APane < 0) or (APane >= FPaneCount) then
     Exit;
   MinC := 0;
   MinR := 0;
@@ -2018,16 +2149,25 @@ begin
       if (MinR = 0) or (FClients[I].ReqRows[APane] < MinR) then
         MinR := FClients[I].ReqRows[APane];
     end;
-  if DebugActive then
-    DebugLog(Format('resize: pane=%d negotiated %dx%d (screen %dx%d)',
-      [APane, MinC, MinR, FScreens[APane].Width, FScreens[APane].Height]));
   if (MinC < 4) or (MinR < 2) then
     Exit;
-  if (MinC = FScreens[APane].Width) and (MinR = FScreens[APane].Height) then
-    Exit;
-  FScreens[APane].Resize(MinC, MinR);
-  if FPanes[APane] <> nil then
-    FPanes[APane].Resize(MinC, MinR);
+  LockPane(APane);
+  try
+    if FScreens[APane] = nil then
+      Exit;
+    if DebugActive then
+      DebugLog(Format('resize: pane=%d negotiated %dx%d (screen %dx%d)',
+        [APane, MinC, MinR, FScreens[APane].Width,
+         FScreens[APane].Height]));
+    if (MinC = FScreens[APane].Width) and
+       (MinR = FScreens[APane].Height) then
+      Exit;
+    FScreens[APane].Resize(MinC, MinR);
+    if FPanes[APane] <> nil then
+      FPanes[APane].Resize(MinC, MinR);
+  finally
+    UnlockPane(APane);
+  end;
   Pair[0] := MinC;
   Pair[1] := MinR;
   Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
@@ -2305,13 +2445,22 @@ begin
       end;
     end;
   end;
-  if not SendSnapshot(Slot) then
-  begin
-    if FClients[Slot].Fd >= 0 then
-      DropClient(Slot);
-    Exit;
+  // A worker can update TScreen and queue the same raw bytes concurrently.
+  // Quiescing here gives the attaching client a true point-in-time cut: all
+  // earlier results are drained before serialization and all later bytes are
+  // delivered as live FRAME_OUTPUT after Ready becomes true.
+  StopPaneWorkers;
+  try
+    if not SendSnapshot(Slot) then
+    begin
+      if FClients[Slot].Fd >= 0 then
+        DropClient(Slot);
+      Exit;
+    end;
+    FClients[Slot].Ready := True;
+  finally
+    StartPaneWorkers;
   end;
-  FClients[Slot].Ready := True;
   WriteSidecar;
   Result := True;
 end;
@@ -2328,40 +2477,45 @@ begin
   // grace period; with a client attached it simply waits for the next pane.
   if (APane < 0) or (APane >= FPaneCount) then
     Exit;
-  FLayout.ClosePane(APane);
-  if FPanes[APane] <> nil then
-  begin
-    FPanes[APane].KillPane;
-    FPanes[APane].Free;
-    FPanes[APane] := nil;
-  end;
-  FScreens[APane].Free;
-  FScreens[APane] := nil;
-  for I := APane to FPaneCount - 2 do
-  begin
-    FPanes[I] := FPanes[I + 1];
-    FScreens[I] := FScreens[I + 1];
-    FTitles[I] := FTitles[I + 1];
-    FTitleFixed[I] := FTitleFixed[I + 1];
-    FTerms[I] := FTerms[I + 1];
-    FGeom[I] := FGeom[I + 1];
-    for C := 0 to MAX_CLIENTS - 1 do
+  StopPaneWorkers;
+  try
+    FLayout.ClosePane(APane);
+    if FPanes[APane] <> nil then
     begin
-      FClients[C].ReqCols[I] := FClients[C].ReqCols[I + 1];
-      FClients[C].ReqRows[I] := FClients[C].ReqRows[I + 1];
+      FPanes[APane].KillPane;
+      FPanes[APane].Free;
+      FPanes[APane] := nil;
     end;
+    FScreens[APane].Free;
+    FScreens[APane] := nil;
+    for I := APane to FPaneCount - 2 do
+    begin
+      FPanes[I] := FPanes[I + 1];
+      FScreens[I] := FScreens[I + 1];
+      FTitles[I] := FTitles[I + 1];
+      FTitleFixed[I] := FTitleFixed[I + 1];
+      FTerms[I] := FTerms[I + 1];
+      FGeom[I] := FGeom[I + 1];
+      for C := 0 to MAX_CLIENTS - 1 do
+      begin
+        FClients[C].ReqCols[I] := FClients[C].ReqCols[I + 1];
+        FClients[C].ReqRows[I] := FClients[C].ReqRows[I + 1];
+      end;
+    end;
+    FPanes[FPaneCount - 1] := nil;
+    FScreens[FPaneCount - 1] := nil;
+    FTitles[FPaneCount - 1] := '';
+    FTerms[FPaneCount - 1] := '';
+    Dec(FPaneCount);
+    if FFocused > APane then
+      Dec(FFocused);
+    if FFocused >= FPaneCount then
+      FFocused := FPaneCount - 1;
+    if FFocused < 0 then
+      FFocused := 0;
+  finally
+    StartPaneWorkers;
   end;
-  FPanes[FPaneCount - 1] := nil;
-  FScreens[FPaneCount - 1] := nil;
-  FTitles[FPaneCount - 1] := '';
-  FTerms[FPaneCount - 1] := '';
-  Dec(FPaneCount);
-  if FFocused > APane then
-    Dec(FFocused);
-  if FFocused >= FPaneCount then
-    FFocused := FPaneCount - 1;
-  if FFocused < 0 then
-    FFocused := 0;
   WriteSidecar; // the sidecar pane count changed
 end;
 
@@ -2548,6 +2702,12 @@ begin
     AErr := 'max panes';
     Exit;
   end;
+  // TPty.Spawn forks. A daemon must never fork while pane workers exist:
+  // only async-signal-safe functions are valid in a multithreaded child
+  // before exec, and FPC's allocator/RTL may have locks held by another
+  // thread. Quiesce the pool for the complete index mutation and spawn.
+  StopPaneWorkers;
+  try
   if (AAt < 0) or (AAt >= FPaneCount) then
     AAt := FFocused;
   if (AAt < 0) or (AAt >= FPaneCount) then
@@ -2657,6 +2817,9 @@ begin
     Meta.Free;
   end;
   Result := True;
+  finally
+    StartPaneWorkers;
+  end;
 end;
 
 // self-cleanup deadline; SUPERTERM_REAP_MS only exists so the tests
@@ -2689,26 +2852,31 @@ begin
   SetLength(Pin, FPaneCount);
   for i := 0 to FPaneCount - 1 do
   begin
-    Pin[i].Term := FTerms[i];
-    if (FTerms[i] = '') and (FPanes[i] <> nil) and FPanes[i].Alive then
-    begin
-      FPanes[i].QueryState;
-      Pin[i].Cmd := FPanes[i].TitleCmd;
-      Pin[i].Cwd := FPanes[i].TitleCwd;
-      Pin[i].Args := FPanes[i].TitleArgs;
-    end;
-    if FTitleFixed[i] then
-      Pin[i].Title := Trim(FTitles[i])
-    else
-      Pin[i].Title := '';
-    if FGeomValid then
-    begin
-      Pin[i].BX := FGeom[i].BX;
-      Pin[i].BY := FGeom[i].BY;
-      Pin[i].BW := FGeom[i].BW;
-      Pin[i].BH := FGeom[i].BH;
-      Pin[i].Zoomed := FGeom[i].Zoomed;
-      Pin[i].Minimized := FGeom[i].Minimized;
+    LockPane(i);
+    try
+      Pin[i].Term := FTerms[i];
+      if (FTerms[i] = '') and (FPanes[i] <> nil) and FPanes[i].Alive then
+      begin
+        FPanes[i].QueryState;
+        Pin[i].Cmd := FPanes[i].TitleCmd;
+        Pin[i].Cwd := FPanes[i].TitleCwd;
+        Pin[i].Args := FPanes[i].TitleArgs;
+      end;
+      if FTitleFixed[i] then
+        Pin[i].Title := Trim(FTitles[i])
+      else
+        Pin[i].Title := '';
+      if FGeomValid then
+      begin
+        Pin[i].BX := FGeom[i].BX;
+        Pin[i].BY := FGeom[i].BY;
+        Pin[i].BW := FGeom[i].BW;
+        Pin[i].BH := FGeom[i].BH;
+        Pin[i].Zoomed := FGeom[i].Zoomed;
+        Pin[i].Minimized := FGeom[i].Minimized;
+      end;
+    finally
+      UnlockPane(i);
     end;
   end;
   SaveSession(SessionFile, FLayout, Pin, FDeskW, FDeskH);
@@ -2937,9 +3105,15 @@ begin
           CtlReplyErr(AFd, 'bad size');
           Exit;
         end;
-        FScreens[APane].Resize(Cols, Rows);
-        if FPanes[APane] <> nil then
-          FPanes[APane].Resize(Cols, Rows);
+        LockPane(APane);
+        try
+          if FScreens[APane] <> nil then
+            FScreens[APane].Resize(Cols, Rows);
+          if FPanes[APane] <> nil then
+            FPanes[APane].Resize(Cols, Rows);
+        finally
+          UnlockPane(APane);
+        end;
         // void the clients' requests so the common-minimum negotiation
         // does not undo the size requested via control
         for j := 0 to MAX_CLIENTS - 1 do
@@ -3000,6 +3174,8 @@ begin
           if AKind = FRAME_CTL_LIST then
             for I := 0 to FPaneCount - 1 do
             begin
+              LockPane(I);
+              try
               // kind and target resolved from the class by name
               KindB := 255;
               Host := '';
@@ -3055,6 +3231,9 @@ begin
               KindB := 0;
               if (FPanes[I] <> nil) and FPanes[I].Alive then KindB := 1;
               Meta.WriteBuffer(KindB, SizeOf(KindB));
+              finally
+                UnlockPane(I);
+              end;
             end;
           Data := nil;
           SetLength(Data, Meta.Size);
@@ -3074,20 +3253,29 @@ begin
       end;
     FRAME_CTL_SEND:
       begin
-        if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
-           (not FPanes[APane].Alive) then
+        if (APane < 0) or (APane >= FPaneCount) then
         begin
           CtlReplyErr(AFd, 'no such pane');
           Exit;
         end;
-        if Length(AData) > 0 then
-        begin
-          SetString(S, PAnsiChar(@AData[0]), Length(AData));
-          if not FPanes[APane].WriteStr(S) then
+        LockPane(APane);
+        try
+          if (FPanes[APane] = nil) or (not FPanes[APane].Alive) then
           begin
-            CtlReplyErr(AFd, 'pane is not reading its input');
+            CtlReplyErr(AFd, 'no such pane');
             Exit;
           end;
+          if Length(AData) > 0 then
+          begin
+            SetString(S, PAnsiChar(@AData[0]), Length(AData));
+            if not FPanes[APane].WriteStr(S) then
+            begin
+              CtlReplyErr(AFd, 'pane is not reading its input');
+              Exit;
+            end;
+          end;
+        finally
+          UnlockPane(APane);
         end;
         Data := nil;
         QueuePending(PIdx, FRAME_CTL_OK, APane, Data);
@@ -3100,6 +3288,8 @@ begin
           CtlReplyErr(AFd, 'no such pane');
           Exit;
         end;
+        LockPane(APane);
+        try
         Scr := FScreens[APane];
         Mode := CAPTURE_VISIBLE;
         N := 0;
@@ -3158,6 +3348,9 @@ begin
           QueuePending(PIdx, FRAME_CTL_END, APane, Data);
         finally
           Meta.Free;
+        end;
+        finally
+          UnlockPane(APane);
         end;
       end;
     FRAME_CTL_WINOP:
@@ -3233,10 +3426,16 @@ begin
   case AKind of
     FRAME_INPUT:
       if (APane >= 0) and (APane < FPaneCount) and
-         (FPanes[APane] <> nil) and (Length(AData) > 0) then
+         (Length(AData) > 0) then
       begin
         SetString(S, PAnsiChar(@AData[0]), Length(AData));
-        FPanes[APane].WriteStr(S);
+        LockPane(APane);
+        try
+          if FPanes[APane] <> nil then
+            FPanes[APane].WriteStr(S);
+        finally
+          UnlockPane(APane);
+        end;
       end;
     FRAME_RESIZE:
       if (APane >= 0) and (APane < FPaneCount) and
@@ -3251,10 +3450,15 @@ begin
           if FClients[AIdx].Legacy then
           begin
             // protocol v1: a single client rules, apply directly
-            if FScreens[APane] <> nil then
-              FScreens[APane].Resize(Cols, Rows);
-            if FPanes[APane] <> nil then
-              FPanes[APane].Resize(Cols, Rows);
+            LockPane(APane);
+            try
+              if FScreens[APane] <> nil then
+                FScreens[APane].Resize(Cols, Rows);
+              if FPanes[APane] <> nil then
+                FPanes[APane].Resize(Cols, Rows);
+            finally
+              UnlockPane(APane);
+            end;
           end
           else
           begin
@@ -3330,35 +3534,408 @@ begin
   end;
 end;
 
-procedure TDetachedSession.HandlePaneOutput(APane: integer);
+constructor TPanePollWorker.Create(AOwner: TDetachedSession;
+  AWorkerIndex: integer; const APaneIndexes: array of integer);
+var
+  I: integer;
+begin
+  inherited Create(True);
+  FreeOnTerminate := False;
+  FOwner := AOwner;
+  FWorkerIndex := AWorkerIndex;
+  FWakePipe[0] := -1;
+  FWakePipe[1] := -1;
+  FPaneCount := Length(APaneIndexes);
+  if FPaneCount > MAX_PANES then
+    FPaneCount := MAX_PANES;
+  for I := 0 to FPaneCount - 1 do
+    FPaneIndexes[I] := APaneIndexes[I];
+  if FpPipe(FWakePipe) <> 0 then
+    raise Exception.Create('cannot create pane-worker wake pipe');
+  SetCloExec(FWakePipe[0]);
+  SetCloExec(FWakePipe[1]);
+  SetNonBlocking(FWakePipe[0]);
+  SetNonBlocking(FWakePipe[1]);
+end;
+
+destructor TPanePollWorker.Destroy;
+begin
+  if FWakePipe[0] >= 0 then
+    FpClose(FWakePipe[0]);
+  if FWakePipe[1] >= 0 then
+    FpClose(FWakePipe[1]);
+  inherited Destroy;
+end;
+
+procedure TPanePollWorker.Wake;
+begin
+  PipeWriteByte(FWakePipe[1], 1);
+end;
+
+procedure TPanePollWorker.RequestStop;
+begin
+  Terminate;
+  Wake;
+end;
+
+procedure TPanePollWorker.Execute;
+var
+  Poller: TSuperPoll;
+  Ready: TPollReadyArray;
+  Ev: TPollReady;
+  I, J, Pane, Fd, N, Fails: integer;
+  WantWrite, Alive: boolean;
+  Kind: byte;
+  Data: TByteArray;
+begin
+  TThread.NameThreadForDebugging('st-pane-' + IntToStr(FWorkerIndex));
+  Poller := TSuperPoll.Create;
+  Fails := 0;
+  try
+    while not Terminated do
+    begin
+      try
+        Poller.Clear;
+        Poller.Watch(FWakePipe[0], psWorker, FWorkerIndex, True, False);
+        for I := 0 to FPaneCount - 1 do
+        begin
+          Pane := FPaneIndexes[I];
+          Fd := -1;
+          WantWrite := False;
+          Alive := False;
+          FOwner.LockPane(Pane);
+          try
+            if (Pane >= 0) and (Pane < FOwner.FPaneCount) and
+               (FOwner.FPanes[Pane] <> nil) and
+               FOwner.FPanes[Pane].Alive then
+            begin
+              Alive := True;
+              Fd := FOwner.FPanes[Pane].Master;
+              WantWrite := FOwner.FPanes[Pane].InputPending;
+            end;
+          finally
+            FOwner.UnlockPane(Pane);
+          end;
+          if Alive and (Fd >= 0) then
+            Poller.Watch(Fd, psPane, Pane, True, WantWrite);
+        end;
+        N := Poller.Wait(POLL_TICK_MS, Ready);
+        if N < 0 then
+        begin
+          if fpgeterrno = ESysEINTR then
+            Continue;
+          raise Exception.Create('pane worker poll failed: errno ' +
+            IntToStr(fpgeterrno));
+        end;
+        for J := 0 to High(Ready) do
+        begin
+          Ev := Ready[J];
+          if Ev.Source = psWorker then
+          begin
+            DrainPipe(FWakePipe[0]);
+            if Terminated then
+              Break;
+          end
+          else if Ev.Source = psPane then
+          begin
+            Pane := Ev.Index;
+            if Ev.Writable then
+            begin
+              FOwner.LockPane(Pane);
+              try
+                if (Pane >= 0) and (Pane < FOwner.FPaneCount) and
+                   (FOwner.FPanes[Pane] <> nil) and
+                   FOwner.FPanes[Pane].Alive then
+                  FOwner.FPanes[Pane].FlushInput;
+              finally
+                FOwner.UnlockPane(Pane);
+              end;
+            end;
+            if Ev.Readable or Ev.Error or Ev.Hangup then
+              if FOwner.ReadPaneEvent(Pane, Kind, Data) then
+                FOwner.QueueWorkerResult(Kind, Pane, Data);
+          end;
+        end;
+        Fails := 0;
+      except
+        on E: Exception do
+        begin
+          Inc(Fails);
+          if DebugActive then
+            DebugLog(Format('daemon: pane reactor %d exception (%d): %s: %s',
+              [FWorkerIndex, Fails, E.ClassName, E.Message]));
+          if Fails > 50 then
+            Break;
+        end;
+      end;
+    end;
+  finally
+    Poller.Free;
+  end;
+end;
+
+procedure TDetachedSession.LockPane(APane: integer);
+begin
+  if (APane >= 0) and (APane < MAX_PANES) then
+    EnterCriticalSection(FPaneLocks[APane]);
+end;
+
+procedure TDetachedSession.UnlockPane(APane: integer);
+begin
+  if (APane >= 0) and (APane < MAX_PANES) then
+    LeaveCriticalSection(FPaneLocks[APane]);
+end;
+
+function TDetachedSession.QueueWorkerResult(AKind: byte; APane: integer;
+  const AData: TByteArray): boolean;
+var
+  Slot, DataSize: integer;
+  Queued: boolean;
+  DataCopy: TByteArray;
+begin
+  Result := False;
+  if (FWorkerResultPipe[1] < 0) or (FWorkerResultSpace = nil) then
+    Exit;
+  DataCopy := Copy(AData, 0, Length(AData));
+  DataSize := Length(DataCopy);
+  repeat
+    Queued := False;
+    EnterCriticalSection(FWorkerResultLock);
+    try
+      if (FWorkerResultCount < WORKER_RESULT_SLOTS) and
+         (FWorkerResultBytes + DataSize <= MAX_WORKER_RESULT_BYTES) then
+      begin
+        Slot := (FWorkerResultHead + FWorkerResultCount) mod
+          WORKER_RESULT_SLOTS;
+        FWorkerResults[Slot].Kind := AKind;
+        FWorkerResults[Slot].Pane := APane;
+        FWorkerResults[Slot].Data := DataCopy;
+        Inc(FWorkerResultCount);
+        Inc(FWorkerResultBytes, DataSize);
+        Queued := True;
+      end
+      else
+        RTLEventResetEvent(FWorkerResultSpace);
+    finally
+      LeaveCriticalSection(FWorkerResultLock);
+    end;
+    if not Queued then
+      RTLEventWaitFor(FWorkerResultSpace, POLL_TICK_MS);
+  until Queued;
+  PipeWriteByte(FWorkerResultPipe[1], 1);
+  Result := True;
+end;
+
+procedure TDetachedSession.DrainWorkerResults;
+var
+  R: TWorkerResult;
+  B0: byte;
+  Have: boolean;
+begin
+  DrainPipe(FWorkerResultPipe[0]);
+  repeat
+    R := Default(TWorkerResult);
+    Have := False;
+    EnterCriticalSection(FWorkerResultLock);
+    try
+      if FWorkerResultCount > 0 then
+      begin
+        R := FWorkerResults[FWorkerResultHead];
+        FWorkerResults[FWorkerResultHead].Data := nil;
+        FWorkerResultHead := (FWorkerResultHead + 1) mod WORKER_RESULT_SLOTS;
+        Dec(FWorkerResultCount);
+        Dec(FWorkerResultBytes, Length(R.Data));
+        Have := True;
+        RTLEventSetEvent(FWorkerResultSpace);
+      end;
+    finally
+      LeaveCriticalSection(FWorkerResultLock);
+    end;
+    if Have then
+    begin
+      B0 := 0;
+      if Length(R.Data) > 0 then
+        Broadcast(R.Kind, R.Pane, R.Data[0], Length(R.Data), False, -1)
+      else
+        Broadcast(R.Kind, R.Pane, B0, 0, False, -1);
+      R.Data := nil;
+    end;
+  until not Have;
+end;
+
+function TDetachedSession.WantedWorkerCount: integer;
+begin
+  if FThreadLimit <= 1 then
+    Exit(0);
+  Result := FPaneCount;
+  if Result > FThreadLimit - 1 then
+    Result := FThreadLimit - 1;
+  if Result < 0 then
+    Result := 0;
+end;
+
+procedure TDetachedSession.StartPaneWorkers;
+var
+  Wanted, W, I, C: integer;
+  Assigned: array of integer;
+begin
+  if FWorkerCount <> 0 then
+    Exit;
+  Assigned := nil;
+  Wanted := WantedWorkerCount;
+  if Wanted = 0 then
+  begin
+    if DebugActive then
+      DebugLog(Format('daemon: multithread=%s cpus=%d effective=1',
+        [MultiThreadCode(FConfiguredThreads), FAvailableCPUs]));
+    Exit;
+  end;
+  try
+    for W := 0 to Wanted - 1 do
+    begin
+      C := 0;
+      SetLength(Assigned, 0);
+      for I := 0 to FPaneCount - 1 do
+        if (I mod Wanted) = W then
+        begin
+          SetLength(Assigned, C + 1);
+          Assigned[C] := I;
+          Inc(C);
+        end;
+      FWorkers[W] := TPanePollWorker.Create(Self, W, Assigned);
+      Inc(FWorkerCount);
+      FWorkers[W].Start;
+      if DebugActive then
+        DebugLog(Format('daemon: pane reactor %d started with %d pane(s)',
+          [W, C]));
+    end;
+  except
+    on E: Exception do
+    begin
+      if DebugActive then
+        DebugLog('daemon: cannot start pane reactors; falling back to one ' +
+          'thread: ' + E.Message);
+      StopPaneWorkers;
+      FThreadLimit := 1;
+    end;
+  end;
+  SetLength(Assigned, 0);
+  if FListener >= 0 then
+    WriteSidecar;
+end;
+
+procedure TDetachedSession.StopPaneWorkers;
+var
+  I: integer;
+  AllFinished: boolean;
+begin
+  if FWorkerCount = 0 then
+    Exit;
+  for I := 0 to FWorkerCount - 1 do
+    if FWorkers[I] <> nil then
+      FWorkers[I].RequestStop;
+  if FWorkerResultSpace <> nil then
+    RTLEventSetEvent(FWorkerResultSpace);
+  repeat
+    DrainWorkerResults;
+    AllFinished := True;
+    for I := 0 to FWorkerCount - 1 do
+      if (FWorkers[I] <> nil) and (not FWorkers[I].Finished) then
+      begin
+        AllFinished := False;
+        Break;
+      end;
+    if not AllFinished then
+      Sleep(1);
+  until AllFinished;
+  DrainWorkerResults;
+  for I := 0 to FWorkerCount - 1 do
+    if FWorkers[I] <> nil then
+    begin
+      FWorkers[I].WaitFor;
+      FreeAndNil(FWorkers[I]);
+    end;
+  if DebugActive then
+    DebugLog('daemon: pane reactors stopped');
+  FWorkerCount := 0;
+  if FListener >= 0 then
+    WriteSidecar;
+end;
+
+procedure TDetachedSession.CheckPaneWorkers;
+var
+  I: integer;
+begin
+  for I := 0 to FWorkerCount - 1 do
+    if (FWorkers[I] = nil) or FWorkers[I].Finished then
+    begin
+      if DebugActive then
+        DebugLog(Format('daemon: pane reactor %d stopped unexpectedly; ' +
+          'falling back to the single reactor', [I]));
+      StopPaneWorkers;
+      FThreadLimit := 1;
+      WriteSidecar;
+      Exit;
+    end;
+end;
+
+function TDetachedSession.ReadPaneEvent(APane: integer; out AKind: byte;
+  out AData: TByteArray): boolean;
 var
   Buf: array[0..MAXREAD - 1] of byte;
   N: integer;
   OscSelection, OscPayload: RawByteString;
 begin
-  if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
-     (not FPanes[APane].Alive) then
-    Exit;
-  N := FPanes[APane].ReadBuf(Buf);
-  if N > 0 then
-  begin
-    if FScreens[APane] <> nil then
+  Result := False;
+  AKind := 0;
+  AData := nil;
+  LockPane(APane);
+  try
+    if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
+       (not FPanes[APane].Alive) then
+      Exit;
+    N := FPanes[APane].ReadBuf(Buf);
+    if N > 0 then
     begin
-      FScreens[APane].WriteBytes(Buf, N);
-      // Clipboard ownership belongs to each attached UI client and its host
-      // terminal. The daemon parses the same bytes for snapshots but must not
-      // retain client-only OSC 52 events (up to 16 large payloads per pane).
-      OscSelection := '';
-      OscPayload := '';
-      while FScreens[APane].TakeOsc52(OscSelection, OscPayload) do ;
+      if FScreens[APane] <> nil then
+      begin
+        FScreens[APane].WriteBytes(Buf, N);
+        // Clipboard ownership belongs to each attached UI client and its host
+        // terminal. The daemon parses the same bytes for snapshots but must
+        // not retain client-only OSC 52 events.
+        OscSelection := '';
+        OscPayload := '';
+        while FScreens[APane].TakeOsc52(OscSelection, OscPayload) do ;
+      end;
+      SetLength(AData, N);
+      Move(Buf[0], AData[0], N);
+      AKind := FRAME_OUTPUT;
+      Result := True;
+    end
+    else if (N = 0) or (fpgeterrno <> ESysEAGAIN) then
+    begin
+      FPanes[APane].MarkDead;
+      AKind := FRAME_EXIT;
+      Result := True;
     end;
-    Broadcast(FRAME_OUTPUT, APane, Buf, N, False, -1);
-  end
-  else if (N = 0) or (fpgeterrno <> ESysEAGAIN) then
-  begin
-    FPanes[APane].MarkDead;
-    Broadcast(FRAME_EXIT, APane, Buf, 0, False, -1);
+  finally
+    UnlockPane(APane);
   end;
+end;
+
+procedure TDetachedSession.HandlePaneOutput(APane: integer);
+var
+  Kind: byte;
+  Data: TByteArray;
+  B0: byte;
+begin
+  if not ReadPaneEvent(APane, Kind, Data) then
+    Exit;
+  B0 := 0;
+  if Length(Data) > 0 then
+    Broadcast(Kind, APane, Data[0], Length(Data), False, -1)
+  else
+    Broadcast(Kind, APane, B0, 0, False, -1);
 end;
 
 // metadata sidecar: lets the selector show name/profile/panes
@@ -3400,6 +3977,11 @@ begin
     Ini.WriteInteger('session', 'panes', FPaneCount);
     Ini.WriteInteger('session', 'attached', AttachedCount);
     Ini.WriteInteger('session', 'pid', fpGetPid);
+    Ini.WriteInteger('session', 'cpus', FAvailableCPUs);
+    Ini.WriteInteger('session', 'thread_limit', FThreadLimit);
+    Ini.WriteInteger('session', 'threads', 1 + FWorkerCount);
+    Ini.WriteString('session', 'multithread',
+      MultiThreadCode(FConfiguredThreads));
     Ini.WriteString('session', 'created',
       FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
     // the identity the panes carry in SUPERTERM_SESSION_CHAIN
@@ -3521,6 +4103,7 @@ begin
     SignalReady(AReadyFd, False);
     Exit;
   end;
+  StartPaneWorkers;
   WriteSidecar;
   SignalReady(AReadyFd, True);
   Poller := TSuperPoll.Create;
@@ -3554,6 +4137,8 @@ begin
              (NowTick >= FPending[I].Deadline) then
             DropPending(I);
 
+        CheckPaneWorkers;
+
         // An attach read may already have consumed following client frames.
         // Do not wait for another kernel readiness edge to dispatch them.
         for I := 0 to MAX_CLIENTS - 1 do
@@ -3562,6 +4147,8 @@ begin
 
         Poller.Clear;
         Poller.Watch(FListener, psListener, 0, True, False);
+        if FWorkerCount > 0 then
+          Poller.Watch(FWorkerResultPipe[0], psWorker, 0, True, False);
         for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
           if FPending[I].Fd >= 0 then
             Poller.Watch(FPending[I].Fd, psPending, I,
@@ -3573,11 +4160,12 @@ begin
               (FClients[I].FramesUsed < FRAME_BUDGET) and
                 (not ClientFrameBuffered(I)),
               FClients[I].OutBuf <> '');
-        for I := 0 to FPaneCount - 1 do
-          if (FPanes[I] <> nil) and FPanes[I].Alive and
-             (FPanes[I].Master >= 0) then
-            Poller.Watch(FPanes[I].Master, psPane, I, True,
-              FPanes[I].InputPending);
+        if FWorkerCount = 0 then
+          for I := 0 to FPaneCount - 1 do
+            if (FPanes[I] <> nil) and FPanes[I].Alive and
+               (FPanes[I].Master >= 0) then
+              Poller.Watch(FPanes[I].Master, psPane, I, True,
+                FPanes[I].InputPending);
         if CompleteClientFrameBuffered then
           TimeoutMs := 0
         else
@@ -3597,6 +4185,8 @@ begin
         begin
           Ev := Ready[J];
           case Ev.Source of
+            psWorker:
+              DrainWorkerResults;
             psListener:
               begin
                 if Ev.Error or Ev.Hangup then
@@ -3714,32 +4304,46 @@ begin
         begin
           FLastTitleTick := GetTickCount64;
           for I := 0 to FPaneCount - 1 do
-            if (FPanes[I] <> nil) and FPanes[I].Alive and
-               (FTerms[I] = '') and (not FTitleFixed[I]) then
-            begin
-              FPanes[I].QueryState;
-              if FPanes[I].TitleCmd <> '' then
-                NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
-              else if FPanes[I].TitleCwd <> '' then
-                NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
-                  1, 24)
-              else
-                NewTitle := FTitles[I];
-              if NewTitle <> FTitles[I] then
+          begin
+            NewTitle := FTitles[I];
+            LockPane(I);
+            try
+              if (FPanes[I] <> nil) and FPanes[I].Alive and
+                 (FTerms[I] = '') and (not FTitleFixed[I]) then
               begin
-                FTitles[I] := NewTitle;
-                BroadcastTitle(I);
+                FPanes[I].QueryState;
+                if FPanes[I].TitleCmd <> '' then
+                  NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd),
+                    1, 24)
+                else if FPanes[I].TitleCwd <> '' then
+                  NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
+                    1, 24);
               end;
+            finally
+              UnlockPane(I);
             end;
+            if NewTitle <> FTitles[I] then
+            begin
+              FTitles[I] := NewTitle;
+              BroadcastTitle(I);
+            end;
+          end;
         end;
         // self-cleanup: all panes dead and nobody attached for a minute
         AliveFound := False;
         for I := 0 to FPaneCount - 1 do
-          if (FPanes[I] <> nil) and FPanes[I].Alive then
+        begin
+          LockPane(I);
+          try
+            AliveFound := (FPanes[I] <> nil) and FPanes[I].Alive;
+          finally
+            UnlockPane(I);
+          end;
+          if AliveFound then
           begin
-            AliveFound := True;
             Break;
           end;
+        end;
         if AliveFound or (AttachedCount > 0) then
           FEmptySince := 0
         else if FEmptySince = 0 then
@@ -3767,6 +4371,7 @@ begin
   finally
     Poller.Free;
   end;
+  StopPaneWorkers;
   // orderly shutdown notice to capable clients; legacy ones see the
   // EOF and react as they do today (lost connection)
   B0 := 0;

@@ -52,6 +52,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
   is just the first attached client, and the whole workspace can be driven
   from another shell with the control CLI. `[session] server=detach`
   restores the classic detach-only flow.
+- Optional per-pane event reactors can parse independent PTY streams on
+  multiple CPU cores. `[session] multithread=1` preserves the original
+  single-threaded daemon; `auto` or a total thread limit enables dynamic
+  workers, each with its own `fpPoll`, on GNU/Linux and macOS.
 - A bilingual control CLI (commands and flags accepted in English AND
   Spanish, output in the configured UI language): `list/listar`,
   `send/enviar`, `capture/capturar` (visible screen, last N lines or the

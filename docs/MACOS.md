@@ -9,10 +9,18 @@ are shared without change. The daemon uses `BaseUnix.fpPoll` in its main thread
 for listeners, pending handshakes, clients and PTYs; sends use the platform's
 `MSG_DONTWAIT` value selected at compile time. GitHub Actions runs the complete
 regression suite on both Apple Silicon (`macos-15`) and Intel
-(`macos-15-intel`). The only platform-conditional unit is `src/st_pty.pas`,
-which selects its PTY/process backend at compile time with `{$IFDEF DARWIN}`.
-Free Pascal auto-defines `DARWIN` for a macOS host, so there are no special
-build flags.
+(`macos-15-intel`). The platform-conditional code is confined to
+`src/st_pty.pas` (PTY/process backend) and `src/st_cpu.pas` (available-CPU
+detection), selected at compile time with `{$IFDEF DARWIN}`. Free Pascal
+auto-defines `DARWIN` for a macOS host, so there are no special build flags.
+
+The optional `[session] multithread=auto` pane reactors are native on macOS.
+SuperTerm reads `hw.activecpu` through FPC's Darwin `SysCtl` unit
+(`FPsysctlbyname`) and never creates more daemon threads than the active
+logical CPUs. Every worker has its own `BaseUnix.fpPoll`; macOS schedules the
+threads across performance/efficiency cores without non-portable affinity.
+Use `multithread=1` or `SUPERTERM_MULTITHREAD=1` to retain the single reactor
+while debugging.
 
 ## Build
 

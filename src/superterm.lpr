@@ -9,6 +9,10 @@ program superterm;
 {$mode objfpc}{$H+}
 
 uses
+  // The pthread thread manager must be installed before Classes or any unit
+  // which can create a TThread. It starts no threads by itself, so the daemon
+  // still forks while the parent is single-threaded.
+  {$ifdef unix}cthreads,{$endif}
   // st_mouse BEFORE Drivers: it must register its mouse driver before the
   // Drivers unit initialises and asks the RTL whether a mouse exists
   SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server, st_video,

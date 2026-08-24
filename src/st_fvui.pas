@@ -214,6 +214,11 @@ type
     MouseGrabButton: integer;
     HostAnyMotion: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
+    // Raw passthrough is only geometrically correct when the daemon accepts
+    // the host's full size. If another client imposes a smaller common size,
+    // temporarily render through the grid while preserving our full-size
+    // request; the daemon's grow event after that client leaves resumes raw.
+    PassBlockedPane, PassBlockedW, PassBlockedH: integer;
     PassFilterState: TPassFilterState;
     PassFilterBuf: RawByteString;
     PassFilterLen: integer;
@@ -274,7 +279,7 @@ type
     procedure FinishBoot;
     // passthrough of a maximized pane straight to the host terminal
     procedure EnterPassthrough(i: integer);
-    procedure ExitPassthrough;
+    procedure ExitPassthrough(AKeepRemoteRequest: boolean = False);
     procedure UpdatePassthrough;
     procedure ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
     function ComputeLayoutHash: string;
@@ -1767,6 +1772,9 @@ begin
   HostAnyMotion := False;
   PassReqW := 0;
   PassReqH := 0;
+  PassBlockedPane := -1;
+  PassBlockedW := 0;
+  PassBlockedH := 0;
   PassFilterState := pfsGround;
   PassFilterBuf := '';
   PassFilterLen := 0;
@@ -2282,6 +2290,12 @@ begin
   // into another application's pty
   MouseGrabPane := -1;
   MouseGrabButton := MB_NONE;
+  // A pane renumbering invalidates the index held by the passthrough
+  // constraint state. The normal bounds synchronization will issue fresh
+  // requests for the resulting layout.
+  PassBlockedPane := -1;
+  PassBlockedW := 0;
+  PassBlockedH := 0;
 end;
 
 function TSuperApp.ForwardMouse(i: integer; const Event: TEvent;
@@ -4754,7 +4768,7 @@ begin
   end;
 end;
 
-procedure TSuperApp.ExitPassthrough;
+procedure TSuperApp.ExitPassthrough(AKeepRemoteRequest: boolean);
 var
   P, pw, ph: integer;
 begin
@@ -4805,7 +4819,8 @@ begin
   // so the PTY is still full-screen and must be synced here. Do NOT call
   // RelayoutAll: that re-tiles every window and overwrites the size the user's
   // window had (an 80x20 pane came back filling the whole screen).
-  if (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
+  if (not (AKeepRemoteRequest and RemoteMode)) and
+     (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
      (not Win[P]^.Minimized) and (Scr[P] <> nil) then
   begin
     pw := Win[P]^.Size.X - 2;
@@ -4835,13 +4850,25 @@ end;
 // leaves it automatically without wiring every command.
 procedure TSuperApp.UpdatePassthrough;
 var
-  f: integer;
+  f, P: integer;
   want: boolean;
 begin
   f := Lay.Focused;
   want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
     Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop));
-  if want and (not PassthroughActive) then
+  // F5 may have been forced back to the grid because another client made the
+  // common PTY smaller. Once the user leaves that pane/mode, discard the
+  // deferred full-size request and synchronize its ordinary window bounds.
+  if (PassBlockedPane >= 0) and
+     ((not want) or (PassBlockedPane <> f)) then
+  begin
+    P := PassBlockedPane;
+    PassBlockedPane := -1;
+    PassBlockedW := 0;
+    PassBlockedH := 0;
+    SyncPaneToWindow(P);
+  end;
+  if want and (not PassthroughActive) and (PassBlockedPane <> f) then
     EnterPassthrough(f)
   else if PassthroughActive and (not want) then
     ExitPassthrough
@@ -5129,12 +5156,48 @@ begin
       [APane, C, R, Scr[APane].Width, Scr[APane].Height]));
   if (C < 4) or (R < 2) then
     Exit;
-  // while a pane is drawn raw its size is owned by EnterPassthrough; ignore
-  // resize echoes for it (incl. the stale desktop-size echo from the zoom
-  // that preceded passthrough). Passthrough assumes a single attached
-  // client -- see EnterPassthrough.
+  // Raw bytes can only be drawn directly when the PTY and the host terminal
+  // have the same grid. A second, smaller client changes the daemon's common
+  // PTY size. Continuing raw in that state makes wrapping and cursor moves
+  // use different widths, leaving prompts and the real cursor many rows
+  // apart. Fall back to the normal mirror, but KEEP the full-size request:
+  // when the constraining client disconnects, the daemon grows the PTY and
+  // its resize event below lets raw passthrough resume automatically.
   if PassthroughActive and (APane = PassPane) then
+  begin
+    if (C = PassReqW) and (R = PassReqH) then
+      Exit; // acknowledgement of EnterPassthrough's own full-size request
+    PassBlockedPane := APane;
+    PassBlockedW := PassReqW;
+    PassBlockedH := PassReqH;
+    if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
+      Scr[APane].Resize(C, R);
+    if DebugActive then
+      DebugLog(Format('pass: constrained pane=%d requested=%dx%d got=%dx%d',
+        [APane, PassBlockedW, PassBlockedH, C, R]));
+    ExitPassthrough(True);
     Exit;
+  end;
+  if APane = PassBlockedPane then
+  begin
+    if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
+    begin
+      Scr[APane].Resize(C, R);
+      if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
+        RepaintPane(APane);
+    end;
+    if (C = PassBlockedW) and (R = PassBlockedH) then
+    begin
+      if DebugActive then
+        DebugLog(Format('pass: constraint released pane=%d size=%dx%d',
+          [APane, C, R]));
+      PassBlockedPane := -1;
+      PassBlockedW := 0;
+      PassBlockedH := 0;
+      UpdatePassthrough;
+    end;
+    Exit;
+  end;
   if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
   begin
     Scr[APane].Resize(C, R);
@@ -6033,7 +6096,12 @@ begin
       LastBlink := Tick;
       CursorPhase := not CursorPhase;
       i := Lay.Focused;
-      if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
+      // TTermView.Draw also updates FreeVision's hardware-cursor state.
+      // Even though the video framebuffer flush is suppressed in raw mode,
+      // that cursor path can emit a relative movement (for example ESC[3B)
+      // on top of the pane's output. The application owns the cursor too.
+      if (not PassthroughActive) and
+         (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
          (Win[i]^.Term <> nil) then
         RepaintPane(i);
     end;
@@ -6109,7 +6177,8 @@ begin
     LastBlink := Tick;
     CursorPhase := not CursorPhase;
     i := Lay.Focused;
-    if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
+    if (not PassthroughActive) and
+       (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
        (Win[i]^.Term <> nil) then
       RepaintPane(i);
   end;

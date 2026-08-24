@@ -17,7 +17,7 @@ uses
   BaseUnix, ctypes;
 
 type
-  TPollSource = (psListener, psPending, psClient, psPane);
+  TPollSource = (psListener, psPending, psClient, psPane, psWorker);
 
   TPollReady = record
     Source: TPollSource;

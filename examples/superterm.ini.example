@@ -21,6 +21,11 @@ palette=color
 [session]
 autosave=1
 autorestore=1
+; Total session-daemon thread limit, including its client/socket reactor.
+; 1 keeps the original single-threaded reactor (default and easiest to debug).
+; auto uses the active CPUs; an integer N>1 caps the total at min(N, CPUs).
+; Workers are created only as panes need them and released when panes close.
+multithread=1
 ; Profile activated at startup (see [profile.daily] below).
 default_profile=daily
 
