@@ -53,6 +53,7 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   profile_default_test.py profile_shell_fallback_test.py multisession_test.py \
   prefix_test.py title_test.py \
   detach_test.py control_test.py cli_test.py control_wm_test.py \
+  nonblocking_server_test.py \
   multiclient_test.py multiclient_focus_test.py alwaysserver_test.py \
   passthrough_test.py exit_clean_test.py newwindow_test.py appcursor_test.py \
   scrollback_test.py nesting_test.py mouseforward_test.py \

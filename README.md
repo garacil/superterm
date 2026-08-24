@@ -347,7 +347,10 @@ make test
 
 The suite covers pane operations, large terminal sizes, xterm and tmux mouse
 input, focus routing, session restore, configured terminals, templates,
-SQLite templates, the session wizard, language switching, and window controls.
+SQLite templates, the session wizard, language switching, window controls, and
+the nonblocking session daemon under partial frames, stalled readers and file
+descriptors above 1023. GitHub Actions runs it on GNU/Linux, macOS Apple Silicon
+and macOS Intel.
 
 Individual tests are also runnable directly:
 
@@ -365,6 +368,7 @@ python3 test/wizard_test.py
 python3 test/language_test.py
 python3 test/window_test.py
 python3 test/detach_test.py
+python3 test/nonblocking_server_test.py
 ```
 
 ## Run

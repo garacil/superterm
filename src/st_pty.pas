@@ -17,13 +17,10 @@ const
   MAXREAD = 65536;
 
 const
-  // how long a write may wait for the pane's program to make room before
-  // the rest is left queued: long enough that a program which is reading
-  // never notices, short enough that one which is not cannot stall a loop
-  WRITE_GRACE_MS = 100;
-  // more than this waiting for one pane's program means the program is not
-  // reading at all; refuse rather than grow without bound
+  // More than this waiting for one pane's program means the program is not
+  // reading at all; refuse rather than grow without bound.
   PENDING_INPUT_MAX = 1 shl 20;
+  PTY_WRITE_BUDGET = 256 * 1024;
 
 type
   TStringArray = array of string;
@@ -56,7 +53,7 @@ type
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
     // push queued input toward the pane; safe to call at any time
-    procedure FlushInput(AGraceMs: integer = 0);
+    procedure FlushInput;
     function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
@@ -602,34 +599,33 @@ begin
   if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
     Exit;
   FPendingInput := FPendingInput + S;
-  // Give the program a bounded moment to take it. Nearly always it takes
-  // everything at once and this behaves exactly as the old blocking write;
-  // what it will not do is wait for ever on a program that has stopped
-  // reading, which used to freeze the daemon and every other pane with it.
-  FlushInput(WRITE_GRACE_MS);
+  // Write only what the non-blocking master accepts immediately. The event
+  // loop watches POLLOUT while a remainder exists, so input for one stopped
+  // program can never delay sockets or the other panes.
+  FlushInput;
   Result := True;
 end;
 
-// Push whatever is still queued toward the pane. With AGraceMs > 0 it waits
-// that long in total for the program to make room; with 0 it writes what
-// fits and returns. A partial write simply leaves the rest for the next
-// turn of the caller's loop.
-procedure TPty.FlushInput(AGraceMs: integer);
+// Push whatever is immediately accepted by the non-blocking master. A partial
+// write leaves the rest for its next POLLOUT event.
+procedure TPty.FlushInput;
 var
-  N: integer;
-  Deadline: QWord;
-  SetW: TFDSet;
-  TV: TTimeVal;
-  Left: QWord;
+  N, Want, Total: integer;
 begin
   if (FMaster < 0) or (FPendingInput = '') then
     Exit;
-  Deadline := GetTickCount64 + QWord(AGraceMs);
+  Total := 0;
   repeat
-    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Length(FPendingInput));
+    Want := Length(FPendingInput);
+    if Want > PTY_WRITE_BUDGET - Total then
+      Want := PTY_WRITE_BUDGET - Total;
+    if Want <= 0 then
+      Exit;
+    N := FpWrite(FMaster, PAnsiChar(FPendingInput), Want);
     if N > 0 then
     begin
       Delete(FPendingInput, 1, N);
+      Inc(Total, N);
       if FPendingInput = '' then
         Exit;
       continue;
@@ -637,17 +633,11 @@ begin
     if (N < 0) and (fpgeterrno = ESysEINTR) then
       continue;
     if (N < 0) and (fpgeterrno <> ESysEAGAIN) then
-      Exit;                       // the pane is gone; drop what is left
-    if GetTickCount64 >= Deadline then
-      Exit;                       // not reading: try again next turn
-    Left := Deadline - GetTickCount64;
-    fpFD_ZERO(SetW);
-    if fpFD_SET(FMaster, SetW) <> 0 then
+    begin
+      FPendingInput := '';        // the pane is gone; drop what is left
       Exit;
-    TV.tv_sec := Left div 1000;
-    TV.tv_usec := (Left mod 1000) * 1000;
-    if fpSelect(FMaster + 1, nil, @SetW, nil, @TV) <= 0 then
-      Exit;
+    end;
+    Exit;                         // not reading: wait for POLLOUT
   until False;
 end;
 

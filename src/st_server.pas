@@ -14,7 +14,8 @@ interface
 
 uses
   Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
-  st_config, st_wclass, st_layout, st_pty, st_screen, st_session, st_debug;
+  st_config, st_wclass, st_layout, st_pty, st_screen, st_session, st_debug,
+  st_poll;
 
 const
   FRAME_ATTACH = 1;
@@ -99,16 +100,25 @@ const
   ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
   MAX_CLIENTS = 8;
+  // accepted sockets which have not become interactive clients: handshakes
+  // and one-shot control requests. They never consume an interactive slot.
+  MAX_PENDING_CONNECTIONS = 16;
   // hard cap on the per-client output buffer (immediate disconnect)
   MAX_EGRESS = 8 * 1024 * 1024;
-  // flow control: with this much pending toward some client we stop
-  // reading from the PTYs (the producer throttles itself in its buffer);
-  // thus a slow reader pauses the session instead of losing output
-  FLOW_STOP = 2 * 1024 * 1024;
   // lagging client: high pending with no progress at all during the
   // grace period -> disconnect so the session stays alive
   LAG_MIN_PENDING = 512 * 1024;
   LAG_GRACE_MS = 10000;
+  FIRST_FRAME_TIMEOUT_MS = 1000;
+  CONTROL_IDLE_TIMEOUT_MS = 5000;
+  IO_BUDGET = 256 * 1024;
+  FRAME_BUDGET = 32;
+  ACCEPT_BUDGET = 8;
+  POLL_TICK_MS = 100;
+  // A point-in-time attach snapshot is allowed to be much larger than the
+  // normal live egress queue, but it is still bounded so one local peer cannot
+  // make the daemon allocate until the process is killed by the OS.
+  MAX_SNAPSHOT_EGRESS = 256 * 1024 * 1024;
 
   {$ifdef darwin}
   ST_MSG_DONTWAIT = $80;
@@ -302,11 +312,20 @@ type
   // last size request per pane (for the common minimum)
   TClientConn = record
     Fd: cint;
+    Ready: boolean;          // snapshot queued; may receive live events
     Caps: Longint;
     Legacy: boolean;         // ATTACH without payload: protocol v1, exclusive
     DeskW, DeskH: Longint;
     OutBuf: RawByteString;
+    OutPos: integer;          // sent prefix retained to avoid memmove per send
+    InBuf: RawByteString;
+    // prefix of OutBuf which belongs to the initial snapshot. Normal live
+    // output is queued behind it and the regular 8 MB cap resumes once this
+    // prefix has drained.
+    SnapshotPending: QWord;
     LastProgress: QWord;     // last tick with bytes accepted by its socket
+    WriteUsed: integer;      // bytes sent during the current reactor turn
+    FramesUsed: integer;     // frames handled during the current reactor turn
     ReqCols: array[0..MAX_PANES - 1] of Longint;
     ReqRows: array[0..MAX_PANES - 1] of Longint;
     // SUPERTERM_SESSION_CHAIN of the client's own environment: non-empty
@@ -315,6 +334,18 @@ type
     // being displayed inside that one (see SessionAllowedFromHere).
     Chain: string;
   end;
+
+  TPendingConn = record
+    Fd: cint;
+    InBuf: RawByteString;
+    OutBuf: RawByteString;
+    OutPos: integer;
+    Deadline: QWord;
+    LastProgress: QWord;
+    CloseAfterWrite: boolean;
+  end;
+
+  TFramePop = (fpNeedMore, fpReady, fpInvalid);
 
   TDetachedSession = class
   private
@@ -332,6 +363,7 @@ type
     FProfile: string;
     FListener: cint;
     FClients: array[0..MAX_CLIENTS - 1] of TClientConn;
+    FPending: array[0..MAX_PENDING_CONNECTIONS - 1] of TPendingConn;
     FStop: boolean;
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
@@ -345,12 +377,19 @@ type
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
     procedure DropClient(AIdx: integer);
-    function QueueOut(AIdx: integer; const Buffer; ASize: integer): boolean;
+    function PendingIndexByFd(AFd: cint): integer;
+    procedure DropPending(AIdx: integer; AClose: boolean = True);
+    function QueueOut(AIdx: integer; const Buffer; ASize: integer;
+      ASnapshot: boolean = False): boolean;
+    function QueuePending(AIdx: integer; AKind: byte; APane: integer;
+      const Data: TByteArray): boolean;
     function SendFrameToIdx(AIdx: integer; AKind: byte; APane: integer;
       const Buffer; ASize: integer): boolean;
+    function SendSnapshot(AIdx: integer): boolean;
     procedure Broadcast(AKind: byte; APane: integer; const Buffer;
       ASize: integer; ANeedCaps: boolean; AExcept: integer);
     procedure FlushClient(AIdx: integer);
+    procedure FlushPending(AIdx: integer);
     procedure NegotiateResize(APane: integer);
     function BuildLayoutBlob(out AData: TByteArray): boolean;
     procedure BroadcastLayoutEv(AExcept: integer);
@@ -358,11 +397,8 @@ type
     procedure DaemonSaveSession;
     function DoNewPane(AAt: integer; ADir: byte; const AClass, ACmd,
       ACwd, ATitle: string; out ANewIdx: integer; out AErr: string): boolean;
-    function ReadFrame(AFd: cint; out AKind: byte; out APane: integer;
-      out Data: TByteArray): boolean;
-    function SendSnapshot(AFd: cint): boolean;
-    function ReadFirstFrame(AFd: cint; out AKind: byte;
-      out APane: integer; out AData: TByteArray): boolean;
+    procedure HandlePendingFrame(AIdx: integer; AKind: byte;
+      APane: integer; const AData: TByteArray);
     procedure HandleControlFrame(AFd: cint; AKind: byte; APane: integer;
       const AData: TByteArray);
     procedure CtlReplyErr(AFd: cint; const AMsg: string);
@@ -374,9 +410,10 @@ type
       ACols, ARows: integer; out APty: TPty; out ATerm: string;
       out ADefTitle: string): boolean;
     procedure ReapChildren;
-    function HandleAttach(AFd: cint; AFirstKind: byte;
+    function HandleAttach(APendingIdx: integer; AFirstKind: byte;
       const AFirstData: TByteArray): boolean;
-    procedure HandleClientFrame(AIdx: integer);
+    procedure HandleClientFrame(AIdx: integer; AKind: byte;
+      APane: integer; const AData: TByteArray);
     procedure HandlePaneOutput(APane: integer);
     procedure SignalReady(AFd: cint; AOk: boolean);
     procedure WriteSidecar;
@@ -393,20 +430,19 @@ type
     procedure Run(AReadyFd: cint);
   end;
 
-// fd_set is exactly FD_MAXFDSET (1024) bits, and the RTL's helpers return -1
-// for anything outside it instead of raising (rtl/unix/genfdset.inc:17-24,
-// :54-63). Every test in this unit compared with <> 0, so a descriptor at or
-// above 1024 read as READY and was then processed -- and MaxFd was raised
-// past the set's storage, so the kernel wrote back more bytes than the
-// stack variable holds. These two say what was meant.
-function FDWatch(AFd: cint; var ASet: TFDSet): boolean;
+function PollFd(AFd: cint; AEvents: cshort; ATimeoutMs: integer): cint;
+var
+  P: TPollFD;
 begin
-  Result := (AFd >= 0) and (AFd < FD_MAXFDSET) and (fpFD_SET(AFd, ASet) = 0);
-end;
-
-function FDReady(AFd: cint; const ASet: TFDSet): boolean;
-begin
-  Result := (AFd >= 0) and (AFd < FD_MAXFDSET) and (fpFD_ISSET(AFd, ASet) = 1);
+  if AFd < 0 then
+    Exit(-1);
+  P := Default(TPollFD);
+  P.fd := AFD;
+  P.events := AEvents;
+  Result := fpPoll(@P, 1, ATimeoutMs);
+  if (Result > 0) and
+     ((P.revents and (AEvents or POLLERR or POLLHUP or POLLNVAL)) = 0) then
+    Result := 0;
 end;
 
 // close-on-exec on a descriptor the daemon owns. Without it every socket --
@@ -418,6 +454,87 @@ procedure SetCloExec(AFd: cint);
 begin
   if AFd >= 0 then
     FpFcntl(AFd, 2 {F_SETFD}, 1 {FD_CLOEXEC});
+end;
+
+procedure SetNonBlocking(AFd: cint);
+var
+  Flags: cint;
+begin
+  if AFD < 0 then
+    Exit;
+  Flags := FpFcntl(AFd, F_GETFL, 0);
+  if Flags >= 0 then
+    FpFcntl(AFd, F_SETFL, Flags or O_NONBLOCK);
+end;
+
+// Consume only what is immediately available. A short header or payload is
+// retained in ABuffer and completed by a later poll notification; no peer can
+// park the daemon by sending the first byte of a frame and then going silent.
+function ReadSocketAvailable(AFd: cint; var ABuffer: RawByteString;
+  out AClosed: boolean): boolean;
+var
+  Buf: array[0..65535] of byte;
+  N, Total, OldLen, Want: integer;
+begin
+  Result := True;
+  AClosed := False;
+  Total := 0;
+  repeat
+    Want := SizeOf(Buf);
+    if Total + Want > IO_BUDGET then
+      Want := IO_BUDGET - Total;
+    if Want <= 0 then
+      Exit;
+    N := FpRecv(AFd, @Buf[0], Want, ST_MSG_DONTWAIT);
+    if N > 0 then
+    begin
+      OldLen := Length(ABuffer);
+      SetLength(ABuffer, OldLen + N);
+      Move(Buf[0], ABuffer[OldLen + 1], N);
+      Inc(Total, N);
+      Continue;
+    end;
+    if N = 0 then
+    begin
+      AClosed := True;
+      Exit;
+    end;
+    case fpgeterrno of
+      ESysEINTR: Continue;
+      ESysEAGAIN: Exit;
+    else
+      Result := False;
+      AClosed := True;
+      Exit;
+    end;
+  until False;
+end;
+
+function PopBufferedFrame(var ABuffer: RawByteString; out AKind: byte;
+  out APane: integer; out AData: TByteArray): TFramePop;
+var
+  H: TFrameHeader;
+  Need: QWord;
+begin
+  AKind := 0;
+  APane := -1;
+  AData := nil;
+  if Length(ABuffer) < SizeOf(H) then
+    Exit(fpNeedMore);
+  H := Default(TFrameHeader);
+  Move(ABuffer[1], H, SizeOf(H));
+  if H.Size > MAX_FRAME_SIZE then
+    Exit(fpInvalid);
+  Need := QWord(SizeOf(H)) + QWord(H.Size);
+  if QWord(Length(ABuffer)) < Need then
+    Exit(fpNeedMore);
+  AKind := H.Kind;
+  APane := H.Pane;
+  SetLength(AData, H.Size);
+  if H.Size > 0 then
+    Move(ABuffer[1 + SizeOf(H)], AData[0], H.Size);
+  Delete(ABuffer, 1, integer(Need));
+  Result := fpReady;
 end;
 
 function WriteFull(AFd: cint; const Buffer; ASize: integer): boolean;
@@ -443,68 +560,6 @@ begin
     Dec(Left, N);
   end;
   Result := True;
-end;
-
-// full write with a total deadline: writability select per segment and
-// a cumulative deadline; if the receiver does not consume in time, abort
-// (a dead control client must not hang the daemon loop)
-function WriteFullTimeout(AFd: cint; const Buffer; ASize: integer;
-  ATotalMs: integer): boolean;
-var
-  P: PByte;
-  Left, N: integer;
-  SetW: TFDSet;
-  TV: TTimeVal;
-  Deadline: QWord;
-  NowMs: QWord;
-begin
-  Result := False;
-  if ASize < 0 then
-    Exit;
-  if ASize = 0 then
-    Exit(True);
-  P := @Buffer;
-  Left := ASize;
-  Deadline := GetTickCount64 + QWord(ATotalMs);
-  while Left > 0 do
-  begin
-    NowMs := GetTickCount64;
-    if NowMs >= Deadline then
-      Exit;
-    fpFD_ZERO(SetW);
-    fpFD_SET(AFd, SetW);
-    TV.tv_sec := (Deadline - NowMs) div 1000;
-    TV.tv_usec := ((Deadline - NowMs) mod 1000) * 1000;
-    if fpSelect(AFd + 1, nil, @SetW, nil, @TV) <= 0 then
-      Exit;
-    N := FileWrite(AFd, P^, Left);
-    if N <= 0 then
-      Exit;
-    Inc(P, N);
-    Dec(Left, N);
-  end;
-  Result := True;
-end;
-
-// full frame (header + payload) with the same total deadline
-function WriteFrameToTimeout(AFd: cint; AKind: byte; APane: integer;
-  const Data: TByteArray; ATotalMs: integer): boolean;
-var
-  H: TFrameHeader;
-begin
-  Result := False;
-  if Length(Data) > MAX_FRAME_SIZE then
-    Exit;
-  H := Default(TFrameHeader);
-  H.Kind := AKind;
-  H.Pane := APane;
-  H.Size := Length(Data);
-  if not WriteFullTimeout(AFd, H, SizeOf(H), ATotalMs) then
-    Exit;
-  if Length(Data) > 0 then
-    Result := WriteFullTimeout(AFd, Data[0], Length(Data), ATotalMs)
-  else
-    Result := True;
 end;
 
 function ReadFull(AFd: cint; var Buffer; ASize: integer): boolean;
@@ -687,8 +742,6 @@ var
   AddrLen: TSockLen;
   Fd, Flags, Err: cint;
   ErrLen: TSockLen;
-  SetWrite: TFDSet;
-  TV: TTimeVal;
 begin
   Result := spDead;
   if not SocketAddress(APath, Addr, AddrLen) then
@@ -706,11 +759,7 @@ begin
       ESysEINPROGRESS:
         begin
           // connection in progress: await the outcome with a timeout
-          fpFD_ZERO(SetWrite);
-          fpFD_SET(Fd, SetWrite);
-          TV.tv_sec := 0;
-          TV.tv_usec := 300000;
-          if fpSelect(Fd + 1, nil, @SetWrite, nil, @TV) <= 0 then
+          if PollFd(Fd, POLLOUT, 300) <= 0 then
             Result := spTimeout
           else
           begin
@@ -1342,9 +1391,6 @@ end;
 
 function TSessionClient.Poll(out Event: TSessionEvent): boolean;
 var
-  SetRead: TFDSet;
-  TV: TTimeVal;
-  MaxFd: cint;
   Kind: byte;
   Pane: integer;
 begin
@@ -1355,14 +1401,7 @@ begin
   Result := False;
   if not FConnected then
     Exit;
-  fpFD_ZERO(SetRead);
-  fpFD_SET(FSocket, SetRead);
-  TV.tv_sec := 0;
-  TV.tv_usec := 0;
-  MaxFd := fpSelect(FSocket + 1, @SetRead, nil, nil, @TV);
-  if MaxFd <= 0 then
-    Exit;
-  if not FDReady(FSocket, SetRead) then
+  if PollFd(FSocket, POLLIN, 0) <= 0 then
     Exit;
   if not ReadFrame(Kind, Pane, Event.Data) then
   begin
@@ -1589,6 +1628,11 @@ begin
     FClients[I] := Default(TClientConn);
     FClients[I].Fd := -1;
   end;
+  for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+  begin
+    FPending[I] := Default(TPendingConn);
+    FPending[I].Fd := -1;
+  end;
   FStop := False;
   // initial window geometry exactly as it was when detaching
   FGeomValid := Length(AGeom) = FPaneCount;
@@ -1608,6 +1652,12 @@ begin
     begin
       FpClose(FClients[I].Fd);
       FClients[I].Fd := -1;
+    end;
+  for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+    if FPending[I].Fd >= 0 then
+    begin
+      FpClose(FPending[I].Fd);
+      FPending[I].Fd := -1;
     end;
   if FListener >= 0 then
     FpClose(FListener);
@@ -1652,13 +1702,14 @@ begin
     FListener := -1;
     Exit;
   end;
-  if fpListen(FListener, 4) <> 0 then
+  if fpListen(FListener, MAX_PENDING_CONNECTIONS) <> 0 then
   begin
     FpClose(FListener);
     FListener := -1;
     DeleteFile(FSocketPath);
     Exit;
   end;
+  SetNonBlocking(FListener);
   FpChmod(PAnsiChar(FSocketPath), &600);
   Result := True;
 end;
@@ -1669,7 +1720,7 @@ var
 begin
   Result := 0;
   for I := 0 to MAX_CLIENTS - 1 do
-    if FClients[I].Fd >= 0 then
+    if (FClients[I].Fd >= 0) and FClients[I].Ready then
       Inc(Result);
 end;
 
@@ -1679,7 +1730,8 @@ var
 begin
   Result := False;
   for I := 0 to MAX_CLIENTS - 1 do
-    if (FClients[I].Fd >= 0) and FClients[I].Legacy then
+    if (FClients[I].Fd >= 0) and FClients[I].Ready and
+       FClients[I].Legacy then
       Exit(True);
 end;
 
@@ -1698,14 +1750,35 @@ begin
   WriteSidecar;
 end;
 
+function TDetachedSession.PendingIndexByFd(AFd: cint): integer;
+var
+  I: integer;
+begin
+  for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+    if FPending[I].Fd = AFD then
+      Exit(I);
+  Result := -1;
+end;
+
+procedure TDetachedSession.DropPending(AIdx: integer; AClose: boolean);
+begin
+  if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+     (FPending[AIdx].Fd < 0) then
+    Exit;
+  if AClose then
+    FpClose(FPending[AIdx].Fd);
+  FPending[AIdx] := Default(TPendingConn);
+  FPending[AIdx].Fd := -1;
+end;
+
 // queues bytes toward a client without ever blocking the daemon: first
 // a direct non-blocking send and the rest to the egress buffer; if the
 // buffer exceeds the cap the client is dead or stalled and gets dropped
 function TDetachedSession.QueueOut(AIdx: integer; const Buffer;
-  ASize: integer): boolean;
+  ASize: integer; ASnapshot: boolean): boolean;
 var
   P: PByte;
-  Left, Pending: integer;
+  Left, Pending, Limit, Want: integer;
   N: ssize_t;
 begin
   Result := False;
@@ -1713,14 +1786,21 @@ begin
     Exit;
   P := @Buffer;
   Left := ASize;
-  if FClients[AIdx].OutBuf = '' then
+  Pending := Length(FClients[AIdx].OutBuf) - FClients[AIdx].OutPos;
+  if Pending = 0 then
     while Left > 0 do
     begin
-      N := fpSend(FClients[AIdx].Fd, P, Left, ST_MSG_DONTWAIT);
+      Want := IO_BUDGET - FClients[AIdx].WriteUsed;
+      if Want <= 0 then
+        Break;
+      if Want > Left then
+        Want := Left;
+      N := fpSend(FClients[AIdx].Fd, P, Want, ST_MSG_DONTWAIT);
       if N > 0 then
       begin
         Inc(P, N);
         Dec(Left, integer(N));
+        Inc(FClients[AIdx].WriteUsed, integer(N));
         FClients[AIdx].LastProgress := GetTickCount64;
       end
       else if (N < 0) and (fpgeterrno = ESysEINTR) then
@@ -1735,15 +1815,58 @@ begin
     end;
   if Left > 0 then
   begin
-    Pending := Length(FClients[AIdx].OutBuf);
-    if Pending + Left > MAX_EGRESS then
+    Pending := Length(FClients[AIdx].OutBuf) - FClients[AIdx].OutPos;
+    if ASnapshot or (FClients[AIdx].SnapshotPending > 0) then
+      Limit := MAX_SNAPSHOT_EGRESS
+    else
+      Limit := MAX_EGRESS;
+    if (Left > Limit) or (Pending > Limit - Left) then
     begin
       DropClient(AIdx);
       Exit;
     end;
+    // Retain a sent prefix while there is ample capacity; this makes draining
+    // a large snapshot linear instead of shifting its whole remainder after
+    // every 256 KB send. Compact only when allocation would cross the cap.
+    if (FClients[AIdx].OutPos > 0) and
+       (Length(FClients[AIdx].OutBuf) > Limit - Left) then
+    begin
+      Delete(FClients[AIdx].OutBuf, 1, FClients[AIdx].OutPos);
+      FClients[AIdx].OutPos := 0;
+    end;
+    Pending := Length(FClients[AIdx].OutBuf);
     SetLength(FClients[AIdx].OutBuf, Pending + Left);
     Move(P^, FClients[AIdx].OutBuf[Pending + 1], Left);
+    if ASnapshot then
+      Inc(FClients[AIdx].SnapshotPending, QWord(Left));
   end;
+  Result := True;
+end;
+
+function TDetachedSession.QueuePending(AIdx: integer; AKind: byte;
+  APane: integer; const Data: TByteArray): boolean;
+var
+  H: TFrameHeader;
+  OldLen, AddLen: integer;
+begin
+  Result := False;
+  if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+     (FPending[AIdx].Fd < 0) or (Length(Data) > MAX_FRAME_SIZE) then
+    Exit;
+  AddLen := SizeOf(H) + Length(Data);
+  OldLen := Length(FPending[AIdx].OutBuf);
+  if (AddLen > MAX_SNAPSHOT_EGRESS) or
+     (OldLen > MAX_SNAPSHOT_EGRESS - AddLen) then
+    Exit;
+  H := Default(TFrameHeader);
+  H.Kind := AKind;
+  H.Pane := SmallInt(APane);
+  H.Size := Length(Data);
+  SetLength(FPending[AIdx].OutBuf, OldLen + AddLen);
+  Move(H, FPending[AIdx].OutBuf[OldLen + 1], SizeOf(H));
+  if Length(Data) > 0 then
+    Move(Data[0], FPending[AIdx].OutBuf[OldLen + 1 + SizeOf(H)],
+      Length(Data));
   Result := True;
 end;
 
@@ -1775,7 +1898,8 @@ var
   I: integer;
 begin
   for I := 0 to MAX_CLIENTS - 1 do
-    if (FClients[I].Fd >= 0) and (I <> AExcept) and
+    if (FClients[I].Fd >= 0) and FClients[I].Ready and
+       (I <> AExcept) and
        ((not ANeedCaps) or
         ((FClients[I].Caps and ATTACH_CAP_EVENTS) <> 0)) then
       SendFrameToIdx(I, AKind, APane, Buffer, ASize);
@@ -1783,22 +1907,92 @@ end;
 
 procedure TDetachedSession.FlushClient(AIdx: integer);
 var
+  Want: integer;
   N: ssize_t;
 begin
-  if (FClients[AIdx].Fd < 0) or (FClients[AIdx].OutBuf = '') then
+  if (FClients[AIdx].Fd < 0) or
+     (FClients[AIdx].OutPos >= Length(FClients[AIdx].OutBuf)) then
     Exit;
-  N := fpSend(FClients[AIdx].Fd, @FClients[AIdx].OutBuf[1],
-    Length(FClients[AIdx].OutBuf), ST_MSG_DONTWAIT);
+  Want := IO_BUDGET - FClients[AIdx].WriteUsed;
+  if Want <= 0 then
+    Exit;
+  if Want > Length(FClients[AIdx].OutBuf) - FClients[AIdx].OutPos then
+    Want := Length(FClients[AIdx].OutBuf) - FClients[AIdx].OutPos;
+  N := fpSend(FClients[AIdx].Fd,
+    @FClients[AIdx].OutBuf[FClients[AIdx].OutPos + 1], Want,
+    ST_MSG_DONTWAIT);
   if N > 0 then
   begin
-    Delete(FClients[AIdx].OutBuf, 1, integer(N));
+    Inc(FClients[AIdx].OutPos, integer(N));
+    Inc(FClients[AIdx].WriteUsed, integer(N));
+    if FClients[AIdx].SnapshotPending > QWord(N) then
+      Dec(FClients[AIdx].SnapshotPending, QWord(N))
+    else
+      FClients[AIdx].SnapshotPending := 0;
     FClients[AIdx].LastProgress := GetTickCount64;
+    if FClients[AIdx].OutPos = Length(FClients[AIdx].OutBuf) then
+    begin
+      FClients[AIdx].OutBuf := '';
+      FClients[AIdx].OutPos := 0;
+    end
+    else if (FClients[AIdx].OutPos >= 1024 * 1024) and
+            (FClients[AIdx].OutPos >= Length(FClients[AIdx].OutBuf) div 2) then
+    begin
+      Delete(FClients[AIdx].OutBuf, 1, FClients[AIdx].OutPos);
+      FClients[AIdx].OutPos := 0;
+    end;
   end
   else if (N < 0) and ((fpgeterrno = ESysEAGAIN) or
      (fpgeterrno = ESysEINTR)) then
     Exit
   else
     DropClient(AIdx);
+end;
+
+procedure TDetachedSession.FlushPending(AIdx: integer);
+var
+  Want: integer;
+  N: ssize_t;
+begin
+  if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+     (FPending[AIdx].Fd < 0) then
+    Exit;
+  if FPending[AIdx].OutPos >= Length(FPending[AIdx].OutBuf) then
+  begin
+    if FPending[AIdx].CloseAfterWrite then
+      DropPending(AIdx);
+    Exit;
+  end;
+  Want := Length(FPending[AIdx].OutBuf) - FPending[AIdx].OutPos;
+  if Want > IO_BUDGET then
+    Want := IO_BUDGET;
+  N := FpSend(FPending[AIdx].Fd,
+    @FPending[AIdx].OutBuf[FPending[AIdx].OutPos + 1], Want,
+    ST_MSG_DONTWAIT);
+  if N > 0 then
+  begin
+    Inc(FPending[AIdx].OutPos, integer(N));
+    FPending[AIdx].LastProgress := GetTickCount64;
+    FPending[AIdx].Deadline := GetTickCount64 + CONTROL_IDLE_TIMEOUT_MS;
+    if FPending[AIdx].OutPos = Length(FPending[AIdx].OutBuf) then
+    begin
+      FPending[AIdx].OutBuf := '';
+      FPending[AIdx].OutPos := 0;
+      if FPending[AIdx].CloseAfterWrite then
+        DropPending(AIdx);
+    end
+    else if (FPending[AIdx].OutPos >= 1024 * 1024) and
+            (FPending[AIdx].OutPos >= Length(FPending[AIdx].OutBuf) div 2) then
+    begin
+      Delete(FPending[AIdx].OutBuf, 1, FPending[AIdx].OutPos);
+      FPending[AIdx].OutPos := 0;
+    end;
+  end
+  else if (N < 0) and ((fpgeterrno = ESysEAGAIN) or
+     (fpgeterrno = ESysEINTR)) then
+    Exit
+  else
+    DropPending(AIdx);
 end;
 
 // effective pane size = common minimum of what the clients requested
@@ -1815,7 +2009,8 @@ begin
   MinC := 0;
   MinR := 0;
   for I := 0 to MAX_CLIENTS - 1 do
-    if (FClients[I].Fd >= 0) and (FClients[I].ReqCols[APane] > 0) and
+    if (FClients[I].Fd >= 0) and FClients[I].Ready and
+       (FClients[I].ReqCols[APane] > 0) and
        (FClients[I].ReqRows[APane] > 0) then
     begin
       if (MinC = 0) or (FClients[I].ReqCols[APane] < MinC) then
@@ -1915,13 +2110,7 @@ begin
   end;
 end;
 
-function TDetachedSession.ReadFrame(AFd: cint; out AKind: byte;
-  out APane: integer; out Data: TByteArray): boolean;
-begin
-  Result := ReadFrameFrom(AFd, AKind, APane, Data);
-end;
-
-function TDetachedSession.SendSnapshot(AFd: cint): boolean;
+function TDetachedSession.SendSnapshot(AIdx: integer): boolean;
 var
   Meta, ScreenData: TMemoryStream;
   Data: TByteArray;
@@ -1929,9 +2118,30 @@ var
   Nodes: string;
   GeomCnt: Longint;
   Flag: byte;
+
+  function QueueSnapshotFrame(AKind: byte; APane: integer;
+    const AData: TByteArray): boolean;
+  var
+    H: TFrameHeader;
+    Frame: RawByteString;
+  begin
+    Result := False;
+    if Length(AData) > MAX_FRAME_SIZE then
+      Exit;
+    H := Default(TFrameHeader);
+    H.Kind := AKind;
+    H.Pane := SmallInt(APane);
+    H.Size := Length(AData);
+    Frame := '';
+    SetLength(Frame, SizeOf(H) + Length(AData));
+    Move(H, Frame[1], SizeOf(H));
+    if Length(AData) > 0 then
+      Move(AData[0], Frame[1 + SizeOf(H)], Length(AData));
+    Result := QueueOut(AIdx, Frame[1], Length(Frame), True);
+  end;
 begin
   Result := False;
-  // Drain whatever the panes have already written but the select loop has not
+  // Drain whatever the panes have already written but the event loop has not
   // picked up yet, so it is IN the snapshot this client is about to receive.
   //
   // Without this a pane's first output could be lost outright. PromoteToServer
@@ -1947,11 +2157,9 @@ begin
   //
   // Safe on both counts: the master is O_NONBLOCK (st_pty.pas), so an idle
   // pane returns EAGAIN and HandlePaneOutput does nothing -- it only marks a
-  // pane dead on a real EOF. And the attaching client is NOT in FClients yet
-  // (HandleAttach fills its slot only after this returns), so the Broadcast
-  // inside HandlePaneOutput cannot also send it these bytes: it gets them once,
-  // in the snapshot. Anything written after this point arrives normally as
-  // FRAME_OUTPUT, because by then the client is registered.
+  // pane dead on a real EOF. The attaching client is present but not Ready,
+  // so Broadcast cannot overtake its snapshot. Anything written afterwards
+  // arrives normally as FRAME_OUTPUT once HandleAttach marks it Ready.
   for I := 0 to FPaneCount - 1 do
     if (FPanes[I] <> nil) and FPanes[I].Alive then
       HandlePaneOutput(I);
@@ -2005,7 +2213,7 @@ begin
       Meta.Position := 0;
       Meta.ReadBuffer(Data[0], Meta.Size);
     end;
-    if not WriteFrameTo(AFd, FRAME_SESSION, -1, Data) then
+    if not QueueSnapshotFrame(FRAME_SESSION, -1, Data) then
       Exit;
   finally
     Meta.Free;
@@ -2022,43 +2230,20 @@ begin
         ScreenData.Position := 0;
         ScreenData.ReadBuffer(Data[0], ScreenData.Size);
       end;
-      if not WriteFrameTo(AFd, FRAME_SCREEN, I, Data) then
+      if not QueueSnapshotFrame(FRAME_SCREEN, I, Data) then
         Exit;
     finally
       ScreenData.Free;
     end;
   end;
   Data := nil;
-  Result := WriteFrameTo(AFd, FRAME_READY, -1, Data);
-end;
-
-// reads the first frame of a freshly accepted connection with bounded
-// wait: a peer that connects and writes nothing must not hang the daemon
-function TDetachedSession.ReadFirstFrame(AFd: cint; out AKind: byte;
-  out APane: integer; out AData: TByteArray): boolean;
-var
-  SetRead: TFDSet;
-  TV: TTimeVal;
-begin
-  Result := False;
-  AKind := 0;
-  APane := -1;
-  AData := nil;
-  fpFD_ZERO(SetRead);
-  fpFD_SET(AFd, SetRead);
-  TV.tv_sec := 1;
-  TV.tv_usec := 0;
-  if fpSelect(AFd + 1, @SetRead, nil, nil, @TV) <= 0 then
-    Exit;
-  if not FDReady(AFd, SetRead) then
-    Exit;
-  Result := ReadFrame(AFd, AKind, APane, AData);
+  Result := QueueSnapshotFrame(FRAME_READY, -1, Data);
 end;
 
 // serves an attach whose first frame was already read in Run; the
 // versioned payload decides the slot: empty = legacy client (protocol
 // v1), which demands exclusivity as it lacks the session-sharing events
-function TDetachedSession.HandleAttach(AFd: cint; AFirstKind: byte;
+function TDetachedSession.HandleAttach(APendingIdx: integer; AFirstKind: byte;
   const AFirstData: TByteArray): boolean;
 var
   ChainLen: Longint;
@@ -2067,7 +2252,8 @@ var
   IsLegacy: boolean;
 begin
   Result := False;
-  if AFirstKind <> FRAME_ATTACH then
+  if (APendingIdx < 0) or (APendingIdx >= MAX_PENDING_CONNECTIONS) or
+     (FPending[APendingIdx].Fd < 0) or (AFirstKind <> FRAME_ATTACH) then
     Exit;
   ChainLen := 0;
   IsLegacy := Length(AFirstData) < 4 * SizeOf(Longint);
@@ -2091,12 +2277,15 @@ begin
     if Ver < ATTACH_PROTO_VER then
       Exit;
   end;
-  if not SendSnapshot(AFd) then
-    Exit;
   FClients[Slot] := Default(TClientConn);
-  FClients[Slot].Fd := AFd;
+  FClients[Slot].Fd := FPending[APendingIdx].Fd;
+  FClients[Slot].InBuf := FPending[APendingIdx].InBuf;
   FClients[Slot].Legacy := IsLegacy;
   FClients[Slot].LastProgress := GetTickCount64;
+  // Ownership has moved to FClients; clearing the pending record must not
+  // close the descriptor. Ready stays false while the point-in-time snapshot
+  // is built, so broadcasts produced by draining the PTYs cannot overtake it.
+  DropPending(APendingIdx, False);
   if not IsLegacy then
   begin
     Move(AFirstData[SizeOf(Longint)], FClients[Slot].DeskW, SizeOf(Longint));
@@ -2116,6 +2305,13 @@ begin
       end;
     end;
   end;
+  if not SendSnapshot(Slot) then
+  begin
+    if FClients[Slot].Fd >= 0 then
+      DropClient(Slot);
+    Exit;
+  end;
+  FClients[Slot].Ready := True;
   WriteSidecar;
   Result := True;
 end;
@@ -2209,13 +2405,16 @@ end;
 
 procedure TDetachedSession.CtlReplyErr(AFd: cint; const AMsg: string);
 var
+  Idx: integer;
   Data: TByteArray;
 begin
   Data := nil;
   SetLength(Data, Length(AMsg));
   if Length(AMsg) > 0 then
     Move(AMsg[1], Data[0], Length(AMsg));
-  WriteFrameToTimeout(AFd, FRAME_CTL_ERR, -1, Data, 5000);
+  Idx := PendingIndexByFd(AFd);
+  if Idx >= 0 then
+    QueuePending(Idx, FRAME_CTL_ERR, -1, Data);
 end;
 
 // lazy load of the window classes to resolve kind/host in LIST
@@ -2234,13 +2433,16 @@ end;
 
 procedure TDetachedSession.CtlReplyOk(AFd: cint; const AMsg: string);
 var
+  Idx: integer;
   Data: TByteArray;
 begin
   Data := nil;
   SetLength(Data, Length(AMsg));
   if Length(AMsg) > 0 then
     Move(AMsg[1], Data[0], Length(AMsg));
-  WriteFrameToTimeout(AFd, FRAME_CTL_OK, -1, Data, 5000);
+  Idx := PendingIndexByFd(AFd);
+  if Idx >= 0 then
+    QueuePending(Idx, FRAME_CTL_OK, -1, Data);
 end;
 
 // reaps daemon children (panes created daemon-side) without blocking
@@ -2769,7 +2971,7 @@ const
 var
   Meta: TMemoryStream;
   Data: TByteArray;
-  I, CIdx: integer;
+  I, CIdx, PIdx: integer;
   S: RawByteString;
   Mode, N: Longint;
   Scr: TScreen;
@@ -2777,6 +2979,9 @@ var
   KindB: byte;
   Host, User, LiveCmd, LiveCwd: string;
 begin
+  PIdx := PendingIndexByFd(AFd);
+  if PIdx < 0 then
+    Exit;
   case AKind of
     FRAME_CTL_INFO, FRAME_CTL_LIST:
       begin
@@ -2858,10 +3063,10 @@ begin
             Meta.Position := 0;
             Meta.ReadBuffer(Data[0], Meta.Size);
           end;
-          if WriteFrameToTimeout(AFd, FRAME_CTL_DATA, -1, Data, 5000) then
+          if QueuePending(PIdx, FRAME_CTL_DATA, -1, Data) then
           begin
             Data := nil;
-            WriteFrameToTimeout(AFd, FRAME_CTL_END, -1, Data, 5000);
+            QueuePending(PIdx, FRAME_CTL_END, -1, Data);
           end;
         finally
           Meta.Free;
@@ -2885,7 +3090,7 @@ begin
           end;
         end;
         Data := nil;
-        WriteFrameToTimeout(AFd, FRAME_CTL_OK, APane, Data, 5000);
+        QueuePending(PIdx, FRAME_CTL_OK, APane, Data);
       end;
     FRAME_CTL_CAPTURE:
       begin
@@ -2923,7 +3128,8 @@ begin
           From := Scr.HistoryRows;
           Count := Scr.Height;
         end;
-        // batched render: one CTL_DATA per ~256KB, never all of it in RAM
+        // Render in bounded working batches. The non-blocking reply queue owns
+        // completed chunks and has its own hard cap.
         Meta := TMemoryStream.Create;
         try
           Sent := 0;
@@ -2932,7 +3138,6 @@ begin
             Take := 512;   // rows per batch
             if Sent + Take > Count then
               Take := Count - Sent;
-            Meta.Clear;
             Scr.RenderTextRange(From + Sent, Take, Meta);
             Inc(Sent, Take);
             if (Meta.Size >= CHUNK) or (Sent >= Count) then
@@ -2944,13 +3149,13 @@ begin
                 Meta.Position := 0;
                 Meta.ReadBuffer(Data[0], Meta.Size);
               end;
-              if not WriteFrameToTimeout(AFd, FRAME_CTL_DATA, APane,
-                Data, 5000) then
+              if not QueuePending(PIdx, FRAME_CTL_DATA, APane, Data) then
                 Exit;
+              Meta.Clear;
             end;
           end;
           Data := nil;
-          WriteFrameToTimeout(AFd, FRAME_CTL_END, APane, Data, 5000);
+          QueuePending(PIdx, FRAME_CTL_END, APane, Data);
         finally
           Meta.Free;
         end;
@@ -2960,11 +3165,45 @@ begin
   end;
 end;
 
-procedure TDetachedSession.HandleClientFrame(AIdx: integer);
+procedure TDetachedSession.HandlePendingFrame(AIdx: integer; AKind: byte;
+  APane: integer; const AData: TByteArray);
 var
-  Kind: byte;
-  Pane: integer;
-  Data: TByteArray;
+  Fd: cint;
+begin
+  if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+     (FPending[AIdx].Fd < 0) then
+    Exit;
+  Fd := FPending[AIdx].Fd;
+  case AKind of
+    FRAME_CLOSE:
+      begin
+        if (Length(AData) > 0) and (AData[0] = 1) then
+          DaemonSaveSession;
+        DropPending(AIdx);
+        FStop := True;
+      end;
+    FRAME_ATTACH:
+      if not HandleAttach(AIdx, AKind, AData) then
+        DropPending(AIdx);
+    FRAME_CTL_LIST..FRAME_CTL_INFO:
+      begin
+        HandleControlFrame(Fd, AKind, APane, AData);
+        if (FPending[AIdx].Fd = Fd) then
+        begin
+          FPending[AIdx].CloseAfterWrite := True;
+          FPending[AIdx].Deadline := GetTickCount64 + CONTROL_IDLE_TIMEOUT_MS;
+          if FPending[AIdx].OutBuf = '' then
+            DropPending(AIdx);
+        end;
+      end;
+  else
+    DropPending(AIdx);
+  end;
+end;
+
+procedure TDetachedSession.HandleClientFrame(AIdx: integer; AKind: byte;
+  APane: integer; const AData: TByteArray);
+var
   Cols, Rows: integer;
   S: RawByteString;
   Ofs, NewIdx: integer;
@@ -2977,55 +3216,51 @@ var
   begin
     Result := '';
     L := Default(Longint);
-    if Ofs + SizeOf(Longint) > Length(Data) then
+    if Ofs + SizeOf(Longint) > Length(AData) then
       Exit;
-    Move(Data[Ofs], L, SizeOf(L));
+    Move(AData[Ofs], L, SizeOf(L));
     Inc(Ofs, SizeOf(L));
-    if (L < 0) or (Ofs + L > Length(Data)) then
+    if (L < 0) or (Ofs + L > Length(AData)) then
       Exit;
     SetLength(Result, L);
     if L > 0 then
-      Move(Data[Ofs], Result[1], L);
+      Move(AData[Ofs], Result[1], L);
     Inc(Ofs, L);
   end;
 
 begin
-  if not ReadFrame(FClients[AIdx].Fd, Kind, Pane, Data) then
-  begin
-    DropClient(AIdx);
-    Exit;
-  end;
   B0 := 0;
-  case Kind of
+  case AKind of
     FRAME_INPUT:
-      if (Pane >= 0) and (Pane < FPaneCount) and (FPanes[Pane] <> nil) and
-         (Length(Data) > 0) then
+      if (APane >= 0) and (APane < FPaneCount) and
+         (FPanes[APane] <> nil) and (Length(AData) > 0) then
       begin
-        SetString(S, PAnsiChar(@Data[0]), Length(Data));
-        FPanes[Pane].WriteStr(S);
+        SetString(S, PAnsiChar(@AData[0]), Length(AData));
+        FPanes[APane].WriteStr(S);
       end;
     FRAME_RESIZE:
-      if (Pane >= 0) and (Pane < FPaneCount) and (Length(Data) = 8) then
+      if (APane >= 0) and (APane < FPaneCount) and
+         (Length(AData) = 8) then
       begin
         Cols := Default(integer);
         Rows := Default(integer);
-        Move(Data[0], Cols, SizeOf(Cols));
-        Move(Data[4], Rows, SizeOf(Rows));
+        Move(AData[0], Cols, SizeOf(Cols));
+        Move(AData[4], Rows, SizeOf(Rows));
         if (Cols > 0) and (Rows > 0) then
         begin
           if FClients[AIdx].Legacy then
           begin
             // protocol v1: a single client rules, apply directly
-            if FScreens[Pane] <> nil then
-              FScreens[Pane].Resize(Cols, Rows);
-            if FPanes[Pane] <> nil then
-              FPanes[Pane].Resize(Cols, Rows);
+            if FScreens[APane] <> nil then
+              FScreens[APane].Resize(Cols, Rows);
+            if FPanes[APane] <> nil then
+              FPanes[APane].Resize(Cols, Rows);
           end
           else
           begin
-            FClients[AIdx].ReqCols[Pane] := Cols;
-            FClients[AIdx].ReqRows[Pane] := Rows;
-            NegotiateResize(Pane);
+            FClients[AIdx].ReqCols[APane] := Cols;
+            FClients[AIdx].ReqRows[APane] := Rows;
+            NegotiateResize(APane);
           end;
         end;
       end;
@@ -3034,30 +3269,31 @@ begin
     FRAME_CLOSE:
       begin
         // tolerant byte: 1 = save session.ini before dying
-        if (Length(Data) > 0) and (Data[0] = 1) then
+        if (Length(AData) > 0) and (AData[0] = 1) then
           DaemonSaveSession;
         DropClient(AIdx);
         FStop := True;
       end;
     FRAME_KILLPANE:
-      if (Pane >= 0) and (Pane < FPaneCount) then
+      if (APane >= 0) and (APane < FPaneCount) then
       begin
-        DoKillPane(Pane);
-        Broadcast(FRAME_KILLPANE_EV, Pane, B0, 0, True, AIdx);
+        DoKillPane(APane);
+        Broadcast(FRAME_KILLPANE_EV, APane, B0, 0, True, AIdx);
       end;
     FRAME_LAYOUT:
       begin
-        ApplyLayoutFrame(Data);
-        if Length(Data) > 0 then
-          Broadcast(FRAME_LAYOUT_EV, -1, Data[0], Length(Data), True, AIdx);
+        ApplyLayoutFrame(AData);
+        if Length(AData) > 0 then
+          Broadcast(FRAME_LAYOUT_EV, -1, AData[0], Length(AData), True,
+            AIdx);
       end;
     FRAME_NEWPANE:
       begin
         DirB := 0;
         Ofs := 0;
-        if Length(Data) > 0 then
+        if Length(AData) > 0 then
         begin
-          DirB := Data[0];
+          DirB := AData[0];
           Ofs := 1;
         end;
         ClassS := RdStr;
@@ -3066,28 +3302,28 @@ begin
         TitleS := RdStr;
         ErrS := '';
         NewIdx := -1;
-        if not DoNewPane(Pane, DirB, ClassS, CmdS, CwdS, TitleS,
+        if not DoNewPane(APane, DirB, ClassS, CmdS, CwdS, TitleS,
           NewIdx, ErrS) then
           if ErrS <> '' then
             SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
       end;
     FRAME_FOCUS:
-      if (Pane >= 0) and (Pane < FPaneCount) then
+      if (APane >= 0) and (APane < FPaneCount) then
       begin
-        FFocused := Pane;
-        Broadcast(FRAME_FOCUS_EV, Pane, B0, 0, True, AIdx);
+        FFocused := APane;
+        Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, AIdx);
       end;
     FRAME_RENAME:
-      if (Pane >= 0) and (Pane < FPaneCount) then
+      if (APane >= 0) and (APane < FPaneCount) then
       begin
         Ofs := 0;
         TitleS := RdStr;
         if Trim(TitleS) <> '' then
         begin
-          FTitles[Pane] := ' ' + Trim(TitleS);
-          FTitleFixed[Pane] := True;
-          if Length(Data) > 0 then
-            Broadcast(FRAME_TITLE_EV, Pane, Data[0], Length(Data), True,
+          FTitles[APane] := ' ' + Trim(TitleS);
+          FTitleFixed[APane] := True;
+          if Length(AData) > 0 then
+            Broadcast(FRAME_TITLE_EV, APane, AData[0], Length(AData), True,
               AIdx);
         end;
       end;
@@ -3189,19 +3425,86 @@ end;
 
 procedure TDetachedSession.Run(AReadyFd: cint);
 var
-  KeepClient: boolean;
-  ReadSet, WriteSet: TFDSet;
-  TV: TTimeVal;
-  MaxFd, I, NewClient, N: cint;
+  Poller: TSuperPoll;
+  Ready: TPollReadyArray;
+  Ev: TPollReady;
+  I, J, NewClient, N, Slot, TimeoutMs: cint;
   Kind: byte;
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
-  FirstPane: integer;
-  FirstData: TByteArray;
+  Pane: integer;
+  Data: TByteArray;
   B0: byte;
-  FlowBlocked: boolean;
+  Closed, AliveFound: boolean;
   NewTitle: string;
   Fails: integer;
+  NowTick: QWord;
+  Pop: TFramePop;
+  EventFd: cint;
+
+  // A client can put many complete frames in one socket read. Process a
+  // bounded batch so input floods cannot starve PTYs or other clients; a
+  // complete remainder makes the next poll non-blocking.
+  procedure DispatchClientBuffer(AIdx: integer);
+  var
+    ClientFd: cint;
+    FrameKind: byte;
+    FramePane: integer;
+    FrameData: TByteArray;
+    FramePop: TFramePop;
+  begin
+    if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or
+       (FClients[AIdx].Fd < 0) then
+      Exit;
+    ClientFd := FClients[AIdx].Fd;
+    while (FClients[AIdx].Fd = ClientFd) and
+          (FClients[AIdx].FramesUsed < FRAME_BUDGET) do
+    begin
+      FramePop := PopBufferedFrame(FClients[AIdx].InBuf, FrameKind,
+        FramePane, FrameData);
+      case FramePop of
+        fpNeedMore:
+          Exit;
+        fpInvalid:
+          begin
+            DropClient(AIdx);
+            Exit;
+          end;
+        fpReady:
+          begin
+            Inc(FClients[AIdx].FramesUsed);
+            HandleClientFrame(AIdx, FrameKind, FramePane, FrameData);
+          end;
+      end;
+    end;
+  end;
+
+  function ClientFrameBuffered(AIdx: integer): boolean;
+  var
+    H: TFrameHeader;
+    Need: QWord;
+  begin
+    Result := False;
+    if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or
+       (FClients[AIdx].Fd < 0) or
+       (Length(FClients[AIdx].InBuf) < SizeOf(H)) then
+      Exit;
+    H := Default(TFrameHeader);
+    Move(FClients[AIdx].InBuf[1], H, SizeOf(H));
+    Need := QWord(SizeOf(H)) + QWord(H.Size);
+    Result := (H.Size > MAX_FRAME_SIZE) or
+      (QWord(Length(FClients[AIdx].InBuf)) >= Need);
+  end;
+
+  function CompleteClientFrameBuffered: boolean;
+  var
+    C: integer;
+  begin
+    Result := False;
+    for C := 0 to MAX_CLIENTS - 1 do
+      if ClientFrameBuffered(C) then
+        Exit(True);
+  end;
 begin
   Fails := 0;
   // From here on this process IS the session: if it dies every pane goes with
@@ -3220,193 +3523,249 @@ begin
   end;
   WriteSidecar;
   SignalReady(AReadyFd, True);
-  while not FStop do
-  begin
-    // One bad iteration must not take the session with it. Before this, an
-    // exception anywhere under the loop -- a failed ini write, a /proc read
-    // of a process that just exited, a socket error -- unwound out of Run,
-    // and the finally that follows frees the session, which kills every pane
-    // on the way out: the user loses every shell and every SSH connection
-    // because of one recoverable error. Log it, dump the state, and carry on;
-    // give up only if it keeps happening, which means the loop itself is
-    // broken and spinning is worse than stopping.
-    try
-      // laggards: lots pending and no progress at all during the grace
-      // period -> disconnect BEFORE building the fd_sets (a closed fd
-      // inside the set would make select fail with EBADF)
-      for I := 0 to MAX_CLIENTS - 1 do
-        if (FClients[I].Fd >= 0) and
-           (Length(FClients[I].OutBuf) > LAG_MIN_PENDING) and
-           (GetTickCount64 - FClients[I].LastProgress > LAG_GRACE_MS) then
-          DropClient(I);
-      fpFD_ZERO(ReadSet);
-      fpFD_ZERO(WriteSet);
-      MaxFd := FListener;
-      if not FDWatch(FListener, ReadSet) then
-      begin
-        // the listener itself is unusable in a select set: nothing can be
-        // served, and spinning would burn the CPU
-        DebugLog('daemon: listener descriptor is out of select range');
-        Break;
-      end;
-      for I := 0 to MAX_CLIENTS - 1 do
-        if FClients[I].Fd >= 0 then
+  Poller := TSuperPoll.Create;
+  try
+    while not FStop do
+    begin
+      // One bad iteration must not take the session with it. Before this, an
+      // exception anywhere under the loop -- a failed ini write, a /proc read
+      // of a process that just exited, a socket error -- unwound out of Run,
+      // and the finally that follows frees the session, which kills every pane
+      // on the way out. Log it, dump the state, and carry on; give up only if
+      // it keeps happening, which means the loop itself is broken.
+      try
+        NowTick := GetTickCount64;
+        for I := 0 to MAX_CLIENTS - 1 do
         begin
-          // a client whose descriptor cannot be watched is dropped rather
-          // than left in the table being reported ready for ever
-          if not FDWatch(FClients[I].Fd, ReadSet) then
-          begin
-            DebugLog(Format('daemon: client %d descriptor %d out of select range',
-              [I, FClients[I].Fd]));
+          FClients[I].WriteUsed := 0;
+          FClients[I].FramesUsed := 0;
+        end;
+        // A slow reader loses only its own view. PTYs are always drained and
+        // every other client continues independently.
+        for I := 0 to MAX_CLIENTS - 1 do
+          if (FClients[I].Fd >= 0) and
+             (Length(FClients[I].OutBuf) - FClients[I].OutPos >
+               LAG_MIN_PENDING) and
+             (NowTick - FClients[I].LastProgress > LAG_GRACE_MS) then
             DropClient(I);
-            continue;
-          end;
-          if FClients[I].OutBuf <> '' then
-            FDWatch(FClients[I].Fd, WriteSet);
-          if FClients[I].Fd > MaxFd then MaxFd := FClients[I].Fd;
-        end;
-      // flow control: with too much pending toward some client we do not
-      // read from the PTYs; the producer throttles in the terminal buffer
-      FlowBlocked := False;
-      for I := 0 to MAX_CLIENTS - 1 do
-        if (FClients[I].Fd >= 0) and
-           (Length(FClients[I].OutBuf) > FLOW_STOP) then
-        begin
-          FlowBlocked := True;
-          Break;
-        end;
-      if not FlowBlocked then
+        // First-frame slowloris and abandoned one-shot control replies.
+        for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+          if (FPending[I].Fd >= 0) and (FPending[I].Deadline <> 0) and
+             (NowTick >= FPending[I].Deadline) then
+            DropPending(I);
+
+        // An attach read may already have consumed following client frames.
+        // Do not wait for another kernel readiness edge to dispatch them.
+        for I := 0 to MAX_CLIENTS - 1 do
+          if (FClients[I].Fd >= 0) and (FClients[I].InBuf <> '') then
+            DispatchClientBuffer(I);
+
+        Poller.Clear;
+        Poller.Watch(FListener, psListener, 0, True, False);
+        for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+          if FPending[I].Fd >= 0 then
+            Poller.Watch(FPending[I].Fd, psPending, I,
+              not FPending[I].CloseAfterWrite,
+              FPending[I].OutBuf <> '');
+        for I := 0 to MAX_CLIENTS - 1 do
+          if FClients[I].Fd >= 0 then
+            Poller.Watch(FClients[I].Fd, psClient, I,
+              (FClients[I].FramesUsed < FRAME_BUDGET) and
+                (not ClientFrameBuffered(I)),
+              FClients[I].OutBuf <> '');
         for I := 0 to FPaneCount - 1 do
           if (FPanes[I] <> nil) and FPanes[I].Alive and
              (FPanes[I].Master >= 0) then
-          begin
-            if FDWatch(FPanes[I].Master, ReadSet) then
-              if FPanes[I].Master > MaxFd then MaxFd := FPanes[I].Master;
-          end;
-      TV.tv_sec := 0;
-      TV.tv_usec := 100000;
-      N := fpSelect(MaxFd + 1, @ReadSet, @WriteSet, nil, @TV);
-      if N < 0 then
-      begin
-        if fpgeterrno = ESysEINTR then
-          continue;
-        Break;
-      end;
-      if FDReady(FListener, ReadSet) then
-      begin
-        Addr := Default(TUnixSockAddr);
-        AddrLen := SizeOf(Addr);
-        NewClient := fpAccept(FListener, @Addr, @AddrLen);
-        if NewClient >= 0 then
+            Poller.Watch(FPanes[I].Master, psPane, I, True,
+              FPanes[I].InputPending);
+        if CompleteClientFrameBuffered then
+          TimeoutMs := 0
+        else
+          TimeoutMs := POLL_TICK_MS;
+        N := Poller.Wait(TimeoutMs, Ready);
+        if N < 0 then
         begin
-          // the panes this daemon spawns must not inherit it: a pane holding
-          // the listening socket keeps a dead session looking alive
-          SetCloExec(NewClient);
-          KeepClient := False;
-          try
-          // the first frame decides: FRAME_CLOSE shuts the daemon down
-          // even on a brand-new connection (CloseSessionAt); FRAME_ATTACH
-          // takes a slot if the versioned payload allows it; anything
-          // else closes the connection
-            if not ReadFirstFrame(NewClient, Kind, FirstPane, FirstData) then
-              KeepClient := False   // the finally below closes it
-            else if Kind = FRAME_CLOSE then
-            begin
-              if (Length(FirstData) > 0) and (FirstData[0] = 1) then
-                DaemonSaveSession;
-              FStop := True;
-            end
-            else if (Kind >= FRAME_CTL_LIST) and (Kind <= FRAME_CTL_INFO) then
-              // ephemeral control request: reply and close; takes no slot
-              HandleControlFrame(NewClient, Kind, FirstPane, FirstData)
-            else if HandleAttach(NewClient, Kind, FirstData) then
-              KeepClient := True;    // the client table owns it now
-          finally
-            // every branch used to close by hand, so any exception raised
-            // while serving a request leaked the descriptor -- and with the
-            // main loop catching exceptions the daemon survives, one
-            // descriptor poorer each time, until it runs out
-            if not KeepClient then
-              FpClose(NewClient);
-          end;
-        end;
-      end;
-      for I := 0 to MAX_CLIENTS - 1 do
-        if (FClients[I].Fd >= 0) and
-           (FDReady(FClients[I].Fd, WriteSet)) then
-          FlushClient(I);
-      for I := 0 to MAX_CLIENTS - 1 do
-        if (FClients[I].Fd >= 0) and
-           (FDReady(FClients[I].Fd, ReadSet)) then
-          HandleClientFrame(I);
-      // push anything still queued toward a pane whose program was not
-      // reading when it was written
-      for I := 0 to FPaneCount - 1 do
-        if (FPanes[I] <> nil) and FPanes[I].Alive and FPanes[I].InputPending then
-          FPanes[I].FlushInput;
-      ReapChildren;
-      if not FlowBlocked then
-        for I := 0 to FPaneCount - 1 do
-          if (FPanes[I] <> nil) and FPanes[I].Alive and
-             (FPanes[I].Master >= 0) and
-             (FDReady(FPanes[I].Master, ReadSet)) then
-            HandlePaneOutput(I);
-      // live titles: ad-hoc panes without a fixed title show the command
-      // or the current directory, just as the UI does locally
-      if GetTickCount64 - FLastTitleTick > 1500 then
-      begin
-        FLastTitleTick := GetTickCount64;
-        for I := 0 to FPaneCount - 1 do
-          if (FPanes[I] <> nil) and FPanes[I].Alive and
-             (FTerms[I] = '') and (not FTitleFixed[I]) then
-          begin
-            FPanes[I].QueryState;
-            if FPanes[I].TitleCmd <> '' then
-              NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
-            else if FPanes[I].TitleCwd <> '' then
-              NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
-                1, 24)
-            else
-              NewTitle := FTitles[I];
-            if NewTitle <> FTitles[I] then
-            begin
-              FTitles[I] := NewTitle;
-              BroadcastTitle(I);
-            end;
-          end;
-      end;
-      // self-cleanup: all panes dead and nobody attached for a minute
-      // -> the session no longer serves anyone, close it on its own
-      FlowBlocked := False;
-      for I := 0 to FPaneCount - 1 do
-        if (FPanes[I] <> nil) and FPanes[I].Alive then
-        begin
-          FlowBlocked := True;
+          if fpgeterrno = ESysEINTR then
+            Continue;
+          if DebugActive then
+            DebugLog('daemon: poll failed with errno ' +
+              IntToStr(fpgeterrno));
           Break;
         end;
-      if FlowBlocked or (AttachedCount > 0) then
-        FEmptySince := 0
-      else if FEmptySince = 0 then
-        FEmptySince := GetTickCount64
-      else if GetTickCount64 - FEmptySince > ReapGraceMs then
-        FStop := True;
-      Fails := 0;
-    except
-      on E: Exception do
-      begin
-        Inc(Fails);
-        if DebugActive then
-          DebugLog(Format('daemon: exception in main loop (%d): %s: %s',
-            [Fails, E.ClassName, E.Message]));
-        DumpNow('unhandled ' + E.ClassName + ': ' + E.Message);
-        if Fails > 50 then
+
+        for J := 0 to High(Ready) do
         begin
-          if DebugActive then
-            DebugLog('daemon: too many consecutive failures, shutting down');
+          Ev := Ready[J];
+          case Ev.Source of
+            psListener:
+              begin
+                if Ev.Error or Ev.Hangup then
+                begin
+                  if DebugActive then
+                    DebugLog('daemon: listener failed');
+                  FStop := True;
+                  Break;
+                end;
+                if not Ev.Readable then
+                  Continue;
+                for I := 1 to ACCEPT_BUDGET do
+                begin
+                  Addr := Default(TUnixSockAddr);
+                  AddrLen := SizeOf(Addr);
+                  NewClient := fpAccept(FListener, @Addr, @AddrLen);
+                  if NewClient < 0 then
+                  begin
+                    if fpgeterrno = ESysEINTR then
+                      Continue;
+                    Break;
+                  end;
+                  SetCloExec(NewClient);
+                  SetNonBlocking(NewClient);
+                  Slot := -1;
+                  for N := 0 to MAX_PENDING_CONNECTIONS - 1 do
+                    if FPending[N].Fd < 0 then
+                    begin
+                      Slot := N;
+                      Break;
+                    end;
+                  if Slot < 0 then
+                    FpClose(NewClient)
+                  else
+                  begin
+                    FPending[Slot] := Default(TPendingConn);
+                    FPending[Slot].Fd := NewClient;
+                    FPending[Slot].LastProgress := GetTickCount64;
+                    FPending[Slot].Deadline := GetTickCount64 +
+                      FIRST_FRAME_TIMEOUT_MS;
+                  end;
+                end;
+              end;
+            psPending:
+              if (Ev.Index >= 0) and
+                 (Ev.Index < MAX_PENDING_CONNECTIONS) and
+                 (FPending[Ev.Index].Fd >= 0) then
+              begin
+                EventFd := FPending[Ev.Index].Fd;
+                Closed := False;
+                if Ev.Readable and (not FPending[Ev.Index].CloseAfterWrite)
+                   then
+                begin
+                  if not ReadSocketAvailable(EventFd,
+                    FPending[Ev.Index].InBuf, Closed) then
+                    DropPending(Ev.Index)
+                  else if FPending[Ev.Index].Fd = EventFd then
+                  begin
+                    Pop := PopBufferedFrame(FPending[Ev.Index].InBuf, Kind,
+                      Pane, Data);
+                    case Pop of
+                      fpInvalid: DropPending(Ev.Index);
+                      fpReady: HandlePendingFrame(Ev.Index, Kind, Pane, Data);
+                    end;
+                  end;
+                  // A control peer may half-close its write side after the
+                  // request and still expect the queued response.
+                  if Closed and (FPending[Ev.Index].Fd = EventFd) and
+                     (not FPending[Ev.Index].CloseAfterWrite) then
+                    DropPending(Ev.Index);
+                end;
+                if (FPending[Ev.Index].Fd = EventFd) and Ev.Writable then
+                  FlushPending(Ev.Index);
+                if (FPending[Ev.Index].Fd = EventFd) and
+                   (Ev.Error or (Ev.Hangup and not Ev.Readable)) then
+                  DropPending(Ev.Index);
+              end;
+            psClient:
+              if (Ev.Index >= 0) and (Ev.Index < MAX_CLIENTS) and
+                 (FClients[Ev.Index].Fd >= 0) then
+              begin
+                EventFd := FClients[Ev.Index].Fd;
+                Closed := False;
+                if Ev.Readable then
+                begin
+                  if not ReadSocketAvailable(EventFd,
+                    FClients[Ev.Index].InBuf, Closed) then
+                    DropClient(Ev.Index)
+                  else if FClients[Ev.Index].Fd = EventFd then
+                    DispatchClientBuffer(Ev.Index);
+                  if Closed and (FClients[Ev.Index].Fd = EventFd) then
+                    DropClient(Ev.Index);
+                end;
+                if (FClients[Ev.Index].Fd = EventFd) and Ev.Writable then
+                  FlushClient(Ev.Index);
+                if (FClients[Ev.Index].Fd = EventFd) and
+                   (Ev.Error or (Ev.Hangup and not Ev.Readable)) then
+                  DropClient(Ev.Index);
+              end;
+            psPane:
+              if (Ev.Index >= 0) and (Ev.Index < FPaneCount) and
+                 (FPanes[Ev.Index] <> nil) and FPanes[Ev.Index].Alive then
+              begin
+                if Ev.Writable then
+                  FPanes[Ev.Index].FlushInput;
+                if Ev.Readable or Ev.Error or Ev.Hangup then
+                  HandlePaneOutput(Ev.Index);
+              end;
+          end;
+        end;
+        ReapChildren;
+      // live titles: ad-hoc panes without a fixed title show the command
+      // or the current directory, just as the UI does locally
+        if GetTickCount64 - FLastTitleTick > 1500 then
+        begin
+          FLastTitleTick := GetTickCount64;
+          for I := 0 to FPaneCount - 1 do
+            if (FPanes[I] <> nil) and FPanes[I].Alive and
+               (FTerms[I] = '') and (not FTitleFixed[I]) then
+            begin
+              FPanes[I].QueryState;
+              if FPanes[I].TitleCmd <> '' then
+                NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd), 1, 24)
+              else if FPanes[I].TitleCwd <> '' then
+                NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
+                  1, 24)
+              else
+                NewTitle := FTitles[I];
+              if NewTitle <> FTitles[I] then
+              begin
+                FTitles[I] := NewTitle;
+                BroadcastTitle(I);
+              end;
+            end;
+        end;
+        // self-cleanup: all panes dead and nobody attached for a minute
+        AliveFound := False;
+        for I := 0 to FPaneCount - 1 do
+          if (FPanes[I] <> nil) and FPanes[I].Alive then
+          begin
+            AliveFound := True;
+            Break;
+          end;
+        if AliveFound or (AttachedCount > 0) then
+          FEmptySince := 0
+        else if FEmptySince = 0 then
+          FEmptySince := GetTickCount64
+        else if GetTickCount64 - FEmptySince > ReapGraceMs then
           FStop := True;
+        Fails := 0;
+      except
+        on E: Exception do
+        begin
+          Inc(Fails);
+          if DebugActive then
+            DebugLog(Format('daemon: exception in main loop (%d): %s: %s',
+              [Fails, E.ClassName, E.Message]));
+          DumpNow('unhandled ' + E.ClassName + ': ' + E.Message);
+          if Fails > 50 then
+          begin
+            if DebugActive then
+              DebugLog('daemon: too many consecutive failures, shutting down');
+            FStop := True;
+          end;
         end;
       end;
     end;
+  finally
+    Poller.Free;
   end;
   // orderly shutdown notice to capable clients; legacy ones see the
   // EOF and react as they do today (lost connection)
