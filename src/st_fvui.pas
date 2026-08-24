@@ -2769,6 +2769,7 @@ begin
     Scr[j] := Scr[j - 1];
     Win[j] := Win[j - 1];
     PaneTerm[j] := PaneTerm[j - 1];
+    PaneConnect[j] := PaneConnect[j - 1];
     if Win[j] <> nil then
     begin
       Win[j]^.SetPaneIdx(j);
@@ -2778,6 +2779,7 @@ begin
   Scr[NewIdx] := nil;
   Win[NewIdx] := nil;
   PaneTerm[NewIdx] := -1;
+  PaneConnect[NewIdx] := '';
   // one rule for every way of creating a window: centred, at the size its
   // class asks for, and nothing already open is touched
   NextRect := NewWindowRect(ASysIdx);
@@ -2798,6 +2800,7 @@ begin
       Scr[j] := Scr[j + 1];
       Win[j] := Win[j + 1];
       PaneTerm[j] := PaneTerm[j + 1];
+      PaneConnect[j] := PaneConnect[j + 1];
       if Win[j] <> nil then
       begin
         Win[j]^.SetPaneIdx(j);
@@ -2807,6 +2810,7 @@ begin
     Scr[OldCount] := nil;
     Win[OldCount] := nil;
     PaneTerm[OldCount] := -1;
+    PaneConnect[OldCount] := '';
     if Lay.Focused >= OldCount then
       Lay.Focused := OldCount - 1;
     // nothing was added, so no window moved: nothing to re-tile
@@ -2870,6 +2874,7 @@ begin
     Scr[i] := nil;
     Win[i] := nil;
     PaneTerm[i] := -1;
+    PaneConnect[i] := '';
   end;
 end;
 
@@ -2893,6 +2898,7 @@ begin
       FreeAndNil(Scr[i]);
     Panes[i] := nil;
     PaneTerm[i] := -1;
+    PaneConnect[i] := '';
   end;
 end;
 
@@ -3990,7 +3996,6 @@ end;
 function TSuperApp.CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
 var
   i, n: integer;
-  CurTitle, DefTitle: string;
   WR, RD: Objects.TRect;
   RL: TListInfo;
   HaveRL: boolean;
@@ -4024,6 +4029,18 @@ begin
     Result.Panes[i] := Default(TProfilePaneSpec);
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
+    // A saved profile is a snapshot of the workspace, not merely a recipe
+    // for approximating it. Keep the title that is visible now even when it
+    // was derived from the foreground command/cwd rather than renamed by
+    // hand. On restore it is deliberately fixed, so a pane called "Codex"
+    // or "Claude" does not fall back to "shell" a moment later.
+    if (Win[i] <> nil) and (Win[i]^.Title <> nil) then
+      Result.Panes[i].Title := Trim(Win[i]^.Title^);
+    // Preserve the actual per-pane history capacity as well. Leaving this at
+    // the record default (zero) made a profile silently return to the global
+    // default instead of the value the workspace was using.
+    if Scr[i] <> nil then
+      Result.Panes[i].ScrollBack := Scr[i].MaxScrollBack;
     // EXACT window geometry: a maximized one contributes its ZoomRect,
     // a minimized one its SavedRect, the rest their current bounds
     if (Win[i] <> nil) then
@@ -4043,22 +4060,6 @@ begin
       Result.Panes[i].BH := WR.B.Y - WR.A.Y;
       Result.Panes[i].Minimized := Win[i]^.Minimized;
       Result.Panes[i].Zoomed := Win[i]^.Zoomed;
-    end;
-    // custom title: saved only if it differs from the class default
-    // title (so the profile does not pin a title the class provides)
-    if (Win[i] <> nil) and Win[i]^.TitleFixed and (Win[i]^.Title <> nil) then
-    begin
-      CurTitle := Trim(Win[i]^.Title^);
-      DefTitle := '';
-      if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
-      begin
-        if WClasses[PaneTerm[i]].Title <> '' then
-          DefTitle := WClasses[PaneTerm[i]].Title
-        else
-          DefTitle := WClasses[PaneTerm[i]].Name;
-      end;
-      if CurTitle <> DefTitle then
-        Result.Panes[i].Title := CurTitle;
     end;
     if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
       Result.Panes[i].WClass := WClasses[PaneTerm[i]].Name
@@ -4138,6 +4139,7 @@ procedure TSuperApp.DoProfileManage;
 var
   Act: TProfileAction;
   Tgt, DefIdx: integer;
+  DefWin: integer;
 begin
   DefIdx := FindProfileByName(Profiles, Cfg.DefaultProfile);
   if not RunProfileManager(Profiles, ActiveProfile, DefIdx, Act, Tgt) then
@@ -4150,10 +4152,13 @@ begin
       begin
         if ProfileMode and (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
            (ActiveWindow < Length(Profiles[Tgt].Windows)) then
+        begin
           // save the current workspace ONLY into the active window of the
           // profile, preserving its other windows
           Profiles[Tgt].Windows[ActiveWindow] :=
-            CaptureCurrentAsWindow(Profiles[Tgt].Windows[ActiveWindow].Name)
+            CaptureCurrentAsWindow(Profiles[Tgt].Windows[ActiveWindow].Name);
+          Profiles[Tgt].FocusedWindow := ActiveWindow;
+        end
         else
         begin
           SetLength(Profiles[Tgt].Windows, 1);
@@ -4168,9 +4173,29 @@ begin
       if (Tgt >= 0) and (Tgt < Length(Profiles)) then
       begin
         Cfg.DefaultProfile := Profiles[Tgt].Name;
+        // DefaultWindow belongs to the chosen profile. Do not retain a
+        // same-named (or unrelated) window from the previously default one.
+        Cfg.DefaultWindow := '';
+        if (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
+           (ActiveWindow < Length(Profiles[Tgt].Windows)) then
+          DefWin := ActiveWindow
+        else
+          DefWin := Profiles[Tgt].FocusedWindow;
+        if (DefWin >= 0) and (DefWin < Length(Profiles[Tgt].Windows)) then
+          Cfg.DefaultWindow := Profiles[Tgt].Windows[DefWin].Name;
         SaveConfig(Cfg);
       end;
-    paNone: ;
+    paNone:
+      begin
+        // Rename/delete happens inside the manager. ADefault is passed by
+        // reference so the configured name follows a renamed default and is
+        // cleared when that profile was deleted.
+        if (DefIdx >= 0) and (DefIdx < Length(Profiles)) then
+          Cfg.DefaultProfile := Profiles[DefIdx].Name
+        else
+          Cfg.DefaultProfile := '';
+        SaveConfig(Cfg);
+      end;
   end;
   RebuildMenu;
 end;
@@ -4450,9 +4475,12 @@ end;
 
 procedure TSuperApp.RememberProfileSelection;
 begin
-  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
-    Cfg.DefaultProfile := Profiles[ActiveProfile].Name;
+  // "active" and "default" are different choices. Set default in the
+  // profile manager must survive Ctrl-S and shutdown even if the user keeps
+  // working in another profile. Only remember the window when the active
+  // profile is itself the configured default.
   if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) and
+     SameText(Cfg.DefaultProfile, Profiles[ActiveProfile].Name) and
      (ActiveWindow >= 0) and
      (ActiveWindow < Length(Profiles[ActiveProfile].Windows)) then
     Cfg.DefaultWindow := Profiles[ActiveProfile].Windows[ActiveWindow].Name;
@@ -4558,6 +4586,7 @@ begin
     Scr[j] := Scr[j + 1];
     Win[j] := Win[j + 1];
     PaneTerm[j] := PaneTerm[j + 1];
+    PaneConnect[j] := PaneConnect[j + 1];
     if Win[j] <> nil then
     begin
       Win[j]^.SetPaneIdx(j);
@@ -4567,6 +4596,7 @@ begin
   Scr[MAX_PANES - 1] := nil;
   Win[MAX_PANES - 1] := nil;
   PaneTerm[MAX_PANES - 1] := -1;
+  PaneConnect[MAX_PANES - 1] := '';
   if OldFocused > i then
     Lay.Focused := OldFocused - 1
   else
@@ -4859,7 +4889,9 @@ begin
 end;
 
 // applies a LAYOUT_EV broadcast by the daemon (another client moved,
-// minimized or renamed windows): tree, titles, geometry and focus
+// minimized or renamed windows): tree, titles and geometry. Focus is local
+// to each interactive client; an explicit CLI `focus` arrives separately as
+// sekFocusEv and is still authoritative.
 procedure TSuperApp.ApplyRemoteLayoutEv(const AData: TByteArray);
 var
   Nodes: string;
@@ -4867,9 +4899,10 @@ var
   Titles: TStrArray;
   Geom: TPaneGeomArray;
   NewLay: TLayout;
-  I: integer;
+  I, LocalFocused: integer;
   GR: Objects.TRect;
 begin
+  LocalFocused := Lay.Focused;
   if not DecodeLayoutBlob(AData, Nodes, Focused, Titles, Geom, DeskW,
     DeskH) then
     Exit;
@@ -4880,6 +4913,7 @@ begin
   begin
     if NewLay.PaneCount = Lay.PaneCount then
     begin
+      NewLay.Focused := LocalFocused;
       Lay.Free;
       Lay := NewLay;
     end
@@ -4917,11 +4951,20 @@ begin
           MinimizeWindow(I);
     end;
   end;
-  if (Focused >= 0) and (Focused < Lay.PaneCount) then
-  begin
-    Lay.Focused := Focused;
-    FocusPane(Focused);
-  end;
+  // Never let another attached UI undo a click in this one. This was the
+  // visible one-second bounce: client A clicked Codex, then the debounced
+  // layout from client B arrived with Claude in its Focused field and stole
+  // A's focus. Use the sender's focus only as a fallback when our pane has
+  // disappeared or was minimized by the shared geometry change.
+  if (LocalFocused >= 0) and (LocalFocused < Lay.PaneCount) and
+     (Win[LocalFocused] <> nil) and (not Win[LocalFocused]^.Minimized) then
+    Lay.Focused := LocalFocused
+  else if (Focused >= 0) and (Focused < Lay.PaneCount) and
+          (Win[Focused] <> nil) and (not Win[Focused]^.Minimized) then
+    Lay.Focused := Focused
+  else
+    Lay.Focused := FirstVisiblePane;
+  FocusPane(Lay.Focused);
   RepaintChanges;
   // what was applied is the common state: do not re-push (no bounces)
   RemoteLayoutHash := ComputeLayoutHash;
@@ -4943,6 +4986,7 @@ begin
     Scr[j] := Scr[j + 1];
     Win[j] := Win[j + 1];
     PaneTerm[j] := PaneTerm[j + 1];
+    PaneConnect[j] := PaneConnect[j + 1];
     if Win[j] <> nil then
     begin
       Win[j]^.SetPaneIdx(j);
@@ -4952,6 +4996,7 @@ begin
   Scr[MAX_PANES - 1] := nil;
   Win[MAX_PANES - 1] := nil;
   PaneTerm[MAX_PANES - 1] := -1;
+  PaneConnect[MAX_PANES - 1] := '';
   if OldFocused > APane then
     Lay.Focused := OldFocused - 1
   else
@@ -5009,6 +5054,7 @@ begin
     Scr[j] := Scr[j - 1];
     Win[j] := Win[j - 1];
     PaneTerm[j] := PaneTerm[j - 1];
+    PaneConnect[j] := PaneConnect[j - 1];
     if Win[j] <> nil then
     begin
       Win[j]^.SetPaneIdx(j);
@@ -5027,6 +5073,7 @@ begin
   Panes[NewIdx] := nil;
   Win[NewIdx] := nil;
   PaneTerm[NewIdx] := FindWindowClass(TermS);
+  PaneConnect[NewIdx] := '';
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
@@ -5044,6 +5091,7 @@ begin
       Scr[j] := Scr[j + 1];
       Win[j] := Win[j + 1];
       PaneTerm[j] := PaneTerm[j + 1];
+      PaneConnect[j] := PaneConnect[j + 1];
       if Win[j] <> nil then
       begin
         Win[j]^.SetPaneIdx(j);
@@ -5053,6 +5101,7 @@ begin
     Scr[OldCount] := nil;
     Win[OldCount] := nil;
     PaneTerm[OldCount] := -1;
+    PaneConnect[OldCount] := '';
     Exit;
   end;
   // same rule as the local path: a new pane does not disturb the others

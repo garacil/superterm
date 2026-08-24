@@ -998,13 +998,28 @@ procedure TPty.QueryState;
 {$IFDEF DARWIN}
 var
   best: TPid;
+  ForegroundPgrp: cint;
   Args: TStringArray;
   cmdline, base: string;
   i: integer;
 begin
   if (not FAlive) or (FPid <= 0) then
     Exit;
-  best := DarwinDeepestChild(FPid);
+  // The process attached directly to the PTY may be a launcher which keeps
+  // an interactive shell ready for when the application exits. The terminal
+  // foreground process group identifies the application the user is actually
+  // interacting with, regardless of those extra parent shells.
+  best := 0;
+  ForegroundPgrp := 0;
+  if (FMaster >= 0) and (TCGetPGrp(FMaster, ForegroundPgrp) = 0) and
+     (ForegroundPgrp > 0) then
+  begin
+    Args := DarwinProcArgv(ForegroundPgrp);
+    if Length(Args) > 0 then
+      best := ForegroundPgrp;
+  end;
+  if best <= 0 then
+    best := DarwinDeepestChild(FPid);
   if best <= 0 then
     best := FPid;
   Args := DarwinProcArgv(best);
@@ -1016,7 +1031,7 @@ begin
       cmdline := cmdline + ' ';
     cmdline := cmdline + Args[i];
   end;
-  base := FirstWordOf(cmdline);
+  base := ExtractFileName(FirstWordOf(cmdline));
   if (base <> '') and (base[1] = '-') then
     Delete(base, 1, 1);
   if (base = '') or SameText(base, FShellBase) then
@@ -1035,6 +1050,7 @@ var
   Kids: array[0..15] of TPid;
   n, i: integer;
   best: TPid;
+  ForegroundPgrp: cint;
   cmdline: string;
   base: string;
   Args: TStringArray;
@@ -1042,10 +1058,20 @@ begin
   if (not FAlive) or (FPid <= 0) then
     Exit;
   best := 0;
-  n := FindChildProcs(FPid, Kids);
-  for i := 0 to n - 1 do
-    if Kids[i] > best then
-      best := Kids[i];
+  ForegroundPgrp := 0;
+  // Ask the PTY which job owns its foreground. Looking only at FPid's direct
+  // children loses the real application when a profile command is protected
+  // by an outer shell so the pane can return to a prompt after `exit`.
+  if (FMaster >= 0) and (TCGetPGrp(FMaster, ForegroundPgrp) = 0) and
+     (ForegroundPgrp > 0) and (Length(ProcArgs(ForegroundPgrp)) > 0) then
+    best := ForegroundPgrp;
+  if best <= 0 then
+  begin
+    n := FindChildProcs(FPid, Kids);
+    for i := 0 to n - 1 do
+      if Kids[i] > best then
+        best := Kids[i];
+  end;
   if best > 0 then
   begin
     Args := ProcArgs(best);

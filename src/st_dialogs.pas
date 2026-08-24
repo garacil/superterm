@@ -42,7 +42,7 @@ type
 // ADefault = default profile (-1 none). False = closed with no changes
 // or action; True with AAction=paNone = only persisted edits happened.
 function RunProfileManager(var AProfiles: TProfileArray;
-  AActive, ADefault: integer; out AAction: TProfileAction;
+  var AActive, ADefault: integer; out AAction: TProfileAction;
   out ATarget: integer): boolean;
 
 type
@@ -912,7 +912,7 @@ begin
 end;
 
 function RunProfileManager(var AProfiles: TProfileArray;
-  AActive, ADefault: integer; out AAction: TProfileAction;
+  var AActive, ADefault: integer; out AAction: TProfileAction;
   out ATarget: integer): boolean;
 var
   Cmd: word;
