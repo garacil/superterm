@@ -5,6 +5,22 @@
 Text that moves between panes, a pane that keeps its colours when you look
 away, and the tracing written down at last.
 
+### Each attached client owns its geometry
+
+Attaching or resizing a smaller terminal no longer changes the one real PTY
+size and reflows every other client. The default `resize_policy=session`
+keeps one canonical daemon screen and gives each UI a private viewport into
+it, including cursor following and translated mouse/copy coordinates. Window
+geometry and focus stay local; shared titles and explicit CLI window commands
+still propagate. `resize_policy=smallest` retains the former common-minimum
+behaviour. The pane menu can explicitly fit the shared PTY to the current
+window when that is what the user wants.
+
+An interactive exit is now client-local while other viewers remain attached.
+`Alt-X` still saves and `Alt-Q` still skips saving, but neither can terminate
+another active UI; the last client closes the session. Explicit CLI `kill`
+remains session-wide.
+
 ### Clipboard history across local and SSH panes
 
 The new `Clipboard` / `Portapapeles` menu keeps the ten most recent items in

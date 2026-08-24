@@ -250,6 +250,14 @@ class Client:
             pass   # the client already exited (e.g. after an immediate detach)
         self.drain(seconds)
 
+    def resize(self, w, h, seconds=1.0):
+        """Resize the host PTY and the pyte model used by assertions."""
+        self.w, self.h = w, h
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', h, w, 0, 0))
+        self.screen.resize(lines=h, columns=w)
+        self.drain(seconds)
+
     def text(self):
         return '\n'.join(row.rstrip() for row in self.screen.display)
 

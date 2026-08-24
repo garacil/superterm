@@ -26,6 +26,9 @@ autorestore=1
 ; auto uses the active CPUs; an integer N>1 caps the total at min(N, CPUs).
 ; Workers are created only as panes need them and released when panes close.
 multithread=1
+; Each client keeps its own geometry and viewport without resizing the PTY.
+; Use smallest for the former common-minimum negotiation between clients.
+resize_policy=session
 ; Profile activated at startup (see [profile.daily] below).
 default_profile=daily
 

@@ -18,6 +18,11 @@ DBDIR = ROOT + '/templates'
 SYSINI = ROOT + '/superterm.ini'
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
 W, H = 110, 35
+
+sys.path.insert(0, os.path.dirname(__file__))
+from stlib import close_all_daemons
+
+close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 os.makedirs(DBDIR, exist_ok=True)
 for path in (HOME + '/.superterm/session.ini', HOME + '/.superterm/superterm.ini'):
@@ -116,6 +121,7 @@ try:
         fails.append('SQLite template appears in menu')
 finally:
     session.close()
+    close_all_daemons(HOME)
 
 for name in ('SQLite template starts terminal', 'SQLite template appears in menu'):
     print(f'{name:35}: ' + ('FAIL' if name in fails else 'OK'))

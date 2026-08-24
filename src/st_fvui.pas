@@ -79,6 +79,7 @@ const
   cmDesktopColor      = 2764;   // visual picker for the desktop colour
   cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
   cmFullScreen        = 2766;   // F5: hand the terminal to the pane
+  cmFitSessionSize    = 2767;   // explicit PTY resize from this client's pane
 
 type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
@@ -187,6 +188,7 @@ type
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
+    RemoteResizePolicy: TResizePolicy; // authoritative value from snapshot
     RemoteLayoutHash: string;   // last geometry pushed/applied
     CurrentSessionSocket: string;  // socket of the attached session
     // attach under construction: windows pass through intermediate
@@ -202,6 +204,9 @@ type
     // cannot use the mirror's size: a daemon that keeps a pane smaller than
     // this client's window would otherwise be asked again on every drag step.
     ReqCols, ReqRows: array[0..MAX_PANES - 1] of integer;
+    // Per-client live viewport into the canonical server-side TScreen. These
+    // offsets never leave this process and therefore cannot move another UI.
+    PaneViewX, PaneViewY: array[0..MAX_PANES - 1] of integer;
     // rectangle for the next window StartPaneEx creates, when the caller has
     // already decided where it goes (a split); consumed by NewWindowRect
     NextRect: Objects.TRect;
@@ -319,6 +324,7 @@ type
     // authoritative answer, so it never grows on a request the daemon then
     // trims -- which pushed the top rows of the mirror into its history.
     procedure RequestPaneSize(i, ACols, ARows: integer);
+    procedure FitSessionToWindow;
     procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
     procedure PassthroughFiltered(const Data; ALen: integer);
@@ -759,6 +765,8 @@ procedure TTermView.Draw;
 var
   B: TDrawBuffer;
   x, y, w, h: integer;
+  ViewX, ViewY, SourceX, SourceY, MaxViewX, MaxViewY: integer;
+  FollowX, FollowY: integer;
   cell: TCell;
   fg, bg: byte;
   App: PSuperApp;
@@ -925,8 +933,56 @@ begin
   end;
   BlankWord := RenderAttr(App^.Scr[PaneIdx].Attr);
   Scrolled := App^.Scr[PaneIdx].ViewOffset > 0;
-  cx := App^.Scr[PaneIdx].CursorX;
-  cy := App^.Scr[PaneIdx].CursorY;
+  ViewX := App^.PaneViewX[PaneIdx];
+  ViewY := App^.PaneViewY[PaneIdx];
+  MaxViewX := App^.Scr[PaneIdx].Width - w;
+  MaxViewY := App^.Scr[PaneIdx].Height - h;
+  if MaxViewX < 0 then MaxViewX := 0;
+  if MaxViewY < 0 then MaxViewY := 0;
+  if ViewX < 0 then ViewX := 0;
+  if ViewY < 0 then ViewY := 0;
+  if ViewX > MaxViewX then ViewX := MaxViewX;
+  if ViewY > MaxViewY then ViewY := MaxViewY;
+  FollowX := App^.Scr[PaneIdx].CursorX;
+  FollowY := App^.Scr[PaneIdx].CursorY;
+  // Copy mode has its own cursor in absolute history coordinates. Follow it
+  // through the same private viewport, including while browsing scrollback;
+  // otherwise keyboard selection can walk outside a small client's window.
+  if App^.CopyMode and (App^.CopyPane = PaneIdx) then
+  begin
+    FollowX := App^.CopyCursorCol;
+    FollowY := App^.CopyCursorRow -
+      (App^.Scr[PaneIdx].HistoryRows - App^.Scr[PaneIdx].ViewOffset);
+    if FollowX < 0 then FollowX := 0;
+    if FollowX >= App^.Scr[PaneIdx].Width then
+      FollowX := App^.Scr[PaneIdx].Width - 1;
+    if FollowY < 0 then FollowY := 0;
+    if FollowY >= App^.Scr[PaneIdx].Height then
+      FollowY := App^.Scr[PaneIdx].Height - 1;
+  end;
+  // A small client follows the active cursor inside the canonical screen.
+  // The offset is local to this UI; the PTY, daemon and other clients never
+  // see it. Ordinary history browsing keeps the current viewport stable.
+  if (not Scrolled) or
+     (App^.CopyMode and (App^.CopyPane = PaneIdx)) then
+  begin
+    if FollowX < ViewX then
+      ViewX := FollowX
+    else if FollowX >= ViewX + w then
+      ViewX := FollowX - w + 1;
+    if FollowY < ViewY then
+      ViewY := FollowY
+    else if FollowY >= ViewY + h then
+      ViewY := FollowY - h + 1;
+    if ViewX < 0 then ViewX := 0;
+    if ViewY < 0 then ViewY := 0;
+    if ViewX > MaxViewX then ViewX := MaxViewX;
+    if ViewY > MaxViewY then ViewY := MaxViewY;
+  end;
+  App^.PaneViewX[PaneIdx] := ViewX;
+  App^.PaneViewY[PaneIdx] := ViewY;
+  cx := App^.Scr[PaneIdx].CursorX - ViewX;
+  cy := App^.Scr[PaneIdx].CursorY - ViewY;
   // DECSCUSR 2/4/6 = steady style (no blink); 0/1/3/5 blinks
   ShowBlk := GetState(sfSelected) and (not Scrolled) and
     (not (App^.CopyMode and (App^.CopyPane = PaneIdx))) and
@@ -974,23 +1030,25 @@ begin
   PadCell.BgRGB := App^.Scr[PaneIdx].AttrBgRGB;
   for y := 0 to h - 1 do
   begin
+    SourceY := y + ViewY;
     if Scrolled then
       AbsY := App^.Scr[PaneIdx].HistoryRows -
-        App^.Scr[PaneIdx].ViewOffset + y
+        App^.Scr[PaneIdx].ViewOffset + SourceY
     else
-      AbsY := App^.Scr[PaneIdx].HistoryRows + y;
+      AbsY := App^.Scr[PaneIdx].HistoryRows + SourceY;
     RowLen := 0;
-    if (not Scrolled) and (y < App^.Scr[PaneIdx].Height) then
+    if (not Scrolled) and (SourceY < App^.Scr[PaneIdx].Height) then
     begin
       for x := 0 to w - 1 do
       begin
-         if x < App^.Scr[PaneIdx].Width then
+         SourceX := x + ViewX;
+         if SourceX < App^.Scr[PaneIdx].Width then
          begin
-           cell := App^.Scr[PaneIdx].Grid[y][x];
+           cell := App^.Scr[PaneIdx].Grid[SourceY][SourceX];
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
-           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
            InvertCell := Marked or (ShowBlk and (x = cx) and (y = cy));
            if InvertCell then
            begin
@@ -1000,13 +1058,13 @@ begin
                word(TranslitByte(cell));
            end;
            RichReg(x, y, cell, B[x], InvertCell,
-             (x + 1 < App^.Scr[PaneIdx].Width) and
-             App^.Scr[PaneIdx].Grid[y][x + 1].Cont);
+             (SourceX + 1 < App^.Scr[PaneIdx].Width) and
+             App^.Scr[PaneIdx].Grid[SourceY][SourceX + 1].Cont);
          end
          else
          begin
            B[x] := BlankWord or word(' ');
-           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
            if Marked then
            begin
              fg := (B[x] shr 8) and $0F;
@@ -1019,17 +1077,18 @@ begin
     end
     else if Scrolled then
     begin
-      Row := App^.Scr[PaneIdx].DisplayRow(y);
+      Row := App^.Scr[PaneIdx].DisplayRow(SourceY);
       RowLen := Length(Row);
       for x := 0 to w - 1 do
       begin
-        if x < RowLen then
+        SourceX := x + ViewX;
+        if SourceX < RowLen then
          begin
-           cell := Row[x];
+           cell := Row[SourceX];
            if (cell.Len > 0) or (cell.Cont) then
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
-           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
            if Marked then
            begin
              fg := (B[x] shr 8) and $0F;
@@ -1038,7 +1097,7 @@ begin
                word(TranslitByte(cell));
            end;
            RichReg(x, y, cell, B[x], Marked,
-             (x + 1 < RowLen) and Row[x + 1].Cont);
+             (SourceX + 1 < RowLen) and Row[SourceX + 1].Cont);
          end
          else
          begin
@@ -1046,7 +1105,7 @@ begin
            // default blank, not the pane's CURRENT attribute -- that would
            // bleed a coloured background over the trimmed tail
            B[x] := DefWord or word(' ');
-           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+           Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
            if Marked then
            begin
              fg := (B[x] shr 8) and $0F;
@@ -1060,8 +1119,9 @@ begin
     else
       for x := 0 to w - 1 do
       begin
+        SourceX := x + ViewX;
         B[x] := BlankWord or word(' ');
-        Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, x);
+        Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
         if Marked then
         begin
           fg := (B[x] shr 8) and $0F;
@@ -1087,8 +1147,6 @@ begin
        Ord(App^.Scr[PaneIdx].UsingAlt), App^.Scr[PaneIdx].CursorX,
        App^.Scr[PaneIdx].CursorY]));
   // terminal cursor in the focused pane
-  if (cx >= w) then cx := w - 1;
-  if (cy >= h) then cy := h - 1;
   if Scrolled or (App^.CopyMode and (App^.CopyPane = PaneIdx)) then
   begin
     SetCursor(0, 0);
@@ -1096,8 +1154,12 @@ begin
   end
   else
   begin
-    SetCursor(cx, cy);
-    if GetState(sfSelected) and App^.Scr[PaneIdx].CursorVisible then
+    if (cx >= 0) and (cx < w) and (cy >= 0) and (cy < h) then
+      SetCursor(cx, cy)
+    else
+      SetCursor(0, 0);
+    if (cx >= 0) and (cx < w) and (cy >= 0) and (cy < h) and
+       GetState(sfSelected) and App^.Scr[PaneIdx].CursorVisible then
       ShowCursor
     else
       HideCursor;
@@ -1749,6 +1811,10 @@ begin
     Scr[i] := nil;
     Win[i] := nil;
     PaneTerm[i] := -1;
+    ReqCols[i] := 0;
+    ReqRows[i] := 0;
+    PaneViewX[i] := 0;
+    PaneViewY[i] := 0;
   end;
   SyncTerminalSize;
   for i := 0 to MAX_PANES - 1 do
@@ -1763,6 +1829,7 @@ begin
   DetachRequested := False;
   PrefixPending := False;
   Remote := nil;
+  RemoteResizePolicy := rpSession;
   RemoteLayoutHash := '';
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
@@ -1982,6 +2049,10 @@ begin
   end
   else if RemoteMode then
   begin
+    if DebugActive then
+      DebugLog(Format('done: remote autosave=%d skip=%d connected=%d',
+        [Ord(Cfg.AutoSave), Ord(SkipSave),
+         Ord((Remote <> nil) and Remote.Connected)]));
     if (Remote <> nil) and Remote.Connected then
     begin
       // push the final geometry and ask the daemon to save (Alt-X);
@@ -2285,6 +2356,8 @@ begin
   begin
     ReqCols[i] := 0;
     ReqRows[i] := 0;
+    PaneViewX[i] := 0;
+    PaneViewY[i] := 0;
   end;
   // same reason: a grab held across a renumbering would write the drag
   // into another application's pty
@@ -2311,8 +2384,21 @@ begin
   Track := Scr[i].MouseTrack;
   if Track = mtOff then
     Exit;
-  Col := ALocal.X + 1;
-  Row := ALocal.Y + 1;
+  Col := ALocal.X + PaneViewX[i] + 1;
+  Row := ALocal.Y + PaneViewY[i] + 1;
+  // Padding outside the canonical grid is not part of the application. A
+  // drag which began inside still needs a release, clamped to the PTY edge;
+  // an unrelated click in padding is consumed locally and never fabricated.
+  if (Col < 1) or (Col > Scr[i].Width) or
+     (Row < 1) or (Row > Scr[i].Height) then
+  begin
+    if MouseGrabPane <> i then
+      Exit(True);
+    if Col < 1 then Col := 1;
+    if Col > Scr[i].Width then Col := Scr[i].Width;
+    if Row < 1 then Row := 1;
+    if Row > Scr[i].Height then Row := Scr[i].Height;
+  end;
   case Event.What of
     evMouseDown:
       begin
@@ -2407,7 +2493,12 @@ begin
       Exit;
     ReqCols[i] := ACols;
     ReqRows[i] := ARows;
-    if (Remote <> nil) and Remote.Connected then
+    // Session policy: this is only the local viewport. The canonical PTY
+    // keeps parsing at one stable geometry, so resizing this window cannot
+    // reflow another client. Compatibility mode retains common-minimum
+    // negotiation and therefore still sends every request.
+    if (RemoteResizePolicy = rpSmallest) and (Remote <> nil) and
+       Remote.Connected then
       Remote.SendResize(i, ACols, ARows);
     Exit;
   end;
@@ -2441,6 +2532,30 @@ begin
     DebugLog(Format('resize: pane=%d sync to window -> %dx%d (mirror %dx%d)',
       [i, pw, ph, Scr[i].Width, Scr[i].Height]));
   RequestPaneSize(i, pw, ph);
+end;
+
+// Automatic window changes are viewport-only in session policy. This command
+// is the deliberate escape hatch: make the focused pane's real PTY adopt this
+// client's current interior, then let every mirror follow the daemon event.
+procedure TSuperApp.FitSessionToWindow;
+var
+  i, PW, PH: integer;
+begin
+  i := Lay.Focused;
+  if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
+     Win[i]^.Minimized or (Scr[i] = nil) then
+    Exit;
+  PW := Win[i]^.Size.X - 2;
+  PH := Win[i]^.Size.Y - 2;
+  if PW < 4 then PW := 4;
+  if PH < 2 then PH := 2;
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected then
+      Remote.SendResize(i, PW, PH);
+  end
+  else
+    RequestPaneSize(i, PW, PH);
 end;
 
 procedure TSuperApp.KillPane(i: integer);
@@ -3291,6 +3406,8 @@ begin
   S := Scr[APane];
   if S = nil then
     Exit;
+  Inc(ACol, PaneViewX[APane]);
+  Inc(AViewRow, PaneViewY[APane]);
   if ACol < 0 then ACol := 0;
   if ACol >= S.Width then ACol := S.Width - 1;
   if AViewRow < 0 then AViewRow := 0;
@@ -3345,6 +3462,7 @@ end;
 function TSuperApp.HandleCopyKey(var Event: TEvent): boolean;
 var
   S: TScreen;
+  PageRows: integer;
 begin
   Result := CopyMode and (Event.What = evKeyDown);
   if not Result then
@@ -3358,6 +3476,11 @@ begin
     ClearEvent(Event);
     Exit;
   end;
+  PageRows := S.Height;
+  if (CopyPane >= 0) and (CopyPane < MAX_PANES) and
+     (Win[CopyPane] <> nil) and (Win[CopyPane]^.Term <> nil) then
+    PageRows := Win[CopyPane]^.Term^.Size.Y;
+  if PageRows < 1 then PageRows := 1;
   case Event.KeyCode of
     kbEsc: EndCopyMode(False);
     kbEnter: EndCopyMode(True);
@@ -3372,8 +3495,8 @@ begin
     kbRight: MoveCopyCursor(+1, 0);
     kbUp: MoveCopyCursor(0, -1);
     kbDown: MoveCopyCursor(0, +1);
-    kbPgUp: MoveCopyCursor(0, -S.Height);
-    kbPgDn: MoveCopyCursor(0, +S.Height);
+    kbPgUp: MoveCopyCursor(0, -PageRows);
+    kbPgDn: MoveCopyCursor(0, +PageRows);
     kbHome: MoveCopyCursor(-MaxInt, 0);
     kbEnd: MoveCopyCursor(+MaxInt, 0);
     kbCtrlHome: MoveCopyCursor(0, -MaxInt);
@@ -3429,6 +3552,7 @@ begin
     Remote := nil;
     Exit;
   end;
+  RemoteResizePolicy := Snapshot.ResizePolicy;
   if not LoadLayoutString(Snapshot.LayoutNodes, NewLay) then
   begin
     Remote.Free;
@@ -3511,8 +3635,9 @@ begin
   end;
   OldLay.Free;
   RelayoutAll;
-  // window geometry the daemon keeps (moved, maximized, minimized);
-  // only applicable if the desktop size matches the one at save time
+  // Saved seed geometry (moved, maximized, minimized). In session policy it
+  // initializes this new client but never changes already attached clients;
+  // only applicable if the desktop size matches the one at save time.
   if DebugActive then
   begin
     GR := Default(Objects.TRect);
@@ -3552,9 +3677,9 @@ begin
           MinimizeWindow(I);
     end;
   end;
-  // the windows are already in their final place: ONE size request
-  // per pane (exact mirror of ChangeBounds); with no transients the
-  // daemon does not bounce sizes to other clients as this one attaches
+  // The windows are already in their final place: record one definitive
+  // viewport size per pane. Smallest policy sends it for negotiation;
+  // session policy keeps it local and cannot bounce another client's PTY.
   RemoteAttachSettling := False;
   for I := 0 to Lay.PaneCount - 1 do
     if (I < MAX_PANES) and (Win[I] <> nil) and
@@ -4611,6 +4736,10 @@ begin
   Win[MAX_PANES - 1] := nil;
   PaneTerm[MAX_PANES - 1] := -1;
   PaneConnect[MAX_PANES - 1] := '';
+  // ReqCols/Rows and the private viewport offsets use the same pane indexes
+  // as the arrays above. The server excludes the requesting client from the
+  // kill event, so this local close must invalidate them itself.
+  ResetSizeRequests;
   if OldFocused > i then
     Lay.Focused := OldFocused - 1
   else
@@ -5137,8 +5266,8 @@ begin
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
-// authoritative daemon size (common minimum among clients): adjust
-// the TScreen without resending a request (echo suppression)
+// Authoritative daemon size (explicit under session policy, negotiated under
+// smallest policy): adjust TScreen without resending it (echo suppression).
 procedure TSuperApp.ApplyRemoteResize(APane: integer;
   const AData: TByteArray);
 var
@@ -5693,6 +5822,7 @@ begin
       cmWindowMinimize: MinimizeWindow(Lay.Focused);
       cmAbout: ShowAbout;
       cmRenameWindow: RenameFocusedWindow;
+      cmFitSessionSize: FitSessionToWindow;
       cmPaneTile: DoTilePanes;
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
@@ -6081,9 +6211,9 @@ begin
               RepaintPane(i);
       end;
     end;
-    // debounced layout push: moving, minimizing or renaming here gets
-    // mirrored in the daemon (and from there to the other clients)
-    // without hooking every single UI action
+    // Debounced layout push: the daemon retains this client's latest state as
+    // the save/next-attach seed. In smallest policy it is also mirrored live;
+    // session policy deliberately leaves existing clients' geometry alone.
     if RemoteMode and (Current = PView(Desktop)) and
        (Tick - LastLayoutSync >= 400) then
     begin
@@ -6502,6 +6632,9 @@ begin
   PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'), 'Ctrl-F5',
     kbCtrlF5, cmResize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Set PT~Y~ to this window',
+    'Ajustar PT~Y~ a esta ventana'), '', kbNoKey,
+    cmFitSessionSize, hcNoContext, PaneItems);
   for i := MAX_PANES - 1 downto 0 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin

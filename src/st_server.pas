@@ -96,7 +96,9 @@ const
   //    daemon outlives its clients, so a 24-byte producer feeding a 14-byte
   //    consumer reads every cell at the wrong offset and the pane fills with
   //    garbage. The version must be refused on BOTH sides.
-  ATTACH_PROTO_VER = 3;
+  // 4: the session snapshot declares its resize policy. A v3 client always
+  //    sends window-size changes, which would defeat independent viewports.
+  ATTACH_PROTO_VER = 4;
   ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
   MAX_CLIENTS = 8;
@@ -169,6 +171,7 @@ type
     // daemon version (tolerant tail 3; 0 = daemon predating the
     // events: do not send it new frames)
     ProtoVer: Longint;
+    ResizePolicy: TResizePolicy;
     Panes: array[0..MAX_PANES - 1] of TSessionPaneSnapshot;
   end;
 
@@ -413,6 +416,7 @@ type
     FAvailableCPUs: integer;
     FConfiguredThreads: integer;      // 0=auto; otherwise total daemon limit
     FThreadLimit: integer;            // effective total, CPU/pane capped
+    FResizePolicy: TResizePolicy;
     FWorkerResultPipe: TFilDes;
     FWorkerResultLock: TRTLCriticalSection;
     FWorkerResultSpace: PRTLEvent;
@@ -437,10 +441,11 @@ type
       ASize: integer; ANeedCaps: boolean; AExcept: integer);
     procedure FlushClient(AIdx: integer);
     procedure FlushPending(AIdx: integer);
+    procedure ApplyCanonicalResize(APane, ACols, ARows: integer);
     procedure NegotiateResize(APane: integer);
     function BuildLayoutBlob(out AData: TByteArray): boolean;
     procedure BroadcastLayoutEv(AExcept: integer);
-    procedure BroadcastTitle(APane: integer);
+    procedure BroadcastTitle(APane: integer; AExcept: integer = -1);
     procedure DaemonSaveSession;
     function DoNewPane(AAt: integer; ADir: byte; const AClass, ACmd,
       ACwd, ATitle: string; out ANewIdx: integer; out AErr: string): boolean;
@@ -1365,6 +1370,7 @@ begin
   Snapshot.DeskW := 0;
   Snapshot.DeskH := 0;
   Snapshot.ProtoVer := 0;
+  Snapshot.ResizePolicy := rpSession;
   FServerProto := 0;
   for I := 0 to MAX_PANES - 1 do
   begin
@@ -1431,7 +1437,19 @@ begin
         ReadSnapshotGeom(Stream, Snapshot);
         // tolerant tail 3: daemon version (absent in old daemons)
         if Stream.Position + SizeOf(Longint) <= Stream.Size then
+        begin
           Stream.ReadBuffer(Snapshot.ProtoVer, SizeOf(Longint));
+          // tolerant tail 4: resize policy introduced by protocol v4
+          if Stream.Position + SizeOf(Longint) <= Stream.Size then
+          begin
+            L := 0;
+            Stream.ReadBuffer(L, SizeOf(Longint));
+            if L = Ord(rpSmallest) then
+              Snapshot.ResizePolicy := rpSmallest
+            else
+              Snapshot.ResizePolicy := rpSession;
+          end;
+        end;
       end;
     FServerProto := Snapshot.ProtoVer;
   finally
@@ -1556,6 +1574,9 @@ begin
   else
     Data[0] := 0;
   Result := SendFrame(FRAME_CLOSE, -1, Data);
+  if DebugActive then
+    DebugLog(Format('client: close session save=%d sent=%d',
+      [Ord(ASave), Ord(Result)]));
   CloseSocket;
 end;
 
@@ -1700,6 +1721,7 @@ begin
   end;
   LoadConfig(ServerCfg);
   FConfiguredThreads := ServerCfg.MultiThread;
+  FResizePolicy := ServerCfg.ResizePolicy;
   FAvailableCPUs := AvailableCPUCount;
   if FConfiguredThreads = 0 then
     FThreadLimit := FAvailableCPUs
@@ -1875,9 +1897,12 @@ begin
   FpClose(FClients[AIdx].Fd);
   FClients[AIdx] := Default(TClientConn);
   FClients[AIdx].Fd := -1;
-  // dropping a client may let the common minimum of sizes grow
-  for P := 0 to FPaneCount - 1 do
-    NegotiateResize(P);
+  // Only the compatibility policy derives PTY size from attached clients.
+  // A session-policy client owns a viewport, so its departure is geometrically
+  // invisible to every process and every other client.
+  if FResizePolicy = rpSmallest then
+    for P := 0 to FPaneCount - 1 do
+      NegotiateResize(P);
   WriteSidecar;
 end;
 
@@ -2126,6 +2151,39 @@ begin
     DropPending(AIdx);
 end;
 
+// Change the one real PTY geometry and mirror it to every client. Under the
+// session policy this is called only by an explicit resize operation; under
+// the compatibility policy NegotiateResize derives the common minimum first.
+procedure TDetachedSession.ApplyCanonicalResize(APane, ACols, ARows: integer);
+var
+  Pair: array[0..1] of Longint;
+begin
+  if (APane < 0) or (APane >= FPaneCount) then
+    Exit;
+  if (ACols < 4) or (ARows < 2) then
+    Exit;
+  LockPane(APane);
+  try
+    if FScreens[APane] = nil then
+      Exit;
+    if DebugActive then
+      DebugLog(Format('resize: pane=%d canonical %dx%d (screen %dx%d)',
+        [APane, ACols, ARows, FScreens[APane].Width,
+         FScreens[APane].Height]));
+    if (ACols = FScreens[APane].Width) and
+       (ARows = FScreens[APane].Height) then
+      Exit;
+    FScreens[APane].Resize(ACols, ARows);
+    if FPanes[APane] <> nil then
+      FPanes[APane].Resize(ACols, ARows);
+  finally
+    UnlockPane(APane);
+  end;
+  Pair[0] := ACols;
+  Pair[1] := ARows;
+  Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
+end;
+
 // effective pane size = common minimum of what the clients requested
 // (so all parse the same bytes); the result is broadcast and each
 // client adjusts its TScreen upon receiving it
@@ -2133,7 +2191,6 @@ procedure TDetachedSession.NegotiateResize(APane: integer);
 var
   I: integer;
   MinC, MinR: Longint;
-  Pair: array[0..1] of Longint;
 begin
   if (APane < 0) or (APane >= FPaneCount) then
     Exit;
@@ -2149,28 +2206,7 @@ begin
       if (MinR = 0) or (FClients[I].ReqRows[APane] < MinR) then
         MinR := FClients[I].ReqRows[APane];
     end;
-  if (MinC < 4) or (MinR < 2) then
-    Exit;
-  LockPane(APane);
-  try
-    if FScreens[APane] = nil then
-      Exit;
-    if DebugActive then
-      DebugLog(Format('resize: pane=%d negotiated %dx%d (screen %dx%d)',
-        [APane, MinC, MinR, FScreens[APane].Width,
-         FScreens[APane].Height]));
-    if (MinC = FScreens[APane].Width) and
-       (MinR = FScreens[APane].Height) then
-      Exit;
-    FScreens[APane].Resize(MinC, MinR);
-    if FPanes[APane] <> nil then
-      FPanes[APane].Resize(MinC, MinR);
-  finally
-    UnlockPane(APane);
-  end;
-  Pair[0] := MinC;
-  Pair[1] := MinR;
-  Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
+  ApplyCanonicalResize(APane, MinC, MinR);
 end;
 
 // serializes the layout state with the same format as FRAME_LAYOUT
@@ -2230,7 +2266,7 @@ begin
     Broadcast(FRAME_LAYOUT_EV, -1, Data[0], Length(Data), True, AExcept);
 end;
 
-procedure TDetachedSession.BroadcastTitle(APane: integer);
+procedure TDetachedSession.BroadcastTitle(APane: integer; AExcept: integer);
 var
   Meta: TMemoryStream;
   Data: TByteArray;
@@ -2244,7 +2280,7 @@ begin
     SetLength(Data, Meta.Size);
     Meta.Position := 0;
     Meta.ReadBuffer(Data[0], Meta.Size);
-    Broadcast(FRAME_TITLE_EV, APane, Data[0], Length(Data), True, -1);
+    Broadcast(FRAME_TITLE_EV, APane, Data[0], Length(Data), True, AExcept);
   finally
     Meta.Free;
   end;
@@ -2346,6 +2382,8 @@ begin
     // tolerant tail 3: daemon protocol version (a new client uses it
     // to avoid sending v2 frames to an old daemon)
     GeomCnt := ATTACH_PROTO_VER;
+    Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
+    GeomCnt := Ord(FResizePolicy);
     Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
     SetLength(Data, Meta.Size);
     if Meta.Size > 0 then
@@ -2846,6 +2884,9 @@ var
   Pin: TPaneArray;
   i: integer;
 begin
+  if DebugActive then
+    DebugLog(Format('daemon: saving session panes=%d path=%s',
+      [FPaneCount, SessionFile]));
   if FPaneCount < 1 then
     Exit;
   Pin := Default(TPaneArray);
@@ -2880,6 +2921,8 @@ begin
     end;
   end;
   SaveSession(SessionFile, FLayout, Pin, FDeskW, FDeskH);
+  if DebugActive then
+    DebugLog('daemon: session save complete');
 end;
 
 // window management via control; with attached clients each change is
@@ -3397,11 +3440,12 @@ end;
 procedure TDetachedSession.HandleClientFrame(AIdx: integer; AKind: byte;
   APane: integer; const AData: TByteArray);
 var
-  Cols, Rows: integer;
+  Cols, Rows, I, ClientCount: integer;
   S: RawByteString;
   Ofs, NewIdx: integer;
   DirB, B0: byte;
   ClassS, CmdS, CwdS, TitleS, ErrS: string;
+  OldTitles: TStrArray;
 
   function RdStr: string;
   var
@@ -3423,6 +3467,9 @@ var
 
 begin
   B0 := 0;
+  if DebugFull then
+    DebugLog(Format('daemon: client frame kind=%d pane=%d bytes=%d',
+      [AKind, APane, Length(AData)]));
   case AKind of
     FRAME_INPUT:
       if (APane >= 0) and (APane < FPaneCount) and
@@ -3462,9 +3509,16 @@ begin
           end
           else
           begin
-            FClients[AIdx].ReqCols[APane] := Cols;
-            FClients[AIdx].ReqRows[APane] := Rows;
-            NegotiateResize(APane);
+            if FResizePolicy = rpSmallest then
+            begin
+              FClients[AIdx].ReqCols[APane] := Cols;
+              FClients[AIdx].ReqRows[APane] := Rows;
+              NegotiateResize(APane);
+            end
+            else
+              // In independent mode automatic window resizes never arrive;
+              // FRAME_RESIZE therefore means an explicit canonical resize.
+              ApplyCanonicalResize(APane, Cols, Rows);
           end;
         end;
       end;
@@ -3472,11 +3526,22 @@ begin
       DropClient(AIdx);
     FRAME_CLOSE:
       begin
-        // tolerant byte: 1 = save session.ini before dying
+        // An interactive close belongs to the client that sent it. Keep the
+        // shared session alive while another UI is still attached; when this
+        // is the last UI, preserve the traditional permanent-exit behaviour.
+        // Frames are handled serially, so two simultaneous closes naturally
+        // make the second one the last client.
+        ClientCount := AttachedCount;
+        if DebugActive then
+          DebugLog(Format('daemon: client close save=%d attached=%d last=%d',
+            [Ord((Length(AData) > 0) and (AData[0] = 1)), ClientCount,
+             Ord(ClientCount <= 1)]));
+        // tolerant byte: 1 = save session.ini before this client leaves
         if (Length(AData) > 0) and (AData[0] = 1) then
           DaemonSaveSession;
         DropClient(AIdx);
-        FStop := True;
+        if ClientCount <= 1 then
+          FStop := True;
       end;
     FRAME_KILLPANE:
       if (APane >= 0) and (APane < FPaneCount) then
@@ -3486,10 +3551,24 @@ begin
       end;
     FRAME_LAYOUT:
       begin
+        OldTitles := nil;
+        if FResizePolicy = rpSession then
+        begin
+          SetLength(OldTitles, FPaneCount);
+          for I := 0 to FPaneCount - 1 do
+            OldTitles[I] := FTitles[I];
+        end;
         ApplyLayoutFrame(AData);
-        if Length(AData) > 0 then
+        if (FResizePolicy = rpSmallest) and (Length(AData) > 0) then
           Broadcast(FRAME_LAYOUT_EV, -1, AData[0], Length(AData), True,
-            AIdx);
+            AIdx)
+        else if FResizePolicy = rpSession then
+          // Geometry/focus are this client's save seed and must not move an
+          // already attached UI. Pane titles are shared session metadata,
+          // however, so propagate just those through their dedicated event.
+          for I := 0 to FPaneCount - 1 do
+            if (I < Length(OldTitles)) and (OldTitles[I] <> FTitles[I]) then
+              BroadcastTitle(I, AIdx);
       end;
     FRAME_NEWPANE:
       begin
@@ -3982,6 +4061,8 @@ begin
     Ini.WriteInteger('session', 'threads', 1 + FWorkerCount);
     Ini.WriteString('session', 'multithread',
       MultiThreadCode(FConfiguredThreads));
+    Ini.WriteString('session', 'resize_policy',
+      ResizePolicyCode(FResizePolicy));
     Ini.WriteString('session', 'created',
       FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
     // the identity the panes carry in SUPERTERM_SESSION_CHAIN

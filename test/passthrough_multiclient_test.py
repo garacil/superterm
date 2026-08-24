@@ -12,7 +12,8 @@ from stlib import check
 HOME = stlib.fresh_home('passthrough-multiclient')
 with open(HOME + '/.superterm/superterm.ini', 'w') as fh:
     fh.write('[ui]\nlanguage=en\nbackground=none\n'
-             '[session]\nserver=always\nautosave=0\nautorestore=0\n')
+             '[session]\nserver=always\nautosave=0\nautorestore=0\n'
+             'resize_policy=smallest\n')
 
 # A owns a large host and enters direct/raw F5 passthrough.
 a = stlib.Client(HOME, w=120, h=36, lang='en')

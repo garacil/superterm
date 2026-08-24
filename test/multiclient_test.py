@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """superterm test: several interactive clients on the same session.
 
-Covers: versioned attach (v2) and legacy client exclusivity, output
-broadcast to all clients, live window management (rename/new/close via
-CLI with clients attached), minimum size negotiation, laggard client
-disconnection and the shutdown notice.
+Covers: versioned attach and legacy client exclusivity, output broadcast to
+all clients, live window management (rename/new/close via CLI), independent
+client geometry, laggard disconnection and the shutdown notice.
 """
 import os
 import socket
@@ -139,7 +138,7 @@ b.wait_until(lambda t: 'Trabajo Largo' in t)
 check('client A gained the window', 'Trabajo Largo' in a.text())
 check('client B gained the window', 'Trabajo Largo' in b.text())
 
-# ---- size negotiation: pane 1's screen fits in B (80 cols) ----
+# ---- independent geometry: B's 80-column host does not shrink the PTY ----
 r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
 row1 = [l for l in r.stdout.splitlines() if l.startswith('1 ')]
 size_ok = False
@@ -147,9 +146,9 @@ if row1:
     for tok in row1[0].split():
         if 'x' in tok and tok[0].isdigit():
             cols = int(tok.split('x')[0])
-            size_ok = cols <= 80
+            size_ok = cols > 80
             break
-check('pane 1 sized to smallest client', size_ok)
+check('smaller client leaves PTY canonical', size_ok)
 
 # ---- 3.0.1: an attach with a different geometry does not bounce sizes ----
 # previously, the attach's transient requests (tile -> final geometry)
