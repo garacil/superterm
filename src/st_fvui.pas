@@ -1137,9 +1137,11 @@ begin
   else if Scrolled then
     DebugLog(Format('draw pane=%d scrolled=%d', [PaneIdx, App^.Scr[PaneIdx].ViewOffset]))
   else if NonBlank > 0 then
-    DebugLog(Format('draw pane=%d %dx%d nonblank=%d cur=(%d,%d) selected=%d',
+    DebugLog(Format('draw pane=%d %dx%d nonblank=%d cur=(%d,%d) selected=%d ' +
+      'scr=%dx%d view=(%d,%d)',
       [PaneIdx, w, h, NonBlank, App^.Scr[PaneIdx].CursorX, App^.Scr[PaneIdx].CursorY,
-       Ord(GetState(sfSelected))]))
+       Ord(GetState(sfSelected)), App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height,
+       ViewX, ViewY]))
   else
     DebugLog(Format('draw pane=%d %dx%d EMPTY scr=%dx%d hist=%d off=%d alt=%d cur=%d,%d',
       [PaneIdx, w, h, App^.Scr[PaneIdx].Width, App^.Scr[PaneIdx].Height,
