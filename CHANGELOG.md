@@ -1,9 +1,33 @@
 # Changelog
 
-## 3.5.0 - 2026-08
+## 3.5.1 - 2026-08
 
-Text that moves between panes, a pane that keeps its colours when you look
-away, and the tracing written down at last.
+A daemon that blocks on nothing, panes that may spread across cores, and a
+viewport that belongs to each client alone.
+
+### Nothing in the session daemon blocks any more
+
+The detached daemon is a single poll(2) reactor now. The listener, half-made
+connections, attached clients and the pane PTYs are all nonblocking and
+served from one `fpPoll` loop with per-tick budgets, so no single peer can
+park the process. A connection that sends half a header expires after a
+second; a client that keeps half a megabyte waiting and makes no progress
+for ten seconds is cut loose while everyone else continues; input queued for
+a program that stopped reading its terminal waits for its own POLLOUT
+without delaying another pane or socket; a frame header promising more than
+the protocol allows drops that peer on sight; and descriptors above the old
+select() ceiling of 1023 are simply descriptors.
+
+### Panes may spread across cores
+
+`[session] multithread=1` -- the default -- keeps the daemon exactly as it
+was: one thread, one reactor. `multithread=auto`, or a total thread cap,
+lets busy panes run on their own `fpPoll` workers, created when a pane
+appears and removed when it closes, while the socket reactor remains the
+single owner of every client and session structure. The effective cap never
+exceeds the CPUs available to the process, `SUPERTERM_MULTITHREAD` overrides
+the file for one launch, and a running daemon keeps the mode it started
+with. GNU/Linux and macOS.
 
 ### Each attached client owns its geometry
 
@@ -20,6 +44,25 @@ An interactive exit is now client-local while other viewers remain attached.
 `Alt-X` still saves and `Alt-Q` still skips saving, but neither can terminate
 another active UI; the last client closes the session. Explicit CLI `kill`
 remains session-wide.
+
+### Smaller notes
+
+- F5 passthrough stays geometrically safe when the attached clients use
+  different terminal sizes, and the FreeVision cursor repaint no longer
+  leaks into raw mode.
+- The macOS build is back to zero compiler hints: the darwin libproc buffers
+  are initialized where the data-flow analysis cannot see `Move` and
+  `proc_pidinfo` filling them.
+- Every push now builds and runs the full suite on GNU/Linux x86_64, macOS
+  Apple Silicon and macOS Intel.
+- The daemon's new manners have their own coverage: fragmented frames,
+  stalled peers, pending-slot overflow, oversize headers, descriptors past
+  1023, the per-client viewports, and the multicore reactors under load.
+
+## 3.5.0 - 2026-08
+
+Text that moves between panes, a pane that keeps its colours when you look
+away, and the tracing written down at last.
 
 ### Clipboard history across local and SSH panes
 
