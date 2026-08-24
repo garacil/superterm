@@ -1931,6 +1931,30 @@ var
   Flag: byte;
 begin
   Result := False;
+  // Drain whatever the panes have already written but the select loop has not
+  // picked up yet, so it is IN the snapshot this client is about to receive.
+  //
+  // Without this a pane's first output could be lost outright. PromoteToServer
+  // hands the live masters to the forked daemon and the parent re-attaches at
+  // once; a program that writes as it starts (a class with
+  // `cmd=echo TOKEN; exec bash`) can have those bytes still sitting in the
+  // master's buffer, not yet in FScreens[], when the snapshot is built. The
+  // client then rebuilds its screen from a snapshot that never saw them, and
+  // they are gone -- silently, with the pane otherwise working. macOS showed
+  // it every time (openpty hands the slave over parent-side fds, so the child
+  // runs sooner); on GNU/Linux the slower open-slave-by-name path usually let
+  // the bytes land first, which is luck, not immunity.
+  //
+  // Safe on both counts: the master is O_NONBLOCK (st_pty.pas), so an idle
+  // pane returns EAGAIN and HandlePaneOutput does nothing -- it only marks a
+  // pane dead on a real EOF. And the attaching client is NOT in FClients yet
+  // (HandleAttach fills its slot only after this returns), so the Broadcast
+  // inside HandlePaneOutput cannot also send it these bytes: it gets them once,
+  // in the snapshot. Anything written after this point arrives normally as
+  // FRAME_OUTPUT, because by then the client is registered.
+  for I := 0 to FPaneCount - 1 do
+    if (FPanes[I] <> nil) and FPanes[I].Alive then
+      HandlePaneOutput(I);
   Data := Default(TByteArray);
   Meta := TMemoryStream.Create;
   try
