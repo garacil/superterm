@@ -4,6 +4,7 @@
 import base64
 import os
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -14,6 +15,29 @@ def bracketed(text):
     if isinstance(text, str):
         text = text.encode()
     return b'\x1b[200~' + text + b'\x1b[201~'
+
+
+def bracketed_paste_shell():
+    """Return a shell whose line editor turns on bracketed paste (ESC[?2004h),
+    so a pasted CR stays on the input line instead of executing. bash gained
+    this in 4.4; macOS still ships bash 3.2, so fall back to zsh (which enables
+    it by default) there. On GNU /bin/bash is modern and is used unchanged."""
+    for sh in ('/bin/bash', '/opt/homebrew/bin/bash', '/usr/local/bin/bash',
+               '/bin/zsh', '/usr/bin/zsh'):
+        if not os.path.exists(sh):
+            continue
+        if os.path.basename(sh) == 'bash':
+            try:
+                out = subprocess.check_output(
+                    [sh, '-c', 'echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}'],
+                    text=True).split()
+                if (int(out[0]), int(out[1])) >= (4, 4):
+                    return sh
+            except Exception:
+                pass
+        else:
+            return sh
+    return '/bin/bash'
 
 
 def osc52_values(raw):
@@ -36,7 +60,7 @@ def has_pane_line(client, expected):
 
 
 home = fresh_home('clipboard')
-c = Client(home, w=110, h=32)
+c = Client(home, w=110, h=32, env={'SHELL': bracketed_paste_shell()})
 c.drain(2.5)
 
 # The top-level menu is a real UI entry and the outer terminal is asked to
