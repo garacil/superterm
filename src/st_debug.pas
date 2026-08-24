@@ -60,15 +60,20 @@ procedure DumpNow(const AReason: string);
 implementation
 
 uses
-  SysUtils, BaseUnix;
+  SysUtils, ctypes, st_os
+  {$IFDEF UNIX}, BaseUnix{$ENDIF}
+  {$IFDEF WINDOWS}, Windows{$ENDIF};
 
 const
   RING_SIZE = 400;      // lines of context kept for a crash report
-{$IFDEF DEBUG}
-  // where a debug build traces when nothing says otherwise; a release build
-  // has no such default, so the constant does not exist there either
-  DEFAULT_DEBUG_LOG = '/tmp/st-crash.log';
-{$ENDIF}
+
+// Directory crash reports and the debug-build default log land in: /tmp on
+// POSIX, %TEMP% on Windows. GetTempDir already resolves TMPDIR/TEMP per
+// platform, so a report is always written somewhere the user can reach.
+function CrashDir: string;
+begin
+  Result := IncludeTrailingPathDelimiter(GetTempDir);
+end;
 
 var
   Lock: TRTLCriticalSection;
@@ -93,16 +98,16 @@ begin
   if Resolved then
     Exit;
   Resolved := True;
-  FullMode := GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '1';
-  FN := GetEnvironmentVariable('SUPERTERM_DEBUG');
+  FullMode := SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '1';
+  FN := SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG');
 {$IFDEF DEBUG}
   // A build made with 'make debug' traces by default: that is what it is
   // for, and having to remember two environment variables meant the one
   // crash worth catching was caught without any context. Either variable
   // given from outside still wins, including SUPERTERM_DEBUG_FULL=0.
   if FN = '' then
-    FN := DEFAULT_DEBUG_LOG;
-  if GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '' then
+    FN := CrashDir + 'st-crash.log';
+  if SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '' then
     FullMode := True;
 {$ENDIF}
   if FN = '' then
@@ -161,7 +166,7 @@ var
 begin
   if not Resolved then
     DebugActive;
-  Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' [' + IntToStr(FpGetPid) +
+  Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' [' + IntToStr(OsGetPid) +
     ' ' + Role + '] ' + S;
   EnterCriticalsection(Lock);
   try
@@ -178,6 +183,7 @@ end;
 
 // --- crash report ------------------------------------------------------
 
+{$IFDEF UNIX}
 function SignalName(ASig: cint): string;
 begin
   case ASig of
@@ -190,6 +196,7 @@ begin
     Result := 'signal ' + IntToStr(ASig);
   end;
 end;
+{$ENDIF}
 
 // One file per crash, never overwritten: role, pid, the time to the second
 // and a short tag drawn from the clock, so two crashes in the same second --
@@ -200,8 +207,8 @@ var
   Tag: string;
 begin
   Tag := IntToHex(GetTickCount64 and $FFFFFF, 6);
-  Result := '/tmp/superterm-crash-' + Role + '-' + IntToStr(FpGetPid) + '-' +
-    FormatDateTime('yyyymmdd-hhnnss', Now) + '-' + Tag + '.log';
+  Result := CrashDir + 'superterm-crash-' + Role + '-' + IntToStr(OsGetPid) +
+    '-' + FormatDateTime('yyyymmdd-hhnnss', Now) + '-' + Tag + '.log';
 end;
 
 // Write everything known about this process to APath. Called from a signal
@@ -223,10 +230,10 @@ begin
     WriteLn(F, 'when      : ', FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
     WriteLn(F, 'reason    : ', AReason);
     WriteLn(F, 'role      : ', Role);
-    WriteLn(F, 'pid       : ', FpGetPid, '   parent: ', FpGetPPid);
+    WriteLn(F, 'pid       : ', OsGetPid, '   parent: ', OsGetPPid);
     WriteLn(F, 'uptime    : ',
       FormatFloat('0.0', (Now - StartedAt) * 24 * 60 * 60), ' s');
-    WriteLn(F, 'flow log  : ', GetEnvironmentVariable('SUPERTERM_DEBUG'));
+    WriteLn(F, 'flow log  : ', SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG'));
     WriteLn(F, '');
     WriteLn(F, '--- backtrace (file and line when built with make debug) ---');
     try
@@ -258,6 +265,46 @@ begin
   WriteReport(ReportPath, AReason, get_frame);
 end;
 
+{$IFDEF WINDOWS}
+// Windows has no POSIX signals; the equivalent last-breath hook is an
+// unhandled-exception filter. It writes the same report (backtrace + ring
+// buffer) and then defers to the previously installed filter so WER / a
+// debugger still gets its turn.
+type
+  TTopLevelFilter = function(ExceptionInfo: pointer): LongInt; stdcall;
+
+// Not declared in FPC 3.2.2's Windows unit; bind it from kernel32.
+function SetUnhandledExceptionFilter(lpTopLevelExceptionFilter: pointer):
+  pointer; stdcall; external 'kernel32' name 'SetUnhandledExceptionFilter';
+
+var
+  PrevFilter: TTopLevelFilter = nil;
+
+function WinCrashFilter(ExceptionInfo: pointer): LongInt; stdcall;
+var
+  P: string;
+begin
+  P := ReportPath;
+  WriteReport(P, 'unhandled exception', get_frame);
+  if LogOpen then
+  begin
+    WriteLn(LogFile, '*** FATAL unhandled exception -- report in ', P);
+    Flush(LogFile);
+  end;
+  // EXCEPTION_CONTINUE_SEARCH: let the default handler (WER) run next.
+  Result := 0;
+  if Assigned(PrevFilter) then
+    Result := PrevFilter(ExceptionInfo);
+end;
+
+procedure InstallCrashHandler;
+begin
+  if HandlerInstalled then
+    Exit;
+  HandlerInstalled := True;
+  PrevFilter := TTopLevelFilter(SetUnhandledExceptionFilter(@WinCrashFilter));
+end;
+{$ELSE}
 procedure CrashHandler(ASig: cint); cdecl;
 var
   P: string;
@@ -286,6 +333,7 @@ begin
   FpSignal(SIGILL, @CrashHandler);
   FpSignal(SIGABRT, @CrashHandler);
 end;
+{$ENDIF}
 
 initialization
   Lock := Default(TRTLCriticalSection);

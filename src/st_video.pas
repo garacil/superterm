@@ -103,7 +103,9 @@ var
 implementation
 
 uses
-  SysUtils, termio, BaseUnix, Video, st_debug;
+  SysUtils, Video, st_debug
+  {$IFDEF UNIX}, termio, BaseUnix{$ENDIF}
+  {$IFDEF WINDOWS}, Windows{$ENDIF};
 
 var
   SavedDriver: TVideoDriver;
@@ -111,6 +113,56 @@ var
   OutputFailed: Boolean;
   ConsoleRow, ConsoleCol: Integer; // cursor position at startup (0 = unknown)
   UseSyncOutput: Boolean = False;  // DECSET 2026; opt-in via SUPERTERM_SYNC=1
+
+{$IFDEF WINDOWS}
+const
+  ENABLE_VIRTUAL_TERMINAL_PROCESSING_ = $0004;
+  DISABLE_NEWLINE_AUTO_RETURN_        = $0008;
+  ENABLE_VIRTUAL_TERMINAL_INPUT_      = $0200;
+
+var
+  SavedOutMode: DWORD = 0;
+  SavedInMode: DWORD = 0;
+  VTModeSaved: Boolean = False;
+
+// Put the Windows console into VT mode: the output side interprets the ANSI
+// escapes st_video emits (colours, cursor, alternate screen), and the input
+// side delivers keys and mouse as the same VT byte stream st_kbd already
+// decodes on Unix. Without this, conhost prints the escapes literally. Windows
+// Terminal enables output VT by default; doing it explicitly covers plain
+// conhost on Windows 10 1809+ too.
+procedure EnableVTConsole;
+var
+  HOut, HIn: THandle;
+  M: DWORD;
+begin
+  HOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  HIn := GetStdHandle(STD_INPUT_HANDLE);
+  if (HOut <> INVALID_HANDLE_VALUE) and GetConsoleMode(HOut, M) then
+  begin
+    SavedOutMode := M;
+    SetConsoleMode(HOut, M or ENABLE_VIRTUAL_TERMINAL_PROCESSING_
+      or DISABLE_NEWLINE_AUTO_RETURN_);
+  end;
+  if (HIn <> INVALID_HANDLE_VALUE) and GetConsoleMode(HIn, M) then
+  begin
+    SavedInMode := M;
+    // VT input, and drop line/echo/Ctrl-C processing so bytes reach us raw.
+    SetConsoleMode(HIn, (M or ENABLE_VIRTUAL_TERMINAL_INPUT_)
+      and not (ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT or ENABLE_PROCESSED_INPUT));
+    VTModeSaved := True;
+  end;
+end;
+
+procedure RestoreVTConsole;
+begin
+  if not VTModeSaved then
+    Exit;
+  SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), SavedOutMode);
+  SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), SavedInMode);
+  VTModeSaved := False;
+end;
+{$ENDIF}
 
 procedure PassthroughRaw(const Data; ALen: LongInt);
 var
@@ -186,6 +238,15 @@ begin
 end;
 
 function InputPending: Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Frame coalescing only needs "is there something to read right now"; a
+  // signalled console input handle answers that without blocking. Any pending
+  // record (key or mouse) counts, which is exactly what we want.
+  Result := WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 0)
+    = WAIT_OBJECT_0;
+end;
+{$ELSE}
 var
   fds: TFDSet;
   tv: TTimeVal;
@@ -196,6 +257,7 @@ begin
   tv.tv_usec := 0;
   InputPending := fpSelect(StdInputHandle + 1, @fds, nil, nil, @tv) > 0;
 end;
+{$ENDIF}
 
 function VgaColorToAnsi(AColor: Byte; AForeground: Boolean): Integer;
 var
@@ -1026,7 +1088,10 @@ var
 begin
   if DriverInstalled then
     Exit;
-  UseSyncOutput := GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
+  {$IFDEF WINDOWS}
+  EnableVTConsole;
+  {$ENDIF}
+  UseSyncOutput := SysUtils.GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
   GetVideoDriver(SavedDriver);
   Driver := SavedDriver;
   Driver.InitDriver := @WideInitVideo;
@@ -1043,6 +1108,25 @@ end;
 // the cursor again -- already at 1;1 -- into the same slot as DECSC, so
 // the final ESC[u ESC 8 restores the first line. Asking the terminal for
 // the position and repositioning explicitly is immune to that slot overlap.
+{$IFDEF WINDOWS}
+procedure CaptureConsoleCursor;
+var
+  Info: TConsoleScreenBufferInfo;
+  HOut: THandle;
+begin
+  // No DSR round-trip needed: the console buffer knows the cursor position.
+  ConsoleRow := 0;
+  ConsoleCol := 0;
+  HOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  if (HOut <> INVALID_HANDLE_VALUE) and
+     GetConsoleScreenBufferInfo(HOut, Info) then
+  begin
+    // Stored 1-based to match the terminal's ESC[row;colH addressing.
+    ConsoleRow := Info.dwCursorPosition.Y + 1;
+    ConsoleCol := Info.dwCursorPosition.X + 1;
+  end;
+end;
+{$ELSE}
 procedure CaptureConsoleCursor;
 var
   OldTio, RawTio: TermIOS;
@@ -1091,6 +1175,7 @@ begin
   ConsoleRow := StrToIntDef(Copy(Resp, i + 2, j - i - 2), 0);
   ConsoleCol := StrToIntDef(Copy(Resp, j + 1, k - j - 1), 0);
 end;
+{$ENDIF}
 
 // Turns off everything that makes the terminal send us bytes, and throws
 // away whatever it sent before we got here.
@@ -1111,8 +1196,13 @@ begin
   // nothing new can arrive in either encoding
   WriteRaw(#27'[?1003l'#27'[?1002l'#27'[?1000l'#27'[?1015l'#27'[?1006l' +
     #27'[?2004l'#27'[?9l');
+  {$IFDEF WINDOWS}
+  FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
+  RestoreVTConsole;
+  {$ELSE}
   if IsATTY(StdInputHandle) = 1 then
     TCFlush(StdInputHandle, TCIFLUSH);
+  {$ENDIF}
 end;
 
 // Puts the console cursor back where it was at startup. Call at the
