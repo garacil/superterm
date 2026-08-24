@@ -11,7 +11,7 @@ unit st_config;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix;
+  Classes, SysUtils, IniFiles, st_os;
 
 type
   TUiLanguage = (ulEnglish, ulSpanish);
@@ -125,7 +125,7 @@ begin
   if not DirectoryExists(Result) then
     ForceDirectories(Result);
   if DirectoryExists(Result) then
-    FpChmod(PAnsiChar(Result), &700);
+    OsRestrictDir(Result);
 end;
 
 function ExpandUserPath(const S: string): string;

@@ -13,7 +13,7 @@ unit st_wclass;
 interface
 
 uses
-  Classes, SysUtils, StrUtils, IniFiles, BaseUnix, st_config;
+  Classes, SysUtils, StrUtils, IniFiles, st_os, st_config;
 
 type
   // the kind is derived on load and never persisted:
@@ -242,7 +242,7 @@ var
   i: integer;
   Sec, TempName: string;
 begin
-  TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
+  TempName := FileName + '.tmp.' + IntToStr(OsGetPid);
   if FileExists(TempName) then
     DeleteFile(TempName);
   // copy of the current content to preserve foreign sections
@@ -305,7 +305,7 @@ begin
     end;
     Ini.UpdateFile;
     // the file may contain passwords
-    FpChmod(PAnsiChar(TempName), &600);
+    OsRestrictFile(TempName);
   finally
     SL.Free;
     Ini.Free;

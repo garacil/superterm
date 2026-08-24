@@ -20,7 +20,8 @@ implementation
 
 uses
   ctypes
-  {$ifdef darwin}, SysCtl{$endif};
+  {$ifdef darwin}, SysCtl{$endif}
+  {$ifdef windows}, Windows{$endif};
 
 {$ifdef linux}
 const
@@ -74,6 +75,24 @@ begin
 end;
 {$endif}
 
+{$ifdef windows}
+const
+  ALL_PROCESSOR_GROUPS = $FFFF;
+
+// Not declared in FPC 3.2.2's Windows unit; bind it from kernel32 directly.
+function GetActiveProcessorCount(GroupNumber: WORD): DWORD; stdcall;
+  external 'kernel32' name 'GetActiveProcessorCount';
+
+function WindowsCPUCount: integer;
+begin
+  // The number of logical processors the current process group can run on.
+  // GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) mirrors what a thread pool
+  // should size to and respects a group-limited process, the Windows analogue
+  // of the Linux affinity mask and Darwin hw.activecpu.
+  Result := integer(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+end;
+{$endif}
+
 function AvailableCPUCount: integer;
 begin
   {$ifdef linux}
@@ -82,7 +101,11 @@ begin
   {$ifdef darwin}
   Result := DarwinCPUCount;
   {$else}
+  {$ifdef windows}
+  Result := WindowsCPUCount;
+  {$else}
   Result := 1;
+  {$endif}
   {$endif}
   {$endif}
   if Result < 1 then

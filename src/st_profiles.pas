@@ -14,7 +14,7 @@ unit st_profiles;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix, st_config, st_wclass, st_templates;
+  Classes, SysUtils, IniFiles, st_os, st_config, st_wclass, st_templates;
 
 type
   TProfilePaneSpec = record
@@ -312,7 +312,7 @@ var
   i, w, p: integer;
   Sec, WSec, PSec, TempName: string;
 begin
-  TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
+  TempName := FileName + '.tmp.' + IntToStr(OsGetPid);
   if FileExists(TempName) then
     DeleteFile(TempName);
   // copy of the current content to preserve unrelated sections
@@ -407,7 +407,7 @@ begin
       end;
     end;
     Ini.UpdateFile;
-    FpChmod(PAnsiChar(TempName), &600);
+    OsRestrictFile(TempName);
   finally
     Names.Free;
     SL.Free;

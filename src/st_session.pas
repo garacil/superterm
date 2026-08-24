@@ -11,7 +11,7 @@ unit st_session;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix, st_layout, st_pty;
+  Classes, SysUtils, IniFiles, st_os, st_layout, st_pty;
 
 type
   TPaneInfo = record
@@ -108,7 +108,7 @@ var
   i, j: integer;
   TempName, Sec: string;
 begin
-  TempName := FileName + '.tmp.' + IntToStr(fpGetPid);
+  TempName := FileName + '.tmp.' + IntToStr(OsGetPid);
   if FileExists(TempName) then
     DeleteFile(TempName);
   Ini := TIniFile.Create(TempName);
@@ -152,7 +152,7 @@ begin
     end;
     Ini.UpdateFile;
     // Session data may contain commands, paths, and terminal identities.
-    FpChmod(PAnsiChar(TempName), &600);
+    OsRestrictFile(TempName);
   finally
     SL.Free;
     Ini.Free;
