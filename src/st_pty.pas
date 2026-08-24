@@ -885,6 +885,9 @@ const
   VNODE_INFO_PATH_OFFSET_  = 152;   { offsetof(struct vnode_info_path, vip_path) }
   PROC_VNODEPATHINFO_SIZE_ = 2352;  { sizeof(struct proc_vnodepathinfo) }
 
+type
+  TVnodePathBuf = array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
+
 function proc_listchildpids(ppid: cint; buffer: pointer; buffersize: cint): cint;
   cdecl; external 'c' name 'proc_listchildpids';
 function proc_pidinfo(pid, flavor: cint; arg: qword; buffer: pointer;
@@ -920,6 +923,8 @@ var
   argc, taken, p, lim, st: integer;
 begin
   Result := nil;
+  { the DFA cannot see that Move fills argc from the sysctl buffer }
+  argc := 0;
   if Pid <= 0 then
     Exit;
   mib[0] := CTL_KERN_;
@@ -962,13 +967,13 @@ end;
 
 function DarwinProcCwd(Pid: TPid): string;
 var
-  buf: array[0..PROC_VNODEPATHINFO_SIZE_ - 1] of byte;
+  buf: TVnodePathBuf;
   ret: cint;
 begin
   Result := '';
   if Pid <= 0 then
     Exit;
-  FillChar(buf, SizeOf(buf), 0);
+  buf := Default(TVnodePathBuf);
   ret := proc_pidinfo(Pid, PROC_PIDVNODEPATHINFO_, 0, @buf[0], SizeOf(buf));
   if ret <= VNODE_INFO_PATH_OFFSET_ then
     Exit;
