@@ -68,12 +68,14 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   profile_switch_transition_test.py multisession_test.py \
   prefix_test.py title_test.py \
   detach_test.py control_test.py cli_test.py control_wm_test.py \
-  nonblocking_server_test.py global_command_fifo_test.py \
+  nonblocking_server_test.py global_command_fifo_test.py sidecar_atomic_test.py \
   global_lock_queue_test.py \
   multiclient_input_burst_test.py \
   multithread_server_test.py \
   multiclient_test.py multiclient_close_test.py shared_geometry_test.py \
-  host_resize_shared_test.py host_summary_lease_test.py \
+  host_resize_shared_test.py maximize_min_viewport_test.py \
+  zoom_exclusive_switch_test.py \
+  host_summary_lease_test.py \
   shared_state_stress_test.py multiclient_intensive_test.py \
   multiclient_focus_test.py multiclient_minimize_test.py \
   layout_transition_test.py layout_preview_protocol_test.py wireframe_preview_test.py \

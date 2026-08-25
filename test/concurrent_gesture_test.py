@@ -352,6 +352,19 @@ def with_two_resizes(geometry, dw0, dw1):
     return resized_geometry(resized_geometry(geometry, 0, dw0), 1, dw1)
 
 
+def zoomed_geometry(snapshot, pane):
+    """One exact normal maximum for the equal-host raw fixture."""
+    result = [list(geom) for geom in snapshot['geometry']]
+    safe_w = min(snapshot['desk'][0], WIDTH)
+    safe_h = min(snapshot['desk'][1], HEIGHT - 2)
+    result[pane][4] = max(14, safe_w - 2)
+    result[pane][5] = max(4, safe_h - 2)
+    result[pane][6] = 1
+    result[pane][7] = 0
+    result[pane][8] = 0
+    return tuple(tuple(geom) for geom in result)
+
+
 def actual_pty_sizes(home, session, tag):
     values = []
     for pane in range(2):
@@ -557,6 +570,80 @@ def raw_scenario(peers, baseline, home, session, first, op, serial):
     return result
 
 
+def raw_zoom_handoff(peers, baseline, home, session):
+    """Two per-pane leases enter zoom from one base; the second wins safely.
+
+    CLI zoom deliberately uses the global lease, so it cannot exercise the
+    daemon's stale per-pane merge. These protocol actors each own only their
+    pane. The second commit must auto-restore the already-released first
+    winner inside the same reactor transaction, never expose two Z flags, and
+    restore the loser's PTY from its canonical BW/BH.
+    """
+    label = 'raw concurrent zoom hand-off'
+    bits = (1, 2)
+    base_revision = baseline['revision']
+    drain_wire(peers, 0.20)
+    granted0, revision0, _prefix0 = lock_layout(
+        peers[0], 0, base_revision, 0x5A4F4F4D0001)
+    granted1, revision1, _prefix1 = lock_layout(
+        peers[1], 1, base_revision, 0x5A4F4F4D0002)
+    drain_wire(peers, 0.30)
+    check(label + ' grants both per-pane leases at one base',
+          granted0 and granted1 and
+          revision0 == base_revision and revision1 == base_revision)
+
+    first_geometry = zoomed_geometry(baseline, 0)
+    peers[0].sendall(raw_frame(
+        FRAME_LAYOUT, -1,
+        layout_payload(baseline, first_geometry, base_revision, bits[0])))
+    first_frames = [collect(peer, 0.65) for peer in peers]
+    first_layouts = []
+    for viewer in range(3):
+        expected_kind = (FRAME_LAYOUT_PEER_EV if viewer == 1 else
+                         FRAME_LAYOUT_EV)
+        expected_changes = bits[1] if viewer == 1 else 0
+        expected_locks = 0 if viewer == 1 else bits[1]
+        first_layouts.append(one_layout(
+            label + f' first winner viewer {viewer}', first_frames[viewer],
+            expected_kind, base_revision + 1, first_geometry,
+            expected_changes, expected_locks))
+    check(label + ' first commit contains exactly one Z',
+          all(layout is not None and
+              sum(geom[6] != 0 for geom in layout['geometry']) == 1
+              for layout in first_layouts))
+
+    # Actor 1 intentionally submits its old-base view: pane 0 is normal in
+    # this payload and is not in the change mask. The daemon must merge pane 1
+    # into current state and restore the prior winner itself.
+    final_geometry = zoomed_geometry(baseline, 1)
+    peers[1].sendall(raw_frame(
+        FRAME_LAYOUT, -1,
+        layout_payload(baseline, final_geometry, base_revision, bits[1])))
+    final_frames = [collect(peer, 0.65) for peer in peers]
+    final_layouts = [
+        one_layout(label + f' final winner viewer {viewer}',
+                   final_frames[viewer], FRAME_LAYOUT_EV,
+                   base_revision + 2, final_geometry, 0, 0)
+        for viewer in range(3)
+    ]
+    check(label + ' atomically leaves only the second Z',
+          all(layout is not None and
+              tuple(index for index, geom in enumerate(layout['geometry'])
+                    if geom[6] != 0) == (1,)
+              for layout in final_layouts))
+    check(label + ' restores loser PTY and installs exact winner PTY',
+          actual_pty_sizes(home, session, 'zoom-handoff') ==
+          tuple((geom[4], geom[5]) for geom in final_geometry))
+
+    result = dict(baseline)
+    result['revision'] = base_revision + 2
+    result['geometry'] = final_geometry
+    result['locked'] = 0
+    result['changes'] = 0
+    drain_wire(peers, 0.15)
+    return result
+
+
 def run_raw_protocol():
     home = stlib.fresh_home('concurrent-gesture-protocol')
     ini = home + '/.superterm/superterm.ini'
@@ -590,10 +677,11 @@ def run_raw_protocol():
                                     PREVIEW_OP_BOUNDS, 1)
             baseline = raw_scenario(peers, baseline, home, session, 0,
                                     PREVIEW_OP_WIREFRAME, 2)
+            baseline = raw_zoom_handoff(peers, baseline, home, session)
             late, late_snapshot = attach_wire(path)
             try:
                 replay = preview_events(collect(late, 0.35))
-                check('late viewer gets final base+4 state without previews',
+                check('late viewer gets final canonical state without previews',
                       late_snapshot['revision'] == baseline['revision'] and
                       late_snapshot['geometry'] == baseline['geometry'] and
                       late_snapshot['locked'] == 0 and replay == [])

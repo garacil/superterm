@@ -111,6 +111,11 @@ history. Each pane keeps its own process, terminal state, focus and size.
   different geometries, every client instead gets the same IDE-rendered
   fullscreen area sized to the smallest host. `F5` again restores the window
   at the size it had.
+- Normal window maximize (title button or double-click) keeps the IDE visible.
+  At commit time its one shared frame and PTY fit the smallest connected host,
+  even when a larger client previously grew the canonical desktop; restore
+  returns to the exact pre-maximize rectangle. A later attach never derives a
+  second local geometry from that canonical result.
 - English application interface by default, with a runtime-selectable Spanish
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux

@@ -637,6 +637,8 @@ type
     function HasLegacyClient: boolean;
     procedure ClientSizeSummary(out AMinW, AMinH: Longint;
       out AAllMatch: boolean);
+    procedure SharedZoomedPaneSize(ADeskW, ADeskH: Longint;
+      AFullScreen: boolean; out ACols, ARows: Longint);
     procedure BroadcastHostSummaryEv;
     procedure BroadcastLayoutPreview(APane, AExcept: integer;
       const APreview: TLayoutPreview);
@@ -1321,15 +1323,30 @@ begin
       end;
       if FileExists(MetaPath) then
       begin
-        Ini := TIniFile.Create(MetaPath);
+        Ini := nil;
         try
-          Info.Name := Ini.ReadString('session', 'name', Info.Name);
-          Info.Profile := Ini.ReadString('session', 'profile', '');
-          Info.PaneCount := Ini.ReadInteger('session', 'panes', 0);
-          Info.Pid := Ini.ReadInteger('session', 'pid', 0);
-          Info.Created := Ini.ReadString('session', 'created', '');
-          Info.Id := Ini.ReadString('session', 'id', '');
-          Info.ClientChains := Ini.ReadString('session', 'client_chains', '');
+          try
+            Ini := TIniFile.Create(MetaPath);
+            Info.Name := Ini.ReadString('session', 'name', Info.Name);
+            Info.Profile := Ini.ReadString('session', 'profile', '');
+            Info.PaneCount := Ini.ReadInteger('session', 'panes', 0);
+            Info.Pid := Ini.ReadInteger('session', 'pid', 0);
+            Info.Created := Ini.ReadString('session', 'created', '');
+            Info.Id := Ini.ReadString('session', 'id', '');
+            Info.ClientChains := Ini.ReadString('session', 'client_chains', '');
+          except
+            on E: Exception do
+              // Discovery metadata is optional. The live socket and its
+              // basename are enough to resolve the session and query the
+              // daemon; a transient filesystem/share error must never crash
+              // a CLI command or hide that live session.
+              try
+                if DebugActive then
+                  DebugLog('session sidecar read failed: ' + E.ClassName +
+                    ': ' + E.Message);
+              except
+              end;
+          end;
         finally
           Ini.Free;
         end;
@@ -2811,6 +2828,55 @@ begin
   end;
 end;
 
+// Derive the PTY grid from daemon-owned host metadata at the instant a zoom
+// is committed. A client may have acquired its pane lease just before another
+// viewer attached or resized; normalizing here closes that TOCTOU window and
+// keeps a stale proposal from making the shared maximum larger than one host.
+procedure TDetachedSession.SharedZoomedPaneSize(ADeskW, ADeskH: Longint;
+  AFullScreen: boolean; out ACols, ARows: Longint);
+var
+  MinHostW, MinHostH, SafeDeskW, SafeDeskH: Longint;
+  HostSizesMatch: boolean;
+begin
+  ClientSizeSummary(MinHostW, MinHostH, HostSizesMatch);
+  if DebugFull then
+    DebugLog(Format('shared-zoom-size: desk=%dx%d host-min=%dx%d match=%d full=%d',
+      [ADeskW, ADeskH, MinHostW, MinHostH, Ord(HostSizesMatch),
+       Ord(AFullScreen)]));
+  if AFullScreen then
+  begin
+    ACols := MinHostW;
+    ARows := MinHostH;
+  end
+  else
+  begin
+    SafeDeskW := ADeskW;
+    SafeDeskH := ADeskH;
+    // Normal maximize must fit the smallest current viewer even when that is
+    // now the sole viewer or all remaining viewers have the same small size.
+    // HostSizesMatch is relevant to raw F5 passthrough, not to this bound.
+    if MinHostW > 0 then
+    begin
+      if SafeDeskW > MinHostW then
+        SafeDeskW := MinHostW;
+      if (MinHostH > 2) and (SafeDeskH > MinHostH - 2) then
+        SafeDeskH := MinHostH - 2;
+    end;
+    ACols := SafeDeskW - 2;
+    ARows := SafeDeskH - 2;
+  end;
+  if AFullScreen then
+  begin
+    if ACols < 4 then ACols := 4;
+    if ARows < 2 then ARows := 2;
+  end
+  else
+  begin
+    if ACols < MIN_WIN_W - 2 then ACols := MIN_WIN_W - 2;
+    if ARows < MIN_WIN_H - 2 then ARows := MIN_WIN_H - 2;
+  end;
+end;
+
 procedure TDetachedSession.BroadcastHostSummaryEv;
 var
   Values: array[0..3] of Longint;
@@ -4196,11 +4262,12 @@ var
   Nodes: string;
   Focused, DeskW, DeskH, ClientCount, MinHostW, MinHostH: Longint;
   BaseRevision: QWord;
-  Changes, AllowedPanes, LockedPanes: LongWord;
+  Changes, AllowedPanes, LockedPanes, AutoRestoreMask: LongWord;
   Titles: TStrArray;
   Geom: TPaneGeomArray;
   NewLay: TLayout;
-  I: integer;
+  I, ZoomedCount, EnteringZoomPane: integer;
+  NormalizedCols, NormalizedRows: Longint;
   Changed, DesktopChanged, HostSizesMatch: boolean;
 begin
   Result := False;
@@ -4262,8 +4329,49 @@ begin
     if (Changes and (LongWord(1) shl I)) <> 0 then
       if (Geom[I].Cols < 4) or (Geom[I].Cols > MAX_SCREEN_COLS) or
          (Geom[I].Rows < 2) or (Geom[I].Rows > MAX_SCREEN_ROWS) or
-         (Geom[I].BW < 0) or (Geom[I].BH < 0) then
+         (Geom[I].BW < 0) or (Geom[I].BH < 0) or
+         (Geom[I].Zoomed and
+          ((Geom[I].BW <= 0) or (Geom[I].BH <= 0))) or
+         (Geom[I].FullScreen and (not Geom[I].Zoomed)) then
         Exit;
+  // Exactly one window may own normal maximize/F5.  Validate the merged
+  // canonical result, not merely this frame's changed subset. If two clients
+  // acquired different panes from the same base and both enter zoom, their
+  // FIFO commits are still meaningful: the later commit atomically restores
+  // the earlier winner once its lease has been released.
+  EnteringZoomPane := -1;
+  for I := 0 to FPaneCount - 1 do
+    if ((Changes and (LongWord(1) shl I)) <> 0) and Geom[I].Zoomed and
+       (not FGeom[I].Zoomed) then
+    begin
+      if EnteringZoomPane >= 0 then
+        Exit;
+      EnteringZoomPane := I;
+    end;
+  AutoRestoreMask := 0;
+  if EnteringZoomPane >= 0 then
+    for I := 0 to FPaneCount - 1 do
+      if (I <> EnteringZoomPane) and FGeom[I].Zoomed and
+         ((Changes and (LongWord(1) shl I)) = 0) then
+      begin
+        // Never rewrite a pane while another client is still manipulating
+        // it. A released earlier FIFO winner has no owner and is safe to
+        // restore inside this one worker barrier.
+        if (FPaneLayoutOwner[I] >= 0) and
+           (FPaneLayoutOwner[I] <> AClient) then
+          Exit;
+        AutoRestoreMask := AutoRestoreMask or (LongWord(1) shl I);
+      end;
+  ZoomedCount := 0;
+  for I := 0 to FPaneCount - 1 do
+    if ((AutoRestoreMask and (LongWord(1) shl I)) = 0) and
+       ((((Changes and (LongWord(1) shl I)) <> 0) and Geom[I].Zoomed) or
+        (((Changes and (LongWord(1) shl I)) = 0) and FGeom[I].Zoomed)) then
+    begin
+      Inc(ZoomedCount);
+      if ZoomedCount > 1 then
+        Exit;
+    end;
   NewLay := nil;
   if (Changes and LAYOUT_CHANGE_TREE) <> 0 then
   begin
@@ -4293,6 +4401,18 @@ begin
       FLayout := NewLay;
       Changed := True;
     end;
+    for I := 0 to FPaneCount - 1 do
+      if (AutoRestoreMask and (LongWord(1) shl I)) <> 0 then
+      begin
+        FGeom[I].Zoomed := False;
+        FGeom[I].FullScreen := False;
+        FGeom[I].Cols := FGeom[I].BW - 2;
+        FGeom[I].Rows := FGeom[I].BH - 2;
+        if FGeom[I].Cols < 4 then FGeom[I].Cols := 4;
+        if FGeom[I].Rows < 2 then FGeom[I].Rows := 2;
+        ApplyCanonicalResize(I, FGeom[I].Cols, FGeom[I].Rows, False, True);
+        Changed := True;
+      end;
     // Focus normally has its own ordered FRAME_FOCUS channel. A geometry
     // proposal never overwrites a still-valid focus with an older rendered
     // snapshot. The sole exception is minimizing the currently focused pane:
@@ -4304,6 +4424,15 @@ begin
       if (Changes and (LongWord(1) shl I)) <> 0 then
       begin
         FGeom[I] := Geom[I];
+        // The daemon, not the actor's possibly stale host summary, owns the
+        // definitive grid for both normal maximize and F5.
+        if FGeom[I].Zoomed then
+        begin
+          SharedZoomedPaneSize(FDeskW, FDeskH, FGeom[I].FullScreen,
+            NormalizedCols, NormalizedRows);
+          FGeom[I].Cols := NormalizedCols;
+          FGeom[I].Rows := NormalizedRows;
+        end;
         // FRAME_LAYOUT_EV below carries both the terminal dimensions and the
         // final window geometry. A separate RESIZE_EV here made clients paint
         // new content inside the old rectangle before this atomic event.
@@ -4729,7 +4858,7 @@ var
   GC, GR, CW, CH: integer;
   Slot: st_layout.TRect;
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
-  HasLayoutLock, WasMinimized, StringsValid: boolean;
+  HasLayoutLock, WasMinimized, WasZoomed, StringsValid: boolean;
 
   function RdStr: string;
   var
@@ -4875,6 +5004,7 @@ begin
           CtlReplyErr(AFd, 'no such pane');
           Exit;
         end;
+        WasZoomed := FGeom[APane].Zoomed or FGeom[APane].FullScreen;
         case Op of
           WINOP_MINIMIZE: FGeom[APane].Minimized := True;
           WINOP_RESTORE:
@@ -4882,17 +5012,49 @@ begin
               FGeom[APane].Minimized := False;
               FGeom[APane].Zoomed := False;
               FGeom[APane].FullScreen := False;
+              if WasZoomed then
+              begin
+                Cols := FGeom[APane].BW - 2;
+                Rows := FGeom[APane].BH - 2;
+                if Cols < 4 then Cols := 4;
+                if Rows < 2 then Rows := 2;
+                FGeom[APane].Cols := Cols;
+                FGeom[APane].Rows := Rows;
+                ApplyCanonicalResize(APane, Cols, Rows, False);
+              end;
             end;
           WINOP_ZOOM:
             begin
-              // only one zoomed at a time (mirror of the UI)
-              for j := 0 to FPaneCount - 1 do
-              begin
-                FGeom[j].Zoomed := False;
-                FGeom[j].FullScreen := False;
+              // Only one pane is zoomed at a time. Restore any previous
+              // owner's PTY and install the target's safe shared maximum as
+              // one worker barrier, matching the interactive UI path.
+              StopPaneWorkers;
+              try
+                for j := 0 to FPaneCount - 1 do
+                  if (j <> APane) and
+                     (FGeom[j].Zoomed or FGeom[j].FullScreen) then
+                  begin
+                    FGeom[j].Zoomed := False;
+                    FGeom[j].FullScreen := False;
+                    Cols := FGeom[j].BW - 2;
+                    Rows := FGeom[j].BH - 2;
+                    if Cols < 4 then Cols := 4;
+                    if Rows < 2 then Rows := 2;
+                    FGeom[j].Cols := Cols;
+                    FGeom[j].Rows := Rows;
+                    ApplyCanonicalResize(j, Cols, Rows, False, True);
+                  end;
+                FGeom[APane].Zoomed := True;
+                FGeom[APane].FullScreen := False;
+                FGeom[APane].Minimized := False;
+                FFocused := APane;
+                SharedZoomedPaneSize(FDeskW, FDeskH, False, Cols, Rows);
+                FGeom[APane].Cols := Cols;
+                FGeom[APane].Rows := Rows;
+                ApplyCanonicalResize(APane, Cols, Rows, False, True);
+              finally
+                StartPaneWorkers;
               end;
-              FGeom[APane].Zoomed := True;
-              FGeom[APane].Minimized := False;
             end;
         end;
         NormalizeFocusedPane;
@@ -5036,6 +5198,15 @@ begin
         if (Cols < 4) or (Rows < 2) or (Cols > 1000) or (Rows > 500) then
         begin
           CtlReplyErr(AFd, 'bad size');
+          Exit;
+        end;
+        // A Zoomed pane's Cols/Rows define its canonical outer frame on every
+        // viewer. Resizing only the PTY would manufacture a second meaning for
+        // those fields and make a later attach draw different bounds. Restore
+        // first, then an explicit PTY resize remains unambiguous.
+        if FGeom[APane].Zoomed or FGeom[APane].FullScreen then
+        begin
+          CtlReplyErr(AFd, 'restore pane before resize');
           Exit;
         end;
         ApplyCanonicalResize(APane, Cols, Rows, False);
@@ -5411,7 +5582,8 @@ begin
               UnlockPane(APane);
             end;
           end
-          else
+          else if not (FGeom[APane].Zoomed or
+                       FGeom[APane].FullScreen) then
           begin
             CancelLayoutPreview(APane, True);
             ApplyCanonicalResize(APane, Cols, Rows);
@@ -6105,10 +6277,18 @@ end;
 procedure TDetachedSession.WriteSidecar;
 var
   Ini: TIniFile;
+  TempPath: string;
 begin
+  Ini := nil;
+  TempPath := FMetaPath + '.tmp.' + IntToStr(fpGetPid);
   try
-    Ini := TIniFile.Create(FMetaPath);
+    if FileExists(TempPath) then
+      DeleteFile(TempPath);
+    Ini := TIniFile.Create(TempPath);
     try
+      // FPC's TIniFile otherwise calls UpdateFile after every Write*. Cache
+      // the fields and materialize one complete private inode instead.
+      Ini.CacheUpdates := True;
       Ini.WriteString('session', 'name', IniQuoteGuard(FName));
       Ini.WriteString('session', 'profile', IniQuoteGuard(FProfile));
       Ini.WriteInteger('session', 'panes', FPaneCount);
@@ -6126,12 +6306,23 @@ begin
       Ini.WriteString('session', 'client_chains', ClientChainsUnion);
       Ini.UpdateFile;
     finally
-      Ini.Free;
+      FreeAndNil(Ini);
     end;
-    FpChmod(PAnsiChar(FMetaPath), &600);
+    if FpChmod(PAnsiChar(TempPath), &600) <> 0 then
+      raise EInOutError.CreateFmt('cannot protect session sidecar: %s',
+        [SysErrorMessage(fpGetErrNo)]);
+    // POSIX rename replaces the old sidecar atomically. Readers holding the
+    // previous inode finish safely; every new reader sees the whole new file.
+    if not RenameFile(TempPath, FMetaPath) then
+      raise EInOutError.CreateFmt('cannot replace session sidecar: %s',
+        [SysErrorMessage(fpGetErrNo)]);
+    TempPath := '';
   except
     on E: Exception do
     begin
+      FreeAndNil(Ini);
+      if (TempPath <> '') and FileExists(TempPath) then
+        DeleteFile(TempPath);
       // The sidecar is discovery metadata, never the session transaction.
       // A read-only/full filesystem must not suppress the already committed
       // NEWPANE/KILL/LAYOUT event and desynchronize attached clients.

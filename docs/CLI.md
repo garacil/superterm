@@ -74,9 +74,12 @@ superterm rename TARGET NAME     set a pane title (survives reattach/save)
 superterm resize TARGET WxH      explicitly resize the shared PTY, e.g. 100x30
 superterm minimize TARGET        minimize the window
 superterm restore TARGET         undo minimize and zoom
-superterm zoom TARGET            maximize the window
+superterm zoom TARGET            maximize and focus the window
 superterm organize SESSION [grid|tile|cascade]
 ```
+
+`resize` requires a normal, restored window. A maximized/F5 pane must be
+restored first so its canonical frame and PTY cannot describe different grids.
 
 ### Exit codes
 
@@ -104,13 +107,17 @@ viewers remains enabled and the daemon processes it in arrival order. Attaching 
 different-sized terminal never adapts that desktop or sends `TIOCSWINSZ`;
 a smaller terminal clips it and a larger one has unused margin. A later
 physical resize of an attached host is different: it is a shared desktop
-operation and atomically updates every window and PTY. With unequal attached
-host sizes, F5 uses the smallest common IDE-rendered fullscreen area; equal
-hosts can all use raw passthrough. Moves, incremental resizes and optional
+operation and atomically updates every window and PTY. A new normal maximize
+uses the smallest currently attached framed IDE area; with unequal host sizes,
+F5 uses the smallest common IDE-rendered fullscreen area, while equal hosts
+can all use raw passthrough for F5. A later attach does not retroactively
+rewrite an existing maximum. Moves, incremental resizes and optional
 maximize/F5 outlines are relayed while they happen, not only as a final
 result. Per-pane leases allow different viewers to manipulate different panes
-concurrently; a peer commit cannot rewind the gesture still held by another
-viewer. Minimize and restore are delivered as one atomic shared transition.
+concurrently; a maximize hand-off also acquires the previous maximized pane
+because both states change atomically. A peer commit cannot rewind the gesture
+still held by another viewer. Minimize and restore are delivered as one atomic
+shared transition.
 A stalled client pauses output briefly and is disconnected after a grace
 period so it can never block the session. Legacy (pre-3.0) clients still
 attach exclusively, exactly as before.
@@ -191,9 +198,13 @@ superterm renombrar DESTINO NOMBRE  fija el título (sobrevive al reattach)
 superterm tamano DESTINO WxH     redimensiona el PTY compartido, ej. 100x30
 superterm minimizar DESTINO      minimiza la ventana
 superterm restaurar DESTINO      deshace minimizar y zoom
-superterm ampliar DESTINO        maximiza la ventana
+superterm ampliar DESTINO        maximiza la ventana y le da el foco
 superterm organizar SESION [rejilla|mosaico|cascada]
 ```
+
+`tamano` requiere una ventana normal y restaurada. Antes hay que restaurar un
+panel maximizado/F5 para que su marco canónico y su PTY no describan rejillas
+distintas.
 
 ### Códigos de salida
 
@@ -222,15 +233,20 @@ habilitada y el daemon la procesa por orden de llegada. Conectar un terminal
 de otro tamaño nunca adapta el escritorio ni
 envía `TIOCSWINSZ`; uno pequeño lo recorta y uno grande deja margen. Cambiar
 después el tamaño físico de un host conectado sí es una operación compartida:
-actualiza atómicamente todas las ventanas y PTY. Con hosts de tamaños distintos,
-F5 usa dentro del IDE el área común del más pequeño; si son iguales, todos
-pueden usar el passthrough crudo. Los movimientos, cambios de tamaño graduales
-y contornos opcionales de maximizar/F5 se retransmiten mientras ocurren, no
+actualiza atómicamente todas las ventanas y PTY. Cada nuevo maximizado normal
+usa el área del IDE enmarcada del host conectado más pequeño; con hosts de
+tamaños distintos, F5 usa su área común de pantalla completa, y si son iguales
+todos pueden usar el passthrough crudo para F5. Un attach posterior no
+reescribe retroactivamente un maximizado existente. Los movimientos, cambios
+de tamaño graduales y contornos opcionales de maximizar/F5 se retransmiten
+mientras ocurren, no
 solo como resultado final. Los leases por panel permiten que distintos
-clientes manipulen paneles diferentes a la vez; el commit de uno no puede
-hacer retroceder el gesto que otro aún mantiene. Minimizar y restaurar se
-presentan como una única transición compartida y atómica. Un cliente
-atascado pausa la salida brevemente y se desconecta pasado un periodo de
+clientes manipulen paneles diferentes a la vez; el relevo de maximizado también
+adquiere el panel maximizado anterior porque ambos estados cambian de forma
+atómica. El commit de uno no puede hacer retroceder el gesto que otro aún
+mantiene. Minimizar y restaurar se presentan como una única transición
+compartida y atómica. Un cliente atascado pausa la salida brevemente y se
+desconecta pasado un periodo de
 gracia, de modo que nunca bloquea la sesión. Los clientes antiguos (anteriores
 a 3.0) siguen conectando en exclusiva, igual que siempre.
 
