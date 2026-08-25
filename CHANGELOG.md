@@ -36,6 +36,18 @@ shared fullscreen viewport sized to the smallest host, so every viewer still
 sees the same cells and the normal canonical desktop remains available on
 restore.
 
+Normal IDE maximize now follows the same common-viewport invariant while
+retaining the menu, status line and window frame. If a later, larger client
+has grown the canonical desktop, a new maximize and its PTY are capped to the
+smallest host connected at commit time and restore still returns to the exact
+larger pre-maximize rectangle. The daemon recomputes that size at commit time,
+so a concurrent attach or host resize cannot install a stale oversized grid.
+Later membership changes do not rewrite an already committed maximum: every
+client renders its one canonical grid and a smaller late viewer simply clips
+it. Direct and concurrent hand-offs also leave exactly one maximized pane;
+the target owns the shared focus, commit-time size normalization is a valid
+acknowledgement, and malformed maxima without restore geometry are rejected.
+
 Double-clicking a window title follows the same serialized pane operation as
 its zoom button: normal and IDE-maximized sizes alternate, the original
 rectangle and focus are preserved, and every viewer receives one transition.
@@ -48,6 +60,13 @@ active palette. Minimize/restore has no invented intermediate geometry: its
 one atomic transition reaches every viewer. These previews are cosmetic and
 ordered: they never change a revision, focus or PTY, cancellation rolls back
 once, and only the final canonical commit changes the session.
+
+The post-commit animation tail now carries an explicit presentation barrier:
+an observer paints the authoritative restored IDE before its first contraction
+ring even when both frames arrive in one socket batch. Session discovery
+sidecars are likewise built privately and replaced with one atomic rename, so
+concurrent attach/detach and CLI enumeration cannot collide on a half-written
+INI file; a metadata read error safely falls back to the live socket identity.
 
 Attach protocol v15 keeps those visuals correct when different clients hold
 different panes at the same time. `FRAME_LAYOUT_PEER_EV` carries a

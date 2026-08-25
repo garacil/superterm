@@ -231,6 +231,11 @@ type
     RemotePreviewOverlayGesture: array[0..MAX_PANES - 1] of QWord;
     RemotePreviewOverlayRect: array[0..MAX_PANES - 1] of Objects.TRect;
     RemotePreviewOverlayAttr: array[0..MAX_PANES - 1] of byte;
+    // A restore/F5 contraction tail starts before its canonical commit and
+    // draws only after it. Keep that ordering barrier across Idle batches so
+    // an observer physically publishes the settled IDE before its first ring.
+    RemotePreviewTailGesture: array[0..MAX_PANES - 1] of QWord;
+    RemotePreviewTailBase: array[0..MAX_PANES - 1] of QWord;
     // CLEAR and its canonical layout are adjacent on the socket, but Idle may
     // stop at its frame/time budget between them. Keep the last preview on
     // screen until that canonical transaction arrives; otherwise the old
@@ -349,13 +354,15 @@ type
     procedure ExitPassthrough;
     procedure UpdatePassthrough;
     procedure SharedFullScreenSize(out ADeskW, ADeskH, ACols, ARows: integer);
+    procedure SharedMaximizedSize(ACanonicalDeskW, ACanonicalDeskH: integer;
+      out ADeskW, ADeskH, ACols, ARows: integer);
     procedure ResetRemotePreviewState;
     procedure ShowRemotePreviewWindow(APane: integer);
     procedure ClearRemotePreview(APane: integer; ARestoreWindow: boolean);
     procedure SettleRemotePreviewsForOwnedAction(APane: integer);
     function LockRemoteLayout(APane: integer): boolean;
-    procedure ApplyRemoteLayoutPreviewEv(APane: integer;
-      const AData: TByteArray);
+    function ApplyRemoteLayoutPreviewEv(APane: integer;
+      const AData: TByteArray; var AFullRedraw: boolean): boolean;
     procedure PrepareRemotePreviewsForLayout(ALockedPanes: LongWord);
     procedure ReapplyRemotePreviewsAfterLayout(ALockedPanes: LongWord);
     procedure ResetRemoteZoomState;
@@ -2110,6 +2117,7 @@ var
   App: PSuperApp;
   i: integer;
   WasZoomed: boolean;
+  R: Objects.TRect;
 begin
   App := PSuperApp(Application);
   WasZoomed := Zoomed;
@@ -2118,7 +2126,30 @@ begin
       if (i <> PaneIdx) and (App^.Win[i] <> nil) and
          App^.Win[i]^.Zoomed then
         App^.Win[i]^.Zoom;
-  inherited Zoom;
+  if (App <> nil) and App^.RemoteMode then
+  begin
+    // FreeVision's TWindow.Zoom infers enter/leave by comparing Size with
+    // SizeLimits.Max. A shared maximum may deliberately be smaller than the
+    // canonical desktop, so that inference would treat an unzoom as another
+    // zoom and overwrite ZoomRect. The explicit state is authoritative here.
+    if WasZoomed then
+    begin
+      R := ZoomRect;
+      Locate(R);
+    end
+    else
+    begin
+      GetBounds(ZoomRect);
+      // Authoritative layout application immediately places this view at the
+      // daemon's canonical Cols/Rows.  Do not derive a different rectangle
+      // from this viewer's current membership summary here: an attach must
+      // never make two clients draw two versions of the same shared window.
+      R.Assign(0, 0, App^.RemoteDeskW, App^.RemoteDeskH);
+      Locate(R);
+    end;
+  end
+  else
+    inherited Zoom;
   Zoomed := not WasZoomed;
   if WasZoomed then
     FullScreen := False;   // back to a window: nothing owns the terminal
@@ -2554,6 +2585,7 @@ var
   Mode: TVideoMode;
   R, WR: Objects.TRect;
   I, SavedPalette, NewDeskW, NewDeskH: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
   NeedVideo, NeedBounds, SavedSuppress, SavedSettling: boolean;
 begin
   if (ACols < 1) or (ARows < 1) then
@@ -2641,7 +2673,17 @@ begin
               else if RemoteGeom[I].Zoomed then
               begin
                 Win[I]^.ZoomRect := WR;
-                R.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+                if RemoteGeom[I].FullScreen then
+                  SharedFullScreenSize(MaxDeskW, MaxDeskH, MaxCols, MaxRows)
+                else
+                begin
+                  // Normal maximized bounds are canonical state.  The host
+                  // minimum was applied by the daemon when the zoom commit
+                  // happened; a later physical resize only clips the view.
+                  MaxDeskW := RemoteGeom[I].Cols + 2;
+                  MaxDeskH := RemoteGeom[I].Rows + 2;
+                end;
+                R.Assign(0, 0, MaxDeskW, MaxDeskH);
                 Win[I]^.Locate(R);
               end
               else
@@ -2685,6 +2727,7 @@ var
   ChangeMask: LongWord;
   OldW, OldH, NewW, NewH: integer;
   I, L, T, R, B, MinW, MinH: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
   Tick: QWord;
 
   function ScaleEdge(AValue, AOldSize, ANewSize: integer): integer;
@@ -2744,8 +2787,10 @@ var
     end
     else if G.Zoomed then
     begin
-      G.Cols := NewW - 2;
-      G.Rows := NewH - 2;
+      SharedMaximizedSize(NewW, NewH, MaxDeskW, MaxDeskH,
+        MaxCols, MaxRows);
+      G.Cols := MaxCols;
+      G.Rows := MaxRows;
     end
     else if not G.Minimized then
     begin
@@ -2761,7 +2806,8 @@ begin
   Titles := nil;
   if (not HostResizePending) or (not RemoteMode) or
      (Remote = nil) or (not Remote.Connected) or (Lay = nil) or
-     (Length(RemoteGeom) <> Lay.PaneCount) then
+     (Length(RemoteGeom) <> Lay.PaneCount) or
+     (not RemoteHostSummaryValid) then
     Exit;
   Tick := GetTickCount64;
   if HostResizeInFlight then
@@ -3311,6 +3357,7 @@ var
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
   LR, TileR: Objects.TRect;
   i, TileH, DeskW, DeskH: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
   R: Objects.TRect;
   HasIcons: boolean;
 begin
@@ -3344,7 +3391,22 @@ begin
       // Keep the tile as the restore target while a window is maximized.
       Win[i]^.ZoomRect := TileR;
       if Win[i]^.Zoomed then
-        LR.Assign(0, 0, DeskW, DeskH)
+      begin
+        if Win[i]^.FullScreen then
+          SharedFullScreenSize(MaxDeskW, MaxDeskH, MaxCols, MaxRows)
+        else if RemoteMode and (i < Length(RemoteGeom)) and
+                RemoteGeom[i].Zoomed then
+        begin
+          MaxDeskW := RemoteGeom[i].Cols + 2;
+          MaxDeskH := RemoteGeom[i].Rows + 2;
+        end
+        else
+        begin
+          MaxDeskW := DeskW;
+          MaxDeskH := DeskH;
+        end;
+        LR.Assign(0, 0, MaxDeskW, MaxDeskH);
+      end
       else
         LR := TileR;
       Win[i]^.Locate(LR);
@@ -4474,6 +4536,7 @@ var
   NewLay, OldLay: TLayout;
   Stream: TMemoryStream;
   I, N, SysIdx, FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  MaxDeskW, MaxDeskH: integer;
   OldActiveProfile, OldActiveWindow: integer;
   OldProfileMode: boolean;
   OldSessionName: string;
@@ -4637,7 +4700,13 @@ begin
             GR.Assign(0, 0, FullDeskW, FullDeskH);
           end
           else
-            GR.Assign(0, 0, Snapshot.DeskW, Snapshot.DeskH);
+          begin
+            // Snapshot Cols/Rows are the daemon-owned shared maximum.  Host
+            // membership is metadata, not a reason to invent local bounds.
+            MaxDeskW := Snapshot.Geom[I].Cols + 2;
+            MaxDeskH := Snapshot.Geom[I].Rows + 2;
+            GR.Assign(0, 0, MaxDeskW, MaxDeskH);
+          end;
           Win[I]^.Locate(GR);
         end;
         Win[I]^.FullScreen := Snapshot.Geom[I].FullScreen;
@@ -5944,6 +6013,7 @@ var
   WR, RD: Objects.TRect;
   CanonicalBase: boolean;
   FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
 begin
   AGeom := Default(TPaneGeomArray);
   ADeskW := 0;
@@ -6016,8 +6086,21 @@ begin
       end
       else if Win[i]^.Zoomed then
       begin
-        AGeom[i].Cols := ADeskW - 2;
-        AGeom[i].Rows := ADeskH - 2;
+        // Preserve an existing canonical maximum during unrelated local
+        // bookkeeping.  Only a new zoom or host-resize proposal derives a
+        // fresh maximum from the current host summary.
+        if CanonicalBase and RemoteGeom[i].Zoomed then
+        begin
+          AGeom[i].Cols := RemoteGeom[i].Cols;
+          AGeom[i].Rows := RemoteGeom[i].Rows;
+        end
+        else
+        begin
+          SharedMaximizedSize(ADeskW, ADeskH, MaxDeskW, MaxDeskH,
+            MaxCols, MaxRows);
+          AGeom[i].Cols := MaxCols;
+          AGeom[i].Rows := MaxRows;
+        end;
       end
       else
       begin
@@ -6321,6 +6404,33 @@ begin
   if ARows < 2 then ARows := 2;
 end;
 
+// A normal maximized window keeps the IDE menu/status and its own frame. The
+// canonical desktop may be larger than one connected terminal after another
+// client deliberately resizes it, but the one shared maximum must remain
+// completely visible on every viewer. This is distinct from F5: its PTY owns
+// the full physical viewport, whereas a normal maximized PTY loses two cells
+// in each dimension to the window frame.
+procedure TSuperApp.SharedMaximizedSize(ACanonicalDeskW,
+  ACanonicalDeskH: integer; out ADeskW, ADeskH, ACols, ARows: integer);
+begin
+  ADeskW := ACanonicalDeskW;
+  ADeskH := ACanonicalDeskH;
+  if (RemoteMinHostW > 0) and (RemoteMinHostH > 2) then
+  begin
+    if ADeskW > RemoteMinHostW then
+      ADeskW := RemoteMinHostW;
+    if ADeskH > RemoteMinHostH - 2 then
+      ADeskH := RemoteMinHostH - 2;
+  end;
+  // Match TWindow.SizeLimits/FreeVision's MinWinSize exactly. Otherwise the
+  // daemon could install a 4-column PTY while Locate silently paints a
+  // 16-column frame on a malformed/tiny host.
+  if ADeskW < MIN_WIN_W then ADeskW := MIN_WIN_W;
+  if ADeskH < MIN_WIN_H then ADeskH := MIN_WIN_H;
+  ACols := ADeskW - 2;
+  ARows := ADeskH - 2;
+end;
+
 procedure TSuperApp.ResetRemotePreviewState;
 var
   I: integer;
@@ -6335,6 +6445,8 @@ begin
     RemotePreviewOverlayGesture[I] := 0;
     RemotePreviewOverlayRect[I] := Default(Objects.TRect);
     RemotePreviewOverlayAttr[I] := 0;
+    RemotePreviewTailGesture[I] := 0;
+    RemotePreviewTailBase[I] := 0;
     RemotePreviewClearPending[I] := False;
   end;
 end;
@@ -6403,6 +6515,8 @@ begin
   RemotePreviewMode[APane] := 0;
   RemotePreviewGesture[APane] := 0;
   RemotePreviewRect[APane] := Default(Objects.TRect);
+  RemotePreviewTailGesture[APane] := 0;
+  RemotePreviewTailBase[APane] := 0;
   RemotePreviewClearPending[APane] := False;
 end;
 
@@ -6437,6 +6551,7 @@ begin
     begin
       HadPreview := (RemotePreviewMode[I] <> 0) or
         RemotePreviewOverlayOn[I] or RemotePreviewClearPending[I] or
+        (RemotePreviewTailGesture[I] <> 0) or
         TransientOutlineActive(I);
       if HadPreview then
       begin
@@ -6460,8 +6575,8 @@ begin
     SettleRemotePreviewsForOwnedAction(APane);
 end;
 
-procedure TSuperApp.ApplyRemoteLayoutPreviewEv(APane: integer;
-  const AData: TByteArray);
+function TSuperApp.ApplyRemoteLayoutPreviewEv(APane: integer;
+  const AData: TByteArray; var AFullRedraw: boolean): boolean;
 var
   Preview: TLayoutPreview;
   R: Objects.TRect;
@@ -6469,6 +6584,7 @@ var
   FrameAttr: byte;
   SavedCurrent: PView;
 begin
+  Result := False;
   if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
      (Desktop = nil) or
      (not DecodeLayoutPreviewBlob(AData, Preview)) then
@@ -6479,8 +6595,28 @@ begin
       Preview.BaseRevision, Preview.Seq, Preview.Op, Preview.X, Preview.Y,
       Preview.W, Preview.H]));
 
+  if Preview.Op = PREVIEW_OP_TAIL_BEGIN then
+  begin
+    RemotePreviewTailGesture[APane] := Preview.GestureId;
+    RemotePreviewTailBase[APane] := Preview.BaseRevision;
+    Exit;
+  end;
+  if Preview.Op = PREVIEW_OP_TAIL_END then
+  begin
+    if RemotePreviewTailGesture[APane] = Preview.GestureId then
+    begin
+      RemotePreviewTailGesture[APane] := 0;
+      RemotePreviewTailBase[APane] := 0;
+    end;
+    Exit;
+  end;
   if Preview.Op = PREVIEW_OP_CLEAR then
   begin
+    if RemotePreviewTailGesture[APane] = Preview.GestureId then
+    begin
+      RemotePreviewTailGesture[APane] := 0;
+      RemotePreviewTailBase[APane] := 0;
+    end;
     if ((RemotePreviewMode[APane] <> 0) and
         (RemotePreviewGesture[APane] <> Preview.GestureId)) or
        (RemotePreviewOverlayOn[APane] and
@@ -6576,6 +6712,24 @@ begin
       end;
     PREVIEW_OP_OUTLINE_SHOW:
       begin
+        if RemotePreviewTailGesture[APane] <> 0 then
+        begin
+          if (RemotePreviewTailGesture[APane] <> Preview.GestureId) or
+             (Preview.BaseRevision <= RemotePreviewTailBase[APane]) then
+            Exit;
+          // Socket FIFO already put the authoritative LAYOUT_EV before this
+          // first contraction ring. If both arrived in one drain batch, its
+          // repaint is still deferred in AFullRedraw; publish it now so the
+          // following UpdateScreen contains only the cosmetic ring.
+          if AFullRedraw then
+          begin
+            RepaintChanges;
+            AFullRedraw := False;
+            Result := True;
+          end;
+          RemotePreviewTailGesture[APane] := 0;
+          RemotePreviewTailBase[APane] := 0;
+        end;
         RemotePreviewClearPending[APane] := False;
         FrameAttr := Win[APane]^.ActiveFrameAttr;
         RemotePreviewOverlayOn[APane] := True;
@@ -6691,6 +6845,8 @@ var
   Candidate: TPaneGeomArray;
   Titles: TStrArray;
   P, I, FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
+  ChangeMask: LongWord;
   Target: TPaneGeom;
   WR: Objects.TRect;
   EntersZoom, LeavesZoom: boolean;
@@ -6728,10 +6884,28 @@ begin
     RemoteHostSizesMatch := Remote.HostSizesMatch;
     RemoteHostSummaryValid := True;
   end;
-  if (ACommand = cmFullScreen) and (not RemoteHostSummaryValid) then
-    Exit;
+  // Start with the pane named by the command. If entering zoom also restores
+  // an existing zoom owner, that pane is acquired below as part of the same
+  // compound commit. This preserves the per-pane lock display while the
+  // daemon's merged-state validation prevents concurrent dual maxima.
   if not LockRemoteLayout(P) then
     Exit;
+  // LockLayout drains frames which precede its reply. A host resize/attach
+  // summary can therefore become available while this call waits; adopt it
+  // before deriving either kind of maximum.
+  if Remote.HostSummaryValid then
+  begin
+    RemoteClientCount := Remote.ClientCount;
+    RemoteMinHostW := Remote.MinHostW;
+    RemoteMinHostH := Remote.MinHostH;
+    RemoteHostSizesMatch := Remote.HostSizesMatch;
+    RemoteHostSummaryValid := True;
+  end;
+  if not RemoteHostSummaryValid then
+  begin
+    Remote.UnlockLayout(-1);
+    Exit;
+  end;
 
   Candidate := Copy(RemoteGeom, 0, Length(RemoteGeom));
   Target := Candidate[P];
@@ -6753,6 +6927,25 @@ begin
     Target.FullScreen := False;
     Target.Zoomed := not Target.Zoomed;
   end;
+  if Target.Zoomed then
+    for I := 0 to High(Candidate) do
+      if (I <> P) and (Candidate[I].Zoomed or Candidate[I].FullScreen) then
+        if not LockRemoteLayout(I) then
+        begin
+          Remote.UnlockLayout(-1);
+          Exit;
+        end;
+  // A second pane grant may have drained a newer host summary. Its revision
+  // cannot have changed (that would deny the grant), but physical host
+  // metadata is deliberately independent of layout revision.
+  if Remote.HostSummaryValid then
+  begin
+    RemoteClientCount := Remote.ClientCount;
+    RemoteMinHostW := Remote.MinHostW;
+    RemoteMinHostH := Remote.MinHostH;
+    RemoteHostSizesMatch := Remote.HostSizesMatch;
+    RemoteHostSummaryValid := True;
+  end;
   Target.Minimized := False;
   if Target.FullScreen then
   begin
@@ -6762,8 +6955,10 @@ begin
   end
   else if Target.Zoomed then
   begin
-    Target.Cols := RemoteDeskW - 2;
-    Target.Rows := RemoteDeskH - 2;
+    SharedMaximizedSize(RemoteDeskW, RemoteDeskH, MaxDeskW, MaxDeskH,
+      MaxCols, MaxRows);
+    Target.Cols := MaxCols;
+    Target.Rows := MaxRows;
   end
   else
   begin
@@ -6773,6 +6968,19 @@ begin
   if Target.Cols < 4 then Target.Cols := 4;
   if Target.Rows < 2 then Target.Rows := 2;
   Candidate[P] := Target;
+  ChangeMask := LongWord(1) shl P;
+  if Target.Zoomed then
+    for I := 0 to High(Candidate) do
+      if (I <> P) and (Candidate[I].Zoomed or Candidate[I].FullScreen) then
+      begin
+        Candidate[I].Zoomed := False;
+        Candidate[I].FullScreen := False;
+        Candidate[I].Cols := Candidate[I].BW - 2;
+        Candidate[I].Rows := Candidate[I].BH - 2;
+        if Candidate[I].Cols < 4 then Candidate[I].Cols := 4;
+        if Candidate[I].Rows < 2 then Candidate[I].Rows := 2;
+        ChangeMask := ChangeMask or (LongWord(1) shl I);
+      end;
 
   WR := Default(Objects.TRect);
   Win[P]^.GetBounds(WR);
@@ -6796,8 +7004,8 @@ begin
       SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows)
     else
     begin
-      FullDeskW := RemoteDeskW;
-      FullDeskH := RemoteDeskH;
+      SharedMaximizedSize(RemoteDeskW, RemoteDeskH, FullDeskW, FullDeskH,
+        MaxCols, MaxRows);
     end;
     ZoomAnimate(Win[P], RemoteZoomOldX1, RemoteZoomOldY1,
       RemoteZoomOldX2, RemoteZoomOldY2, Desktop^.Origin.X,
@@ -6821,15 +7029,15 @@ begin
       Remote.LayoutRevision, RemoteZoomPreviewSeq, PREVIEW_OP_TAIL_BEGIN,
       0, 0, 0, 0) then
     begin
-      Remote.UnlockLayout(P);
+      Remote.UnlockLayout(-1);
       ResetRemoteZoomState;
       Exit;
     end;
   end;
   if not Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles,
-    Candidate, RemoteDeskW, RemoteDeskH, LongWord(1) shl P) then
+    Candidate, RemoteDeskW, RemoteDeskH, ChangeMask) then
   begin
-    Remote.UnlockLayout(P);
+    Remote.UnlockLayout(-1);
     ResetRemoteZoomState;
     Exit;
   end;
@@ -7036,6 +7244,7 @@ var
   AnyFull, WireHostSizesMatch, ZoomAck, ZoomReply: boolean;
   SavedSuppress: boolean;
   FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  MaxDeskW, MaxDeskH: integer;
 
   procedure PreserveLocalPane(APane: integer);
   var
@@ -7103,14 +7312,19 @@ begin
   for I := 0 to Lay.PaneCount - 1 do
     if (PreservePanes and (LongWord(1) shl I)) <> 0 then
       PreserveLocalPane(I);
+  // Every zoom/F5 request changes Zoomed or FullScreen. Combined with the
+  // advanced revision and exact restore rectangle, those flags correlate the
+  // ordinary reply without trusting the actor's proposed grid. Cols/Rows are
+  // daemon authority: it may normalize them for an attach/resize just before
+  // commit, and an egress-time client drop may change the summary embedded in
+  // the reply without changing the already committed safe geometry.
   ZoomAck := (not APeer) and RemoteZoomPending and (RemoteZoomPane >= 0) and
     (RemoteZoomPane < Length(Geom)) and
+    (Revision > RemoteZoomBaseRevision) and
     (Geom[RemoteZoomPane].BX = RemoteZoomTarget.BX) and
     (Geom[RemoteZoomPane].BY = RemoteZoomTarget.BY) and
     (Geom[RemoteZoomPane].BW = RemoteZoomTarget.BW) and
     (Geom[RemoteZoomPane].BH = RemoteZoomTarget.BH) and
-    (Geom[RemoteZoomPane].Cols = RemoteZoomTarget.Cols) and
-    (Geom[RemoteZoomPane].Rows = RemoteZoomTarget.Rows) and
     (Geom[RemoteZoomPane].Zoomed = RemoteZoomTarget.Zoomed) and
     (Geom[RemoteZoomPane].Minimized = RemoteZoomTarget.Minimized) and
     (Geom[RemoteZoomPane].FullScreen = RemoteZoomTarget.FullScreen);
@@ -7119,8 +7333,11 @@ begin
   // rejects our stale base and returns that newer state after releasing the
   // lease. Treat that state as a negative ACK instead of leaving every later
   // F5/double-click blocked behind a proposal which can no longer complete.
-  ZoomReply := (not APeer) and RemoteZoomPending and
-    (Revision > RemoteZoomBaseRevision);
+  // While this client owns the pane, unrelated canonical commits arrive as
+  // peer events. The first ordinary snapshot after FRAME_LAYOUT is therefore
+  // its correlated success/rejection reply even when validation rejected the
+  // proposal without advancing the revision.
+  ZoomReply := (not APeer) and RemoteZoomPending;
   NewLay := nil;
   if (not LoadLayoutString(Nodes, NewLay, True)) or (NewLay = nil) then
     Exit;
@@ -7194,7 +7411,13 @@ begin
               GR.Assign(0, 0, FullDeskW, FullDeskH);
             end
             else
-              GR.Assign(0, 0, DeskW, DeskH);
+            begin
+              // Geom is the just-committed canonical state.  Re-deriving it
+              // from a later host-summary would split the shared view.
+              MaxDeskW := Geom[I].Cols + 2;
+              MaxDeskH := Geom[I].Rows + 2;
+              GR.Assign(0, 0, MaxDeskW, MaxDeskH);
+            end;
             Win[I]^.Locate(GR);
           end;
         end
@@ -7904,6 +8127,7 @@ var
   ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
   SharedR: Objects.TRect;
   DeskCol, FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -7974,8 +8198,10 @@ begin
         end
         else
         begin
-          ZoomDX2 := ZoomDX1 + RemoteDeskW - 1;
-          ZoomDY2 := ZoomDY1 + RemoteDeskH - 1;
+          SharedMaximizedSize(RemoteDeskW, RemoteDeskH,
+            MaxDeskW, MaxDeskH, MaxCols, MaxRows);
+          ZoomDX2 := ZoomDX1 + MaxDeskW - 1;
+          ZoomDY2 := ZoomDY1 + MaxDeskH - 1;
         end;
       end
       else
@@ -8048,8 +8274,10 @@ begin
         end
         else if Win[ZoomF]^.Zoomed then
         begin
-          RemoteGeom[ZoomF].Cols := RemoteDeskW - 2;
-          RemoteGeom[ZoomF].Rows := RemoteDeskH - 2;
+          SharedMaximizedSize(RemoteDeskW, RemoteDeskH,
+            MaxDeskW, MaxDeskH, MaxCols, MaxRows);
+          RemoteGeom[ZoomF].Cols := MaxCols;
+          RemoteGeom[ZoomF].Rows := MaxRows;
         end
         else
         begin
@@ -8068,7 +8296,11 @@ begin
             SharedR.Assign(0, 0, FullDeskW, FullDeskH);
           end
           else
-            SharedR.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+          begin
+            SharedMaximizedSize(RemoteDeskW, RemoteDeskH,
+              MaxDeskW, MaxDeskH, MaxCols, MaxRows);
+            SharedR.Assign(0, 0, MaxDeskW, MaxDeskH);
+          end;
           Win[ZoomF]^.Locate(SharedR);
         end;
         // Resize the actor's screen mirror inside this same suppressed
@@ -8659,7 +8891,9 @@ begin
           ApplyRemoteHostSummaryEv(RemoteEvent.Data);
         sekLayoutPreviewEv:
           begin
-            ApplyRemoteLayoutPreviewEv(RemoteEvent.Pane, RemoteEvent.Data);
+            if ApplyRemoteLayoutPreviewEv(RemoteEvent.Pane,
+                 RemoteEvent.Data, FullRedraw) then
+              Touched := Default(TTouchedPanes);
             // Visual steps flush themselves. CLEAR holds the last visual
             // unchanged until its canonical event, even if the drain budget
             // splits the adjacent wire frames across two Idle iterations.

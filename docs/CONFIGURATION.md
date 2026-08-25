@@ -160,6 +160,11 @@ character grid.
   replaces the canonical desktop, proportionally scales its windows and
   updates the PTYs for every viewer. Explicit window operations and CLI
   `resize` likewise change the common geometry.
+  A new normal IDE maximize is a shared exception to clipping: its complete
+  frame and PTY fit the smallest host connected when the action commits while
+  the larger canonical desktop remains intact for restore. A later attach does
+  not recalculate that committed geometry. F5 uses the smallest host's complete
+  terminal instead because it removes the IDE chrome.
   Detach performs no save/reload; the daemon keeps the live object untouched.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
