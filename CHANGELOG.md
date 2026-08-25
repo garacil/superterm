@@ -1,5 +1,71 @@
 # Changelog
 
+## 3.5.2 - 2026-08
+
+One live session is now exactly one shared desktop.  The daemon owns the
+single pane tree, window geometry, PTY sizes, minimized/maximized state and
+focus; every attached client sees those same values.  A differently sized
+host used for attach is only a viewport: it clips or pads the desktop and
+never silently reshapes it.  A later physical resize is an explicit shared
+operation: the actor's new host size becomes the canonical desktop and every
+window and PTY changes in the same transaction.  Detaching every viewer leaves
+the live desktop exactly as it was for the next attach.
+
+Client commands enter one bounded global FIFO and are applied by the reactor
+in arrival order.  Visual mutations take a short per-pane lease (or the one
+desktop lease for tree-wide operations), while terminal input remains ordered
+and live.  Layout commits and synchronized terminal updates now present only
+the authoritative result, removing the stale-snapshot flashes around move,
+resize, minimize/restore, F5 and profile replacement.
+
+The desktop may contain zero to sixteen panes.  It can close all panes and
+create the first one again; attempts beyond sixteen report the real limit.
+New panes created from a class are resolved completely by the daemon and
+become visible only with their final title, size and position.  Class changes
+are reloaded by a daemon that is already running.
+
+Palette changes repaint the complete UI immediately and terminal-host resizes
+preserve the selected palette.  There is one interactive Exit command: it is
+client-local while other viewers remain, and the final Exit closes and removes
+the session.  Detach is the separate operation that deliberately keeps it
+alive.
+
+F5 uses raw passthrough in every viewer when all attached hosts have the same
+geometry.  With different geometries it remains inside the IDE and uses one
+shared fullscreen viewport sized to the smallest host, so every viewer still
+sees the same cells and the normal canonical desktop remains available on
+restore.
+
+Double-clicking a window title follows the same serialized pane operation as
+its zoom button: normal and IDE-maximized sizes alternate, the original
+rectangle and focus are preserved, and every viewer receives one transition.
+
+Live gestures now belong to the shared view too. While one client moves or
+resizes a window, every other viewer receives the same bounded 60 Hz content
+or wireframe path under that pane's lease. The optional eight-step maximize
+and F5 outline is relayed in both directions as well, using each viewer's
+active palette. Minimize/restore has no invented intermediate geometry: its
+one atomic transition reaches every viewer. These previews are cosmetic and
+ordered: they never change a revision, focus or PTY, cancellation rolls back
+once, and only the final canonical commit changes the session.
+
+Attach protocol v15 keeps those visuals correct when different clients hold
+different panes at the same time. `FRAME_LAYOUT_PEER_EV` carries a
+viewer-relative preserve mask: an owner applies a peer's committed panes,
+focus and lock display immediately without replacing its own in-flight pane
+or advancing that pane's older lease base. The two commits then merge as
+successive canonical revisions. Preview `CLEAR` is also presentation-atomic:
+the renderer retains the last transient frame until the following canonical
+layout can replace it in the same output transaction, even when the socket
+drain budget separates the two frames across event-loop ticks.
+
+The regression suite now exercises multi-client ordering, attach/detach churn,
+shared focus and geometry, atomic visual transitions, empty/maximum desktops,
+class creation, palette preservation and heap/debug stress runs. A dedicated
+three-viewer concurrent-gesture oracle releases two same-revision pane leases
+in both orders, with content and wireframe dragging, and rejects any
+`final -> old -> final` presentation while checking the two merged PTY sizes.
+
 ## 3.5.1 - 2026-08
 
 A daemon that blocks on nothing, panes that may spread across cores, and a

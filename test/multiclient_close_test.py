@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Closing one attached UI must not close the shared session.
+"""Exit and detach have one unambiguous live-session lifetime.
 
-Covers both interactive exit variants, last-client shutdown, and the separate
-administrative kill path. This is deliberately a real multi-client UI test: it
-exercises the final layout sent during TSuperApp teardown before FRAME_CLOSE,
-not only a synthetic protocol frame.
+Covers secondary Exit, last-client Exit, Detach, and the separate
+administrative kill path. There is no save/no-save exit variant. This is a
+real multi-client UI test: it exercises the final layout sent during
+TSuperApp teardown before FRAME_CLOSE, not only a synthetic protocol frame.
 """
 import os
 import sys
@@ -53,34 +53,36 @@ for client in (a, b):
 check('both clients receive output', all(
     'BOTH_CONNECTED' in client.text() for client in (a, b)))
 
-# Alt-X saves but must close only B because creator A remains attached.
+# Exit closes only B because creator A remains attached. Even autosave=1 must
+# not resurrect the removed Save-and-exit protocol path.
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
 b.send(b'\x1bx', 1.0)
-check('attached Alt-X exits sender', b.wait_exit(timeout=8.0) is not None)
+check('attached Alt-X exits sender', b.wait_exit(timeout=8.0) == 0)
 b.close()
-check('Alt-X keeps creator alive', a.alive())
-check('Alt-X keeps session alive', len(sockets()) == 1)
-check('attached Alt-X still saves', wait_for(lambda: os.path.exists(SESS_INI)))
+check('secondary Exit keeps creator alive', a.alive())
+check('secondary Exit keeps session alive', len(sockets()) == 1)
+check('secondary Exit does not save', not os.path.exists(SESS_INI))
 
-# Attach C so Alt-Q is also tested with exactly two clients.
+# The same single Exit path remains per-client with a replacement viewer.
 c = stlib.Client(HOME, args=['--attach', name], w=80, h=24, lang='en')
 c.drain(2.0)
 check('replacement client attaches', c.alive())
-c.send(b'\x1bq', 1.0)
-check('attached Alt-Q exits sender', c.wait_exit(timeout=8.0) is not None)
+c.send(b'\x1bx', 1.0)
+check('replacement Exit exits sender', c.wait_exit(timeout=8.0) == 0)
 c.close()
-check('Alt-Q keeps sole creator alive', a.alive())
-check('Alt-Q keeps session alive', len(sockets()) == 1)
+check('replacement Exit keeps creator alive', a.alive())
+check('replacement Exit keeps session alive', len(sockets()) == 1)
 run_cli(['send', name + ':1', 'echo CREATOR_STILL_WORKS'], HOME)
 a.wait_until(lambda text: 'CREATOR_STILL_WORKS' in text, 5.0)
 check('remaining client remains usable', 'CREATOR_STILL_WORKS' in a.text())
 
 # With A now the only attached UI, the same interactive exit closes the daemon.
-a.send(b'\x1bq', 1.0)
-check('last client exits', a.wait_exit(timeout=8.0) is not None)
+a.send(b'\x1bx', 1.0)
+check('last client exits', a.wait_exit(timeout=8.0) == 0)
 a.close()
 check('last client closes session', wait_for(lambda: sockets() == []))
+check('last Exit leaves no saved session', not os.path.exists(SESS_INI))
 
 # Administrative `kill` is intentionally global even while clients exist.
 d = stlib.Client(HOME, args=['--session', 'admin-kill'], w=100, h=28,
@@ -101,9 +103,9 @@ time.sleep(1.5)
 d.send(b'\r', 0.5)
 e.send(b'\r', 0.5)
 check('administrative kill notifies creator',
-      d.wait_exit(timeout=8.0) is not None)
+      d.wait_exit(timeout=8.0) == 0)
 check('administrative kill notifies attached',
-      e.wait_exit(timeout=8.0) is not None)
+      e.wait_exit(timeout=8.0) == 0)
 d.close()
 e.close()
 

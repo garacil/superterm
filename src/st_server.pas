@@ -23,11 +23,15 @@ const
   FRAME_RESIZE = 3;
   FRAME_DETACH = 4;
   FRAME_CLOSE = 5;
-  FRAME_KILLPANE = 6;   // attached client closes a pane
+  FRAME_KILLPANE = 6;   // pane >= 0 closes one; pane=-1 closes all atomically
   FRAME_LAYOUT = 7;     // attached client syncs tree/geometry
-  FRAME_NEWPANE = 8;    // new daemon-side pane: byte Dir; Class,Cmd,Cwd,Title
+  FRAME_NEWPANE = 8;    // QWord BaseRevision; byte Dir; Class,Cmd,Cwd,Title
   FRAME_FOCUS = 9;      // changes the focused pane (pane in header)
   FRAME_RENAME = 10;    // string NewTitle (pane in header)
+  // frame kind 16 retired: a live session has no save-layout operation
+  FRAME_LAYOUT_LOCK = 17; // pane=-1 atomically locks every existing pane
+  FRAME_LAYOUT_UNLOCK = 18;
+  FRAME_CLIENT_SIZE = 19; // physical host Cols,Rows; never changes layout alone
 
   // ephemeral control: one connection, one request frame, reply and close;
   // never occupies an interactive client slot (FRAME_CLOSE pattern)
@@ -48,12 +52,33 @@ const
   // an old client treats any unknown frame as a lost connection,
   // so they are never sent to it)
   FRAME_LAYOUT_EV = 26;    // same payload as FRAME_LAYOUT
-  FRAME_KILLPANE_EV = 27;  // pane closed (pane in header)
+  FRAME_KILLPANE_EV = 27;  // pane >= 0 closed; pane=-1 = whole workspace
   FRAME_NEWPANE_EV = 28;   // At,NewIdx,PaneCount,Dir,Cols,Rows,Title,Term
   FRAME_RESIZE_EV = 29;    // Longint Cols,Rows (pane in header)
   FRAME_TITLE_EV = 30;     // string Title (pane in header)
   FRAME_FOCUS_EV = 31;     // focused pane (pane in header)
   FRAME_SHUTDOWN_EV = 32;  // the session is shutting down
+  FRAME_LAYOUT_LOCK_REPLY = 33; // byte granted; reply only to requester
+  FRAME_HOST_SUMMARY_EV = 34; // count,min host WxH,all-hosts-match
+  FRAME_LAYOUT_PREVIEW = 35; // cosmetic gesture; never changes canonical state
+  FRAME_LAYOUT_PREVIEW_EV = 36; // relayed to every other capable viewer
+  // Canonical state for a viewer which currently owns another pane. Its
+  // FRAME_LAYOUT_EV-shaped payload carries the viewer's own pane mask in
+  // Changes, so those panes remain locally interactive while every peer
+  // commit and viewer-relative lock bit is applied immediately.
+  FRAME_LAYOUT_PEER_EV = 37;
+
+  // FRAME_LAYOUT_PREVIEW operations. Bounds, wireframe and outline show/hide
+  // carry a desktop-local X,Y,W,H rectangle. Tail/clear operations are
+  // ordering markers and carry a zero rectangle. CLEAR is also gesture END.
+  PREVIEW_OP_BOUNDS = 1;
+  PREVIEW_OP_WIREFRAME = 2;
+  PREVIEW_OP_OUTLINE_SHOW = 3;
+  PREVIEW_OP_OUTLINE_HIDE = 4;
+  PREVIEW_OP_TAIL_BEGIN = 5;
+  PREVIEW_OP_TAIL_END = 6;
+  PREVIEW_OP_CLEAR = 7;
+  PREVIEW_OP_END = PREVIEW_OP_CLEAR;
 
   // control replies
   FRAME_CTL_OK = 40;
@@ -76,7 +101,6 @@ const
   WINOP_ORGANIZE = 8;   // byte How: 0 grid, 1 tile, 2 cascade
   WINOP_RENAME = 9;     // string NewTitle
   WINOP_RESIZE = 10;    // Longint Cols, Rows (terminal size)
-  WINOP_SAVE = 11;      // saves session.ini with the daemon state
 
   // Ceiling for one frame. FRAME_SCREEN carries a pane's whole grid plus its
   // scrollback as raw TCell records, so this limit is really a CELL budget:
@@ -87,6 +111,17 @@ const
   // A compact wire format would be the better long-term answer; this restores
   // the previous capacity without another format change.
   MAX_FRAME_SIZE = 112 * 1024 * 1024;
+  // Length-prefixed command strings are configuration/metadata, never screen
+  // dumps.  Keep their allocation bounded independently from the much larger
+  // FRAME_SCREEN ceiling.
+  MAX_WIRE_STRING_SIZE = 1024 * 1024;
+  // Every complete command received by the daemon crosses this one global
+  // FIFO before it can mutate session state.  The reactor is its sole
+  // producer and consumer; the bounds prevent a burst of local clients from
+  // turning framing into unbounded process memory.
+  COMMAND_QUEUE_SLOTS = 512;
+  COMMAND_QUEUE_BYTE_LIMIT = MAX_FRAME_SIZE;
+  INPUT_COMPACT_THRESHOLD = 64 * 1024;
 
   // versioned attach (tolerant tail of the FRAME_ATTACH payload):
   // ProtoVer, DeskW, DeskH, Caps; no payload = exclusive legacy client
@@ -96,12 +131,53 @@ const
   //    daemon outlives its clients, so a 24-byte producer feeding a 14-byte
   //    consumer reads every cell at the wrong offset and the pane fills with
   //    garbage. The version must be refused on BOTH sides.
-  // 4: the session snapshot declares its resize policy. A v3 client always
-  //    sends window-size changes, which would defeat independent viewports.
-  ATTACH_PROTO_VER = 4;
+  // 4: historical per-client resize-policy slot (reserved in v5).
+  // 5: one daemon-authoritative desktop for every client; geometry includes
+  //    fullscreen and canonical PTY dimensions.
+  // 6: layout proposals carry a pane-change mask, so concurrent operations
+  //    on different windows merge instead of blocking or overwriting.
+  // 7: authoritative layout state carries one transient lock bit per pane.
+  // 8: FRAME_LAYOUT is the atomic commit and releases the sender's layout
+  //    ownership; there is no successful-operation UNLOCK/snapshot pair.
+  // 9: every layout LOCK has an explicit grant/deny reply. A client never
+  //    starts a local visual mutation before the daemon has granted it.
+  // 10: pane creation is a daemon-authoritative one-shot command carrying its
+  //     base revision. It acquires the structural lease in the FIFO consumer,
+  //     so creating the first pane cannot be lost behind the final zero-pane
+  //     layout revision while a stale non-empty pane index is rejected.
+  // 11: one KILLPANE_EV with pane=-1 replaces a burst of up to sixteen
+  //     individual close events, so every viewer applies Close all inside
+  //     one visual transaction even at the socket drain budget boundary.
+  // 12: clients publish their physical host dimensions. A deliberate host
+  //     resize can atomically replace the canonical desktop; F5 may use raw
+  //     passthrough for several viewers only when every host has the same
+  //     geometry, otherwise it uses the smallest common viewport.
+  // 13: host compatibility is an independent event. It reaches every ready
+  //     viewer even while that viewer owns a layout lease, so an attaching,
+  //     detaching or resizing peer can stop unsafe raw passthrough without
+  //     waiting for an unrelated window gesture to finish.
+  // 14: the owner of a pane lease can publish transient cosmetic gesture
+  //     previews. They are FIFO-ordered with the final FRAME_LAYOUT but never
+  //     mutate canonical geometry, revision, PTYs or focus.
+  // 15: a canonical commit on one pane also reaches viewers holding another
+  //     pane lease. The peer event preserves their local pane and deliberately
+  //     leaves its older lease-base revision unchanged.
+  ATTACH_PROTO_VER = 15;
   ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
+  // Preview frames remain on the ordered command socket. Callers coalesce
+  // pointer motion to this interval; switching only these writes to
+  // non-blocking could leave a partial frame ahead of reliable commands.
+  LAYOUT_PREVIEW_MIN_INTERVAL_MS = 16;
+  LAYOUT_PREVIEW_TAIL_MS = 2000;
+  LAYOUT_PREVIEW_PAYLOAD_SIZE = 44;
+
+  LAYOUT_CHANGE_DESKTOP = LongWord($20000000);
+  LAYOUT_CHANGE_TREE = LongWord($40000000);
+  LAYOUT_CHANGE_PANES = LongWord($0000FFFF);
+
   MAX_CLIENTS = 8;
+  CONTROL_LAYOUT_OWNER = MAX_CLIENTS; // transient owner for one-shot CLI ops
   // accepted sockets which have not become interactive clients: handshakes
   // and one-shot control requests. They never consume an interactive slot.
   MAX_PENDING_CONNECTIONS = 16;
@@ -112,6 +188,7 @@ const
   LAG_MIN_PENDING = 512 * 1024;
   LAG_GRACE_MS = 10000;
   FIRST_FRAME_TIMEOUT_MS = 1000;
+  LAYOUT_LOCK_REPLY_TIMEOUT_MS = 2000;
   CONTROL_IDLE_TIMEOUT_MS = 5000;
   IO_BUDGET = 256 * 1024;
   FRAME_BUDGET = 32;
@@ -144,13 +221,27 @@ type
   TStrArray = array of string;
   TBoolArray = array of boolean;
 
-  // geometry of a client window (absolute desktop bounds)
+  // geometry of a window in the one daemon-authoritative desktop
   TPaneGeom = record
     BX, BY, BW, BH: Longint;
+    Cols, Rows: Longint;
     Zoomed: boolean;
     Minimized: boolean;
+    FullScreen: boolean;
   end;
   TPaneGeomArray = array of TPaneGeom;
+
+  // Fixed protocol-v14+ payload (44 bytes). Reserved must be all zero. The
+  // daemon also keys it by the connection generation, so a recycled client
+  // slot can never continue an old preview with a reused GestureId.
+  TLayoutPreview = packed record
+    GestureId: QWord;
+    BaseRevision: QWord;
+    Seq: QWord;
+    Op: byte;
+    Reserved: array[0..2] of byte;
+    X, Y, W, H: Longint;
+  end;
 
   TSessionPaneSnapshot = record
     Title: string;
@@ -171,13 +262,18 @@ type
     // daemon version (tolerant tail 3; 0 = daemon predating the
     // events: do not send it new frames)
     ProtoVer: Longint;
-    ResizePolicy: TResizePolicy;
+    Revision: QWord;
+    ClientCount: Longint;
+    LockedPanes: LongWord;
+    MinHostW, MinHostH: Longint;
+    HostSizesMatch: boolean;
+    HostSummaryValid: boolean;
     Panes: array[0..MAX_PANES - 1] of TSessionPaneSnapshot;
   end;
 
   TSessionEventKind = (sekOutput, sekExit, sekError, sekLost,
-    sekLayoutEv, sekKillPaneEv, sekNewPaneEv, sekResizeEv, sekTitleEv,
-    sekFocusEv, sekShutdown, sekIgnore);
+    sekLayoutEv, sekLayoutPeerEv, sekKillPaneEv, sekNewPaneEv, sekResizeEv, sekTitleEv,
+    sekFocusEv, sekHostSummaryEv, sekLayoutPreviewEv, sekShutdown, sekIgnore);
 
   TSessionEvent = record
     Kind: TSessionEventKind;
@@ -191,6 +287,21 @@ type
     FSocket: cint;
     FConnected: boolean;
     FServerProto: Longint;
+    FLayoutRevision: QWord;
+    FClientCount: Longint;
+    FLockedPanes: LongWord;
+    FMinHostW, FMinHostH: Longint;
+    FHostSizesMatch: boolean;
+    FHostSummaryValid: boolean;
+    FInBuf: RawByteString;
+    FInPos: integer;
+    FPeerClosed: boolean;
+    FNextLayoutLockRequest: QWord;
+    FNextPreviewId: QWord;
+    FLastPreviewId: QWord;
+    FLastPreviewTick: QWord;
+    FQueuedEvents: array of TSessionEvent;
+    FQueuedEventHead: integer;
     // why the last Connect failed, so the UI can say something useful
     // instead of silently falling back to a fresh local session
     FAttachError: string;
@@ -198,24 +309,38 @@ type
       const Data: TByteArray): boolean;
     function ReadFrame(out AKind: byte; out APane: integer;
       out Data: TByteArray): boolean;
+    function DecodeEvent(AKind: byte; APane: integer;
+      const AData: TByteArray; out AEvent: TSessionEvent): boolean;
+    procedure QueueEvent(const AEvent: TSessionEvent);
+    function PopQueuedEvent(out AEvent: TSessionEvent): boolean;
     procedure CloseSocket;
   public
     constructor Create;
     destructor Destroy; override;
-    function Connect(const APath: string;
-      out Snapshot: TSessionSnapshot): boolean;
+    function Connect(const APath: string; out Snapshot: TSessionSnapshot;
+      AHostW: integer = 0; AHostH: integer = 0): boolean;
     function Poll(out Event: TSessionEvent): boolean;
     function SendInput(APane: integer; const S: RawByteString): boolean;
     function SendResize(APane, ACols, ARows: integer): boolean;
+    function SendClientSize(ACols, ARows: integer): boolean;
     function Detach: boolean;
-    // closes the session; with ASave the daemon saves session.ini first
-    function CloseSession(ASave: boolean = False): boolean;
+    // closes this viewer; the daemon stops only for the last viewer
+    function CloseSession: boolean;
     // closes a daemon pane (the client compacts in mirror)
     function SendKillPane(APane: integer): boolean;
-    // syncs split tree, focus, titles and window geometry
+    // syncs split tree and shared window geometry; focus uses SendFocus
     function SendLayout(const ANodes: string; AFocused: integer;
       const ATitles: TStrArray; const AGeom: TPaneGeomArray;
-      ADeskW, ADeskH: integer): boolean;
+      ADeskW, ADeskH: integer; AChangeMask: LongWord): boolean;
+    function LockLayout(APane: integer): boolean;
+    function UnlockLayout(APane: integer): boolean;
+    function NewPreviewId: QWord;
+    function SendLayoutPreview(APane: integer; AGestureId,
+      ABaseRevision, ASeq: QWord; AOp: byte; AX, AY, AW, AH: Longint;
+      AForce: boolean = False): boolean;
+    // Marks a canonical layout as applied by the UI. Merely reading and
+    // queueing its event must not advance the revision used by LOCK.
+    procedure AcceptLayoutState(ARevision: QWord; ALockedPanes: LongWord);
     // new pane created by the daemon; the window arrives via NEWPANE_EV
     function SendNewPane(APane: integer; ADir: byte;
       const AClass, ACmd, ACwd, ATitle: string): boolean;
@@ -225,6 +350,13 @@ type
     property AttachError: string read FAttachError;
     // version of the daemon we are attached to (0 = pre-v2)
     property ServerProto: Longint read FServerProto;
+    property LayoutRevision: QWord read FLayoutRevision;
+    property ClientCount: Longint read FClientCount;
+    property LockedPanes: LongWord read FLockedPanes;
+    property MinHostW: Longint read FMinHostW;
+    property MinHostH: Longint read FMinHostH;
+    property HostSizesMatch: boolean read FHostSizesMatch;
+    property HostSummaryValid: boolean read FHostSummaryValid;
   end;
 
 type
@@ -275,6 +407,14 @@ type
   // data callback for control requests with chunked replies
   TCtlDataProc = procedure(const AChunk: TByteArray) of object;
 
+  // A fork has three materially different outcomes.  In the parent a live
+  // daemon can be attached; in the child the daemon has already run to
+  // completion and the inherited application must only unwind; a failure
+  // leaves the parent in its original local mode.
+  TDetachedServerStartResult = (dssFailed, dssParentStarted,
+    dssChildFinished);
+  TDetachedServerChildHook = procedure of object;
+
 // simple control request (OK/ERR): connects, sends one frame, waits for
 // the reply and closes; AReply carries the error message if any
 function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
@@ -290,12 +430,25 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer; const AGeom: TPaneGeomArray;
   ADeskW, ADeskH: integer;
-  const ATitleFixed: TBoolArray = nil): boolean;
+  const ATitleFixed: TBoolArray;
+  AChildHook: TDetachedServerChildHook): TDetachedServerStartResult;
 
 // decodes the FRAME_LAYOUT / FRAME_LAYOUT_EV payload
 function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
   out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
-  out ADeskW, ADeskH: Longint): boolean;
+  out ADeskW, ADeskH: Longint; out ARevision: QWord;
+  out AClientCount: Longint; out AChangeMask, ALockedPanes: LongWord;
+  out AMinHostW, AMinHostH: Longint; out AHostSizesMatch: boolean): boolean;
+
+// decodes FRAME_HOST_SUMMARY_EV: viewer count, smallest host and whether all
+// physical host geometries are identical
+function DecodeHostSummaryBlob(const Data: TByteArray; out AClientCount,
+  AMinHostW, AMinHostH: Longint; out AHostSizesMatch: boolean): boolean;
+
+// Structural decoder for the fixed protocol-v14 preview payload. Desktop
+// bounds are validated by the daemon because only it owns the canonical size.
+function DecodeLayoutPreviewBlob(const Data: TByteArray;
+  out APreview: TLayoutPreview): boolean;
 
 // decodes the FRAME_NEWPANE_EV payload
 function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
@@ -306,6 +459,11 @@ var
   AttachRequested: boolean = False;
   AttachSocket: string = '';   // socket resolved by the CLI ('' = selector)
   CliSessionName: string = ''; // name requested with --session/--sesion
+  // Fork gives each process its own copy.  Only the daemon child sets this
+  // after Run has returned; the program block then finalizes Pascal units
+  // once and leaves through the raw Unix exit instead of inherited atexit
+  // handlers.
+  DetachedServerChildFinished: boolean = False;
 
 implementation
 
@@ -317,17 +475,22 @@ type
     Size: LongWord;
   end;
 
-  // an attached interactive client: fd, capabilities, egress buffer and
-  // last size request per pane (for the common minimum)
+  // An attached interactive client owns only transport state. Desktop and
+  // PTY geometry live once, in TDetachedSession, and are never copied here.
   TClientConn = record
     Fd: cint;
+    Generation: QWord;       // never reused with the same slot
     Ready: boolean;          // snapshot queued; may receive live events
     Caps: Longint;
+    HostW, HostH: Longint;  // complete physical terminal, including UI bars
     Legacy: boolean;         // ATTACH without payload: protocol v1, exclusive
-    DeskW, DeskH: Longint;
     OutBuf: RawByteString;
     OutPos: integer;          // sent prefix retained to avoid memmove per send
     InBuf: RawByteString;
+    InPos: integer;           // consumed prefix; compacted only occasionally
+    PeerClosed: boolean;      // EOF observed; buffered commands still drain
+    CloseQueued: boolean;     // synthetic EOF already ordered in the FIFO
+    TerminalQueued: boolean;  // DETACH/CLOSE ordered; stop accepting successors
     // prefix of OutBuf which belongs to the initial snapshot. Normal live
     // output is queued behind it and the regular 8 MB cap resumes once this
     // prefix has drained.
@@ -335,8 +498,6 @@ type
     LastProgress: QWord;     // last tick with bytes accepted by its socket
     WriteUsed: integer;      // bytes sent during the current reactor turn
     FramesUsed: integer;     // frames handled during the current reactor turn
-    ReqCols: array[0..MAX_PANES - 1] of Longint;
-    ReqRows: array[0..MAX_PANES - 1] of Longint;
     // SUPERTERM_SESSION_CHAIN of the client's own environment: non-empty
     // when the client runs inside a pane of another session. Published in
     // the sidecar so a nested start elsewhere can see that THIS session is
@@ -346,15 +507,47 @@ type
 
   TPendingConn = record
     Fd: cint;
+    Generation: QWord;
     InBuf: RawByteString;
+    InPos: integer;
     OutBuf: RawByteString;
     OutPos: integer;
     Deadline: QWord;
     LastProgress: QWord;
     CloseAfterWrite: boolean;
+    PeerClosed: boolean;
+    CloseQueued: boolean;
+    CommandQueued: boolean;   // pending peers have exactly one request
   end;
 
   TFramePop = (fpNeedMore, fpReady, fpInvalid);
+
+  TCommandOrigin = (coPending, coClient);
+
+  TQueuedCommand = record
+    Sequence: QWord;
+    Origin: TCommandOrigin;
+    Slot: integer;
+    Generation: QWord;
+    Kind: byte;
+    Pane: integer;
+    PeerClose: boolean;
+    Data: TByteArray;
+  end;
+
+  TLayoutPreviewState = record
+    Active: boolean;
+    Ended: boolean;
+    TailRequested: boolean;
+    TailAuthorized: boolean;
+    Owner: integer;
+    Generation: QWord;
+    TailRevision: QWord;
+    TailDeadline: QWord;
+    Last: TLayoutPreview;
+    LastVisual: TLayoutPreview;
+    HasVisual: boolean;
+  end;
 
   TDetachedSession = class;
 
@@ -401,11 +594,27 @@ type
     FListener: cint;
     FClients: array[0..MAX_CLIENTS - 1] of TClientConn;
     FPending: array[0..MAX_PENDING_CONNECTIONS - 1] of TPendingConn;
+    FCommandQueue: array[0..COMMAND_QUEUE_SLOTS - 1] of TQueuedCommand;
+    FCommandHead: integer;
+    FCommandCount: integer;
+    FCommandBytes: QWord;
+    FNextCommandSequence: QWord;
+    FNextConnectionGeneration: QWord;
+    FDispatchCursor: integer;
     FStop: boolean;
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
     FDeskW, FDeskH: Longint;
-    FCtlClasses: TWindowClassArray;   // classes resolved for LIST (lazy)
+    FRevision: QWord;
+    // Owner of a structural transaction (tree changes, pane creation and
+    // removal).  This must be independent of the per-pane owner array: when
+    // the desktop has zero panes there are no array slots to lock.
+    FLayoutTreeOwner: integer;
+    FPaneLayoutOwner: array[0..MAX_PANES - 1] of integer;
+    FPaneLeaseGeneration: array[0..MAX_PANES - 1] of QWord;
+    FPaneLeaseRevision: array[0..MAX_PANES - 1] of QWord;
+    FLayoutPreviews: array[0..MAX_PANES - 1] of TLayoutPreviewState;
+    FCtlClasses: TWindowClassArray;   // classes resolved for LIST/spawn
     FCtlClassesLoaded: boolean;
     FCtlCfg: TConfig;                 // config for daemon-side spawns
     FEmptySince: QWord;               // tick with no clients or live panes
@@ -416,7 +625,6 @@ type
     FAvailableCPUs: integer;
     FConfiguredThreads: integer;      // 0=auto; otherwise total daemon limit
     FThreadLimit: integer;            // effective total, CPU/pane capped
-    FResizePolicy: TResizePolicy;
     FWorkerResultPipe: TFilDes;
     FWorkerResultLock: TRTLCriticalSection;
     FWorkerResultSpace: PRTLEvent;
@@ -427,9 +635,29 @@ type
     function CreateListener: boolean;
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
+    procedure ClientSizeSummary(out AMinW, AMinH: Longint;
+      out AAllMatch: boolean);
+    procedure BroadcastHostSummaryEv;
+    procedure BroadcastLayoutPreview(APane, AExcept: integer;
+      const APreview: TLayoutPreview);
+    procedure CancelLayoutPreview(APane: integer; ABroadcast: boolean = True);
+    procedure CancelAllLayoutPreviews(ABroadcast: boolean = True);
+    function ExpireLayoutPreviews: boolean;
+    procedure SendActiveLayoutPreviews(AClient: integer);
+    procedure AuthorizeLayoutPreviewTails(AOwner: integer;
+      ACommitBase: QWord; AChanges: LongWord);
+    procedure HandleLayoutPreview(AClient, APane: integer;
+      const AData: TByteArray);
     procedure DropClient(AIdx: integer);
     function PendingIndexByFd(AFd: cint): integer;
     procedure DropPending(AIdx: integer; AClose: boolean = True);
+    function NewConnectionGeneration: QWord;
+    function CanQueueCommand(ASize: integer): boolean;
+    function QueueCommand(AOrigin: TCommandOrigin; ASlot: integer;
+      AGeneration: QWord; AKind: byte; APane: integer;
+      const AData: TByteArray; APeerClose: boolean = False): boolean;
+    function PopCommand(out ACommand: TQueuedCommand): boolean;
+    procedure DrainCommandQueue;
     function QueueOut(AIdx: integer; const Buffer; ASize: integer;
       ASnapshot: boolean = False): boolean;
     function QueuePending(AIdx: integer; AKind: byte; APane: integer;
@@ -441,14 +669,22 @@ type
       ASize: integer; ANeedCaps: boolean; AExcept: integer);
     procedure FlushClient(AIdx: integer);
     procedure FlushPending(AIdx: integer);
-    procedure ApplyCanonicalResize(APane, ACols, ARows: integer);
-    procedure NegotiateResize(APane: integer);
-    function BuildLayoutBlob(out AData: TByteArray): boolean;
+    procedure ApplyCanonicalResize(APane, ACols, ARows: integer;
+      ANotify: boolean = True; AWorkersStopped: boolean = False);
+    procedure NormalizeFocusedPane;
+    function TryLockLayout(AOwner, APane: integer;
+      ABroadcast: boolean = True): boolean;
+    procedure ReleaseLayout(AOwner, APane: integer;
+      ABroadcast: boolean = True);
+    function ClientOwnsAnyLayout(AOwner: integer): boolean;
+    function OwnsAllLayout(AOwner: integer): boolean;
+    function BuildLayoutBlob(AViewer: integer; out AData: TByteArray;
+      APreservePanes: LongWord = 0): boolean;
     procedure BroadcastLayoutEv(AExcept: integer);
     procedure BroadcastTitle(APane: integer; AExcept: integer = -1);
-    procedure DaemonSaveSession;
-    function DoNewPane(AAt: integer; ADir: byte; const AClass, ACmd,
-      ACwd, ATitle: string; out ANewIdx: integer; out AErr: string): boolean;
+    function DoNewPane(AOwner, AAt: integer; ADir: byte;
+      const AClass, ACmd, ACwd, ATitle: string; out ANewIdx: integer;
+      out AErr: string): boolean;
     procedure HandlePendingFrame(AIdx: integer; AKind: byte;
       APane: integer; const AData: TByteArray);
     procedure HandleControlFrame(AFd: cint; AKind: byte; APane: integer;
@@ -459,7 +695,7 @@ type
     procedure HandleWinOp(AFd: cint; APane: integer;
       const AData: TByteArray);
     function SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
-      ACols, ARows: integer; out APty: TPty; out ATerm: string;
+      var ACols, ARows: integer; out APty: TPty; out ATerm: string;
       out ADefTitle: string): boolean;
     procedure ReapChildren;
     function HandleAttach(APendingIdx: integer; AFirstKind: byte;
@@ -478,11 +714,14 @@ type
     procedure CheckPaneWorkers;
     procedure LockPane(APane: integer);
     procedure UnlockPane(APane: integer);
-    procedure SignalReady(AFd: cint; AOk: boolean);
+    procedure SignalReady(var AFd: cint; AOk: boolean);
     procedure WriteSidecar;
     function ClientChainsUnion: string;
     procedure DoKillPane(APane: integer);
-    procedure ApplyLayoutFrame(const Data: TByteArray);
+    procedure DoKillAllPanes;
+    function ApplyLayoutFrame(AClient: integer; const Data: TByteArray;
+      AAllowStale: boolean; out ABaseRevision: QWord;
+      out AChanges: LongWord): boolean;
   public
     constructor Create(const AName, AProfile: string; ALay: TLayout;
       const APanes: TPtyArray; const AScreens: TScreenArray;
@@ -490,7 +729,7 @@ type
       AFocused: integer; const AGeom: TPaneGeomArray;
       ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray);
     destructor Destroy; override;
-    procedure Run(AReadyFd: cint);
+    procedure Run(var AReadyFd: cint);
   end;
 
 function PollFd(AFd: cint; AEvents: cshort; ATimeoutMs: integer): cint;
@@ -554,8 +793,27 @@ end;
 // Consume only what is immediately available. A short header or payload is
 // retained in ABuffer and completed by a later poll notification; no peer can
 // park the daemon by sending the first byte of a frame and then going silent.
+procedure CompactInputBuffer(var ABuffer: RawByteString; var AInPos: integer);
+begin
+  if AInPos <= 0 then
+    Exit;
+  if AInPos >= Length(ABuffer) then
+  begin
+    ABuffer := '';
+    AInPos := 0;
+  end
+  else if (AInPos >= INPUT_COMPACT_THRESHOLD) and
+          (AInPos >= Length(ABuffer) div 2) then
+  begin
+    // One occasional move replaces Delete-on-every-frame, which was O(n^2)
+    // for a socket read containing a large burst of small input frames.
+    Delete(ABuffer, 1, AInPos);
+    AInPos := 0;
+  end;
+end;
+
 function ReadSocketAvailable(AFd: cint; var ABuffer: RawByteString;
-  out AClosed: boolean): boolean;
+  var AInPos: integer; out AClosed: boolean): boolean;
 var
   Buf: array[0..65535] of byte;
   N, Total, OldLen, Want: integer;
@@ -563,6 +821,7 @@ begin
   Result := True;
   AClosed := False;
   Total := 0;
+  CompactInputBuffer(ABuffer, AInPos);
   repeat
     Want := SizeOf(Buf);
     if Total + Want > IO_BUDGET then
@@ -594,30 +853,49 @@ begin
   until False;
 end;
 
-function PopBufferedFrame(var ABuffer: RawByteString; out AKind: byte;
-  out APane: integer; out AData: TByteArray): TFramePop;
+function PeekBufferedFrame(const ABuffer: RawByteString; AInPos: integer;
+  out AKind: byte; out APane: integer; out ASize: LongWord): TFramePop;
 var
   H: TFrameHeader;
-  Need: QWord;
+  Available, Need: QWord;
 begin
   AKind := 0;
   APane := -1;
-  AData := nil;
-  if Length(ABuffer) < SizeOf(H) then
+  ASize := 0;
+  if (AInPos < 0) or (AInPos > Length(ABuffer)) then
+    Exit(fpInvalid);
+  Available := QWord(Length(ABuffer) - AInPos);
+  if Available < SizeOf(H) then
     Exit(fpNeedMore);
   H := Default(TFrameHeader);
-  Move(ABuffer[1], H, SizeOf(H));
+  Move(ABuffer[AInPos + 1], H, SizeOf(H));
   if H.Size > MAX_FRAME_SIZE then
     Exit(fpInvalid);
   Need := QWord(SizeOf(H)) + QWord(H.Size);
-  if QWord(Length(ABuffer)) < Need then
+  if Available < Need then
     Exit(fpNeedMore);
   AKind := H.Kind;
   APane := H.Pane;
-  SetLength(AData, H.Size);
-  if H.Size > 0 then
-    Move(ABuffer[1 + SizeOf(H)], AData[0], H.Size);
-  Delete(ABuffer, 1, integer(Need));
+  ASize := H.Size;
+  Result := fpReady;
+end;
+
+function PopBufferedFrame(var ABuffer: RawByteString; var AInPos: integer;
+  out AKind: byte; out APane: integer; out AData: TByteArray): TFramePop;
+var
+  PayloadSize: LongWord;
+  Need: integer;
+begin
+  AData := nil;
+  Result := PeekBufferedFrame(ABuffer, AInPos, AKind, APane, PayloadSize);
+  if Result <> fpReady then
+    Exit;
+  Need := SizeOf(TFrameHeader) + integer(PayloadSize);
+  SetLength(AData, PayloadSize);
+  if PayloadSize > 0 then
+    Move(ABuffer[AInPos + 1 + SizeOf(TFrameHeader)], AData[0], PayloadSize);
+  Inc(AInPos, Need);
+  CompactInputBuffer(ABuffer, AInPos);
   Result := fpReady;
 end;
 
@@ -1171,10 +1449,12 @@ end;
 
 function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
   out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
-  out ADeskW, ADeskH: Longint): boolean;
+  out ADeskW, ADeskH: Longint; out ARevision: QWord;
+  out AClientCount: Longint; out AChangeMask, ALockedPanes: LongWord;
+  out AMinHostW, AMinHostH: Longint; out AHostSizesMatch: boolean): boolean;
 var
   Stream: TMemoryStream;
-  Cnt, I: Longint;
+  Cnt, I, MatchFlag: Longint;
   T: string;
   Flag: byte;
 begin
@@ -1185,6 +1465,13 @@ begin
   AGeom := nil;
   ADeskW := 0;
   ADeskH := 0;
+  ARevision := 0;
+  AClientCount := 0;
+  AChangeMask := 0;
+  ALockedPanes := 0;
+  AMinHostW := 0;
+  AMinHostH := 0;
+  AHostSizesMatch := False;
   if Length(Data) = 0 then
     Exit;
   Stream := TMemoryStream.Create;
@@ -1198,7 +1485,8 @@ begin
       Exit;
     Stream.ReadBuffer(AFocused, SizeOf(AFocused));
     Stream.ReadBuffer(Cnt, SizeOf(Cnt));
-    if (Cnt < 1) or (Cnt > MAX_PANES) then
+    if (Cnt < 0) or (Cnt > MAX_PANES) or
+       (AFocused < -1) or (AFocused >= Cnt) then
       Exit;
     SetLength(ATitles, Cnt);
     for I := 0 to Cnt - 1 do
@@ -1208,7 +1496,8 @@ begin
       ATitles[I] := T;
     end;
     if Stream.Position + 2 * SizeOf(Longint) +
-       Cnt * (4 * SizeOf(Longint) + 2) > Stream.Size then
+       Cnt * (6 * SizeOf(Longint) + 3) + SizeOf(QWord) +
+       SizeOf(Longint) > Stream.Size then
       Exit;
     Stream.ReadBuffer(ADeskW, SizeOf(ADeskW));
     Stream.ReadBuffer(ADeskH, SizeOf(ADeskH));
@@ -1219,16 +1508,80 @@ begin
       Stream.ReadBuffer(AGeom[I].BY, SizeOf(Longint));
       Stream.ReadBuffer(AGeom[I].BW, SizeOf(Longint));
       Stream.ReadBuffer(AGeom[I].BH, SizeOf(Longint));
+      Stream.ReadBuffer(AGeom[I].Cols, SizeOf(Longint));
+      Stream.ReadBuffer(AGeom[I].Rows, SizeOf(Longint));
       Flag := Default(byte);
       Stream.ReadBuffer(Flag, SizeOf(Flag));
       AGeom[I].Zoomed := Flag <> 0;
       Stream.ReadBuffer(Flag, SizeOf(Flag));
       AGeom[I].Minimized := Flag <> 0;
+      Stream.ReadBuffer(Flag, SizeOf(Flag));
+      AGeom[I].FullScreen := Flag <> 0;
+    end;
+    Stream.ReadBuffer(ARevision, SizeOf(ARevision));
+    Stream.ReadBuffer(AClientCount, SizeOf(AClientCount));
+    if Stream.Position + SizeOf(AChangeMask) <= Stream.Size then
+      Stream.ReadBuffer(AChangeMask, SizeOf(AChangeMask));
+    if Stream.Position + SizeOf(ALockedPanes) <= Stream.Size then
+      Stream.ReadBuffer(ALockedPanes, SizeOf(ALockedPanes));
+    if Stream.Position + 3 * SizeOf(Longint) <= Stream.Size then
+    begin
+      Stream.ReadBuffer(AMinHostW, SizeOf(AMinHostW));
+      Stream.ReadBuffer(AMinHostH, SizeOf(AMinHostH));
+      MatchFlag := 0;
+      Stream.ReadBuffer(MatchFlag, SizeOf(MatchFlag));
+      AHostSizesMatch := MatchFlag <> 0;
     end;
     Result := True;
   finally
     Stream.Free;
   end;
+end;
+
+function DecodeHostSummaryBlob(const Data: TByteArray; out AClientCount,
+  AMinHostW, AMinHostH: Longint; out AHostSizesMatch: boolean): boolean;
+var
+  Values: array[0..3] of Longint;
+begin
+  Result := False;
+  AClientCount := 0;
+  AMinHostW := 0;
+  AMinHostH := 0;
+  AHostSizesMatch := False;
+  if Length(Data) <> SizeOf(Values) then
+    Exit;
+  Values[0] := 0;
+  Values[1] := 0;
+  Values[2] := 0;
+  Values[3] := 0;
+  Move(Data[0], Values, SizeOf(Values));
+  if (Values[0] < 1) or (Values[0] > MAX_CLIENTS) or
+     (Values[1] < 1) or (Values[1] > MAX_SCREEN_COLS) or
+     (Values[2] < 3) or (Values[2] > MAX_SCREEN_ROWS) or
+     ((Values[3] <> 0) and (Values[3] <> 1)) then
+    Exit;
+  AClientCount := Values[0];
+  AMinHostW := Values[1];
+  AMinHostH := Values[2];
+  AHostSizesMatch := Values[3] <> 0;
+  Result := True;
+end;
+
+function DecodeLayoutPreviewBlob(const Data: TByteArray;
+  out APreview: TLayoutPreview): boolean;
+begin
+  APreview := Default(TLayoutPreview);
+  Result := (SizeOf(TLayoutPreview) = LAYOUT_PREVIEW_PAYLOAD_SIZE) and
+    (Length(Data) = LAYOUT_PREVIEW_PAYLOAD_SIZE);
+  if not Result then
+    Exit;
+  Move(Data[0], APreview, SizeOf(APreview));
+  Result := (APreview.GestureId <> 0) and (APreview.Seq <> 0) and
+    (APreview.Reserved[0] = 0) and (APreview.Reserved[1] = 0) and
+    (APreview.Reserved[2] = 0) and
+    (APreview.Op in [PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME,
+      PREVIEW_OP_OUTLINE_SHOW, PREVIEW_OP_OUTLINE_HIDE,
+      PREVIEW_OP_TAIL_BEGIN, PREVIEW_OP_TAIL_END, PREVIEW_OP_CLEAR]);
 end;
 
 function DecodeNewPaneEv(const Data: TByteArray; out AAt, ANewIdx,
@@ -1288,6 +1641,22 @@ begin
   inherited Create;
   FSocket := -1;
   FConnected := False;
+  FLayoutRevision := 0;
+  FClientCount := 0;
+  FLockedPanes := 0;
+  FMinHostW := 0;
+  FMinHostH := 0;
+  FHostSizesMatch := False;
+  FHostSummaryValid := False;
+  FInBuf := '';
+  FInPos := 0;
+  FPeerClosed := False;
+  FNextLayoutLockRequest := 0;
+  FNextPreviewId := 0;
+  FLastPreviewId := 0;
+  FLastPreviewTick := 0;
+  FQueuedEvents := nil;
+  FQueuedEventHead := 0;
 end;
 
 procedure TSessionClient.CloseSocket;
@@ -1296,6 +1665,11 @@ begin
     FpClose(FSocket);
   FSocket := -1;
   FConnected := False;
+  FInBuf := '';
+  FInPos := 0;
+  FPeerClosed := False;
+  FLastPreviewId := 0;
+  FLastPreviewTick := 0;
 end;
 
 destructor TSessionClient.Destroy;
@@ -1316,6 +1690,97 @@ begin
   Result := FConnected and ReadFrameFrom(FSocket, AKind, APane, Data);
 end;
 
+function TSessionClient.DecodeEvent(AKind: byte; APane: integer;
+  const AData: TByteArray; out AEvent: TSessionEvent): boolean;
+var
+  Preview: TLayoutPreview;
+begin
+  AEvent := Default(TSessionEvent);
+  AEvent.Kind := sekIgnore;
+  AEvent.Pane := APane;
+  AEvent.Data := Copy(AData, 0, Length(AData));
+  case AKind of
+    FRAME_OUTPUT: AEvent.Kind := sekOutput;
+    FRAME_EXIT: AEvent.Kind := sekExit;
+    FRAME_ERROR:
+      begin
+        AEvent.Kind := sekError;
+        if Length(AData) > 0 then
+          SetString(AEvent.Text, PAnsiChar(@AData[0]), Length(AData));
+      end;
+    FRAME_LAYOUT_EV: AEvent.Kind := sekLayoutEv;
+    FRAME_LAYOUT_PEER_EV: AEvent.Kind := sekLayoutPeerEv;
+    FRAME_KILLPANE_EV: AEvent.Kind := sekKillPaneEv;
+    FRAME_NEWPANE_EV: AEvent.Kind := sekNewPaneEv;
+    FRAME_RESIZE_EV: AEvent.Kind := sekResizeEv;
+    FRAME_TITLE_EV: AEvent.Kind := sekTitleEv;
+    FRAME_FOCUS_EV: AEvent.Kind := sekFocusEv;
+    FRAME_HOST_SUMMARY_EV:
+      if DecodeHostSummaryBlob(AData, FClientCount, FMinHostW, FMinHostH,
+        FHostSizesMatch) then
+      begin
+        FHostSummaryValid := True;
+        AEvent.Kind := sekHostSummaryEv;
+      end;
+    FRAME_LAYOUT_PREVIEW_EV:
+      begin
+        // Keep the packed payload in Data; the UI can decode/coalesce several
+        // previews in one Idle batch without translating managed objects.
+        if DecodeLayoutPreviewBlob(AData, Preview) then
+          AEvent.Kind := sekLayoutPreviewEv;
+      end;
+    FRAME_SHUTDOWN_EV: AEvent.Kind := sekShutdown;
+  else
+    // Lock replies are consumed by LockLayout. A late reply after its bounded
+    // timeout, or any future frame, is harmless and deliberately ignored.
+    AEvent.Kind := sekIgnore;
+    AEvent.Data := nil;
+  end;
+  Result := True;
+end;
+
+procedure TSessionClient.QueueEvent(const AEvent: TSessionEvent);
+var
+  I, N: integer;
+begin
+  // Lock acquisition may have to drain already queued PTY output before its
+  // reply. Preserve every such event in order for the ordinary Idle loop.
+  if (FQueuedEventHead > 0) and
+     (FQueuedEventHead >= Length(FQueuedEvents) div 2) then
+  begin
+    N := Length(FQueuedEvents) - FQueuedEventHead;
+    // TSessionEvent contains a string and a dynamic array: copy by managed
+    // assignment, never Move raw bytes (which would duplicate references
+    // without their reference counts and later double-finalize them).
+    for I := 0 to N - 1 do
+    begin
+      FQueuedEvents[I] := FQueuedEvents[FQueuedEventHead + I];
+      FQueuedEvents[FQueuedEventHead + I] := Default(TSessionEvent);
+    end;
+    SetLength(FQueuedEvents, N);
+    FQueuedEventHead := 0;
+  end;
+  N := Length(FQueuedEvents);
+  SetLength(FQueuedEvents, N + 1);
+  FQueuedEvents[N] := AEvent;
+end;
+
+function TSessionClient.PopQueuedEvent(out AEvent: TSessionEvent): boolean;
+begin
+  AEvent := Default(TSessionEvent);
+  if FQueuedEventHead >= Length(FQueuedEvents) then
+    Exit(False);
+  AEvent := FQueuedEvents[FQueuedEventHead];
+  FQueuedEvents[FQueuedEventHead] := Default(TSessionEvent);
+  Inc(FQueuedEventHead);
+  if FQueuedEventHead >= Length(FQueuedEvents) then
+  begin
+    FQueuedEvents := nil;
+    FQueuedEventHead := 0;
+  end;
+  Result := True;
+end;
+
 // snapshot tolerant tail 2: window geometry; on any size violation
 // it leaves Snapshot.Geom empty without raising exceptions
 procedure ReadSnapshotGeom(Stream: TMemoryStream; var Snapshot: TSessionSnapshot);
@@ -1331,7 +1796,7 @@ begin
   Stream.ReadBuffer(Snapshot.DeskH, SizeOf(Longint));
   if (Cnt <= 0) or (Cnt > MAX_PANES) then
     Exit;
-  if Stream.Position + Cnt * (4 * SizeOf(Longint) + 2) > Stream.Size then
+  if Stream.Position + Cnt * (6 * SizeOf(Longint) + 3) > Stream.Size then
     Exit;
   SetLength(Snapshot.Geom, Cnt);
   for I := 0 to Cnt - 1 do
@@ -1340,16 +1805,20 @@ begin
     Stream.ReadBuffer(Snapshot.Geom[I].BY, SizeOf(Longint));
     Stream.ReadBuffer(Snapshot.Geom[I].BW, SizeOf(Longint));
     Stream.ReadBuffer(Snapshot.Geom[I].BH, SizeOf(Longint));
+    Stream.ReadBuffer(Snapshot.Geom[I].Cols, SizeOf(Longint));
+    Stream.ReadBuffer(Snapshot.Geom[I].Rows, SizeOf(Longint));
     Flag := Default(byte);
     Stream.ReadBuffer(Flag, SizeOf(Flag));
     Snapshot.Geom[I].Zoomed := Flag <> 0;
     Stream.ReadBuffer(Flag, SizeOf(Flag));
     Snapshot.Geom[I].Minimized := Flag <> 0;
+    Stream.ReadBuffer(Flag, SizeOf(Flag));
+    Snapshot.Geom[I].FullScreen := Flag <> 0;
   end;
 end;
 
 function TSessionClient.Connect(const APath: string;
-  out Snapshot: TSessionSnapshot): boolean;
+  out Snapshot: TSessionSnapshot; AHostW: integer; AHostH: integer): boolean;
 var
   ChainS: string;
   Kind: byte;
@@ -1370,8 +1839,28 @@ begin
   Snapshot.DeskW := 0;
   Snapshot.DeskH := 0;
   Snapshot.ProtoVer := 0;
-  Snapshot.ResizePolicy := rpSession;
+  Snapshot.Revision := 0;
+  Snapshot.ClientCount := 0;
+  Snapshot.LockedPanes := 0;
+  Snapshot.MinHostW := 0;
+  Snapshot.MinHostH := 0;
+  Snapshot.HostSizesMatch := False;
+  Snapshot.HostSummaryValid := False;
   FServerProto := 0;
+  FLayoutRevision := 0;
+  FClientCount := 0;
+  FLockedPanes := 0;
+  FMinHostW := 0;
+  FMinHostH := 0;
+  FHostSizesMatch := False;
+  FHostSummaryValid := False;
+  FInBuf := '';
+  FInPos := 0;
+  FPeerClosed := False;
+  FLastPreviewId := 0;
+  FLastPreviewTick := 0;
+  FQueuedEvents := nil;
+  FQueuedEventHead := 0;
   for I := 0 to MAX_PANES - 1 do
   begin
     Snapshot.Panes[I].Title := '';
@@ -1388,8 +1877,9 @@ begin
   SetLength(Data, 4 * SizeOf(Longint));
   L := ATTACH_PROTO_VER;
   Move(L, Data[0], SizeOf(L));
-  L := 0;   // DeskW/DeskH: no desktop yet at startup
+  L := AHostW;
   Move(L, Data[SizeOf(Longint)], SizeOf(L));
+  L := AHostH;
   Move(L, Data[2 * SizeOf(Longint)], SizeOf(L));
   L := ATTACH_CAP_EVENTS;
   Move(L, Data[3 * SizeOf(Longint)], SizeOf(L));
@@ -1420,7 +1910,9 @@ begin
       Exit;
     Stream.ReadBuffer(Snapshot.Focused, SizeOf(Snapshot.Focused));
     Stream.ReadBuffer(Snapshot.PaneCount, SizeOf(Snapshot.PaneCount));
-    if (Snapshot.PaneCount < 1) or (Snapshot.PaneCount > MAX_PANES) then
+    if (Snapshot.PaneCount < 0) or (Snapshot.PaneCount > MAX_PANES) or
+       (Snapshot.Focused < -1) or
+       (Snapshot.Focused >= Snapshot.PaneCount) then
       Exit;
     for I := 0 to Snapshot.PaneCount - 1 do
     begin
@@ -1439,30 +1931,72 @@ begin
         if Stream.Position + SizeOf(Longint) <= Stream.Size then
         begin
           Stream.ReadBuffer(Snapshot.ProtoVer, SizeOf(Longint));
-          // tolerant tail 4: resize policy introduced by protocol v4
+          // tolerant tail 4: reserved protocol-v4 slot. Protocol v5 has
+          // exactly one geometry model, so its value has no meaning.
           if Stream.Position + SizeOf(Longint) <= Stream.Size then
           begin
             L := 0;
             Stream.ReadBuffer(L, SizeOf(Longint));
-            if L = Ord(rpSmallest) then
-              Snapshot.ResizePolicy := rpSmallest
-            else
-              Snapshot.ResizePolicy := rpSession;
+            if Stream.Position + SizeOf(QWord) + SizeOf(Longint) <=
+               Stream.Size then
+            begin
+              Stream.ReadBuffer(Snapshot.Revision,
+                SizeOf(Snapshot.Revision));
+              Stream.ReadBuffer(Snapshot.ClientCount,
+                SizeOf(Snapshot.ClientCount));
+              if Stream.Position + SizeOf(Snapshot.LockedPanes) <=
+                 Stream.Size then
+              begin
+                Stream.ReadBuffer(Snapshot.LockedPanes,
+                  SizeOf(Snapshot.LockedPanes));
+                if Stream.Position + 3 * SizeOf(Longint) <= Stream.Size then
+                begin
+                  Stream.ReadBuffer(Snapshot.MinHostW,
+                    SizeOf(Snapshot.MinHostW));
+                  Stream.ReadBuffer(Snapshot.MinHostH,
+                    SizeOf(Snapshot.MinHostH));
+                  L := 0;
+                  Stream.ReadBuffer(L, SizeOf(L));
+                  Snapshot.HostSizesMatch := L <> 0;
+                  Snapshot.HostSummaryValid :=
+                    (Snapshot.ClientCount >= 1) and
+                    (Snapshot.ClientCount <= MAX_CLIENTS) and
+                    (Snapshot.MinHostW >= 1) and
+                    (Snapshot.MinHostW <= MAX_SCREEN_COLS) and
+                    (Snapshot.MinHostH >= 3) and
+                    (Snapshot.MinHostH <= MAX_SCREEN_ROWS) and
+                    ((L = 0) or (L = 1));
+                end;
+              end;
+            end;
           end;
         end;
       end;
     FServerProto := Snapshot.ProtoVer;
+    FLayoutRevision := Snapshot.Revision;
+    FClientCount := Snapshot.ClientCount;
+    FLockedPanes := Snapshot.LockedPanes;
+    FMinHostW := Snapshot.MinHostW;
+    FMinHostH := Snapshot.MinHostH;
+    FHostSizesMatch := Snapshot.HostSizesMatch;
+    FHostSummaryValid := Snapshot.HostSummaryValid;
   finally
     Stream.Free;
   end;
   // The daemon refuses clients older than itself, but an OLDER daemon happily
   // accepts a newer client and then feeds it cells of the wrong size. Refuse
   // that direction here too, instead of rendering garbage.
-  if Snapshot.ProtoVer < ATTACH_PROTO_VER then
+  if Snapshot.ProtoVer <> ATTACH_PROTO_VER then
   begin
     FAttachError := 'session created by an older superterm (protocol ' +
       IntToStr(Snapshot.ProtoVer) + ', need ' + IntToStr(ATTACH_PROTO_VER) +
       '): close it or run the matching binary';
+    CloseSocket;
+    Exit;
+  end;
+  if not Snapshot.HostSummaryValid then
+  begin
+    FAttachError := 'session returned an invalid host summary';
     CloseSocket;
     Exit;
   end;
@@ -1481,54 +2015,57 @@ begin
     CloseSocket;
     Exit;
   end;
-  Result := Snapshot.LayoutNodes <> '';
-  if not Result then
-    CloseSocket;
+  // READY completes a valid snapshot even when the canonical desktop has no
+  // panes.  In that state LayoutNodes is deliberately empty and no SCREEN
+  // frames precede READY.
+  Result := True;
 end;
 
 function TSessionClient.Poll(out Event: TSessionEvent): boolean;
 var
   Kind: byte;
   Pane: integer;
+  Data: TByteArray;
+  ClosedNow: boolean;
+  PopResult: TFramePop;
 begin
+  Event := Default(TSessionEvent);
   Event.Kind := sekLost;
   Event.Pane := -1;
-  Event.Data := nil;
-  Event.Text := '';
   Result := False;
+  if PopQueuedEvent(Event) then
+    Exit(True);
   if not FConnected then
     Exit;
-  if PollFd(FSocket, POLLIN, 0) <= 0 then
-    Exit;
-  if not ReadFrame(Kind, Pane, Event.Data) then
+  PopResult := PopBufferedFrame(FInBuf, FInPos, Kind, Pane, Data);
+  if PopResult = fpReady then
+    Exit(DecodeEvent(Kind, Pane, Data, Event));
+  if (PopResult = fpInvalid) or FPeerClosed then
   begin
     CloseSocket;
     Event.Kind := sekLost;
     Exit(True);
   end;
-  Event.Pane := Pane;
-  case Kind of
-    FRAME_OUTPUT: Event.Kind := sekOutput;
-    FRAME_EXIT: Event.Kind := sekExit;
-    FRAME_ERROR:
-      begin
-        Event.Kind := sekError;
-        if Length(Event.Data) > 0 then
-          SetString(Event.Text, PAnsiChar(@Event.Data[0]), Length(Event.Data));
-      end;
-    FRAME_LAYOUT_EV: Event.Kind := sekLayoutEv;
-    FRAME_KILLPANE_EV: Event.Kind := sekKillPaneEv;
-    FRAME_NEWPANE_EV: Event.Kind := sekNewPaneEv;
-    FRAME_RESIZE_EV: Event.Kind := sekResizeEv;
-    FRAME_TITLE_EV: Event.Kind := sekTitleEv;
-    FRAME_FOCUS_EV: Event.Kind := sekFocusEv;
-    FRAME_SHUTDOWN_EV: Event.Kind := sekShutdown;
-  else
-    // future frame: ignore instead of treating it as a lost connection
-    Event.Kind := sekIgnore;
-    Event.Data := nil;
+  if PollFd(FSocket, POLLIN, 0) <= 0 then
+    Exit;
+  ClosedNow := False;
+  if not ReadSocketAvailable(FSocket, FInBuf, FInPos, ClosedNow) then
+  begin
+    CloseSocket;
+    Event.Kind := sekLost;
+    Exit(True);
   end;
-  Result := True;
+  if ClosedNow then
+    FPeerClosed := True;
+  PopResult := PopBufferedFrame(FInBuf, FInPos, Kind, Pane, Data);
+  if PopResult = fpReady then
+    Exit(DecodeEvent(Kind, Pane, Data, Event));
+  if (PopResult = fpInvalid) or FPeerClosed then
+  begin
+    CloseSocket;
+    Event.Kind := sekLost;
+    Exit(True);
+  end;
 end;
 
 function TSessionClient.SendInput(APane: integer; const S: RawByteString): boolean;
@@ -1553,6 +2090,23 @@ begin
   Result := SendFrame(FRAME_RESIZE, APane, Data);
 end;
 
+function TSessionClient.SendClientSize(ACols, ARows: integer): boolean;
+var
+  Data: TByteArray;
+  Pair: array[0..1] of Longint;
+begin
+  Result := False;
+  Data := nil;
+  if (ACols < 1) or (ACols > MAX_SCREEN_COLS) or
+     (ARows < 3) or (ARows > MAX_SCREEN_ROWS) then
+    Exit;
+  Pair[0] := ACols;
+  Pair[1] := ARows;
+  SetLength(Data, SizeOf(Pair));
+  Move(Pair, Data[0], SizeOf(Pair));
+  Result := SendFrame(FRAME_CLIENT_SIZE, -1, Data);
+end;
+
 function TSessionClient.Detach: boolean;
 var
   Data: TByteArray;
@@ -1562,21 +2116,37 @@ begin
   CloseSocket;
 end;
 
-function TSessionClient.CloseSession(ASave: boolean): boolean;
+function TSessionClient.CloseSession: boolean;
 var
   Data: TByteArray;
+  Buf: array[0..4095] of byte;
+  N: ssize_t;
+  Deadline: QWord;
 begin
-  // tolerant byte: an old daemon ignores it (closes without saving)
   Data := nil;
-  SetLength(Data, 1);
-  if ASave then
-    Data[0] := 1
-  else
-    Data[0] := 0;
   Result := SendFrame(FRAME_CLOSE, -1, Data);
   if DebugActive then
-    DebugLog(Format('client: close session save=%d sent=%d',
-      [Ord(ASave), Ord(Result)]));
+    DebugLog(Format('client: exit sent=%d', [Ord(Result)]));
+  if Result and (FSocket >= 0) then
+  begin
+    // Keep the read half alive until the daemon has consumed every frame
+    // preceding CLOSE. A full close here let an authoritative layout echo hit
+    // EPIPE; the daemon then dropped this client before reaching the already
+    // buffered CLOSE, leaving a zero-viewer session behind.
+    FpShutdown(FSocket, 1); // POSIX SHUT_WR
+    Deadline := GetTickCount64 + 1500;
+    repeat
+      if PollFd(FSocket, POLLIN or POLLHUP, 100) > 0 then
+      begin
+        N := FpRecv(FSocket, @Buf[0], SizeOf(Buf), ST_MSG_DONTWAIT);
+        if N = 0 then
+          Break;
+        if (N < 0) and (fpgeterrno <> ESysEINTR) and
+           (fpgeterrno <> ESysEAGAIN) then
+          Break;
+      end;
+    until GetTickCount64 >= Deadline;
+  end;
   CloseSocket;
 end;
 
@@ -1585,12 +2155,22 @@ var
   Data: TByteArray;
 begin
   Data := nil;
+  // Close all is an indivisible FIFO command. The daemon claims its global
+  // structural lease inside the command and emits only the final empty event;
+  // a separate visible lock snapshot would be a pointless pre-action flash.
+  if APane = -1 then
+    Exit(SendFrame(FRAME_KILLPANE, APane, Data));
+  Result := LockLayout(-1);
+  if not Result then
+    Exit;
   Result := SendFrame(FRAME_KILLPANE, APane, Data);
+  if not Result then
+    UnlockLayout(-1);
 end;
 
 function TSessionClient.SendLayout(const ANodes: string; AFocused: integer;
   const ATitles: TStrArray; const AGeom: TPaneGeomArray;
-  ADeskW, ADeskH: integer): boolean;
+  ADeskW, ADeskH: integer; AChangeMask: LongWord): boolean;
 var
   Stream: TMemoryStream;
   Data: TByteArray;
@@ -1598,9 +2178,14 @@ var
   Flag: byte;
 begin
   Result := False;
-  if (Length(ATitles) <> Length(AGeom)) or (Length(AGeom) < 1) then
+  if (Length(ATitles) <> Length(AGeom)) or
+     (Length(AGeom) > MAX_PANES) then
     Exit;
   Cnt := Length(AGeom);
+  if ((Cnt = 0) and ((ANodes <> '') or (AFocused <> -1))) or
+     ((Cnt > 0) and ((ANodes = '') or (AFocused < -1) or
+      (AFocused >= Cnt))) then
+    Exit;
   Data := Default(TByteArray);
   Stream := TMemoryStream.Create;
   try
@@ -1620,6 +2205,8 @@ begin
       Stream.WriteBuffer(AGeom[I].BY, SizeOf(Longint));
       Stream.WriteBuffer(AGeom[I].BW, SizeOf(Longint));
       Stream.WriteBuffer(AGeom[I].BH, SizeOf(Longint));
+      Stream.WriteBuffer(AGeom[I].Cols, SizeOf(Longint));
+      Stream.WriteBuffer(AGeom[I].Rows, SizeOf(Longint));
       if AGeom[I].Zoomed then
         Flag := 1
       else
@@ -1630,7 +2217,16 @@ begin
       else
         Flag := 0;
       Stream.WriteBuffer(Flag, SizeOf(Flag));
+      if AGeom[I].FullScreen then
+        Flag := 1
+      else
+        Flag := 0;
+      Stream.WriteBuffer(Flag, SizeOf(Flag));
     end;
+    Stream.WriteBuffer(FLayoutRevision, SizeOf(FLayoutRevision));
+    F := FClientCount;
+    Stream.WriteBuffer(F, SizeOf(F));
+    Stream.WriteBuffer(AChangeMask, SizeOf(AChangeMask));
     SetLength(Data, Stream.Size);
     if Stream.Size > 0 then
     begin
@@ -1643,6 +2239,248 @@ begin
   end;
 end;
 
+function TSessionClient.LockLayout(APane: integer): boolean;
+var
+  Kind: byte;
+  Pane, WaitMs, K, LastLayoutEvent: integer;
+  Data: TByteArray;
+  Event: TSessionEvent;
+  Deadline, NowTick, RequestId, ReplyId, ReplyRevision: QWord;
+  GotReply, ClosedNow, Granted: boolean;
+  PopResult: TFramePop;
+begin
+  Result := False;
+  Data := nil;
+  Inc(FNextLayoutLockRequest);
+  if FNextLayoutLockRequest = 0 then
+    Inc(FNextLayoutLockRequest);
+  RequestId := FNextLayoutLockRequest;
+  SetLength(Data, 2 * SizeOf(QWord));
+  Move(RequestId, Data[0], SizeOf(RequestId));
+  Move(FLayoutRevision, Data[SizeOf(RequestId)], SizeOf(FLayoutRevision));
+  if not SendFrame(FRAME_LAYOUT_LOCK, APane, Data) then
+    Exit;
+  // The daemon is a local Unix-socket peer. Wait only for its explicit
+  // grant/deny while preserving every PTY/layout event already ahead of the
+  // reply for the normal Idle loop. This never blocks the daemon or another
+  // client, and prevents the losing client from mutating then rolling back.
+  Deadline := GetTickCount64 + LAYOUT_LOCK_REPLY_TIMEOUT_MS;
+  GotReply := False;
+  Granted := False;
+  repeat
+    Data := nil;
+    PopResult := PopBufferedFrame(FInBuf, FInPos, Kind, Pane, Data);
+    if PopResult = fpReady then
+    begin
+      if (Kind = FRAME_LAYOUT_LOCK_REPLY) and
+         (Length(Data) = 2 * SizeOf(QWord) + 1) then
+      begin
+        ReplyId := 0;
+        ReplyRevision := 0;
+        Move(Data[0], ReplyId, SizeOf(ReplyId));
+        Move(Data[SizeOf(ReplyId) + 1], ReplyRevision,
+          SizeOf(ReplyRevision));
+        if ReplyId = RequestId then
+        begin
+          GotReply := True;
+          Granted := Data[SizeOf(ReplyId)] <> 0;
+          Result := Granted and (ReplyRevision = FLayoutRevision) and
+            (not FPeerClosed);
+          if Result then
+          begin
+            // TryLockLayout broadcasts one viewer-relative snapshot after a
+            // successful grant and immediately before this reply. A grant
+            // also proves that no pending snapshot contains a newer revision.
+            // Keep only that final grant snapshot for a pane lease and ignore
+            // every older layout, including frames left by an earlier wait.
+            // Otherwise an Idle batch edge could briefly restore old focus or
+            // bounds before the grant snapshot corrects them.
+            LastLayoutEvent := -1;
+            for K := FQueuedEventHead to High(FQueuedEvents) do
+              if FQueuedEvents[K].Kind in [sekLayoutEv,
+                sekLayoutPeerEv] then
+                LastLayoutEvent := K;
+            for K := FQueuedEventHead to High(FQueuedEvents) do
+              if FQueuedEvents[K].Kind in [sekLayoutEv,
+                sekLayoutPeerEv] then
+              begin
+                // A structural action mutates the split tree immediately
+                // after LockLayout returns. Even the grant snapshot then
+                // represents the old tree, so none may be applied later.
+                if (APane < 0) or (K <> LastLayoutEvent) then
+                  FQueuedEvents[K].Kind := sekIgnore
+                else
+                begin
+                  FQueuedEvents[K].Kind := sekLayoutPeerEv;
+                  FQueuedEvents[K].Pane := APane;
+                end;
+              end;
+            // The grant is also an ordering barrier for cosmetic traffic.
+            // TryLockLayout cancelled the previous preview on this pane (or
+            // every preview for a structural lease) before broadcasting its
+            // snapshot. Do not let an already queued BOUNDS/CLEAR from that
+            // superseded owner run after the new local gesture has started.
+            for K := FQueuedEventHead to High(FQueuedEvents) do
+              if (FQueuedEvents[K].Kind = sekLayoutPreviewEv) and
+                 ((APane < 0) or (FQueuedEvents[K].Pane = APane)) then
+                FQueuedEvents[K].Kind := sekIgnore;
+          end;
+          if FPeerClosed then
+          begin
+            CloseSocket;
+            Event := Default(TSessionEvent);
+            Event.Kind := sekLost;
+            Event.Pane := -1;
+            QueueEvent(Event);
+          end;
+          if DebugFull then
+            DebugLog(Format(
+              'client-layout-lock: request=%d pane=%d granted=%d revision=%d applied=%d',
+              [RequestId, APane, Ord(Result), ReplyRevision,
+               FLayoutRevision]));
+          Break;
+        end;
+        // A reply for an expired request is correlated and harmless.
+        Continue;
+      end;
+      DecodeEvent(Kind, Pane, Data, Event);
+      if Event.Kind <> sekIgnore then
+        QueueEvent(Event);
+      Continue;
+    end;
+    if PopResult = fpInvalid then
+    begin
+      CloseSocket;
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+      QueueEvent(Event);
+      Exit;
+    end;
+    if FPeerClosed then
+    begin
+      CloseSocket;
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+      QueueEvent(Event);
+      Exit;
+    end;
+    NowTick := GetTickCount64;
+    if NowTick >= Deadline then
+      Break;
+    WaitMs := integer(Deadline - NowTick);
+    if PollFd(FSocket, POLLIN or POLLHUP, WaitMs) <= 0 then
+      Break;
+    ClosedNow := False;
+    if not ReadSocketAvailable(FSocket, FInBuf, FInPos, ClosedNow) then
+    begin
+      CloseSocket;
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+      QueueEvent(Event);
+      Exit;
+    end;
+    if ClosedNow then
+      FPeerClosed := True;
+  until False;
+  if (not GotReply) or (Granted and (not Result)) then
+  begin
+    if DebugActive then
+      DebugLog(Format('client-layout-lock: request=%d pane=%d cancelled',
+        [RequestId, APane]));
+    // Ordered cancellation: if the delayed request is granted later, this
+    // immediately releases it; if it was never observed, it is a no-op.
+    UnlockLayout(APane);
+  end;
+end;
+
+procedure TSessionClient.AcceptLayoutState(ARevision: QWord;
+  ALockedPanes: LongWord);
+begin
+  // Socket order guarantees monotonic canonical revisions. Equal revisions
+  // are meaningful because acquisition/release changes only the lock mask.
+  if ARevision < FLayoutRevision then
+    Exit;
+  FLayoutRevision := ARevision;
+  FLockedPanes := ALockedPanes;
+end;
+
+function TSessionClient.UnlockLayout(APane: integer): boolean;
+var
+  Data: TByteArray;
+begin
+  Data := nil;
+  Result := SendFrame(FRAME_LAYOUT_UNLOCK, APane, Data);
+end;
+
+function TSessionClient.NewPreviewId: QWord;
+begin
+  Inc(FNextPreviewId);
+  if FNextPreviewId = 0 then
+    Inc(FNextPreviewId);
+  Result := FNextPreviewId;
+end;
+
+function TSessionClient.SendLayoutPreview(APane: integer; AGestureId,
+  ABaseRevision, ASeq: QWord; AOp: byte; AX, AY, AW, AH: Longint;
+  AForce: boolean): boolean;
+var
+  Data: TByteArray;
+  Preview: TLayoutPreview;
+  NowTick: QWord;
+  VisualOp: boolean;
+begin
+  Result := False;
+  Data := nil;
+  VisualOp := AOp in [PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME,
+    PREVIEW_OP_OUTLINE_SHOW, PREVIEW_OP_OUTLINE_HIDE];
+  if (APane < 0) or (APane >= MAX_PANES) or (AGestureId = 0) or
+     (ABaseRevision = 0) or (ASeq = 0) or (ASeq = High(QWord)) or
+     (not (AOp in [PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME,
+       PREVIEW_OP_OUTLINE_SHOW, PREVIEW_OP_OUTLINE_HIDE,
+       PREVIEW_OP_TAIL_BEGIN, PREVIEW_OP_TAIL_END, PREVIEW_OP_CLEAR])) then
+    Exit;
+  if VisualOp then
+  begin
+    if (AW < 1) or (AW > MAX_SCREEN_COLS) or
+       (AH < 1) or (AH > MAX_SCREEN_ROWS) then
+      Exit;
+  end
+  else if (AX <> 0) or (AY <> 0) or (AW <> 0) or (AH <> 0) then
+    Exit;
+
+  // Motion previews are lossy by design; the final FRAME_LAYOUT is not.
+  // A complete asynchronous client egress queue would have to cover every
+  // command and LockLayout reply together. Until then, bound the rate here
+  // without changing the established reliable socket ordering.
+  NowTick := GetTickCount64;
+  if (not AForce) and
+     (AOp in [PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME]) and
+     (FLastPreviewId = AGestureId) and (FLastPreviewTick <> 0) and
+     (NowTick - FLastPreviewTick < LAYOUT_PREVIEW_MIN_INTERVAL_MS) then
+    Exit(True);
+
+  Preview := Default(TLayoutPreview);
+  Preview.GestureId := AGestureId;
+  Preview.BaseRevision := ABaseRevision;
+  Preview.Seq := ASeq;
+  Preview.Op := AOp;
+  Preview.X := AX;
+  Preview.Y := AY;
+  Preview.W := AW;
+  Preview.H := AH;
+  SetLength(Data, SizeOf(Preview));
+  Move(Preview, Data[0], SizeOf(Preview));
+  Result := SendFrame(FRAME_LAYOUT_PREVIEW, APane, Data);
+  if Result then
+  begin
+    FLastPreviewId := AGestureId;
+    FLastPreviewTick := NowTick;
+  end;
+end;
+
 function TSessionClient.SendNewPane(APane: integer; ADir: byte;
   const AClass, ACmd, ACwd, ATitle: string): boolean;
 var
@@ -1652,6 +2490,7 @@ begin
   Data := Default(TByteArray);
   Stream := TMemoryStream.Create;
   try
+    Stream.WriteBuffer(FLayoutRevision, SizeOf(FLayoutRevision));
     Stream.WriteBuffer(ADir, SizeOf(ADir));
     WriteString(Stream, AClass);
     WriteString(Stream, ACmd);
@@ -1663,6 +2502,12 @@ begin
   finally
     Stream.Free;
   end;
+  // NEWPANE has no speculative client-side mutation to protect.  The daemon
+  // acquires the structural lease when this FIFO command reaches the single
+  // consumer, then publishes the authoritative NEWPANE_EV.  Pre-locking here
+  // lost the first click on an empty desktop: the preceding zero-pane layout
+  // event could still be queued locally, so its revision made LOCK fail and
+  // the command was never sent.
   Result := SendFrame(FRAME_NEWPANE, APane, Data);
 end;
 
@@ -1690,7 +2535,12 @@ begin
   finally
     Stream.Free;
   end;
+  Result := LockLayout(APane);
+  if not Result then
+    Exit;
   Result := SendFrame(FRAME_RENAME, APane, Data);
+  if not Result then
+    UnlockLayout(APane);
 end;
 
 constructor TDetachedSession.Create(const AName, AProfile: string;
@@ -1721,7 +2571,6 @@ begin
   end;
   LoadConfig(ServerCfg);
   FConfiguredThreads := ServerCfg.MultiThread;
-  FResizePolicy := ServerCfg.ResizePolicy;
   FAvailableCPUs := AvailableCPUCount;
   if FConfiguredThreads = 0 then
     FThreadLimit := FAvailableCPUs
@@ -1764,6 +2613,12 @@ begin
   FSocketPath := SessionSocketPathFor(FName);
   FMetaPath := SessionMetaPathFor(FName);
   FListener := -1;
+  FCommandHead := 0;
+  FCommandCount := 0;
+  FCommandBytes := 0;
+  FNextCommandSequence := 0;
+  FNextConnectionGeneration := 0;
+  FDispatchCursor := 0;
   for I := 0 to MAX_CLIENTS - 1 do
   begin
     FClients[I] := Default(TClientConn);
@@ -1774,14 +2629,32 @@ begin
     FPending[I] := Default(TPendingConn);
     FPending[I].Fd := -1;
   end;
+  for I := 0 to COMMAND_QUEUE_SLOTS - 1 do
+    FCommandQueue[I].Data := nil;
   FStop := False;
-  // initial window geometry exactly as it was when detaching
+  FRevision := 1;
+  FLayoutTreeOwner := -1;
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    FPaneLayoutOwner[I] := -1;
+    FPaneLeaseGeneration[I] := 0;
+    FPaneLeaseRevision[I] := 0;
+    FLayoutPreviews[I] := Default(TLayoutPreviewState);
+  end;
+  // initial shared window geometry exactly as it was when the daemon started
   FGeomValid := Length(AGeom) = FPaneCount;
   FDeskW := ADeskW;
   FDeskH := ADeskH;
   if FGeomValid then
     for I := 0 to FPaneCount - 1 do
+    begin
       FGeom[I] := AGeom[I];
+      if FScreens[I] <> nil then
+      begin
+        FGeom[I].Cols := FScreens[I].Width;
+        FGeom[I].Rows := FScreens[I].Height;
+      end;
+    end;
 end;
 
 destructor TDetachedSession.Destroy;
@@ -1825,6 +2698,8 @@ begin
     FpClose(FWorkerResultPipe[1]);
   for I := 0 to WORKER_RESULT_SLOTS - 1 do
     FWorkerResults[I].Data := nil;
+  for I := 0 to COMMAND_QUEUE_SLOTS - 1 do
+    FCommandQueue[I].Data := nil;
   if FWorkerResultSpace <> nil then
     RTLEventDestroy(FWorkerResultSpace);
   DoneCriticalSection(FWorkerResultLock);
@@ -1888,21 +2763,342 @@ begin
       Exit(True);
 end;
 
+procedure TDetachedSession.ClientSizeSummary(out AMinW, AMinH: Longint;
+  out AAllMatch: boolean);
+var
+  I, Count, W, H, FirstW, FirstH: integer;
+begin
+  AMinW := 0;
+  AMinH := 0;
+  FirstW := 0;
+  FirstH := 0;
+  Count := 0;
+  AAllMatch := True;
+  // Include the attaching slot before it becomes Ready: its own snapshot and
+  // the first broadcast to existing viewers must describe the same set.
+  for I := 0 to MAX_CLIENTS - 1 do
+    if FClients[I].Fd >= 0 then
+    begin
+      W := FClients[I].HostW;
+      H := FClients[I].HostH;
+      if (W < 1) or (H < 3) then
+      begin
+        W := FDeskW;
+        H := FDeskH + 2;
+        AAllMatch := False;
+      end;
+      if Count = 0 then
+      begin
+        FirstW := W;
+        FirstH := H;
+        AMinW := W;
+        AMinH := H;
+      end
+      else
+      begin
+        if (W <> FirstW) or (H <> FirstH) then
+          AAllMatch := False;
+        if W < AMinW then AMinW := W;
+        if H < AMinH then AMinH := H;
+      end;
+      Inc(Count);
+    end;
+  if Count = 0 then
+  begin
+    AMinW := FDeskW;
+    AMinH := FDeskH + 2;
+    AAllMatch := True;
+  end;
+end;
+
+procedure TDetachedSession.BroadcastHostSummaryEv;
+var
+  Values: array[0..3] of Longint;
+  AllMatch: boolean;
+begin
+  Values[0] := AttachedCount;
+  if Values[0] <= 0 then
+    Exit;
+  ClientSizeSummary(Values[1], Values[2], AllMatch);
+  if AllMatch then Values[3] := 1 else Values[3] := 0;
+  if DebugFull then
+    DebugLog(Format('host-summary: clients=%d min=%dx%d match=%d',
+      [Values[0], Values[1], Values[2], Values[3]]));
+  // Deliberately bypass BroadcastLayoutEv: that routine excludes a viewer
+  // while it owns any layout lease. Host safety metadata is independent of
+  // geometry and must reach every ready event-capable viewer immediately.
+  Broadcast(FRAME_HOST_SUMMARY_EV, -1, Values, SizeOf(Values), True, -1);
+end;
+
+procedure TDetachedSession.BroadcastLayoutPreview(APane, AExcept: integer;
+  const APreview: TLayoutPreview);
+begin
+  // Unlike canonical layout snapshots, a preview must reach a viewer which
+  // owns some other pane: independent gestures may be visible concurrently.
+  Broadcast(FRAME_LAYOUT_PREVIEW_EV, APane, APreview, SizeOf(APreview),
+    True, AExcept);
+end;
+
+procedure TDetachedSession.CancelLayoutPreview(APane: integer;
+  ABroadcast: boolean);
+var
+  Preview: TLayoutPreview;
+  ExceptClient: integer;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or
+     (not FLayoutPreviews[APane].Active) then
+    Exit;
+  Preview := Default(TLayoutPreview);
+  Preview.GestureId := FLayoutPreviews[APane].Last.GestureId;
+  if FLayoutPreviews[APane].TailAuthorized then
+    Preview.BaseRevision := FLayoutPreviews[APane].TailRevision
+  else
+    Preview.BaseRevision := FLayoutPreviews[APane].Last.BaseRevision;
+  Preview.Seq := FLayoutPreviews[APane].Last.Seq + 1;
+  Preview.Op := PREVIEW_OP_CLEAR;
+  ExceptClient := FLayoutPreviews[APane].Owner;
+  if DebugFull then
+    DebugLog(Format('layout-preview: clear pane=%d owner=%d id=%d seq=%d',
+      [APane, ExceptClient, Int64(Preview.GestureId), Int64(Preview.Seq)]));
+  FLayoutPreviews[APane] := Default(TLayoutPreviewState);
+  if ABroadcast then
+    BroadcastLayoutPreview(APane, ExceptClient, Preview);
+end;
+
+procedure TDetachedSession.CancelAllLayoutPreviews(ABroadcast: boolean);
+var
+  I: integer;
+begin
+  for I := 0 to MAX_PANES - 1 do
+    CancelLayoutPreview(I, ABroadcast);
+end;
+
+function TDetachedSession.ExpireLayoutPreviews: boolean;
+var
+  I: integer;
+  NowTick: QWord;
+begin
+  Result := False;
+  NowTick := GetTickCount64;
+  for I := 0 to MAX_PANES - 1 do
+    if FLayoutPreviews[I].Active and
+       FLayoutPreviews[I].TailAuthorized and
+       ((FLayoutPreviews[I].TailRevision <> FRevision) or
+        (NowTick >= FLayoutPreviews[I].TailDeadline)) then
+    begin
+      CancelLayoutPreview(I, True);
+      Result := True;
+    end;
+end;
+
+procedure TDetachedSession.SendActiveLayoutPreviews(AClient: integer);
+var
+  I: integer;
+begin
+  if (AClient < 0) or (AClient >= MAX_CLIENTS) or
+     (FClients[AClient].Fd < 0) or (not FClients[AClient].Ready) or
+     ((FClients[AClient].Caps and ATTACH_CAP_EVENTS) = 0) then
+    Exit;
+  for I := 0 to FPaneCount - 1 do
+    if FLayoutPreviews[I].Active and FLayoutPreviews[I].HasVisual and
+       (FLayoutPreviews[I].Owner <> AClient) then
+      SendFrameToIdx(AClient, FRAME_LAYOUT_PREVIEW_EV, I,
+        FLayoutPreviews[I].LastVisual,
+        SizeOf(FLayoutPreviews[I].LastVisual));
+end;
+
+procedure TDetachedSession.AuthorizeLayoutPreviewTails(AOwner: integer;
+  ACommitBase: QWord; AChanges: LongWord);
+var
+  I: integer;
+begin
+  if (AOwner < 0) or (AOwner >= MAX_CLIENTS) or
+     (FClients[AOwner].Fd < 0) then
+    Exit;
+  for I := 0 to FPaneCount - 1 do
+    if FLayoutPreviews[I].Active and
+       FLayoutPreviews[I].TailRequested and
+       (not FLayoutPreviews[I].TailAuthorized) and
+       (FLayoutPreviews[I].Owner = AOwner) and
+       (FLayoutPreviews[I].Generation = FClients[AOwner].Generation) and
+       (FLayoutPreviews[I].Last.BaseRevision = ACommitBase) and
+       ((AChanges and (LongWord(1) shl I)) <> 0) then
+    begin
+      FLayoutPreviews[I].TailAuthorized := True;
+      FLayoutPreviews[I].TailRevision := FRevision;
+      FLayoutPreviews[I].TailDeadline := GetTickCount64 +
+        LAYOUT_PREVIEW_TAIL_MS;
+      // A client attaching between the commit and the first tail step sees a
+      // preview tied to the canonical revision in its snapshot, not the old
+      // pre-commit base used to acquire the lease.
+      if FLayoutPreviews[I].HasVisual then
+        FLayoutPreviews[I].LastVisual.BaseRevision := FRevision;
+      if DebugFull then
+        DebugLog(Format(
+          'layout-preview: tail authorized pane=%d owner=%d id=%d revision=%d',
+          [I, AOwner, Int64(FLayoutPreviews[I].Last.GestureId),
+           Int64(FRevision)]));
+    end;
+end;
+
+procedure TDetachedSession.HandleLayoutPreview(AClient, APane: integer;
+  const AData: TByteArray);
+var
+  Preview: TLayoutPreview;
+  State: ^TLayoutPreviewState;
+  VisualOp, Valid: boolean;
+begin
+  if (AClient < 0) or (AClient >= MAX_CLIENTS) or
+     (FClients[AClient].Fd < 0) or (APane < 0) or
+     (APane >= FPaneCount) or
+     (not DecodeLayoutPreviewBlob(AData, Preview)) or
+     (Preview.Seq = High(QWord)) then
+    Exit;
+  VisualOp := Preview.Op in [PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME,
+    PREVIEW_OP_OUTLINE_SHOW, PREVIEW_OP_OUTLINE_HIDE];
+  if VisualOp then
+    // FreeVision intentionally permits a dragged window to sit partly beyond
+    // the desktop. Keep those real edge steps, but require a bounded positive
+    // rectangle which still intersects the canonical desktop. Int64 avoids a
+    // hostile Longint X/Y overflowing during the intersection calculation.
+    Valid := (Preview.W >= 1) and (Preview.W <= FDeskW) and
+      (Preview.H >= 1) and (Preview.H <= FDeskH) and
+      (Int64(Preview.X) < Int64(FDeskW)) and
+      (Int64(Preview.X) + Int64(Preview.W) > 0) and
+      (Int64(Preview.Y) < Int64(FDeskH)) and
+      (Int64(Preview.Y) + Int64(Preview.H) > 0)
+  else
+    Valid := (Preview.X = 0) and (Preview.Y = 0) and
+      (Preview.W = 0) and (Preview.H = 0);
+  if not Valid then
+    Exit;
+
+  State := @FLayoutPreviews[APane];
+  if State^.Active and State^.TailAuthorized then
+  begin
+    if (GetTickCount64 >= State^.TailDeadline) or
+       (State^.TailRevision <> FRevision) then
+    begin
+      CancelLayoutPreview(APane, True);
+      // CLEAR is presentation-only and clients deliberately keep its last
+      // frame until canonical state follows. This on-arrival expiry path is
+      // independent of the periodic expiry sweep, so pair it here as well.
+      BroadcastLayoutEv(-1);
+      Exit;
+    end;
+    Valid := (State^.Owner = AClient) and
+      (State^.Generation = FClients[AClient].Generation) and
+      (State^.Last.GestureId = Preview.GestureId) and
+      (Preview.BaseRevision = State^.TailRevision) and
+      (Preview.BaseRevision = FRevision) and
+      (Preview.Seq > State^.Last.Seq) and
+      (Preview.Op <> PREVIEW_OP_TAIL_BEGIN);
+  end
+  else
+  begin
+    Valid := (FPaneLayoutOwner[APane] = AClient) and
+      (FPaneLeaseGeneration[APane] = FClients[AClient].Generation) and
+      (Preview.BaseRevision = FPaneLeaseRevision[APane]);
+    if Valid and State^.Active then
+      Valid := (State^.Owner = AClient) and
+        (State^.Generation = FClients[AClient].Generation) and
+        (State^.Last.GestureId = Preview.GestureId) and
+        (State^.Last.BaseRevision = Preview.BaseRevision) and
+        (Preview.Seq > State^.Last.Seq)
+    else if Valid and State^.Ended then
+      Valid := False
+    else if Valid then
+    begin
+      // END/hide without a preceding preview has nothing to clear and must
+      // not create a persistent gesture record.
+      Valid := not (Preview.Op in [PREVIEW_OP_OUTLINE_HIDE,
+        PREVIEW_OP_TAIL_END, PREVIEW_OP_CLEAR]);
+      if Valid then
+      begin
+        State^ := Default(TLayoutPreviewState);
+        State^.Active := True;
+        State^.Owner := AClient;
+        State^.Generation := FClients[AClient].Generation;
+      end;
+    end;
+    // TAIL_END is valid only after a successful matching commit/ACK.
+    if Valid and (Preview.Op = PREVIEW_OP_TAIL_END) then
+      Valid := False;
+  end;
+  if not Valid then
+    Exit;
+
+  State^.Last := Preview;
+  case Preview.Op of
+    PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME, PREVIEW_OP_OUTLINE_SHOW:
+      begin
+        State^.LastVisual := Preview;
+        State^.HasVisual := True;
+      end;
+    PREVIEW_OP_OUTLINE_HIDE:
+      State^.HasVisual := False;
+    PREVIEW_OP_TAIL_BEGIN:
+      State^.TailRequested := True;
+  end;
+  if DebugFull then
+    DebugLog(Format(
+      'layout-preview: relay pane=%d owner=%d id=%d seq=%d op=%d base=%d',
+      [APane, AClient, Int64(Preview.GestureId), Int64(Preview.Seq),
+       Preview.Op, Int64(Preview.BaseRevision)]));
+  BroadcastLayoutPreview(APane, AClient, Preview);
+  if Preview.Op = PREVIEW_OP_TAIL_END then
+    State^ := Default(TLayoutPreviewState);
+  if Preview.Op = PREVIEW_OP_CLEAR then
+  begin
+    State^.Active := False;
+    State^.Ended := True;
+    State^.TailRequested := False;
+    State^.TailAuthorized := False;
+    State^.HasVisual := False;
+  end;
+end;
+
 procedure TDetachedSession.DropClient(AIdx: integer);
 var
-  P: integer;
+  WasReady: boolean;
+  I: integer;
 begin
   if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or (FClients[AIdx].Fd < 0) then
     Exit;
+  WasReady := FClients[AIdx].Ready;
+  if FLayoutTreeOwner = AIdx then
+    FLayoutTreeOwner := -1;
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    if (FLayoutPreviews[I].Active or FLayoutPreviews[I].Ended) and
+       (FLayoutPreviews[I].Owner = AIdx) then
+    begin
+      if FLayoutPreviews[I].Active then
+        CancelLayoutPreview(I, True)
+      else
+        FLayoutPreviews[I] := Default(TLayoutPreviewState);
+    end;
+    if FPaneLayoutOwner[I] = AIdx then
+    begin
+      FPaneLayoutOwner[I] := -1;
+      FPaneLeaseGeneration[I] := 0;
+      FPaneLeaseRevision[I] := 0;
+    end;
+  end;
   FpClose(FClients[AIdx].Fd);
   FClients[AIdx] := Default(TClientConn);
   FClients[AIdx].Fd := -1;
-  // Only the compatibility policy derives PTY size from attached clients.
-  // A session-policy client owns a viewport, so its departure is geometrically
-  // invisible to every process and every other client.
-  if FResizePolicy = rpSmallest then
-    for P := 0 to FPaneCount - 1 do
-      NegotiateResize(P);
+  if WasReady then
+  begin
+    // Detach changes only the set of viewers. The one canonical desktop stays
+    // untouched, including when no interactive client remains attached.
+    if AttachedCount > 0 then
+    begin
+      BroadcastHostSummaryEv;
+      // Releasing a disconnected owner's lease still changes the lock mask.
+      BroadcastLayoutEv(-1);
+    end;
+  end;
   WriteSidecar;
 end;
 
@@ -1925,6 +3121,146 @@ begin
     FpClose(FPending[AIdx].Fd);
   FPending[AIdx] := Default(TPendingConn);
   FPending[AIdx].Fd := -1;
+end;
+
+function TDetachedSession.NewConnectionGeneration: QWord;
+begin
+  Inc(FNextConnectionGeneration);
+  // Zero denotes an unused/default record.  This is only relevant after a
+  // theoretical 2^64 accepts, but keeping the invariant costs nothing.
+  if FNextConnectionGeneration = 0 then
+    Inc(FNextConnectionGeneration);
+  Result := FNextConnectionGeneration;
+end;
+
+function TDetachedSession.CanQueueCommand(ASize: integer): boolean;
+begin
+  Result := (ASize >= 0) and (ASize <= MAX_FRAME_SIZE) and
+    (FCommandCount < COMMAND_QUEUE_SLOTS) and
+    (FCommandBytes + QWord(ASize) <= QWord(COMMAND_QUEUE_BYTE_LIMIT));
+end;
+
+function TDetachedSession.QueueCommand(AOrigin: TCommandOrigin;
+  ASlot: integer; AGeneration: QWord; AKind: byte; APane: integer;
+  const AData: TByteArray; APeerClose: boolean): boolean;
+var
+  Tail: integer;
+  OriginName: string;
+begin
+  Result := False;
+  if not CanQueueCommand(Length(AData)) then
+    Exit;
+  Tail := (FCommandHead + FCommandCount) mod COMMAND_QUEUE_SLOTS;
+  Inc(FNextCommandSequence);
+  if FNextCommandSequence = 0 then
+    Inc(FNextCommandSequence);
+  FCommandQueue[Tail] := Default(TQueuedCommand);
+  FCommandQueue[Tail].Sequence := FNextCommandSequence;
+  FCommandQueue[Tail].Origin := AOrigin;
+  FCommandQueue[Tail].Slot := ASlot;
+  FCommandQueue[Tail].Generation := AGeneration;
+  FCommandQueue[Tail].Kind := AKind;
+  FCommandQueue[Tail].Pane := APane;
+  FCommandQueue[Tail].PeerClose := APeerClose;
+  FCommandQueue[Tail].Data := AData;
+  Inc(FCommandCount);
+  Inc(FCommandBytes, QWord(Length(AData)));
+  if DebugFull then
+  begin
+    if AOrigin = coClient then OriginName := 'client'
+    else OriginName := 'pending';
+    DebugLog('command-fifo: enqueue seq=' +
+      IntToStr(Int64(FNextCommandSequence)) + ' origin=' + OriginName +
+      ' slot=' + IntToStr(ASlot) + ' gen=' +
+      IntToStr(Int64(AGeneration)) + ' kind=' + IntToStr(AKind) +
+      ' pane=' + IntToStr(APane) + ' bytes=' +
+      IntToStr(Length(AData)) + ' count=' + IntToStr(FCommandCount) +
+      ' total=' + IntToStr(Int64(FCommandBytes)));
+  end;
+  Result := True;
+end;
+
+function TDetachedSession.PopCommand(out ACommand: TQueuedCommand): boolean;
+begin
+  ACommand := Default(TQueuedCommand);
+  if FCommandCount <= 0 then
+    Exit(False);
+  ACommand := FCommandQueue[FCommandHead];
+  FCommandQueue[FCommandHead] := Default(TQueuedCommand);
+  FCommandHead := (FCommandHead + 1) mod COMMAND_QUEUE_SLOTS;
+  Dec(FCommandCount);
+  if FCommandBytes >= QWord(Length(ACommand.Data)) then
+    Dec(FCommandBytes, QWord(Length(ACommand.Data)))
+  else
+    FCommandBytes := 0;
+  Result := True;
+end;
+
+procedure TDetachedSession.DrainCommandQueue;
+var
+  Command: TQueuedCommand;
+  Valid: boolean;
+  OriginName: string;
+begin
+  // Deliberately no critical section: Run is the sole producer and consumer.
+  // Handlers execute only after the item has left the FIFO, so pane locks or
+  // callbacks can never be nested under a queue lock.
+  Command := Default(TQueuedCommand);
+  while PopCommand(Command) do
+  begin
+    if Command.Origin = coClient then
+    begin
+      OriginName := 'client';
+      Valid := (Command.Slot >= 0) and (Command.Slot < MAX_CLIENTS) and
+        (FClients[Command.Slot].Fd >= 0) and
+        (FClients[Command.Slot].Generation = Command.Generation);
+    end
+    else
+    begin
+      OriginName := 'pending';
+      Valid := (Command.Slot >= 0) and
+        (Command.Slot < MAX_PENDING_CONNECTIONS) and
+        (FPending[Command.Slot].Fd >= 0) and
+        (FPending[Command.Slot].Generation = Command.Generation);
+    end;
+    if DebugFull then
+      DebugLog('command-fifo: dequeue seq=' +
+        IntToStr(Int64(Command.Sequence)) + ' origin=' + OriginName +
+        ' slot=' + IntToStr(Command.Slot) + ' gen=' +
+        IntToStr(Int64(Command.Generation)) + ' kind=' +
+        IntToStr(Command.Kind) + ' pane=' + IntToStr(Command.Pane) +
+        ' bytes=' + IntToStr(Length(Command.Data)) + ' valid=' +
+        IntToStr(Ord(Valid)) + ' count=' + IntToStr(FCommandCount) +
+        ' total=' + IntToStr(Int64(FCommandBytes)));
+    if not Valid then
+    begin
+      Command.Data := nil;
+      Continue;
+    end;
+    if Command.Origin = coClient then
+    begin
+      if Command.PeerClose then
+        DropClient(Command.Slot)
+      else
+        HandleClientFrame(Command.Slot, Command.Kind, Command.Pane,
+          Command.Data);
+    end
+    else
+    begin
+      FPending[Command.Slot].CommandQueued := False;
+      if Command.PeerClose then
+      begin
+        // A one-shot control peer commonly shutdown(SHUT_WR) and keeps
+        // reading its reply.  Its normal CloseAfterWrite path owns closure.
+        if not FPending[Command.Slot].CloseAfterWrite then
+          DropPending(Command.Slot);
+      end
+      else
+        HandlePendingFrame(Command.Slot, Command.Kind, Command.Pane,
+          Command.Data);
+    end;
+    Command.Data := nil;
+  end;
 end;
 
 // queues bytes toward a client without ever blocking the daemon: first
@@ -2151,69 +3487,212 @@ begin
     DropPending(AIdx);
 end;
 
-// Change the one real PTY geometry and mirror it to every client. Under the
-// session policy this is called only by an explicit resize operation; under
-// the compatibility policy NegotiateResize derives the common minimum first.
-procedure TDetachedSession.ApplyCanonicalResize(APane, ACols, ARows: integer);
+// Change the one real PTY geometry and mirror it to every client. Attaching
+// clients and their physical terminal resizes never call this routine.
+procedure TDetachedSession.ApplyCanonicalResize(APane, ACols, ARows: integer;
+  ANotify, AWorkersStopped: boolean);
 var
   Pair: array[0..1] of Longint;
+  ManageWorkers: boolean;
 begin
   if (APane < 0) or (APane >= FPaneCount) then
     Exit;
   if (ACols < 4) or (ARows < 2) then
     Exit;
-  LockPane(APane);
+  // A worker parses bytes into the daemon screen before it queues the same
+  // OUTPUT for clients. Quiescing and draining the pool creates one ordering
+  // barrier: every result parsed with the old width is queued before the
+  // resize/layout event; every later byte is parsed with the new width by
+  // both daemon and clients. Callers resizing several panes stop once and
+  // pass AWorkersStopped=True.
+  ManageWorkers := not AWorkersStopped;
+  if ManageWorkers then
+    StopPaneWorkers;
   try
-    if FScreens[APane] = nil then
-      Exit;
-    if DebugActive then
-      DebugLog(Format('resize: pane=%d canonical %dx%d (screen %dx%d)',
-        [APane, ACols, ARows, FScreens[APane].Width,
-         FScreens[APane].Height]));
-    if (ACols = FScreens[APane].Width) and
-       (ARows = FScreens[APane].Height) then
-      Exit;
-    FScreens[APane].Resize(ACols, ARows);
-    if FPanes[APane] <> nil then
-      FPanes[APane].Resize(ACols, ARows);
+    LockPane(APane);
+    try
+      if FScreens[APane] = nil then
+        Exit;
+      if DebugActive then
+        DebugLog(Format('resize: pane=%d canonical %dx%d (screen %dx%d)',
+          [APane, ACols, ARows, FScreens[APane].Width,
+           FScreens[APane].Height]));
+      if (ACols = FScreens[APane].Width) and
+         (ARows = FScreens[APane].Height) then
+        Exit;
+      FScreens[APane].Resize(ACols, ARows);
+      if FPanes[APane] <> nil then
+        FPanes[APane].Resize(ACols, ARows);
+    finally
+      UnlockPane(APane);
+    end;
   finally
-    UnlockPane(APane);
+    if ManageWorkers then
+      StartPaneWorkers;
   end;
   Pair[0] := ACols;
   Pair[1] := ARows;
-  Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
+  if ANotify then
+    Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
 end;
 
-// effective pane size = common minimum of what the clients requested
-// (so all parse the same bytes); the result is broadcast and each
-// client adjusts its TScreen upon receiving it
-procedure TDetachedSession.NegotiateResize(APane: integer);
+// A pane lock protects one window operation.  A pane=-1 request protects the
+// split tree itself and all existing panes.  The explicit tree owner is
+// essential for an empty desktop: an empty per-pane array cannot represent a
+// lock, and two clients could otherwise both create pane zero concurrently.
+// PTY input/output and focus deliberately never use these locks.
+function TDetachedSession.TryLockLayout(AOwner, APane: integer;
+  ABroadcast: boolean): boolean;
 var
   I: integer;
-  MinC, MinR: Longint;
+  OwnerGeneration: QWord;
 begin
-  if (APane < 0) or (APane >= FPaneCount) then
+  Result := False;
+  if AOwner < 0 then
     Exit;
-  MinC := 0;
-  MinR := 0;
-  for I := 0 to MAX_CLIENTS - 1 do
-    if (FClients[I].Fd >= 0) and FClients[I].Ready and
-       (FClients[I].ReqCols[APane] > 0) and
-       (FClients[I].ReqRows[APane] > 0) then
+  OwnerGeneration := 0;
+  if (AOwner < MAX_CLIENTS) and (FClients[AOwner].Fd >= 0) then
+    OwnerGeneration := FClients[AOwner].Generation;
+  if APane >= 0 then
+  begin
+    if (APane >= FPaneCount) or
+       ((FLayoutTreeOwner >= 0) and (FLayoutTreeOwner <> AOwner)) or
+       ((FPaneLayoutOwner[APane] >= 0) and
+        (FPaneLayoutOwner[APane] <> AOwner)) then
+      Exit;
+    // A newly granted lease is an ordering barrier for cosmetic state, even
+    // when the same client immediately begins another gesture on this pane.
+    CancelLayoutPreview(APane, True);
+    if (AOwner < MAX_CLIENTS) and (FClients[AOwner].Fd < 0) then
+      Exit;
+    FLayoutPreviews[APane] := Default(TLayoutPreviewState);
+    FPaneLayoutOwner[APane] := AOwner;
+    FPaneLeaseGeneration[APane] := OwnerGeneration;
+    FPaneLeaseRevision[APane] := FRevision;
+  end
+  else
+  begin
+    if (FLayoutTreeOwner >= 0) and (FLayoutTreeOwner <> AOwner) then
+      Exit;
+    for I := 0 to FPaneCount - 1 do
+      if (FPaneLayoutOwner[I] >= 0) and
+         (FPaneLayoutOwner[I] <> AOwner) then
+        Exit;
+    // Tree mutations compact pane indexes, so no preview may survive a
+    // structural lease even when all existing locks belong to this owner.
+    CancelAllLayoutPreviews(True);
+    if (AOwner < MAX_CLIENTS) and (FClients[AOwner].Fd < 0) then
+      Exit;
+    for I := 0 to MAX_PANES - 1 do
+      FLayoutPreviews[I] := Default(TLayoutPreviewState);
+    FLayoutTreeOwner := AOwner;
+    for I := 0 to FPaneCount - 1 do
     begin
-      if (MinC = 0) or (FClients[I].ReqCols[APane] < MinC) then
-        MinC := FClients[I].ReqCols[APane];
-      if (MinR = 0) or (FClients[I].ReqRows[APane] < MinR) then
-        MinR := FClients[I].ReqRows[APane];
+      FPaneLayoutOwner[I] := AOwner;
+      FPaneLeaseGeneration[I] := OwnerGeneration;
+      FPaneLeaseRevision[I] := FRevision;
     end;
-  ApplyCanonicalResize(APane, MinC, MinR);
+  end;
+  Result := True;
+  if DebugFull then
+    DebugLog(Format('layout-lock: acquire owner=%d pane=%d ok=1',
+      [AOwner, APane]));
+  if ABroadcast then
+    BroadcastLayoutEv(-1);
+end;
+
+procedure TDetachedSession.ReleaseLayout(AOwner, APane: integer;
+  ABroadcast: boolean);
+var
+  I: integer;
+  Changed: boolean;
+begin
+  Changed := False;
+  if APane >= 0 then
+  begin
+    // A structural lease is released atomically with pane=-1; do not allow a
+    // mismatched per-pane unlock to tear only part of it down.
+    if (FLayoutTreeOwner <> AOwner) and (APane < FPaneCount) and
+       (FPaneLayoutOwner[APane] = AOwner) then
+    begin
+      if FLayoutPreviews[APane].Active and
+         (FLayoutPreviews[APane].Owner = AOwner) and
+         (not FLayoutPreviews[APane].TailAuthorized) then
+        CancelLayoutPreview(APane, True);
+      FPaneLayoutOwner[APane] := -1;
+      FPaneLeaseGeneration[APane] := 0;
+      FPaneLeaseRevision[APane] := 0;
+      if not (FLayoutPreviews[APane].Active and
+              FLayoutPreviews[APane].TailAuthorized) then
+        FLayoutPreviews[APane] := Default(TLayoutPreviewState);
+      Changed := True;
+    end;
+  end
+  else
+  begin
+    if FLayoutTreeOwner = AOwner then
+    begin
+      FLayoutTreeOwner := -1;
+      Changed := True;
+    end;
+    // Clear the complete fixed array defensively. Pane insertion/removal
+    // compacts owners with panes, but a disconnect/cancel must also make an
+    // old tail slot impossible to inherit when that index is reused later.
+    for I := 0 to MAX_PANES - 1 do
+      if FPaneLayoutOwner[I] = AOwner then
+      begin
+        if FLayoutPreviews[I].Active and
+           (FLayoutPreviews[I].Owner = AOwner) and
+           (not FLayoutPreviews[I].TailAuthorized) then
+          CancelLayoutPreview(I, True);
+        FPaneLayoutOwner[I] := -1;
+        FPaneLeaseGeneration[I] := 0;
+        FPaneLeaseRevision[I] := 0;
+        if not (FLayoutPreviews[I].Active and
+                FLayoutPreviews[I].TailAuthorized) then
+          FLayoutPreviews[I] := Default(TLayoutPreviewState);
+        Changed := True;
+      end;
+  end;
+  if Changed then
+  begin
+    if DebugFull then
+      DebugLog(Format('layout-lock: release owner=%d pane=%d',
+        [AOwner, APane]));
+    if ABroadcast then
+      BroadcastLayoutEv(-1);
+  end;
+end;
+
+function TDetachedSession.ClientOwnsAnyLayout(AOwner: integer): boolean;
+var
+  I: integer;
+begin
+  Result := False;
+  if (AOwner < 0) or (AOwner >= MAX_CLIENTS) then
+    Exit;
+  if FLayoutTreeOwner = AOwner then
+    Exit(True);
+  for I := 0 to FPaneCount - 1 do
+    if FPaneLayoutOwner[I] = AOwner then
+      Exit(True);
+end;
+
+function TDetachedSession.OwnsAllLayout(AOwner: integer): boolean;
+begin
+  // Structural operations require the explicit global lease.  In particular,
+  // zero panes must not make this true vacuously for every client.
+  Result := (AOwner >= 0) and (FLayoutTreeOwner = AOwner);
 end;
 
 // serializes the layout state with the same format as FRAME_LAYOUT
-function TDetachedSession.BuildLayoutBlob(out AData: TByteArray): boolean;
+function TDetachedSession.BuildLayoutBlob(AViewer: integer;
+  out AData: TByteArray; APreservePanes: LongWord): boolean;
 var
   Meta: TMemoryStream;
-  Cnt, I, F: Longint;
+  Cnt, I, F, MinHostW, MinHostH, MatchFlag: Longint;
+  Changes, LockedPanes: LongWord;
+  HostSizesMatch: boolean;
   Flag: byte;
 begin
   Result := False;
@@ -2237,11 +3716,35 @@ begin
       Meta.WriteBuffer(FGeom[I].BY, SizeOf(Longint));
       Meta.WriteBuffer(FGeom[I].BW, SizeOf(Longint));
       Meta.WriteBuffer(FGeom[I].BH, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].Cols, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].Rows, SizeOf(Longint));
       if FGeom[I].Zoomed then Flag := 1 else Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
       if FGeom[I].Minimized then Flag := 1 else Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
+      if FGeom[I].FullScreen then Flag := 1 else Flag := 0;
+      Meta.WriteBuffer(Flag, SizeOf(Flag));
     end;
+    Meta.WriteBuffer(FRevision, SizeOf(FRevision));
+    F := AttachedCount;
+    Meta.WriteBuffer(F, SizeOf(F));
+    // Ordinary authoritative events carry zero. A protocol-v15 peer event
+    // uses this otherwise-idle field for the panes which its viewer currently
+    // owns: the client applies every canonical peer change but keeps those
+    // local gesture rectangles and its older lease-base revision intact.
+    Changes := APreservePanes and LAYOUT_CHANGE_PANES;
+    Meta.WriteBuffer(Changes, SizeOf(Changes));
+    LockedPanes := 0;
+    for I := 0 to Cnt - 1 do
+      if (FPaneLayoutOwner[I] >= 0) and
+         (FPaneLayoutOwner[I] <> AViewer) then
+        LockedPanes := LockedPanes or (LongWord(1) shl I);
+    Meta.WriteBuffer(LockedPanes, SizeOf(LockedPanes));
+    ClientSizeSummary(MinHostW, MinHostH, HostSizesMatch);
+    Meta.WriteBuffer(MinHostW, SizeOf(MinHostW));
+    Meta.WriteBuffer(MinHostH, SizeOf(MinHostH));
+    if HostSizesMatch then MatchFlag := 1 else MatchFlag := 0;
+    Meta.WriteBuffer(MatchFlag, SizeOf(MatchFlag));
     SetLength(AData, Meta.Size);
     if Meta.Size > 0 then
     begin
@@ -2257,13 +3760,37 @@ end;
 procedure TDetachedSession.BroadcastLayoutEv(AExcept: integer);
 var
   Data: TByteArray;
+  I, J: integer;
+  PreservePanes: LongWord;
+  Kind: byte;
 begin
   if AttachedCount = 0 then
     Exit;
-  if not BuildLayoutBlob(Data) then
-    Exit;
-  if Length(Data) > 0 then
-    Broadcast(FRAME_LAYOUT_EV, -1, Data[0], Length(Data), True, AExcept);
+  // The geometry is identical, but the lock mask is viewer-relative: owners
+  // receive PEER state preserving their panes; everyone else receives the
+  // ordinary canonical frame and sees the shaded busy border.
+  // A lease owner cannot accept a newer global revision without invalidating
+  // the older base recorded for its still-running pane gesture. Protocol v15
+  // therefore sends it a peer event: other panes/focus/locks advance visually,
+  // while its own pane mask and lease revision are explicitly preserved. This
+  // lets several clients animate and commit different panes concurrently.
+  for I := 0 to MAX_CLIENTS - 1 do
+    if (I <> AExcept) and (FClients[I].Fd >= 0) and FClients[I].Ready and
+       ((FClients[I].Caps and ATTACH_CAP_EVENTS) <> 0) then
+    begin
+      PreservePanes := 0;
+      for J := 0 to FPaneCount - 1 do
+        if FPaneLayoutOwner[J] = I then
+          PreservePanes := PreservePanes or (LongWord(1) shl J);
+      if ClientOwnsAnyLayout(I) then
+        Kind := FRAME_LAYOUT_PEER_EV
+      else
+        Kind := FRAME_LAYOUT_EV;
+      if not BuildLayoutBlob(I, Data, PreservePanes) then
+        Exit;
+      if Length(Data) > 0 then
+        SendFrameToIdx(I, Kind, -1, Data[0], Length(Data));
+    end;
 end;
 
 procedure TDetachedSession.BroadcastTitle(APane: integer; AExcept: integer);
@@ -2292,7 +3819,9 @@ var
   Data: TByteArray;
   I: integer;
   Nodes: string;
-  GeomCnt: Longint;
+  GeomCnt, MinHostW, MinHostH, MatchFlag: Longint;
+  LockedPanes: LongWord;
+  HostSizesMatch: boolean;
   Flag: byte;
 
   function QueueSnapshotFrame(AKind: byte; APane: integer;
@@ -2368,6 +3897,8 @@ begin
       Meta.WriteBuffer(FGeom[I].BY, SizeOf(Longint));
       Meta.WriteBuffer(FGeom[I].BW, SizeOf(Longint));
       Meta.WriteBuffer(FGeom[I].BH, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].Cols, SizeOf(Longint));
+      Meta.WriteBuffer(FGeom[I].Rows, SizeOf(Longint));
       if FGeom[I].Zoomed then
         Flag := 1
       else
@@ -2378,13 +3909,33 @@ begin
       else
         Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
+      if FGeom[I].FullScreen then
+        Flag := 1
+      else
+        Flag := 0;
+      Meta.WriteBuffer(Flag, SizeOf(Flag));
     end;
     // tolerant tail 3: daemon protocol version (a new client uses it
     // to avoid sending v2 frames to an old daemon)
     GeomCnt := ATTACH_PROTO_VER;
     Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
-    GeomCnt := Ord(FResizePolicy);
+    GeomCnt := 0; // reserved: protocol v5 has one canonical geometry
     Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
+    Meta.WriteBuffer(FRevision, SizeOf(FRevision));
+    // The attaching socket is not Ready until after this snapshot, so include
+    // it explicitly in the count advertised to that client.
+    GeomCnt := AttachedCount + 1;
+    Meta.WriteBuffer(GeomCnt, SizeOf(GeomCnt));
+    LockedPanes := 0;
+    for I := 0 to FPaneCount - 1 do
+      if FPaneLayoutOwner[I] >= 0 then
+        LockedPanes := LockedPanes or (LongWord(1) shl I);
+    Meta.WriteBuffer(LockedPanes, SizeOf(LockedPanes));
+    ClientSizeSummary(MinHostW, MinHostH, HostSizesMatch);
+    Meta.WriteBuffer(MinHostW, SizeOf(MinHostW));
+    Meta.WriteBuffer(MinHostH, SizeOf(MinHostH));
+    if HostSizesMatch then MatchFlag := 1 else MatchFlag := 0;
+    Meta.WriteBuffer(MatchFlag, SizeOf(MatchFlag));
     SetLength(Data, Meta.Size);
     if Meta.Size > 0 then
     begin
@@ -2424,7 +3975,7 @@ end;
 function TDetachedSession.HandleAttach(APendingIdx: integer; AFirstKind: byte;
   const AFirstData: TByteArray): boolean;
 var
-  ChainLen: Longint;
+  ChainLen, HostW, HostH: Longint;
   Slot, I: integer;
   Ver: Longint;
   IsLegacy: boolean;
@@ -2452,12 +4003,15 @@ begin
   if not IsLegacy then
   begin
     Move(AFirstData[0], Ver, SizeOf(Ver));
-    if Ver < ATTACH_PROTO_VER then
+    if Ver <> ATTACH_PROTO_VER then
       Exit;
   end;
   FClients[Slot] := Default(TClientConn);
   FClients[Slot].Fd := FPending[APendingIdx].Fd;
+  FClients[Slot].Generation := NewConnectionGeneration;
   FClients[Slot].InBuf := FPending[APendingIdx].InBuf;
+  FClients[Slot].InPos := FPending[APendingIdx].InPos;
+  FClients[Slot].PeerClosed := FPending[APendingIdx].PeerClosed;
   FClients[Slot].Legacy := IsLegacy;
   FClients[Slot].LastProgress := GetTickCount64;
   // Ownership has moved to FClients; clearing the pending record must not
@@ -2466,9 +4020,18 @@ begin
   DropPending(APendingIdx, False);
   if not IsLegacy then
   begin
-    Move(AFirstData[SizeOf(Longint)], FClients[Slot].DeskW, SizeOf(Longint));
-    Move(AFirstData[2 * SizeOf(Longint)], FClients[Slot].DeskH,
-      SizeOf(Longint));
+    HostW := 0;
+    HostH := 0;
+    Move(AFirstData[SizeOf(Longint)], HostW, SizeOf(HostW));
+    Move(AFirstData[2 * SizeOf(Longint)], HostH, SizeOf(HostH));
+    if (HostW < 1) or (HostW > MAX_SCREEN_COLS) or
+       (HostH < 3) or (HostH > MAX_SCREEN_ROWS) then
+    begin
+      DropClient(Slot);
+      Exit;
+    end;
+    FClients[Slot].HostW := HostW;
+    FClients[Slot].HostH := HostH;
     Move(AFirstData[3 * SizeOf(Longint)], FClients[Slot].Caps,
       SizeOf(Longint));
     // tail 2: the client's own session chain (absent from older clients)
@@ -2496,9 +4059,19 @@ begin
       Exit;
     end;
     FClients[Slot].Ready := True;
+    // The point-in-time snapshot contains canonical geometry only. If an
+    // existing owner is mid-gesture, append its latest cosmetic rectangle
+    // after READY so the new viewer catches up without altering the snapshot.
+    SendActiveLayoutPreviews(Slot);
+    if FClients[Slot].Fd < 0 then
+      Exit;
   finally
     StartPaneWorkers;
   end;
+  // Host compatibility is independent from canonical geometry and reaches
+  // existing lease owners too. The new client receives the same summary
+  // after its point-in-time snapshot, preserving one ordered event stream.
+  BroadcastHostSummaryEv;
   WriteSidecar;
   Result := True;
 end;
@@ -2507,7 +4080,7 @@ end;
 // client (same index shifts so that INPUT stays aligned)
 procedure TDetachedSession.DoKillPane(APane: integer);
 var
-  I, C: integer;
+  I: integer;
 begin
   // the last pane may go too: a session with no panes is a legitimate state,
   // an empty desktop with the window manager still there. Nothing is attached
@@ -2515,6 +4088,7 @@ begin
   // grace period; with a client attached it simply waits for the next pane.
   if (APane < 0) or (APane >= FPaneCount) then
     Exit;
+  CancelAllLayoutPreviews(True);
   StopPaneWorkers;
   try
     FLayout.ClosePane(APane);
@@ -2534,65 +4108,247 @@ begin
       FTitleFixed[I] := FTitleFixed[I + 1];
       FTerms[I] := FTerms[I + 1];
       FGeom[I] := FGeom[I + 1];
-      for C := 0 to MAX_CLIENTS - 1 do
-      begin
-        FClients[C].ReqCols[I] := FClients[C].ReqCols[I + 1];
-        FClients[C].ReqRows[I] := FClients[C].ReqRows[I + 1];
-      end;
+      FPaneLayoutOwner[I] := FPaneLayoutOwner[I + 1];
+      FPaneLeaseGeneration[I] := FPaneLeaseGeneration[I + 1];
+      FPaneLeaseRevision[I] := FPaneLeaseRevision[I + 1];
+      FLayoutPreviews[I] := FLayoutPreviews[I + 1];
     end;
     FPanes[FPaneCount - 1] := nil;
     FScreens[FPaneCount - 1] := nil;
     FTitles[FPaneCount - 1] := '';
     FTerms[FPaneCount - 1] := '';
+    FTitleFixed[FPaneCount - 1] := False;
+    FGeom[FPaneCount - 1] := Default(TPaneGeom);
+    FPaneLayoutOwner[FPaneCount - 1] := -1;
+    FPaneLeaseGeneration[FPaneCount - 1] := 0;
+    FPaneLeaseRevision[FPaneCount - 1] := 0;
+    FLayoutPreviews[FPaneCount - 1] := Default(TLayoutPreviewState);
     Dec(FPaneCount);
     if FFocused > APane then
       Dec(FFocused);
-    if FFocused >= FPaneCount then
-      FFocused := FPaneCount - 1;
-    if FFocused < 0 then
-      FFocused := 0;
+    NormalizeFocusedPane;
   finally
     StartPaneWorkers;
   end;
+  Inc(FRevision);
   WriteSidecar; // the sidecar pane count changed
 end;
 
-// the client syncs split tree, focus, titles and geometry; accepted
-// only if the pane count matches the daemon's live state
-procedure TDetachedSession.ApplyLayoutFrame(const Data: TByteArray);
+// Close the complete shared workspace as one structural transaction.  The
+// reactor has already granted the global lease; stopping the pane workers
+// once avoids sixteen stop/start cycles and no client command can observe a
+// half-compacted server array. Clients receive one KILLPANE_EV with pane=-1
+// and remove the whole mirror under their own suppressed visual transaction.
+procedure TDetachedSession.DoKillAllPanes;
+var
+  I: integer;
+begin
+  if FPaneCount <= 0 then
+    Exit;
+  CancelAllLayoutPreviews(True);
+  StopPaneWorkers;
+  try
+    for I := FPaneCount - 1 downto 0 do
+    begin
+      if FPanes[I] <> nil then
+      begin
+        FPanes[I].KillPane;
+        FPanes[I].Free;
+        FPanes[I] := nil;
+      end;
+      FScreens[I].Free;
+      FScreens[I] := nil;
+      FTitles[I] := '';
+      FTitleFixed[I] := False;
+      FTerms[I] := '';
+      FGeom[I] := Default(TPaneGeom);
+      // Keep the global owner itself until FRAME_KILLPANE's finally block,
+      // but stale per-pane slots must never survive index reuse.
+      FPaneLayoutOwner[I] := -1;
+      FPaneLeaseGeneration[I] := 0;
+      FPaneLeaseRevision[I] := 0;
+      FLayoutPreviews[I] := Default(TLayoutPreviewState);
+    end;
+    if FLayout <> nil then
+    begin
+      FreeAndNil(FLayout.Root);
+      FLayout.Focused := -1;
+      FLayout.LastInsertedIndex := -1;
+    end;
+    FPaneCount := 0;
+    FFocused := -1;
+    FGeomValid := True;
+  finally
+    StartPaneWorkers;
+  end;
+  Inc(FRevision);
+  WriteSidecar;
+end;
+
+// Apply one proposed shared desktop. The reactor serializes frames, while the
+// revision prevents a client that rendered an older snapshot from overwriting
+// a newer global change.
+function TDetachedSession.ApplyLayoutFrame(AClient: integer;
+  const Data: TByteArray;
+  AAllowStale: boolean; out ABaseRevision: QWord;
+  out AChanges: LongWord): boolean;
 var
   Nodes: string;
-  Focused, DeskW, DeskH: Longint;
+  Focused, DeskW, DeskH, ClientCount, MinHostW, MinHostH: Longint;
+  BaseRevision: QWord;
+  Changes, AllowedPanes, LockedPanes: LongWord;
   Titles: TStrArray;
   Geom: TPaneGeomArray;
   NewLay: TLayout;
   I: integer;
+  Changed, DesktopChanged, HostSizesMatch: boolean;
 begin
+  Result := False;
+  ABaseRevision := 0;
+  AChanges := 0;
   if not DecodeLayoutBlob(Data, Nodes, Focused, Titles, Geom, DeskW,
-    DeskH) then
+    DeskH, BaseRevision, ClientCount, Changes, LockedPanes,
+    MinHostW, MinHostH, HostSizesMatch) then
     Exit;
-  if Length(Titles) <> FPaneCount then
+  ABaseRevision := BaseRevision;
+  AChanges := Changes;
+  if DebugFull then
+    DebugLog(Format('layout-proposal: owner=%d desk=%dx%d host-min=%dx%d ' +
+      'host-match=%d mask=%x base=%d', [AClient, DeskW, DeskH, MinHostW,
+      MinHostH, Ord(HostSizesMatch), Changes, BaseRevision]));
+  AllowedPanes := (LongWord(1) shl FPaneCount) - 1;
+  DesktopChanged := (Changes and LAYOUT_CHANGE_DESKTOP) <> 0;
+  if (AClient < 0) or (AClient >= MAX_CLIENTS) or
+     (FClients[AClient].Fd < 0) or
+     (Length(Titles) <> FPaneCount) or (Length(Geom) <> FPaneCount) or
+     ((Changes and not (LAYOUT_CHANGE_DESKTOP or LAYOUT_CHANGE_TREE or
+       AllowedPanes)) <> 0) or
+     ((BaseRevision <> FRevision) and (Changes = 0) and (not AAllowStale)) or
+     ((not DesktopChanged) and
+      ((DeskW <> FDeskW) or (DeskH <> FDeskH))) or
+     (Focused < -1) or (Focused >= FPaneCount) or
+     (ClientCount < 0) or (ClientCount > MAX_CLIENTS) or
+     (LockedPanes <> 0) then
     Exit;
-  NewLay := nil;
-  if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
+  if DesktopChanged then
   begin
-    if NewLay.PaneCount = FPaneCount then
+    if (not OwnsAllLayout(AClient)) or (BaseRevision <> FRevision) or
+       (DeskW < 8) or (DeskW > MAX_SCREEN_COLS) or
+       (DeskH < 5) or (DeskH + 2 > MAX_SCREEN_ROWS) or
+       (AClient < 0) or (AClient >= MAX_CLIENTS) or
+       ((Changes and AllowedPanes) <> AllowedPanes) then
+      Exit;
+    if (DeskW <> FClients[AClient].HostW) or
+       (DeskH + 2 <> FClients[AClient].HostH) then
+      Exit;
+  end;
+  if (Changes and LAYOUT_CHANGE_TREE) <> 0 then
+    if (not OwnsAllLayout(AClient)) or (BaseRevision <> FRevision) then
+      Exit;
+  for I := 0 to FPaneCount - 1 do
+    if (Changes and (LongWord(1) shl I)) <> 0 then
+      // Concurrent owners intentionally commit different panes from an older
+      // global revision. Bind each changed bit to the exact revision and
+      // connection generation recorded when this pane's lease was granted;
+      // a malformed local peer can never reuse ownership to replay another
+      // stale snapshot.
+      if (FPaneLayoutOwner[I] <> AClient) or
+         (FPaneLeaseGeneration[I] <> FClients[AClient].Generation) or
+         (BaseRevision <> FPaneLeaseRevision[I]) then
+        Exit;
+  // Validate the whole proposal before changing one pane or the split tree:
+  // an invalid tail can never leave a partially applied shared desktop.
+  for I := 0 to FPaneCount - 1 do
+    if (Changes and (LongWord(1) shl I)) <> 0 then
+      if (Geom[I].Cols < 4) or (Geom[I].Cols > MAX_SCREEN_COLS) or
+         (Geom[I].Rows < 2) or (Geom[I].Rows > MAX_SCREEN_ROWS) or
+         (Geom[I].BW < 0) or (Geom[I].BH < 0) then
+        Exit;
+  NewLay := nil;
+  if (Changes and LAYOUT_CHANGE_TREE) <> 0 then
+  begin
+    if not LoadLayoutString(Nodes, NewLay, True) or (NewLay = nil) then
+      Exit;
+    if NewLay.PaneCount <> FPaneCount then
+    begin
+      NewLay.Free;
+      Exit;
+    end;
+  end;
+  // Drain every worker result parsed with the old screen width before any
+  // resize/layout is queued. This is one barrier for the whole transaction,
+  // not one thread restart per changed pane.
+  StopPaneWorkers;
+  try
+    Changed := False;
+    if DesktopChanged then
+    begin
+      FDeskW := DeskW;
+      FDeskH := DeskH;
+      Changed := True;
+    end;
+    if NewLay <> nil then
     begin
       FLayout.Free;
       FLayout := NewLay;
-    end
-    else
-      NewLay.Free;
+      Changed := True;
+    end;
+    // Focus normally has its own ordered FRAME_FOCUS channel. A geometry
+    // proposal never overwrites a still-valid focus with an older rendered
+    // snapshot. The sole exception is minimizing the currently focused pane:
+    // once this transaction makes that focus invalid, its proposed fallback
+    // can be accepted without an extra focus broadcast/paint. A newer valid
+    // focus from another client always wins. Titles likewise remain separate
+    // live metadata, so a delayed geometry frame cannot roll a rename back.
+    for I := 0 to FPaneCount - 1 do
+      if (Changes and (LongWord(1) shl I)) <> 0 then
+      begin
+        FGeom[I] := Geom[I];
+        // FRAME_LAYOUT_EV below carries both the terminal dimensions and the
+        // final window geometry. A separate RESIZE_EV here made clients paint
+        // new content inside the old rectangle before this atomic event.
+        ApplyCanonicalResize(I, FGeom[I].Cols, FGeom[I].Rows, False, True);
+        Changed := True;
+      end;
+    // Focus is shared, but it can never designate an icon. If this very
+    // transaction invalidated the current focus, honor its valid fallback;
+    // otherwise keep the newer ordered focus already stored by the daemon.
+    if ((FFocused < 0) or (FFocused >= FPaneCount) or
+        FGeom[FFocused].Minimized) and
+       (Focused >= 0) and (Focused < FPaneCount) and
+       (not FGeom[Focused].Minimized) then
+      FFocused := Focused;
+    NormalizeFocusedPane;
+    if Changed then
+    begin
+      FGeomValid := True;
+      Inc(FRevision);
+    end;
+  finally
+    StartPaneWorkers;
   end;
-  if (Focused >= 0) and (Focused < FPaneCount) then
-    FFocused := Focused;
-  for I := 0 to FPaneCount - 1 do
-    FTitles[I] := Titles[I];
-  FDeskW := DeskW;
-  FDeskH := DeskH;
-  for I := 0 to FPaneCount - 1 do
-    FGeom[I] := Geom[I];
-  FGeomValid := True;
+  Result := True;
+end;
+
+procedure TDetachedSession.NormalizeFocusedPane;
+var
+  I: integer;
+begin
+  if FPaneCount <= 0 then
+    FFocused := -1
+  else if (FFocused < 0) or (FFocused >= FPaneCount) or
+          FGeom[FFocused].Minimized then
+  begin
+    FFocused := -1;
+    for I := 0 to FPaneCount - 1 do
+      if not FGeom[I].Minimized then
+      begin
+        FFocused := I;
+        Break;
+      end;
+  end;
+  if FLayout <> nil then
+    FLayout.Focused := FFocused;
 end;
 
 procedure TDetachedSession.CtlReplyErr(AFd: cint; const AMsg: string);
@@ -2616,11 +4372,13 @@ var
 begin
   if FCtlClassesLoaded then
     Exit;
-  FCtlClassesLoaded := True;
   LoadConfig(FCtlCfg);
   LoadWindowClasses(ConfigFile, coUser, FCtlClasses);
   LoadWindowClasses(SystemConfigFile, coSystem, SysClasses);
   MergeWindowClasses(FCtlClasses, SysClasses);
+  // Do not cache a partially loaded configuration if one of the readers
+  // raises: a later command must be allowed to retry from a clean load.
+  FCtlClassesLoaded := True;
 end;
 
 procedure TDetachedSession.CtlReplyOk(AFd: cint; const AMsg: string);
@@ -2650,10 +4408,10 @@ end;
 // creates a PTY for a window class or a command, like StartPaneEx but
 // without FreeVision: wcSSH -> structured argv; rest -> composed command
 function TDetachedSession.SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
-  ACols, ARows: integer; out APty: TPty; out ATerm: string;
+  var ACols, ARows: integer; out APty: TPty; out ATerm: string;
   out ADefTitle: string): boolean;
 var
-  CIdx: integer;
+  CIdx, ReqCols, ReqRows, OuterW, OuterH: integer;
   ShellS, CmdS, CwdS: string;
   ExecProgram, ExecSecret: string;
   ExecArgs: TStringList;
@@ -2662,6 +4420,11 @@ begin
   APty := nil;
   ATerm := '';
   ADefTitle := '';
+  // Classes can be created or edited while this daemon remains alive.  A
+  // cached definition would spawn the old command/size (or reject a newly
+  // added class), so pane creation deliberately reloads this small config
+  // before resolving every class.  LIST keeps the ordinary lazy path.
+  FCtlClassesLoaded := False;
   EnsureCtlConfig;
   CIdx := -1;
   if AClass <> '' then
@@ -2676,6 +4439,36 @@ begin
     else
       ADefTitle := FCtlClasses[CIdx].Name;
   end;
+  // Resolve the complete window geometry before fork/pty creation.  This is
+  // the daemon equivalent of TSuperApp.NewWindowRect: class dimensions win,
+  // then the global defaults, then two thirds of the canonical desktop.  The
+  // first pane in an empty desktop keeps the whole desktop when both values
+  // are automatic.  ACols/ARows are returned as the exact PTY interior and
+  // are carried in NEWPANE_EV, so clients never need a provisional size.
+  ReqCols := 0;
+  ReqRows := 0;
+  if CIdx >= 0 then
+  begin
+    ReqCols := FCtlClasses[CIdx].Cols;
+    ReqRows := FCtlClasses[CIdx].Rows;
+  end;
+  if ReqCols <= 0 then
+    ReqCols := FCtlCfg.NewWinCols;
+  if ReqRows <= 0 then
+    ReqRows := FCtlCfg.NewWinRows;
+  if (FPaneCount = 0) and (ReqCols <= 0) and (ReqRows <= 0) then
+  begin
+    OuterW := FDeskW;
+    OuterH := FDeskH;
+  end
+  else
+    WantedWindowSize(ReqCols, ReqRows, FDeskW, FDeskH, OuterW, OuterH);
+  ACols := OuterW - 2;
+  ARows := OuterH - 2;
+  if ACols < 4 then
+    ACols := 4;
+  if ARows < 2 then
+    ARows := 2;
   APty := TPty.Create;
   if (CIdx >= 0) and (FCtlClasses[CIdx].Kind = wcSSH) then
   begin
@@ -2720,17 +4513,20 @@ end;
 // creates a new pane in the daemon (tree split + spawn + arrays in
 // client mirror) and broadcasts NEWPANE_EV to all capable clients:
 // the daemon's result is authoritative and each window is born there
-function TDetachedSession.DoNewPane(AAt: integer; ADir: byte;
+function TDetachedSession.DoNewPane(AOwner, AAt: integer; ADir: byte;
   const AClass, ACmd, ACwd, ATitle: string; out ANewIdx: integer;
   out AErr: string): boolean;
 var
   Cols, Rows, L, PC: Longint;
-  OldCount, j, C: integer;
+  OldCount, j, RollbackIdx: integer;
   NewPty: TPty;
-  TermS, DefTitle: string;
+  NewScreen: TScreen;
+  TermS, DefTitle, NewTitle: string;
+  NewGeom: TPaneGeom;
   Meta: TMemoryStream;
   Data: TByteArray;
   DirB: byte;
+  LayoutInserted, Committed: boolean;
 begin
   Result := False;
   ANewIdx := -1;
@@ -2745,118 +4541,161 @@ begin
   // before exec, and FPC's allocator/RTL may have locks held by another
   // thread. Quiesce the pool for the complete index mutation and spawn.
   StopPaneWorkers;
-  try
-  if (AAt < 0) or (AAt >= FPaneCount) then
-    AAt := FFocused;
-  if (AAt < 0) or (AAt >= FPaneCount) then
-    AAt := 0;
-  Cols := 80;
-  Rows := 24;
-  if (FPaneCount > 0) and (FScreens[AAt] <> nil) then
-  begin
-    Cols := FScreens[AAt].Width;
-    Rows := FScreens[AAt].Height;
-  end;
-  OldCount := FPaneCount;
-  // an empty session is a legitimate state now (the last pane can be closed),
-  // so the first pane back is a new root, not a split of something
-  if FPaneCount = 0 then
-  begin
-    if not FLayout.AddFirstPane then
-    begin
-      AErr := 'split failed';
-      Exit;
-    end;
-  end
-  else if ADir = 1 then
-  begin
-    if not FLayout.SplitPane(AAt, sdH) then
-    begin
-      AErr := 'split failed';
-      Exit;
-    end;
-  end
-  else if not FLayout.SplitPane(AAt, sdV) then
-  begin
-    AErr := 'split failed';
-    Exit;
-  end;
-  ANewIdx := FLayout.LastInsertedIndex;
   NewPty := nil;
-  TermS := '';
-  DefTitle := '';
-  if not SpawnPaneForSpec(AClass, ACmd, ACwd, Cols, Rows, NewPty,
-    TermS, DefTitle) then
-  begin
-    FLayout.ClosePane(ANewIdx);
-    ANewIdx := -1;
-    if AClass <> '' then
-      AErr := 'unknown class or spawn failed'
-    else
-      AErr := 'spawn failed';
-    Exit;
-  end;
-  // shift the arrays mirroring the client (DoSplit)
-  for j := OldCount downto ANewIdx + 1 do
-  begin
-    FPanes[j] := FPanes[j - 1];
-    FScreens[j] := FScreens[j - 1];
-    FTitles[j] := FTitles[j - 1];
-    FTitleFixed[j] := FTitleFixed[j - 1];
-    FTerms[j] := FTerms[j - 1];
-    FGeom[j] := FGeom[j - 1];
-    for C := 0 to MAX_CLIENTS - 1 do
-    begin
-      FClients[C].ReqCols[j] := FClients[C].ReqCols[j - 1];
-      FClients[C].ReqRows[j] := FClients[C].ReqRows[j - 1];
-    end;
-  end;
-  FPanes[ANewIdx] := NewPty;
-  FScreens[ANewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
-  FTerms[ANewIdx] := TermS;
-  FTitleFixed[ANewIdx] := ATitle <> '';
-  if ATitle <> '' then
-    FTitles[ANewIdx] := ' ' + ATitle
-  else if DefTitle <> '' then
-    FTitles[ANewIdx] := ' ' + DefTitle
-  else if ACmd <> '' then
-    FTitles[ANewIdx] := ' ' + ACmd
-  else
-    FTitles[ANewIdx] := ' shell';
-  FGeom[ANewIdx] := Default(TPaneGeom);
-  for C := 0 to MAX_CLIENTS - 1 do
-  begin
-    FClients[C].ReqCols[ANewIdx] := 0;
-    FClients[C].ReqRows[ANewIdx] := 0;
-  end;
-  Inc(FPaneCount);
-  FFocused := ANewIdx;
-  WriteSidecar;
-  Meta := TMemoryStream.Create;
+  NewScreen := nil;
+  LayoutInserted := False;
+  Committed := False;
   try
-    L := AAt;
-    Meta.WriteBuffer(L, SizeOf(L));
-    L := ANewIdx;
-    Meta.WriteBuffer(L, SizeOf(L));
-    PC := FPaneCount;
-    Meta.WriteBuffer(PC, SizeOf(PC));
-    DirB := ADir;
-    Meta.WriteBuffer(DirB, SizeOf(DirB));
-    Meta.WriteBuffer(Cols, SizeOf(Cols));
-    Meta.WriteBuffer(Rows, SizeOf(Rows));
-    WriteString(Meta, FTitles[ANewIdx]);
-    WriteString(Meta, FTerms[ANewIdx]);
-    Data := nil;
-    SetLength(Data, Meta.Size);
-    Meta.Position := 0;
-    Meta.ReadBuffer(Data[0], Meta.Size);
+    if (AAt < 0) or (AAt >= FPaneCount) then
+      AAt := FFocused;
+    if (AAt < 0) or (AAt >= FPaneCount) then
+      AAt := 0;
+    Cols := 80;
+    Rows := 24;
+    // SpawnPaneForSpec replaces these fallbacks with the effective
+    // class/global size before the PTY is created.
+    OldCount := FPaneCount;
+    // An empty session is legitimate: the first pane back is a new root, not
+    // a split of something.  From here until commit, every failure rolls this
+    // tree mutation and any spawned child back together.
+    if FPaneCount = 0 then
+    begin
+      if not FLayout.AddFirstPane then
+      begin
+        AErr := 'split failed';
+        Exit;
+      end;
+    end
+    else if ADir = 1 then
+    begin
+      if not FLayout.SplitPane(AAt, sdH) then
+      begin
+        AErr := 'split failed';
+        Exit;
+      end;
+    end
+    else if not FLayout.SplitPane(AAt, sdV) then
+    begin
+      AErr := 'split failed';
+      Exit;
+    end;
+    ANewIdx := FLayout.LastInsertedIndex;
+    LayoutInserted := True;
+    TermS := '';
+    DefTitle := '';
+    if not SpawnPaneForSpec(AClass, ACmd, ACwd, Cols, Rows, NewPty,
+      TermS, DefTitle) then
+    begin
+      if AClass <> '' then
+        AErr := 'unknown class or spawn failed'
+      else
+        AErr := 'spawn failed';
+      Exit;
+    end;
+    NewScreen := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
+    if ATitle <> '' then
+      NewTitle := ' ' + ATitle
+    else if DefTitle <> '' then
+      NewTitle := ' ' + DefTitle
+    else if ACmd <> '' then
+      NewTitle := ' ' + ACmd
+    else
+      NewTitle := ' shell';
+    NewGeom := Default(TPaneGeom);
+    NewGeom.Cols := Cols;
+    NewGeom.Rows := Rows;
+    NewGeom.BW := Cols + 2;
+    NewGeom.BH := Rows + 2;
+    if NewGeom.BW > FDeskW then NewGeom.BW := FDeskW;
+    if NewGeom.BH > FDeskH then NewGeom.BH := FDeskH;
+    NewGeom.BX := (FDeskW - NewGeom.BW) div 2;
+    NewGeom.BY := (FDeskH - NewGeom.BH) div 2;
+
+    // Allocate and serialize the complete event before exposing the pane in
+    // the fixed arrays.  Allocation failures therefore leave no half-pane.
+    Meta := TMemoryStream.Create;
+    try
+      L := AAt;
+      Meta.WriteBuffer(L, SizeOf(L));
+      L := ANewIdx;
+      Meta.WriteBuffer(L, SizeOf(L));
+      PC := OldCount + 1;
+      Meta.WriteBuffer(PC, SizeOf(PC));
+      DirB := ADir;
+      Meta.WriteBuffer(DirB, SizeOf(DirB));
+      Meta.WriteBuffer(Cols, SizeOf(Cols));
+      Meta.WriteBuffer(Rows, SizeOf(Rows));
+      WriteString(Meta, NewTitle);
+      WriteString(Meta, TermS);
+      Data := nil;
+      SetLength(Data, Meta.Size);
+      Meta.Position := 0;
+      if Meta.Size > 0 then
+        Meta.ReadBuffer(Data[0], Meta.Size);
+    finally
+      Meta.Free;
+    end;
+
+    // Commit: all potentially allocating construction above has succeeded.
+    for j := OldCount downto ANewIdx + 1 do
+    begin
+      FPanes[j] := FPanes[j - 1];
+      FScreens[j] := FScreens[j - 1];
+      FTitles[j] := FTitles[j - 1];
+      FTitleFixed[j] := FTitleFixed[j - 1];
+      FTerms[j] := FTerms[j - 1];
+      FGeom[j] := FGeom[j - 1];
+      FPaneLayoutOwner[j] := FPaneLayoutOwner[j - 1];
+      FPaneLeaseGeneration[j] := FPaneLeaseGeneration[j - 1];
+      FPaneLeaseRevision[j] := FPaneLeaseRevision[j - 1];
+      FLayoutPreviews[j] := FLayoutPreviews[j - 1];
+    end;
+    FPanes[ANewIdx] := NewPty;
+    NewPty := nil;
+    FScreens[ANewIdx] := NewScreen;
+    NewScreen := nil;
+    FTerms[ANewIdx] := TermS;
+    FTitles[ANewIdx] := NewTitle;
+    // Match local StartPaneEx: explicit and class titles are fixed metadata,
+    // not a shell cwd for the periodic title refresh to replace.
+    FTitleFixed[ANewIdx] := (ATitle <> '') or (TermS <> '');
+    FGeom[ANewIdx] := NewGeom;
+    FPaneLayoutOwner[ANewIdx] := AOwner;
+    if (AOwner >= 0) and (AOwner < MAX_CLIENTS) and
+       (FClients[AOwner].Fd >= 0) then
+      FPaneLeaseGeneration[ANewIdx] := FClients[AOwner].Generation
+    else
+      FPaneLeaseGeneration[ANewIdx] := 0;
+    FPaneLeaseRevision[ANewIdx] := FRevision;
+    FLayoutPreviews[ANewIdx] := Default(TLayoutPreviewState);
+    Inc(FPaneCount);
+    FFocused := ANewIdx;
+    FGeomValid := True;
+    Inc(FRevision);
+    Committed := True;
+
+    WriteSidecar;
     Broadcast(FRAME_NEWPANE_EV, ANewIdx, Data[0], Length(Data), True, -1);
+    Result := True;
   finally
-    Meta.Free;
-  end;
-  Result := True;
-  finally
-    StartPaneWorkers;
+    try
+      if not Committed then
+      begin
+        try
+          if LayoutInserted then
+          begin
+            RollbackIdx := ANewIdx;
+            ANewIdx := -1;
+            FLayout.ClosePane(RollbackIdx);
+          end;
+        finally
+          NewScreen.Free;
+          NewPty.Free;       // destroys the newly spawned child, if any
+        end;
+      end;
+    finally
+      StartPaneWorkers;
+    end;
   end;
 end;
 
@@ -2877,54 +4716,6 @@ begin
   end;
 end;
 
-// daemon-side save of session.ini: mirror of SaveSessionNow with the
-// daemon's live state (remote Alt-X and Ctrl-S save here)
-procedure TDetachedSession.DaemonSaveSession;
-var
-  Pin: TPaneArray;
-  i: integer;
-begin
-  if DebugActive then
-    DebugLog(Format('daemon: saving session panes=%d path=%s',
-      [FPaneCount, SessionFile]));
-  if FPaneCount < 1 then
-    Exit;
-  Pin := Default(TPaneArray);
-  SetLength(Pin, FPaneCount);
-  for i := 0 to FPaneCount - 1 do
-  begin
-    LockPane(i);
-    try
-      Pin[i].Term := FTerms[i];
-      if (FTerms[i] = '') and (FPanes[i] <> nil) and FPanes[i].Alive then
-      begin
-        FPanes[i].QueryState;
-        Pin[i].Cmd := FPanes[i].TitleCmd;
-        Pin[i].Cwd := FPanes[i].TitleCwd;
-        Pin[i].Args := FPanes[i].TitleArgs;
-      end;
-      if FTitleFixed[i] then
-        Pin[i].Title := Trim(FTitles[i])
-      else
-        Pin[i].Title := '';
-      if FGeomValid then
-      begin
-        Pin[i].BX := FGeom[i].BX;
-        Pin[i].BY := FGeom[i].BY;
-        Pin[i].BW := FGeom[i].BW;
-        Pin[i].BH := FGeom[i].BH;
-        Pin[i].Zoomed := FGeom[i].Zoomed;
-        Pin[i].Minimized := FGeom[i].Minimized;
-      end;
-    finally
-      UnlockPane(i);
-    end;
-  end;
-  SaveSession(SessionFile, FLayout, Pin, FDeskW, FDeskH);
-  if DebugActive then
-    DebugLog('daemon: session save complete');
-end;
-
 // window management via control; with attached clients each change is
 // broadcast as an event so they apply it live
 procedure TDetachedSession.HandleWinOp(AFd: cint; APane: integer;
@@ -2933,11 +4724,12 @@ var
   Ofs: integer;
   Op, HowB, DirB, B0: byte;
   ClassS, CmdS, CwdS, TitleS, ErrS: string;
-  NewIdx, j, N, i, k: integer;
+  NewIdx, j, N, i, k, LockTarget: integer;
   Cols, Rows: Longint;
-  Pair: array[0..1] of Longint;
   GC, GR, CW, CH: integer;
   Slot: st_layout.TRect;
+  Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
+  HasLayoutLock, WasMinimized, StringsValid: boolean;
 
   function RdStr: string;
   var
@@ -2945,12 +4737,30 @@ var
   begin
     Result := '';
     L := Default(Longint);
-    if Ofs + SizeOf(Longint) > Length(AData) then
+    if not StringsValid then
       Exit;
+    if (Ofs < 0) or (Ofs > Length(AData)) then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
+    if Length(AData) - Ofs < SizeOf(Longint) then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
     Move(AData[Ofs], L, SizeOf(L));
     Inc(Ofs, SizeOf(L));
-    if (L < 0) or (Ofs + L > Length(AData)) then
+    if (L < 0) or (L > MAX_WIRE_STRING_SIZE) then
+    begin
+      StringsValid := False;
       Exit;
+    end;
+    if L > Length(AData) - Ofs then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
     SetLength(Result, L);
     if L > 0 then
       Move(AData[Ofs], Result[1], L);
@@ -2965,7 +4775,36 @@ begin
   end;
   Op := AData[0];
   Ofs := 1;
+  StringsValid := True;
   B0 := 0;
+  // One-shot control requests use the same per-pane slots and never wait.
+  // Focus itself is lock-free; its historical "restore minimized" side
+  // effect takes the target pane. Zoom/tree/organize touch every pane.
+  LockTarget := -2; // no layout lock
+  if Op in [WINOP_MINIMIZE, WINOP_RESTORE, WINOP_RENAME, WINOP_RESIZE] then
+  begin
+    if (APane >= 0) and (APane < FPaneCount) then
+      LockTarget := APane;
+  end
+  else if (Op = WINOP_FOCUS) and (APane >= 0) and
+          (APane < FPaneCount) and FGeom[APane].Minimized then
+    LockTarget := APane
+  else if Op in [WINOP_ZOOM, WINOP_NEWPANE, WINOP_KILL,
+                 WINOP_ORGANIZE] then
+    LockTarget := -1;
+  HasLayoutLock := False;
+  if LockTarget <> -2 then
+  begin
+    // A one-shot control action has no gesture for another viewer to wait on.
+    // Serialize it, but publish only its settled canonical result.
+    HasLayoutLock := TryLockLayout(CONTROL_LAYOUT_OWNER, LockTarget, False);
+    if not HasLayoutLock then
+    begin
+      CtlReplyErr(AFd, 'layout busy');
+      Exit;
+    end;
+  end;
+  try
   case Op of
     WINOP_NEWPANE:
       begin
@@ -2975,14 +4814,21 @@ begin
           DirB := AData[Ofs];
           Inc(Ofs);
         end;
+        if Ofs = 1 then
+          StringsValid := False;
         ClassS := RdStr;
         CmdS := RdStr;
         CwdS := RdStr;
         TitleS := RdStr;
+        if (not StringsValid) or (Ofs <> Length(AData)) then
+        begin
+          CtlReplyErr(AFd, 'bad request');
+          Exit;
+        end;
         ErrS := '';
         NewIdx := -1;
-        if DoNewPane(APane, DirB, ClassS, CmdS, CwdS, TitleS, NewIdx,
-          ErrS) then
+        if DoNewPane(CONTROL_LAYOUT_OWNER, APane, DirB, ClassS, CmdS,
+          CwdS, TitleS, NewIdx, ErrS) then
           CtlReplyOk(AFd, IntToStr(NewIdx + 1))
         else
           CtlReplyErr(AFd, ErrS);
@@ -3011,11 +4857,15 @@ begin
           Exit;
         end;
         FFocused := APane;
+        FLayout.Focused := APane;
         // focusing restores if it was minimized
+        WasMinimized := FGeom[APane].Minimized;
         FGeom[APane].Minimized := False;
         FGeomValid := True;
-        Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
-        BroadcastLayoutEv(-1);
+        if WasMinimized then
+          Inc(FRevision)
+        else
+          Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
         CtlReplyOk(AFd, '');
       end;
     WINOP_MINIMIZE, WINOP_RESTORE, WINOP_ZOOM:
@@ -3031,18 +4881,27 @@ begin
             begin
               FGeom[APane].Minimized := False;
               FGeom[APane].Zoomed := False;
+              FGeom[APane].FullScreen := False;
             end;
           WINOP_ZOOM:
             begin
               // only one zoomed at a time (mirror of the UI)
               for j := 0 to FPaneCount - 1 do
+              begin
                 FGeom[j].Zoomed := False;
+                FGeom[j].FullScreen := False;
+              end;
               FGeom[APane].Zoomed := True;
               FGeom[APane].Minimized := False;
             end;
         end;
+        NormalizeFocusedPane;
         FGeomValid := True;
-        BroadcastLayoutEv(-1);
+        Inc(FRevision);
+        if DebugActive then
+          DebugLog(Format('winop: op=%d pane=%d min=%d zoom=%d focus=%d',
+            [Op, APane, Ord(FGeom[APane].Minimized),
+             Ord(FGeom[APane].Zoomed), FFocused]));
         CtlReplyOk(AFd, '');
       end;
     WINOP_ORGANIZE:
@@ -3073,17 +4932,26 @@ begin
                 FGeom[i].BH := Slot.H;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
+                FGeom[i].FullScreen := False;
                 Inc(k);
               end;
             end;
           1:  // tile according to the split tree
             begin
+              FLayout.ComputeRects(FDeskW, FDeskH, Rects);
               for i := 0 to N - 1 do
               begin
-                FGeom[i].BW := 0;  // no manual bounds: re-tiles on attach
-                FGeom[i].BH := 0;
+                FGeom[i].BX := Rects[i].X;
+                FGeom[i].BY := Rects[i].Y;
+                FGeom[i].BW := Rects[i].W - 2;
+                FGeom[i].BH := Rects[i].H - 1;
+                if FGeom[i].BW < MIN_WIN_W then
+                  FGeom[i].BW := MIN_WIN_W;
+                if FGeom[i].BH < MIN_WIN_H then
+                  FGeom[i].BH := MIN_WIN_H;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
+                FGeom[i].FullScreen := False;
               end;
             end;
         else
@@ -3104,10 +4972,28 @@ begin
             FGeom[i].BY := (i div GC) * (FDeskH div GR);
             FGeom[i].Zoomed := False;
             FGeom[i].Minimized := False;
+            FGeom[i].FullScreen := False;
           end;
         end;
+        // The terminal grid belongs to the same canonical rectangle. Resize
+        // screen+PTY before broadcasting the final layout, never on attach.
+        StopPaneWorkers;
+        try
+          for i := 0 to N - 1 do
+          begin
+            Cols := FGeom[i].BW - 2;
+            Rows := FGeom[i].BH - 2;
+            if Cols < 4 then Cols := 4;
+            if Rows < 2 then Rows := 2;
+            FGeom[i].Cols := Cols;
+            FGeom[i].Rows := Rows;
+            ApplyCanonicalResize(i, Cols, Rows, False, True);
+          end;
+        finally
+          StartPaneWorkers;
+        end;
         FGeomValid := True;
-        BroadcastLayoutEv(-1);
+        Inc(FRevision);
         CtlReplyOk(AFd, '');
       end;
     WINOP_RENAME:
@@ -3118,6 +5004,11 @@ begin
           Exit;
         end;
         TitleS := RdStr;
+        if (not StringsValid) or (Ofs <> Length(AData)) then
+        begin
+          CtlReplyErr(AFd, 'bad request');
+          Exit;
+        end;
         if Trim(TitleS) = '' then
         begin
           CtlReplyErr(AFd, 'empty title');
@@ -3125,7 +5016,6 @@ begin
         end;
         FTitles[APane] := ' ' + Trim(TitleS);
         FTitleFixed[APane] := True;
-        BroadcastTitle(APane);
         CtlReplyOk(AFd, '');
       end;
     WINOP_RESIZE:
@@ -3148,34 +5038,24 @@ begin
           CtlReplyErr(AFd, 'bad size');
           Exit;
         end;
-        LockPane(APane);
-        try
-          if FScreens[APane] <> nil then
-            FScreens[APane].Resize(Cols, Rows);
-          if FPanes[APane] <> nil then
-            FPanes[APane].Resize(Cols, Rows);
-        finally
-          UnlockPane(APane);
-        end;
-        // void the clients' requests so the common-minimum negotiation
-        // does not undo the size requested via control
-        for j := 0 to MAX_CLIENTS - 1 do
-        begin
-          FClients[j].ReqCols[APane] := 0;
-          FClients[j].ReqRows[APane] := 0;
-        end;
-        Pair[0] := Cols;
-        Pair[1] := Rows;
-        Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
-        CtlReplyOk(AFd, '');
-      end;
-    WINOP_SAVE:
-      begin
-        DaemonSaveSession;
+        ApplyCanonicalResize(APane, Cols, Rows, False);
+        FGeom[APane].Cols := Cols;
+        FGeom[APane].Rows := Rows;
+        Inc(FRevision);
         CtlReplyOk(AFd, '');
       end;
   else
     CtlReplyErr(AFd, 'unknown operation');
+  end;
+  finally
+    if HasLayoutLock then
+    begin
+      // End a one-shot control action exactly like a UI layout commit: remove
+      // ownership silently and publish one settled canonical state. The only
+      // earlier layout event was the intentional busy border from TryLock.
+      ReleaseLayout(CONTROL_LAYOUT_OWNER, LockTarget, False);
+      BroadcastLayoutEv(-1);
+    end;
   end;
 end;
 
@@ -3413,8 +5293,6 @@ begin
   case AKind of
     FRAME_CLOSE:
       begin
-        if (Length(AData) > 0) and (AData[0] = 1) then
-          DaemonSaveSession;
         DropPending(AIdx);
         FStop := True;
       end;
@@ -3440,12 +5318,15 @@ end;
 procedure TDetachedSession.HandleClientFrame(AIdx: integer; AKind: byte;
   APane: integer; const AData: TByteArray);
 var
-  Cols, Rows, I, ClientCount: integer;
+  Cols, Rows, ClientCount, I: integer;
   S: RawByteString;
   Ofs, NewIdx: integer;
-  DirB, B0: byte;
+  DirB, B0, ReplyKind: byte;
+  CanLock, Applied, ValidLockRequest, StringsValid, PreviewExpired: boolean;
+  RequestId, BaseRevision: QWord;
+  ChangeMask, PreserveMask: LongWord;
+  ReplyData, CurrentLayout: TByteArray;
   ClassS, CmdS, CwdS, TitleS, ErrS: string;
-  OldTitles: TStrArray;
 
   function RdStr: string;
   var
@@ -3453,12 +5334,30 @@ var
   begin
     Result := '';
     L := Default(Longint);
-    if Ofs + SizeOf(Longint) > Length(AData) then
+    if not StringsValid then
       Exit;
+    if (Ofs < 0) or (Ofs > Length(AData)) then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
+    if Length(AData) - Ofs < SizeOf(Longint) then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
     Move(AData[Ofs], L, SizeOf(L));
     Inc(Ofs, SizeOf(L));
-    if (L < 0) or (Ofs + L > Length(AData)) then
+    if (L < 0) or (L > MAX_WIRE_STRING_SIZE) then
+    begin
+      StringsValid := False;
       Exit;
+    end;
+    if L > Length(AData) - Ofs then
+    begin
+      StringsValid := False;
+      Exit;
+    end;
     SetLength(Result, L);
     if L > 0 then
       Move(AData[Ofs], Result[1], L);
@@ -3467,9 +5366,12 @@ var
 
 begin
   B0 := 0;
+  StringsValid := True;
+  ReplyData := nil;
+  CurrentLayout := nil;
   if DebugFull then
-    DebugLog(Format('daemon: client frame kind=%d pane=%d bytes=%d',
-      [AKind, APane, Length(AData)]));
+    DebugLog(Format('daemon: client frame owner=%d kind=%d pane=%d bytes=%d',
+      [AIdx, AKind, APane, Length(AData)]));
   case AKind of
     FRAME_INPUT:
       if (APane >= 0) and (APane < FPaneCount) and
@@ -3486,7 +5388,9 @@ begin
       end;
     FRAME_RESIZE:
       if (APane >= 0) and (APane < FPaneCount) and
-         (Length(AData) = 8) then
+         (Length(AData) = 8) and
+         (FClients[AIdx].Legacy or
+          (FPaneLayoutOwner[APane] = AIdx)) then
       begin
         Cols := Default(integer);
         Rows := Default(integer);
@@ -3509,17 +5413,33 @@ begin
           end
           else
           begin
-            if FResizePolicy = rpSmallest then
-            begin
-              FClients[AIdx].ReqCols[APane] := Cols;
-              FClients[AIdx].ReqRows[APane] := Rows;
-              NegotiateResize(APane);
-            end
-            else
-              // In independent mode automatic window resizes never arrive;
-              // FRAME_RESIZE therefore means an explicit canonical resize.
-              ApplyCanonicalResize(APane, Cols, Rows);
+            CancelLayoutPreview(APane, True);
+            ApplyCanonicalResize(APane, Cols, Rows);
+            FGeom[APane].Cols := Cols;
+            FGeom[APane].Rows := Rows;
+            Inc(FRevision);
+            BroadcastLayoutEv(-1);
           end;
+        end;
+      end;
+    FRAME_CLIENT_SIZE:
+      if Length(AData) = 2 * SizeOf(Longint) then
+      begin
+        Cols := 0;
+        Rows := 0;
+        Move(AData[0], Cols, SizeOf(Cols));
+        Move(AData[SizeOf(Longint)], Rows, SizeOf(Rows));
+        if (Cols >= 1) and (Cols <= MAX_SCREEN_COLS) and
+           (Rows >= 3) and (Rows <= MAX_SCREEN_ROWS) then
+        begin
+          // Metadata only: it never changes canonical window geometry. The
+          // dedicated event reaches lease owners as well as ordinary viewers.
+          FClients[AIdx].HostW := Cols;
+          FClients[AIdx].HostH := Rows;
+          if DebugFull then
+            DebugLog(Format('client-size: owner=%d host=%dx%d',
+              [AIdx, Cols, Rows]));
+          BroadcastHostSummaryEv;
         end;
       end;
     FRAME_DETACH:
@@ -3533,82 +5453,219 @@ begin
         // make the second one the last client.
         ClientCount := AttachedCount;
         if DebugActive then
-          DebugLog(Format('daemon: client close save=%d attached=%d last=%d',
-            [Ord((Length(AData) > 0) and (AData[0] = 1)), ClientCount,
-             Ord(ClientCount <= 1)]));
-        // tolerant byte: 1 = save session.ini before this client leaves
-        if (Length(AData) > 0) and (AData[0] = 1) then
-          DaemonSaveSession;
+          DebugLog(Format('daemon: client exit attached=%d last=%d',
+            [ClientCount, Ord(ClientCount <= 1)]));
         DropClient(AIdx);
         if ClientCount <= 1 then
           FStop := True;
       end;
-    FRAME_KILLPANE:
-      if (APane >= 0) and (APane < FPaneCount) then
+    FRAME_LAYOUT_LOCK:
       begin
-        DoKillPane(APane);
-        Broadcast(FRAME_KILLPANE_EV, APane, B0, 0, True, AIdx);
+        RequestId := 0;
+        BaseRevision := 0;
+        ValidLockRequest := (Length(AData) = 2 * SizeOf(QWord)) and
+          ((APane = -1) or ((APane >= 0) and (APane < FPaneCount)));
+        if ValidLockRequest then
+        begin
+          Move(AData[0], RequestId, SizeOf(RequestId));
+          Move(AData[SizeOf(RequestId)], BaseRevision,
+            SizeOf(BaseRevision));
+          ValidLockRequest := RequestId <> 0;
+        end;
+        CanLock := False;
+        if ValidLockRequest then
+          if BaseRevision = FRevision then
+            CanLock := TryLockLayout(AIdx, APane);
+        // Put an authoritative state before every denial. LockLayout queues
+        // it while waiting for this reply, so the losing UI can catch up in
+        // its next ordinary event batch without ever mutating stale pixels.
+        if not CanLock then
+        begin
+          CurrentLayout := nil;
+          PreserveMask := 0;
+          for I := 0 to FPaneCount - 1 do
+            if FPaneLayoutOwner[I] = AIdx then
+              PreserveMask := PreserveMask or (LongWord(1) shl I);
+          if ClientOwnsAnyLayout(AIdx) then
+            ReplyKind := FRAME_LAYOUT_PEER_EV
+          else
+            ReplyKind := FRAME_LAYOUT_EV;
+          if BuildLayoutBlob(AIdx, CurrentLayout, PreserveMask) and
+             (Length(CurrentLayout) > 0) then
+            SendFrameToIdx(AIdx, ReplyKind, -1, CurrentLayout[0],
+              Length(CurrentLayout));
+        end;
+        SetLength(ReplyData, 2 * SizeOf(QWord) + 1);
+        Move(RequestId, ReplyData[0], SizeOf(RequestId));
+        ReplyData[SizeOf(RequestId)] := Ord(CanLock);
+        Move(FRevision, ReplyData[SizeOf(RequestId) + 1],
+          SizeOf(FRevision));
+        SendFrameToIdx(AIdx, FRAME_LAYOUT_LOCK_REPLY, APane, ReplyData[0],
+          Length(ReplyData));
+        if DebugFull and (not CanLock) then
+          DebugLog(Format(
+            'layout-lock: acquire owner=%d request=%d pane=%d base=%d current=%d ok=0',
+            [AIdx, RequestId, APane, BaseRevision, FRevision]));
+      end;
+    FRAME_LAYOUT_UNLOCK:
+      ReleaseLayout(AIdx, APane);
+    FRAME_LAYOUT_PREVIEW:
+      HandleLayoutPreview(AIdx, APane, AData);
+    FRAME_KILLPANE:
+      begin
+        if APane = -1 then
+          // Close all has no speculative client mutation and is safe at any
+          // revision. Claim the global lease here in FIFO order without a
+          // transient lock paint; slow interactive gestures still use the
+          // ordinary visible FRAME_LAYOUT_LOCK path.
+          Applied := TryLockLayout(AIdx, -1, False)
+        else
+          Applied := OwnsAllLayout(AIdx) and
+            (APane >= 0) and (APane < FPaneCount);
+        try
+          if Applied and (APane = -1) then
+          begin
+            DoKillAllPanes;
+            // Include the actor: unlike a single close, Close all performs no
+            // speculative local mutation before the daemon replies. One
+            // event also makes it impossible for a client's 32-frame drain
+            // budget to expose a half-closed workspace.
+            Broadcast(FRAME_KILLPANE_EV, -1, B0, 0, True, -1);
+          end
+          else if Applied then
+          begin
+            DoKillPane(APane);
+            Broadcast(FRAME_KILLPANE_EV, APane, B0, 0, True, AIdx);
+          end;
+        finally
+          // KILL consumes its global lease. The specialized event and this
+          // settled canonical snapshot are adjacent; no successful UNLOCK
+          // frame or intermediate locked geometry exists.
+          if (APane <> -1) or Applied then
+            ReleaseLayout(AIdx, -1, False);
+        end;
+        if (APane = -1) and (not Applied) then
+        begin
+          ErrS := 'layout busy';
+          SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
+        end;
+        BroadcastLayoutEv(-1);
       end;
     FRAME_LAYOUT:
       begin
-        OldTitles := nil;
-        if FResizePolicy = rpSession then
-        begin
-          SetLength(OldTitles, FPaneCount);
-          for I := 0 to FPaneCount - 1 do
-            OldTitles[I] := FTitles[I];
+        BaseRevision := 0;
+        ChangeMask := 0;
+        try
+          Applied := ApplyLayoutFrame(AIdx, AData, False, BaseRevision,
+            ChangeMask);
+          if Applied then
+            AuthorizeLayoutPreviewTails(AIdx, BaseRevision, ChangeMask);
+        finally
+          // This is the atomic end of the visual transaction.  Even a parser,
+          // allocation or resize exception must not strand the sender's
+          // lease and permanently lock the pane for every other client.
+          ReleaseLayout(AIdx, -1, False);
         end;
-        ApplyLayoutFrame(AData);
-        if (FResizePolicy = rpSmallest) and (Length(AData) > 0) then
-          Broadcast(FRAME_LAYOUT_EV, -1, AData[0], Length(AData), True,
-            AIdx)
-        else if FResizePolicy = rpSession then
-          // Geometry/focus are this client's save seed and must not move an
-          // already attached UI. Pane titles are shared session metadata,
-          // however, so propagate just those through their dedicated event.
-          for I := 0 to FPaneCount - 1 do
-            if (I < Length(OldTitles)) and (OldTitles[I] <> FTitles[I]) then
-              BroadcastTitle(I, AIdx);
+        // A tail is valid only at the exact revision produced by its own
+        // commit. Any other canonical commit invalidates and clears it.
+        PreviewExpired := ExpireLayoutPreviews;
+        if PreviewExpired and DebugFull then
+          DebugLog('layout-preview: stale tail cleared by canonical commit');
+        if DebugFull then
+          DebugLog(Format('layout-commit: owner=%d applied=%d revision=%d',
+            [AIdx, Ord(Applied), FRevision]));
+        BroadcastLayoutEv(-1);
       end;
     FRAME_NEWPANE:
       begin
-        DirB := 0;
-        Ofs := 0;
-        if Length(AData) > 0 then
-        begin
-          DirB := AData[0];
-          Ofs := 1;
-        end;
-        ClassS := RdStr;
-        CmdS := RdStr;
-        CwdS := RdStr;
-        TitleS := RdStr;
+        // Creation is entirely daemon-authoritative: claim and release the
+        // structural lease inside this one serialized command.  This works
+        // identically with 0..15 existing panes and gives a real lock even
+        // when there are no per-pane slots yet.
+        Applied := False;
+        CanLock := False;
         ErrS := '';
-        NewIdx := -1;
-        if not DoNewPane(APane, DirB, ClassS, CmdS, CwdS, TitleS,
-          NewIdx, ErrS) then
-          if ErrS <> '' then
-            SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
+        Ofs := 0;
+        BaseRevision := 0;
+        if Length(AData) < SizeOf(BaseRevision) + SizeOf(DirB) then
+          ErrS := 'invalid new pane'
+        else
+        begin
+          Move(AData[Ofs], BaseRevision, SizeOf(BaseRevision));
+          Inc(Ofs, SizeOf(BaseRevision));
+          DirB := AData[Ofs];
+          Inc(Ofs);
+          ClassS := RdStr;
+          CmdS := RdStr;
+          CwdS := RdStr;
+          TitleS := RdStr;
+          if (not StringsValid) or (Ofs <> Length(AData)) then
+            ErrS := 'invalid new pane'
+          else if FPaneCount >= MAX_PANES then
+            ErrS := 'max panes'
+          else if (APane >= 0) and (BaseRevision <> FRevision) then
+            ErrS := 'layout changed'
+          else if (APane < -1) or (APane >= FPaneCount) then
+            ErrS := 'layout changed'
+          else
+            // Creation is an atomic FIFO command, not a held gesture. Keep
+            // its structural lease real but invisible and publish only the
+            // NEWPANE_EV plus the settled canonical layout.
+            CanLock := TryLockLayout(AIdx, -1, False);
+        end;
+        if (ErrS = '') and (not CanLock) then
+          ErrS := 'layout busy';
+        try
+          if CanLock then
+          begin
+            NewIdx := -1;
+            Applied := DoNewPane(AIdx, APane, DirB, ClassS, CmdS, CwdS,
+              TitleS, NewIdx, ErrS);
+          end;
+        finally
+          if CanLock then
+            ReleaseLayout(AIdx, -1, False);
+        end;
+        if ErrS <> '' then
+          SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
+        BroadcastLayoutEv(-1);
       end;
     FRAME_FOCUS:
-      if (APane >= 0) and (APane < FPaneCount) then
+      if (APane >= 0) and (APane < FPaneCount) and
+         ((not FGeom[APane].Minimized) or
+          (FPaneLayoutOwner[APane] = AIdx)) then
       begin
         FFocused := APane;
-        Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, AIdx);
+        FLayout.Focused := APane;
+        // A restore owns this pane before its geometry commit. Record its
+        // definitive focus now so the final layout snapshot contains it, but
+        // do not ask observers to focus an icon. They receive it atomically
+        // with the restore. An ordinary visible focus remains its own
+        // lock-free event.
+        if not FGeom[APane].Minimized then
+          Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
       end;
     FRAME_RENAME:
-      if (APane >= 0) and (APane < FPaneCount) then
       begin
-        Ofs := 0;
-        TitleS := RdStr;
-        if Trim(TitleS) <> '' then
-        begin
-          FTitles[APane] := ' ' + Trim(TitleS);
-          FTitleFixed[APane] := True;
-          if Length(AData) > 0 then
-            Broadcast(FRAME_TITLE_EV, APane, AData[0], Length(AData), True,
-              AIdx);
+        Applied := (APane >= 0) and (APane < FPaneCount) and
+          (FPaneLayoutOwner[APane] = AIdx);
+        try
+          if Applied then
+          begin
+            Ofs := 0;
+            StringsValid := True;
+            TitleS := RdStr;
+            if StringsValid and (Ofs = Length(AData)) and
+               (Trim(TitleS) <> '') then
+            begin
+              FTitles[APane] := ' ' + Trim(TitleS);
+              FTitleFixed[APane] := True;
+            end;
+          end;
+        finally
+          ReleaseLayout(AIdx, -1, False);
         end;
+        BroadcastLayoutEv(-1);
       end;
   end;
 end;
@@ -4049,33 +6106,46 @@ procedure TDetachedSession.WriteSidecar;
 var
   Ini: TIniFile;
 begin
-  Ini := TIniFile.Create(FMetaPath);
   try
-    Ini.WriteString('session', 'name', IniQuoteGuard(FName));
-    Ini.WriteString('session', 'profile', IniQuoteGuard(FProfile));
-    Ini.WriteInteger('session', 'panes', FPaneCount);
-    Ini.WriteInteger('session', 'attached', AttachedCount);
-    Ini.WriteInteger('session', 'pid', fpGetPid);
-    Ini.WriteInteger('session', 'cpus', FAvailableCPUs);
-    Ini.WriteInteger('session', 'thread_limit', FThreadLimit);
-    Ini.WriteInteger('session', 'threads', 1 + FWorkerCount);
-    Ini.WriteString('session', 'multithread',
-      MultiThreadCode(FConfiguredThreads));
-    Ini.WriteString('session', 'resize_policy',
-      ResizePolicyCode(FResizePolicy));
-    Ini.WriteString('session', 'created',
-      FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
-    // the identity the panes carry in SUPERTERM_SESSION_CHAIN
-    Ini.WriteString('session', 'id', PaneSessionId);
-    Ini.WriteString('session', 'client_chains', ClientChainsUnion);
-    Ini.UpdateFile;
-  finally
-    Ini.Free;
+    Ini := TIniFile.Create(FMetaPath);
+    try
+      Ini.WriteString('session', 'name', IniQuoteGuard(FName));
+      Ini.WriteString('session', 'profile', IniQuoteGuard(FProfile));
+      Ini.WriteInteger('session', 'panes', FPaneCount);
+      Ini.WriteInteger('session', 'attached', AttachedCount);
+      Ini.WriteInteger('session', 'pid', fpGetPid);
+      Ini.WriteInteger('session', 'cpus', FAvailableCPUs);
+      Ini.WriteInteger('session', 'thread_limit', FThreadLimit);
+      Ini.WriteInteger('session', 'threads', 1 + FWorkerCount);
+      Ini.WriteString('session', 'multithread',
+        MultiThreadCode(FConfiguredThreads));
+      Ini.WriteString('session', 'created',
+        FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+      // the identity the panes carry in SUPERTERM_SESSION_CHAIN
+      Ini.WriteString('session', 'id', PaneSessionId);
+      Ini.WriteString('session', 'client_chains', ClientChainsUnion);
+      Ini.UpdateFile;
+    finally
+      Ini.Free;
+    end;
+    FpChmod(PAnsiChar(FMetaPath), &600);
+  except
+    on E: Exception do
+    begin
+      // The sidecar is discovery metadata, never the session transaction.
+      // A read-only/full filesystem must not suppress the already committed
+      // NEWPANE/KILL/LAYOUT event and desynchronize attached clients.
+      try
+        if DebugActive then
+          DebugLog('daemon: sidecar update failed: ' + E.ClassName + ': ' +
+            E.Message);
+      except
+      end;
+    end;
   end;
-  FpChmod(PAnsiChar(FMetaPath), &600);
 end;
 
-procedure TDetachedSession.SignalReady(AFd: cint; AOk: boolean);
+procedure TDetachedSession.SignalReady(var AFd: cint; AOk: boolean);
 var
   B: byte;
 begin
@@ -4084,96 +6154,197 @@ begin
   if AOk then B := 1 else B := 0;
   WriteFull(AFd, B, SizeOf(B));
   FpClose(AFd);
+  AFd := -1;
 end;
 
-procedure TDetachedSession.Run(AReadyFd: cint);
+procedure TDetachedSession.Run(var AReadyFd: cint);
 var
   Poller: TSuperPoll;
   Ready: TPollReadyArray;
   Ev: TPollReady;
   I, J, NewClient, N, Slot, TimeoutMs: cint;
-  Kind: byte;
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
-  Pane: integer;
-  Data: TByteArray;
   B0: byte;
   Closed, AliveFound: boolean;
   NewTitle: string;
   Fails: integer;
   NowTick: QWord;
-  Pop: TFramePop;
   EventFd: cint;
 
-  // A client can put many complete frames in one socket read. Process a
-  // bounded batch so input floods cannot starve PTYs or other clients; a
-  // complete remainder makes the next poll non-blocking.
+  // Extract complete frames into the one global FIFO.  Nothing below calls a
+  // command handler directly: observation order and execution order are now
+  // the same explicit sequence.
   procedure DispatchClientBuffer(AIdx: integer);
   var
-    ClientFd: cint;
     FrameKind: byte;
     FramePane: integer;
+    FrameSize: LongWord;
     FrameData: TByteArray;
     FramePop: TFramePop;
+    Header: TFrameHeader;
   begin
     if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or
-       (FClients[AIdx].Fd < 0) then
+       (FClients[AIdx].Fd < 0) or FClients[AIdx].CloseQueued or
+       FClients[AIdx].TerminalQueued then
       Exit;
-    ClientFd := FClients[AIdx].Fd;
-    while (FClients[AIdx].Fd = ClientFd) and
-          (FClients[AIdx].FramesUsed < FRAME_BUDGET) do
+    while FClients[AIdx].FramesUsed < FRAME_BUDGET do
     begin
-      FramePop := PopBufferedFrame(FClients[AIdx].InBuf, FrameKind,
-        FramePane, FrameData);
+      // Reject a fixed-size cosmetic frame from its header alone. Otherwise
+      // a hostile local peer could make the parser buffer/allocate up to the
+      // general 112 MB screen-frame ceiling before validation in the handler.
+      if Length(FClients[AIdx].InBuf) - FClients[AIdx].InPos >=
+         SizeOf(Header) then
+      begin
+        Header := Default(TFrameHeader);
+        Move(FClients[AIdx].InBuf[FClients[AIdx].InPos + 1], Header,
+          SizeOf(Header));
+        if (Header.Kind = FRAME_LAYOUT_PREVIEW) and
+           (Header.Size <> LAYOUT_PREVIEW_PAYLOAD_SIZE) then
+        begin
+          if CanQueueCommand(0) and
+             QueueCommand(coClient, AIdx, FClients[AIdx].Generation,
+               0, -1, nil, True) then
+            FClients[AIdx].CloseQueued := True;
+          Exit;
+        end;
+      end;
+      FramePop := PeekBufferedFrame(FClients[AIdx].InBuf,
+        FClients[AIdx].InPos, FrameKind, FramePane, FrameSize);
       case FramePop of
         fpNeedMore:
-          Exit;
+          begin
+            if FClients[AIdx].PeerClosed and
+               CanQueueCommand(0) and
+               QueueCommand(coClient, AIdx, FClients[AIdx].Generation,
+                 0, -1, nil, True) then
+              FClients[AIdx].CloseQueued := True;
+            Exit;
+          end;
         fpInvalid:
           begin
-            DropClient(AIdx);
+            if CanQueueCommand(0) and
+               QueueCommand(coClient, AIdx, FClients[AIdx].Generation,
+                 0, -1, nil, True) then
+              FClients[AIdx].CloseQueued := True;
             Exit;
           end;
         fpReady:
           begin
+            // Backpressure: do not consume the frame until both queue bounds
+            // can accept it. Polling this socket is disabled in the meantime.
+            if not CanQueueCommand(FrameSize) then
+              Exit;
+            if PopBufferedFrame(FClients[AIdx].InBuf,
+              FClients[AIdx].InPos, FrameKind, FramePane,
+              FrameData) <> fpReady then
+              Exit;
+            if not QueueCommand(coClient, AIdx,
+              FClients[AIdx].Generation, FrameKind, FramePane,
+              FrameData) then
+              Exit;
             Inc(FClients[AIdx].FramesUsed);
-            HandleClientFrame(AIdx, FrameKind, FramePane, FrameData);
+            if FrameKind in [FRAME_DETACH, FRAME_CLOSE] then
+            begin
+              FClients[AIdx].TerminalQueued := True;
+              Exit;
+            end;
           end;
       end;
     end;
   end;
 
+  procedure DispatchPendingBuffer(AIdx: integer);
+  var
+    FrameKind: byte;
+    FramePane: integer;
+    FrameSize: LongWord;
+    FrameData: TByteArray;
+    FramePop: TFramePop;
+  begin
+    if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+       (FPending[AIdx].Fd < 0) or FPending[AIdx].CloseAfterWrite or
+       FPending[AIdx].CloseQueued or FPending[AIdx].CommandQueued then
+      Exit;
+    FramePop := PeekBufferedFrame(FPending[AIdx].InBuf,
+      FPending[AIdx].InPos, FrameKind, FramePane, FrameSize);
+    case FramePop of
+      fpNeedMore:
+        if FPending[AIdx].PeerClosed and CanQueueCommand(0) and
+           QueueCommand(coPending, AIdx, FPending[AIdx].Generation,
+             0, -1, nil, True) then
+          FPending[AIdx].CloseQueued := True;
+      fpInvalid:
+        if CanQueueCommand(0) and
+           QueueCommand(coPending, AIdx, FPending[AIdx].Generation,
+             0, -1, nil, True) then
+          FPending[AIdx].CloseQueued := True;
+      fpReady:
+        if CanQueueCommand(FrameSize) then
+        begin
+          if PopBufferedFrame(FPending[AIdx].InBuf,
+            FPending[AIdx].InPos, FrameKind, FramePane,
+            FrameData) <> fpReady then
+            Exit;
+          if QueueCommand(coPending, AIdx, FPending[AIdx].Generation,
+            FrameKind, FramePane, FrameData) then
+            FPending[AIdx].CommandQueued := True;
+        end;
+    end;
+  end;
+
   function ClientFrameBuffered(AIdx: integer): boolean;
   var
-    H: TFrameHeader;
-    Need: QWord;
+    FrameKind: byte;
+    FramePane: integer;
+    FrameSize: LongWord;
   begin
     Result := False;
     if (AIdx < 0) or (AIdx >= MAX_CLIENTS) or
-       (FClients[AIdx].Fd < 0) or
-       (Length(FClients[AIdx].InBuf) < SizeOf(H)) then
+       (FClients[AIdx].Fd < 0) then
       Exit;
-    H := Default(TFrameHeader);
-    Move(FClients[AIdx].InBuf[1], H, SizeOf(H));
-    Need := QWord(SizeOf(H)) + QWord(H.Size);
-    Result := (H.Size > MAX_FRAME_SIZE) or
-      (QWord(Length(FClients[AIdx].InBuf)) >= Need);
+    Result := PeekBufferedFrame(FClients[AIdx].InBuf,
+      FClients[AIdx].InPos, FrameKind, FramePane, FrameSize) <> fpNeedMore;
   end;
 
-  function CompleteClientFrameBuffered: boolean;
+  function PendingFrameBuffered(AIdx: integer): boolean;
+  var
+    FrameKind: byte;
+    FramePane: integer;
+    FrameSize: LongWord;
+  begin
+    Result := False;
+    if (AIdx < 0) or (AIdx >= MAX_PENDING_CONNECTIONS) or
+       (FPending[AIdx].Fd < 0) then
+      Exit;
+    Result := PeekBufferedFrame(FPending[AIdx].InBuf,
+      FPending[AIdx].InPos, FrameKind, FramePane, FrameSize) <> fpNeedMore;
+  end;
+
+  function BufferedCommandWork: boolean;
   var
     C: integer;
   begin
-    Result := False;
+    Result := FCommandCount > 0;
+    if Result then Exit;
+    for C := 0 to MAX_PENDING_CONNECTIONS - 1 do
+      if (FPending[C].Fd >= 0) and (not FPending[C].CommandQueued) and
+         (PendingFrameBuffered(C) or
+          (FPending[C].PeerClosed and not FPending[C].CloseQueued)) then
+        Exit(True);
     for C := 0 to MAX_CLIENTS - 1 do
-      if ClientFrameBuffered(C) then
+      if (FClients[C].Fd >= 0) and
+         (ClientFrameBuffered(C) or
+          (FClients[C].PeerClosed and not FClients[C].CloseQueued and
+           not FClients[C].TerminalQueued)) then
         Exit(True);
   end;
 begin
   Fails := 0;
-  // From here on this process IS the session: if it dies every pane goes with
-  // it and the clients only see 'connection lost'. Name it in the log and trap
-  // the fatal signals so it leaves a report behind instead of vanishing.
-  DebugSetRole('daemon');
+  // StartDetachedServer named this fork before transferring the inherited UI,
+  // so even a constructor/hook failure gets a child-PID HeapTrc destination.
+  // From here on, trap fatal signals too: if this process dies every pane goes
+  // with it and clients otherwise see only "connection lost".
   InstallCrashHandler;
   if DebugActive then
     DebugLog('daemon: session server starting (pid ' + IntToStr(FpGetPid) + ')');
@@ -4198,7 +6369,17 @@ begin
       // on the way out. Log it, dump the state, and carry on; give up only if
       // it keeps happening, which means the loop itself is broken.
       try
+        // Commands queued by the previous readiness batch are always consumed
+        // before observing more socket input.
+        DrainCommandQueue;
+        if FStop then
+          Continue;
         NowTick := GetTickCount64;
+        if ExpireLayoutPreviews then
+          // A timed-out tail has no later commit frame of its own. Pair CLEAR
+          // with a canonical event so clients can settle it atomically even
+          // when their bounded drain stops between the adjacent frames.
+          BroadcastLayoutEv(-1);
         for I := 0 to MAX_CLIENTS - 1 do
         begin
           FClients[I].WriteUsed := 0;
@@ -4215,16 +6396,27 @@ begin
         // First-frame slowloris and abandoned one-shot control replies.
         for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
           if (FPending[I].Fd >= 0) and (FPending[I].Deadline <> 0) and
-             (NowTick >= FPending[I].Deadline) then
+             (NowTick >= FPending[I].Deadline) and
+             (not FPending[I].CommandQueued) and
+             (not PendingFrameBuffered(I)) then
             DropPending(I);
 
         CheckPaneWorkers;
 
-        // An attach read may already have consumed following client frames.
-        // Do not wait for another kernel readiness edge to dispatch them.
-        for I := 0 to MAX_CLIENTS - 1 do
-          if (FClients[I].Fd >= 0) and (FClients[I].InBuf <> '') then
-            DispatchClientBuffer(I);
+        // Buffered commands left by an earlier queue-capacity boundary need
+        // no new kernel edge. Pending handshakes get one slot each; attached
+        // clients start at a rotating index for bounded round-robin fairness.
+        for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+          DispatchPendingBuffer(I);
+        for J := 0 to MAX_CLIENTS - 1 do
+        begin
+          I := (FDispatchCursor + J) mod MAX_CLIENTS;
+          DispatchClientBuffer(I);
+        end;
+        FDispatchCursor := (FDispatchCursor + 1) mod MAX_CLIENTS;
+        DrainCommandQueue;
+        if FStop then
+          Continue;
 
         Poller.Clear;
         Poller.Watch(FListener, psListener, 0, True, False);
@@ -4233,13 +6425,23 @@ begin
         for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
           if FPending[I].Fd >= 0 then
             Poller.Watch(FPending[I].Fd, psPending, I,
-              not FPending[I].CloseAfterWrite,
+              (not FPending[I].CloseAfterWrite) and
+                (not FPending[I].PeerClosed) and
+                (not FPending[I].CommandQueued) and
+                (not PendingFrameBuffered(I)) and
+                (FCommandCount < COMMAND_QUEUE_SLOTS) and
+                (FCommandBytes < COMMAND_QUEUE_BYTE_LIMIT),
               FPending[I].OutBuf <> '');
         for I := 0 to MAX_CLIENTS - 1 do
           if FClients[I].Fd >= 0 then
             Poller.Watch(FClients[I].Fd, psClient, I,
               (FClients[I].FramesUsed < FRAME_BUDGET) and
-                (not ClientFrameBuffered(I)),
+                (not FClients[I].PeerClosed) and
+                (not FClients[I].CloseQueued) and
+                (not FClients[I].TerminalQueued) and
+                (not ClientFrameBuffered(I)) and
+                (FCommandCount < COMMAND_QUEUE_SLOTS) and
+                (FCommandBytes < COMMAND_QUEUE_BYTE_LIMIT),
               FClients[I].OutBuf <> '');
         if FWorkerCount = 0 then
           for I := 0 to FPaneCount - 1 do
@@ -4247,7 +6449,7 @@ begin
                (FPanes[I].Master >= 0) then
               Poller.Watch(FPanes[I].Master, psPane, I, True,
                 FPanes[I].InputPending);
-        if CompleteClientFrameBuffered then
+        if BufferedCommandWork then
           TimeoutMs := 0
         else
           TimeoutMs := POLL_TICK_MS;
@@ -4305,6 +6507,7 @@ begin
                   begin
                     FPending[Slot] := Default(TPendingConn);
                     FPending[Slot].Fd := NewClient;
+                    FPending[Slot].Generation := NewConnectionGeneration;
                     FPending[Slot].LastProgress := GetTickCount64;
                     FPending[Slot].Deadline := GetTickCount64 +
                       FIRST_FRAME_TIMEOUT_MS;
@@ -4318,32 +6521,27 @@ begin
               begin
                 EventFd := FPending[Ev.Index].Fd;
                 Closed := False;
-                if Ev.Readable and (not FPending[Ev.Index].CloseAfterWrite)
-                   then
+                if Ev.Readable and (not FPending[Ev.Index].CloseAfterWrite) and
+                   (FCommandCount < COMMAND_QUEUE_SLOTS) and
+                   (FCommandBytes < COMMAND_QUEUE_BYTE_LIMIT) then
                 begin
                   if not ReadSocketAvailable(EventFd,
-                    FPending[Ev.Index].InBuf, Closed) then
-                    DropPending(Ev.Index)
-                  else if FPending[Ev.Index].Fd = EventFd then
-                  begin
-                    Pop := PopBufferedFrame(FPending[Ev.Index].InBuf, Kind,
-                      Pane, Data);
-                    case Pop of
-                      fpInvalid: DropPending(Ev.Index);
-                      fpReady: HandlePendingFrame(Ev.Index, Kind, Pane, Data);
-                    end;
-                  end;
-                  // A control peer may half-close its write side after the
-                  // request and still expect the queued response.
-                  if Closed and (FPending[Ev.Index].Fd = EventFd) and
-                     (not FPending[Ev.Index].CloseAfterWrite) then
-                    DropPending(Ev.Index);
+                    FPending[Ev.Index].InBuf,
+                    FPending[Ev.Index].InPos, Closed) then
+                    FPending[Ev.Index].PeerClosed := True
+                  else if Closed then
+                    FPending[Ev.Index].PeerClosed := True;
+                  if FPending[Ev.Index].Fd = EventFd then
+                    DispatchPendingBuffer(Ev.Index);
                 end;
                 if (FPending[Ev.Index].Fd = EventFd) and Ev.Writable then
                   FlushPending(Ev.Index);
                 if (FPending[Ev.Index].Fd = EventFd) and
                    (Ev.Error or (Ev.Hangup and not Ev.Readable)) then
-                  DropPending(Ev.Index);
+                begin
+                  FPending[Ev.Index].PeerClosed := True;
+                  DispatchPendingBuffer(Ev.Index);
+                end;
               end;
             psClient:
               if (Ev.Index >= 0) and (Ev.Index < MAX_CLIENTS) and
@@ -4351,21 +6549,27 @@ begin
               begin
                 EventFd := FClients[Ev.Index].Fd;
                 Closed := False;
-                if Ev.Readable then
+                if Ev.Readable and
+                   (FCommandCount < COMMAND_QUEUE_SLOTS) and
+                   (FCommandBytes < COMMAND_QUEUE_BYTE_LIMIT) then
                 begin
                   if not ReadSocketAvailable(EventFd,
-                    FClients[Ev.Index].InBuf, Closed) then
-                    DropClient(Ev.Index)
-                  else if FClients[Ev.Index].Fd = EventFd then
+                    FClients[Ev.Index].InBuf,
+                    FClients[Ev.Index].InPos, Closed) then
+                    FClients[Ev.Index].PeerClosed := True
+                  else if Closed then
+                    FClients[Ev.Index].PeerClosed := True;
+                  if FClients[Ev.Index].Fd = EventFd then
                     DispatchClientBuffer(Ev.Index);
-                  if Closed and (FClients[Ev.Index].Fd = EventFd) then
-                    DropClient(Ev.Index);
                 end;
                 if (FClients[Ev.Index].Fd = EventFd) and Ev.Writable then
                   FlushClient(Ev.Index);
                 if (FClients[Ev.Index].Fd = EventFd) and
                    (Ev.Error or (Ev.Hangup and not Ev.Readable)) then
-                  DropClient(Ev.Index);
+                begin
+                  FClients[Ev.Index].PeerClosed := True;
+                  DispatchClientBuffer(Ev.Index);
+                end;
               end;
             psPane:
               if (Ev.Index >= 0) and (Ev.Index < FPaneCount) and
@@ -4378,6 +6582,12 @@ begin
               end;
           end;
         end;
+        // Execute exactly in the order in which the readiness pass enqueued
+        // the commands. Any detach/close resets its generation, so successors
+        // already in the FIFO are harmlessly rejected as stale.
+        DrainCommandQueue;
+        if FStop then
+          Continue;
         ReapChildren;
       // live titles: ad-hoc panes without a fixed title show the command
       // or the current directory, just as the UI does locally
@@ -4464,16 +6674,30 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const ATitles: TStrArray; const ATerms: TStrArray;
   AFocused: integer; const AGeom: TPaneGeomArray;
   ADeskW, ADeskH: integer;
-  const ATitleFixed: TBoolArray): boolean;
+  const ATitleFixed: TBoolArray;
+  AChildHook: TDetachedServerChildHook): TDetachedServerStartResult;
 var
   ReadyPipe: TFilDes;
   Pid: TPid;
   B: byte;
   Server: TDetachedSession;
   NullFd: cint;
+
+  procedure SignalChildFailure;
+  begin
+    if ReadyPipe[1] < 0 then
+      Exit;
+    B := 0;
+    WriteFull(ReadyPipe[1], B, SizeOf(B));
+    FpClose(ReadyPipe[1]);
+    ReadyPipe[1] := -1;
+  end;
+
 begin
-  Result := False;
+  Result := dssFailed;
+  DetachedServerChildFinished := False;
   if (ALay = nil) or (Length(APanes) < 1) or
+     (not Assigned(AChildHook)) or
      SessionIsLive(SessionSocketPathFor(AName)) then
     Exit;
   ReadyPipe := Default(TFilDes);
@@ -4485,9 +6709,7 @@ begin
     FpClose(ReadyPipe[0]);
     if FpSetsid < 0 then
     begin
-      B := 0;
-      WriteFull(ReadyPipe[1], B, SizeOf(B));
-      FpClose(ReadyPipe[1]);
+      SignalChildFailure;
       FpExit(1);
     end;
     // The detached server has no terminal UI, so the inherited client
@@ -4525,15 +6747,52 @@ begin
       FpClose(1);
       FpClose(2);
     end;
-    Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
-      AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
-      ATitleFixed);
+    // Do this before the ownership hook.  Any failure while the inherited UI
+    // still owns the objects must take the raw exit path; once the hook has
+    // begun, normal unwinding is safe and gives HeapTrc its child-PID file.
     try
-      Server.Run(ReadyPipe[1]);
-    finally
-      Server.Free;
+      DebugSetRole('daemon');
+    except
+      SignalChildFailure;
+      FpExit(1);
     end;
-    FpExit(0);
+
+    Server := nil;
+    try
+      try
+        // The child alone relinquishes the inherited FreeVision references.
+        // APanes/AScreens/ALay above are independent copies and become the
+        // daemon's sole owners when its constructor succeeds.
+        AChildHook;
+        Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
+          AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
+          ATitleFixed);
+        Server.Run(ReadyPipe[1]);
+      finally
+        Server.Free;
+      end;
+    except
+      on E: Exception do
+      begin
+        // SignalReady changes the descriptor to -1.  Therefore this sends a
+        // failure only when Run did not already publish success/failure, and
+        // can never close a descriptor number recycled later by the daemon.
+        SignalChildFailure;
+        System.ExitCode := 1;
+        try
+          if DebugActive then
+            DebugLog('daemon: startup/run unwind: ' + E.ClassName + ': ' +
+              E.Message);
+        except
+        end;
+      end;
+    end;
+    // Return through RequestDetach/PromoteToServer, Main and TSuperApp.Done.
+    // The program block observes this fork-private flag, finalizes Pascal
+    // units exactly once (including HeapTrc), then uses the raw Unix exit.
+    DetachedServerChildFinished := True;
+    Result := dssChildFinished;
+    Exit;
   end;
   FpClose(ReadyPipe[1]);
   if Pid < 0 then
@@ -4543,7 +6802,7 @@ begin
   end;
   B := 0;
   if (FileRead(ReadyPipe[0], B, SizeOf(B)) = SizeOf(B)) and (B <> 0) then
-    Result := True;
+    Result := dssParentStarted;
   FpClose(ReadyPipe[0]);
 end;
 

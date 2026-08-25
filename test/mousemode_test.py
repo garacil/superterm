@@ -49,7 +49,7 @@ check('a click still opens the menu',
       ('Close pane' in c.text()) or ('Split vertical' in c.text()))
 c.send(b'\x1b', 0.5)
 
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

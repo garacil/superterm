@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""superterm test: wide terminal geometry and resize redraws."""
+"""Every supported wide host resize becomes the new canonical desktop.
+
+The session is born at 4096x35, grows to FreeVision's 8192-column limit,
+shrinks in both axes and returns. At every step its precomputed proportional
+window rectangle and PTY size change in the same transaction. This keeps the
+extreme-width renderer covered without retaining the obsolete contract where
+every post-attach SIGWINCH was only a local viewport change.
+"""
 import fcntl
 import os
 import pty
 import select
+import signal
 import struct
 import sys
 import termios
@@ -13,10 +21,23 @@ import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
+from stlib import check
 
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = stlib.fresh_home('large-screen')
+CANON_WIDTH = 4096
+CANON_HEIGHT = 35
+
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 
 
 class Session:
@@ -39,11 +60,15 @@ class Session:
     def set_size(self, width, height, reset_screen=True):
         self.width = width
         self.height = height
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                    struct.pack('HHHH', height, width, 0, 0))
+        # A real emulator changes its cell surface before the kernel delivers
+        # SIGWINCH. Reset the pyte surface in that same order. Doing ioctl
+        # first races SuperTerm's fast atomic repaint: bytes can reach the old
+        # stream and then be discarded when this test replaces it.
         if reset_screen:
             self.screen = pyte.Screen(width, height)
             self.stream = pyte.ByteStream(self.screen)
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', height, width, 0, 0))
 
     def drain(self, seconds):
         end = time.time() + seconds
@@ -62,23 +87,47 @@ class Session:
         self.drain(seconds)
 
     def close(self):
+        end = time.time() + 4.0
+        while time.time() < end:
+            try:
+                pid, _status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                pid = self.pid
+            if pid:
+                break
+            self.drain(0.1)
+        else:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            end = time.time() + 1.0
+            while time.time() < end:
+                try:
+                    pid, _status = os.waitpid(self.pid, os.WNOHANG)
+                except ChildProcessError:
+                    pid = self.pid
+                if pid:
+                    break
+                time.sleep(0.05)
+            else:
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                end = time.time() + 1.0
+                while time.time() < end:
+                    try:
+                        pid, _status = os.waitpid(self.pid, os.WNOHANG)
+                    except ChildProcessError:
+                        break
+                    if pid:
+                        break
+                    time.sleep(0.05)
         try:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
-
-
-fails = []
-
-
-def check(name, condition):
-    print(f'{name:36}: ' + ('OK' if condition else 'FAIL'))
-    if not condition:
-        fails.append(name)
 
 
 def frame_corners(session):
@@ -90,28 +139,58 @@ def frame_corners(session):
     }
 
 
-def expected_corners(session):
+def expected_corners(rectangle):
+    left, top, right, bottom = rectangle
     return {
-        (1, 0, '╔'),
-        (1, session.width - 3, '╗'),
-        (session.height - 3, 0, '╚'),
-        (session.height - 3, session.width - 3, '┘'),
+        (top, left, '╔'),
+        (top, right, '╗'),
+        (bottom, left, '╚'),
+        (bottom, right, '┘'),
     }
 
 
-def settle(session, timeout=20.0):
-    """Wait for the layout to reach its final shape.
+def scaled_single_pane(rectangle, old_host, new_host):
+    """Mirror the integer ScaleEdge rule used for a shared host resize."""
+    left, top, right, bottom = rectangle
+    old_width, old_height = old_host[0], old_host[1] - 2
+    new_width, new_height = new_host[0], new_host[1] - 2
 
-    A resize is not one paint: the mode change, the bounds change and the
-    relayout each produce one, and at 4096 or 8192 columns a single frame is
-    hundreds of thousands of cells. Measured here, the 4096-column restore
-    needs a bit over two seconds. Sampling on a fixed pause read an
-    intermediate frame and reported stale corners that were simply the
-    previous layout still on screen -- which is what the 3.3 'known issue'
-    really was. Wait for the shape instead; the assertions below still fail
-    if it never arrives.
-    """
-    want = expected_corners(session)
+    def edge(value, old_size, new_size):
+        return (value * new_size + old_size // 2) // old_size
+
+    new_left = edge(left, old_width, new_width)
+    new_top = edge(top - 1, old_height, new_height)
+    new_right = edge(right + 1, old_width, new_width)
+    new_bottom = edge(bottom, old_height, new_height)
+    new_left = max(0, min(new_left, new_width - 16))
+    new_top = max(0, min(new_top, new_height - 6))
+    new_right = min(new_width, max(new_right, new_left + 16))
+    new_bottom = min(new_height, max(new_bottom, new_top + 6))
+    return ((new_left, new_top + 1, new_right - 1, new_bottom),
+            (new_right - new_left - 2, new_bottom - new_top - 2))
+
+
+def pane_size(session_name):
+    """Read the exact PTY WxH owned by the daemon."""
+    result = stlib.run_cli(['list', session_name], HOME, env={'LANG': 'C'})
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if not line.startswith('1 '):
+            continue
+        for token in line.split():
+            if 'x' not in token or not token[0].isdigit():
+                continue
+            try:
+                return tuple(int(part) for part in token.split('x', 1))
+            except ValueError:
+                pass
+    return None
+
+
+def settle(session, rectangle, timeout=15.0):
+    """Wait for the physical surface to present the new shared desktop."""
+    want = expected_corners(rectangle)
     end = time.time() + timeout
     while time.time() < end:
         session.drain(0.25)
@@ -120,25 +199,45 @@ def settle(session, timeout=20.0):
     return None
 
 
-def check_layout(session, label):
+def check_layout(session, label, rectangle):
     rows = session.screen.display
     width = session.width
     height = session.height
-    top = rows[1]
-    bottom = rows[height - 3]
+    left, frame_top, right, frame_bottom = rectangle
+    top = rows[frame_top]
+    bottom = rows[frame_bottom]
     status = rows[height - 1]
-    expected = expected_corners(session)
+    expected = expected_corners(rectangle)
     corners = frame_corners(session)
     check(f'{label}: full frame', expected <= corners)
     check(f'{label}: no stale corners', corners == expected)
     check(f'{label}: status at bottom', 'F2 Split' in ''.join(status))
-    check(f'{label}: frame dimensions', len(top) == width and len(bottom) == width)
+    check(f'{label}: surface dimensions',
+          len(top) == width and len(bottom) == width)
+    check(f'{label}: frame matches scaled bounds',
+          rows[frame_top][left] in '╔┌' and
+          rows[frame_top][right] in '╗┐' and
+          rows[frame_bottom][left] in '╚└' and
+          rows[frame_bottom][right] in '╝┘')
+    check(f'{label}: scaled frame stays on surface',
+          0 <= left < right < width and 1 <= frame_top < frame_bottom < height - 1)
 
 
-s = Session(4096, 35)
+s = Session(CANON_WIDTH, CANON_HEIGHT)
+session_name = ''
+canonical_pty = None
 try:
-    settle(s)
-    check_layout(s, '4096x35 startup')
+    current_host = (CANON_WIDTH, CANON_HEIGHT)
+    current_rect = (0, 1, CANON_WIDTH - 3, CANON_HEIGHT - 3)
+    check('4096x35 startup settles', settle(s, current_rect) is not None)
+    check_layout(s, '4096x35 startup', current_rect)
+    sockets = stlib.session_sockets(HOME)
+    check('one canonical session exists', len(sockets) == 1)
+    if len(sockets) == 1:
+        session_name = os.path.basename(sockets[0])[:-5]
+    canonical_pty = pane_size(session_name) if session_name else None
+    check('canonical PTY matches 4096x35 desktop',
+          canonical_pty == (4092, 30))
 
     s.send(b"printf '\\033[44m\\033[2J\\033[H'\r", 1.2)
     background_cells = [s.screen.buffer[10][x].bg for x in range(2, s.width - 3)]
@@ -151,23 +250,41 @@ try:
           bright_background_cells and
           all(color == 'brightwhite' for color in bright_background_cells))
 
-    s.set_size(8192, 35)
-    settle(s)
-    check_layout(s, '8192x35 maximum')
+    next_host = (8192, 35)
+    current_rect, expected_pty = scaled_single_pane(
+        current_rect, current_host, next_host)
+    current_host = next_host
+    s.set_size(*current_host)
+    check('8192x35 resize settles', settle(s, current_rect) is not None)
+    check_layout(s, '8192x35 maximum', current_rect)
+    check('8192x35 changes shared PTY WxH',
+          pane_size(session_name) == expected_pty)
 
-    s.set_size(300, 80)
-    settle(s)
-    check_layout(s, '300x80 resize')
+    next_host = (300, 80)
+    current_rect, expected_pty = scaled_single_pane(
+        current_rect, current_host, next_host)
+    current_host = next_host
+    s.set_size(*current_host)
+    check('300x80 resize settles', settle(s, current_rect) is not None)
+    check_layout(s, '300x80 resize', current_rect)
+    check('300x80 changes shared PTY WxH',
+          pane_size(session_name) == expected_pty)
 
-    s.set_size(4096, 35)
-    settle(s)
-    check_layout(s, '4096x35 restore')
+    next_host = (4096, 35)
+    current_rect, expected_pty = scaled_single_pane(
+        current_rect, current_host, next_host)
+    current_host = next_host
+    s.set_size(*current_host)
+    check('4096x35 restore settles', settle(s, current_rect) is not None)
+    check_layout(s, '4096x35 restore', current_rect)
+    check('restore changes PTY back exactly',
+          pane_size(session_name) == expected_pty)
 finally:
     try:
-        s.send(b'\x1bq', 0.5)
+        s.send(b'\x1bx', 0.5)
     except OSError:
         pass
     s.close()
     stlib.close_all_daemons(HOME)
 
-sys.exit(1 if fails else 0)
+stlib.report()

@@ -16,11 +16,12 @@ ROOT = '/tmp/opencode/stsqlite'
 HOME = ROOT + '/home'
 DBDIR = ROOT + '/templates'
 SYSINI = ROOT + '/superterm.ini'
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 W, H = 110, 35
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons
+from stlib import close_all_daemons, wait_pid
 
 close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
@@ -94,7 +95,7 @@ class Session:
 
     def close(self):
         try:
-            os.write(self.fd, b'\x1bq')
+            os.write(self.fd, b'\x1bx')
             self.drain(0.5)
         except OSError:
             pass
@@ -102,10 +103,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        wait_pid(self.pid)
 
 
 fails = []

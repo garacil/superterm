@@ -178,7 +178,7 @@ check('passthrough blocks OSC 52 query',
       b'\x1b]52;c;?\x07' not in c.raw()[before:])
 c.send(b'\x1b[15~', 0.8)
 
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 c.close()
 close_all_daemons(home)
 
@@ -196,7 +196,7 @@ check('Spanish Clipboard immediately before Help',
 es.send(b'\x1bt', 0.4)  # Alt-T: Por-t-apapeles
 check('Spanish Clipboard actions',
       'Copiar del panel' in es.text() and 'Pegar del historial' in es.text())
-es.send(b'\x1bq', 0.7)
+es.send(b'\x1bx', 0.7)
 es.close()
 close_all_daemons(home_es)
 

@@ -6,7 +6,8 @@ import pyte
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib  # noqa: E402
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = stlib.fresh_home('multisession')
 SYSINI = HOME + '/no.ini'
 SESSDIR = HOME + '/.superterm/sessions'

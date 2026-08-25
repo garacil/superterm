@@ -314,6 +314,7 @@ begin
     // only pane: leaf root
     FreeAndNil(Root);
     Focused := -1;
+    LastInsertedIndex := -1;
     Exit(False);
   end;
   if Par.A = Leaf then

@@ -14,11 +14,12 @@ import pyte
 ROOT = '/tmp/opencode/sttemplate'
 HOME = ROOT + '/home'
 SYSINI = ROOT + '/superterm.ini'
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 W, H = 110, 35
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons
+from stlib import close_all_daemons, wait_pid
 
 close_all_daemons(HOME)
 os.makedirs(HOME, exist_ok=True)
@@ -93,9 +94,9 @@ class Session:
     def text(self):
         return '\n'.join(row.rstrip() for row in self.screen.display)
 
-    def close_without_save(self):
+    def close(self):
         try:
-            os.write(self.fd, b'\x1bq')
+            os.write(self.fd, b'\x1bx')
             self.drain(0.5)
         except OSError:
             pass
@@ -103,10 +104,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        wait_pid(self.pid)
 
 
 fails = []
@@ -131,10 +129,24 @@ try:
     os.write(s.fd, b'\x1b')
     s.drain(0.2)
 
-    # F8 changes from the split dashboard to the single logs window.
+    # F8 changes from the split dashboard (both terminal titles visible) to
+    # the single logs window.  Looking only for ``two`` was vacuous because
+    # that title was already on the dashboard before F8.
+    dashboard_before_f8 = s.text()
+    check('dashboard state precedes F8',
+          'one' in dashboard_before_f8 and 'two' in dashboard_before_f8)
     os.write(s.fd, b'\x1b[19~')
-    s.drain(0.8)
-    check('window switch works', 'two' in s.text())
+    deadline = time.time() + 5.0
+    logs_after_f8 = dashboard_before_f8
+    while time.time() < deadline:
+        s.drain(0.2)
+        logs_after_f8 = s.text()
+        if (logs_after_f8 != dashboard_before_f8 and
+                'two' in logs_after_f8 and 'one' not in logs_after_f8):
+            break
+    check('F8 visibly changes window state',
+          logs_after_f8 != dashboard_before_f8 and
+          'two' in logs_after_f8 and 'one' not in logs_after_f8)
 
     # Return to the template menu and select the second template.
     os.write(s.fd, b'\x1br')
@@ -143,7 +155,7 @@ try:
     s.drain(1.0)
     check('hot template switch works', 'beta' in s.text())
 finally:
-    s.close_without_save()
+    s.close()
     close_all_daemons(HOME)
 
 sys.exit(1 if fails else 0)

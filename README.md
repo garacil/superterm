@@ -65,10 +65,18 @@ history. Each pane keeps its own process, terminal state, focus and size.
   `restore/restaurar`, `zoom/ampliar` and `organize/organizar`. See
   [`docs/CLI.md`](docs/CLI.md).
 - True multi-user sessions: up to 8 clients attached to the same session at
-  once, with output broadcast, live window events, client-local geometry and
-  viewports, and slow-client flow control so one stalled client never blocks
-  the rest. `[session] resize_policy=smallest` retains common-minimum sizing
-  for compatibility.
+  once, with one daemon-owned desktop -- positions, sizes, minimize, zoom and
+  fullscreen are identical for everyone, including the focused pane. Input
+  from every client is delivered in arrival order. Window moves, incremental
+  resizes and optional maximize/F5 outlines are also shown live in every
+  viewer, not just in the client performing the action; minimize and restore
+  are one atomic shared transition. Per-pane leases let different clients
+  manipulate different panes concurrently without either pane jumping back,
+  while each final canonical commit alone changes PTY geometry. Attaching
+  from a differently sized terminal only clips or pads that desktop; a later
+  physical resize is a shared operation which atomically adopts the new
+  desktop and PTY geometry. Slow-client flow control ensures one stalled
+  client never blocks the rest.
 - Named multi-session detach: several live sessions under
   `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
@@ -83,8 +91,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
 - Two per-profile display options in the Options menu: **show contents while
   dragging** (off gives a wireframe drag, where only the window outline moves
   and everything behind it stays visible -- much less traffic on a slow link)
-  and an optional **zoom transition** for `F5`.
-- Automatic session save and restore through `~/.superterm/session.ini`.
+  and an optional **zoom transition** for IDE maximize and `F5`. Every attached
+  viewer sees the same live path in its own active palette.
+- Automatic local fallback save and restore through
+  `~/.superterm/session.ini`.
 - A quick session wizard for one to four panes. Each pane accepts a connection
   command and an optional command to feed to the connection after it starts.
 - A custom keyboard driver: a lone `Esc` reaches the pane (timeout-based, not
@@ -97,8 +107,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
   maximized. The vendored FreeVision is not modified: its grid is still drawn
   and decides what is visible.
 - **Maximize (`F5`) hands the pane the whole terminal** and writes its raw PTY
-  bytes straight through, for applications that want the terminal to
-  themselves. `F5` again restores the window at the size it had.
+  bytes straight through when every attached host has the same geometry. With
+  different geometries, every client instead gets the same IDE-rendered
+  fullscreen area sized to the smallest host. `F5` again restores the window
+  at the size it had.
 - English application interface by default, with a runtime-selectable Spanish
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux
@@ -124,8 +136,10 @@ nothing over a slow link:
 
 ![Two panes keeping their colours, focused and not](screenshots/focus-colour.png)
 
-**Minimize or restore every window at once**, from the `Windows` / `Ventanas`
-menu. The per-window entries stay in `Panes` / `Paneles`:
+**Minimize, restore, or close every window at once**, from the `Windows` /
+`Ventanas` menu. Closing all leaves the desktop and the live session attached;
+either client can create the first pane again. The per-window entries stay in
+`Panes` / `Paneles`:
 
 ![Minimize all and restore all in the Windows menu](screenshots/windows-menu.png)
 
@@ -180,7 +194,8 @@ Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
 in the centre, and a fourth minimized to a title bar at the bottom. `F5`
 maximizes the focused pane and hands it the entire terminal, so `top` reflows
 into the full screen; `F5` again brings the desktop back with every window
-where it was. The expanding outline is the optional zoom transition
+where it was. Every attached viewer sees the expanding or contracting outline,
+not only the client which pressed the key. It is the optional zoom transition
 (`[session] zoomanim`, off by default — the instant switch is the fast one):
 
 ![The F5 zoom transition](screenshots/zoom-transition.gif)
@@ -399,11 +414,14 @@ sessions exist. Every launch starts a per-user session server at
 still recognized). The server owns the PTY masters, process groups,
 terminal parsers, and scrollback, so leaving the client — or losing it —
 does not close local shells or remote SSH connections. With several clients,
-`Alt-X` and `Alt-Q` close only the client that requested the exit; the session
-ends when its last attached client exits. `Alt-X` asks the server to save
-`session.ini` first, while `Alt-Q` skips saving. The explicit CLI `kill`
+`Alt-X` closes only the client that requested the exit; the session ends when
+its last attached client exits. A detached live session already is the saved
+state, so there are no separate "save and exit" or "exit without saving"
+paths. The explicit CLI `kill`
 command remains an immediate session-wide close. Inside the app, `Ctrl-Q s`
 opens the session picker to attach to or permanently close other sessions.
+`Ctrl-Q d` only detaches the viewer: the single live desktop remains exactly
+as it was, even with no viewers, and the next attach receives it directly.
 
 Optional diagnostics:
 
@@ -421,7 +439,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | Key | Action |
 | --- | --- |
 | `F2` / `F3` | Open a window; it appears centred and nothing already open is moved or resized |
-| `Alt-F3` / `Alt-F4` | Close the focused pane; exit when one remains |
+| `Alt-F3` / `Alt-F4` | Close the focused pane; closing the last one leaves an empty desktop |
 | `F6` / `F7` | Next / previous pane |
 | `Alt-1..9` | Go to pane N |
 | `Alt-0` | Pane list: pick a pane, restoring it if minimized |
@@ -443,12 +461,12 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
 | Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
 | `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
 | `Alt-Home` / `Alt-End` | History: oldest line / back to live |
-| `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
-| `Alt-X` | Exit and save when autosave is enabled |
-| `Alt-Q` | Exit without saving |
+| `Ctrl-S` | Save a local layout or profile selection (not needed or shown while attached to a live session) |
+| `Alt-X` | Exit; the last attached viewer closes the live session |
 
 Changing pane focus changes only the window border/title and cursor. Terminal
 content keeps exactly the same colors and attributes in every pane, focused or
@@ -456,8 +474,9 @@ not, and unchanged interiors are not retransmitted on a focus switch.
 
 The same actions are available from the `Panes`, `Windows`, `Classes`,
 `Profiles`, `Sessions`, `Options`, `Clipboard`, and `Help` menus. The
-`Windows` menu contains `Minimize all windows`, `Restore all windows`, `Tile`,
-`Organize`, `Cascade`, `List`, and `Refresh display`. `Options` holds the
+`Windows` menu contains `Minimize all windows`, `Restore all windows`,
+`Close all windows`, `Tile`, `Organize`, `Cascade`, `List`, and
+`Refresh display`. `Options` holds the
 language (`English`/`Espanol`, applied immediately), the color palette (color,
 black and white, monochrome), and the autosave/autorestore toggles. In Spanish
 mode the menus are `Paneles`, `Ventanas`, `Clases`, `Perfiles`, `Sesiones`,
@@ -536,7 +555,6 @@ palette=color               ; color (default), bw, or mono
 [session]
 autosave=1
 autorestore=1               ; use 0 for a fresh profile startup
-resize_policy=session       ; independent client viewports (default)
 default_profile=daily
 ```
 

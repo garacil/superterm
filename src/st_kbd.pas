@@ -24,6 +24,11 @@ interface
 
 // install before creating the application (before Keyboard.InitKeyboard)
 procedure InstallSuperKeyboard;
+// CaptureConsoleCursor issues CSI 6 n before the keyboard driver starts. A
+// slow host may answer only after startup; arm one expiring CPR so CSI r;c R
+// is consumed as a terminal reply rather than decoded as CSI-F3.
+procedure ArmCursorPositionReply;
+procedure CompleteCursorPositionReply;
 // Bracketed paste arrives as one payload instead of thousands of unrelated
 // key events. The application drains this queue from Idle and routes each
 // item to the focused pane.
@@ -66,6 +71,17 @@ var
   PasteQueue: array[0..HOST_PASTE_QUEUE - 1] of RawByteString;
   PasteHead: integer = 0;
   PasteTail: integer = 0;
+  CursorReplyDeadline: QWord = 0;
+
+procedure ArmCursorPositionReply;
+begin
+  CursorReplyDeadline := GetTickCount64 + 1500;
+end;
+
+procedure CompleteCursorPositionReply;
+begin
+  CursorReplyDeadline := 0;
+end;
 
 procedure QueueHostPaste(const AText: RawByteString);
 var
@@ -471,6 +487,19 @@ begin
     p2 := 1;
   Dec(p2); // xterm modifier bits: 1=shift 2=alt 4=ctrl
   p2 := p2 or ExtraMods;
+  // 'R' is also CSI-F3, hence the explicit pending query state. Do not infer
+  // CPR from numeric ranges: row 1/column 2 is byte-for-byte identical to a
+  // modified CSI F3 on some terminals. Only a DSR we actually emitted arms
+  // this one-shot swallow, and it expires shortly after startup.
+  if (AnsiChar(c) = 'R') and (CursorReplyDeadline <> 0) then
+  begin
+    if GetTickCount64 <= CursorReplyDeadline then
+    begin
+      CompleteCursorPositionReply;
+      Exit;
+    end;
+    CompleteCursorPositionReply;
+  end;
   case AnsiChar(c) of
     'A': Result := NavEvent($48, $8D, $98, p2);
     'B': Result := NavEvent($50, $91, $A0, p2);

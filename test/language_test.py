@@ -11,15 +11,19 @@ import time
 
 import pyte
 
+from stlib import wait_pid
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 ROOT = '/tmp/opencode/stlanguage'
 HOME = ROOT + '/home'
 CONFIG = HOME + '/.superterm/superterm.ini'
 W, H = 110, 35
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(CONFIG, 'w') as config:
-    config.write('[ui]\nlanguage=es\n[session]\nautosave=0\nautorestore=0\n')
+    config.write('[ui]\nlanguage=es\n[session]\nserver=detach\n'
+                 'autosave=0\nautorestore=0\n')
 
 
 class Session:
@@ -57,7 +61,7 @@ class Session:
 
     def close(self):
         try:
-            os.write(self.fd, b'\x1bq')
+            os.write(self.fd, b'\x1bx')
             self.drain(0.4)
         except OSError:
             pass
@@ -65,10 +69,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        wait_pid(self.pid)
 
 
 fails = []
@@ -115,7 +116,7 @@ try:
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
     s.send(b'\x1b', 0.5)  # close the help dialog
     s.send(b'\x1b', 0.5)  # and any menu still left open
-    s.send(b'\x1bq', 1.5)  # Alt-Q: closes client and session daemon
+    s.send(b'\x1bx', 1.5)  # Alt-X: the single Exit command
 finally:
     s.close()
 

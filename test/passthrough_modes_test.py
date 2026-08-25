@@ -50,7 +50,7 @@ c.send(b'\x1b[<0;20;10M', 0.4)
 c.send(b'\x1b[<0;20;10m', 0.8)
 check('the client still runs after the click', c.alive())
 
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

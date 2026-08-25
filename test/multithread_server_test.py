@@ -3,6 +3,7 @@
 import configparser
 import glob
 import os
+import subprocess
 import sys
 import time
 
@@ -43,14 +44,35 @@ def wait_state(home, predicate, timeout=8.0):
     return state
 
 
-def actual_linux_threads(pid):
+def actual_os_threads(pid):
     path = f'/proc/{pid}/task'
-    if not os.path.isdir(path):
-        return None
-    try:
-        return len(os.listdir(path))
-    except OSError:
-        return None
+    if os.path.isdir(path):
+        try:
+            return len(os.listdir(path))
+        except OSError:
+            return None
+    if sys.platform == 'darwin':
+        try:
+            result = subprocess.run(
+                ['/bin/ps', '-M', '-p', str(pid), '-o', 'pid='],
+                capture_output=True, text=True, timeout=3.0,
+                check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if result.returncode == 0 and lines:
+            return len(lines)
+    return None
+
+
+def available_cpu_oracle():
+    """Independent OS/Python view of CPUs schedulable by this process."""
+    if hasattr(os, 'sched_getaffinity'):
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except OSError:
+            pass
+    return max(1, os.cpu_count() or 1)
 
 
 HOME = stlib.fresh_home('multithread-server')
@@ -62,6 +84,8 @@ check('multithread session exists', len(sockets) == 1)
 session = os.path.basename(sockets[0])[:-5] if sockets else ''
 
 state = wait_state(HOME, lambda s: s['panes'] == 1 and s['threads'] > 0)
+check('daemon detects available CPU count', bool(state) and
+      state['cpus'] == available_cpu_oracle())
 expected_limit = min(4, state['cpus']) if state else -1
 expected_one = 1 + min(1, max(0, expected_limit - 1))
 check('numeric value caps total threads', bool(state) and
@@ -69,7 +93,7 @@ check('numeric value caps total threads', bool(state) and
 check('one pane creates one pane worker', bool(state) and
       state['threads'] == expected_one)
 if state:
-    actual = actual_linux_threads(state['pid'])
+    actual = actual_os_threads(state['pid'])
     check('sidecar matches OS thread count', actual is None or
           actual == state['threads'])
 
@@ -84,7 +108,7 @@ expected_four = 1 + min(4, max(0, expected_limit - 1))
 check('workers grow up to configured cap', bool(state) and
       state['threads'] == expected_four)
 if state:
-    actual = actual_linux_threads(state['pid'])
+    actual = actual_os_threads(state['pid'])
     check('grown pool matches OS threads', actual is None or
           actual == state['threads'])
 
@@ -155,7 +179,7 @@ single_state = wait_state(
 check('environment override selects single thread', bool(single_state) and
       single_state['thread_limit'] == 1)
 if single_state:
-    actual = actual_linux_threads(single_state['pid'])
+    actual = actual_os_threads(single_state['pid'])
     check('single mode creates no hidden worker', actual is None or actual == 1)
 single.send(b'echo SINGLE_REACTOR_OK\r', 1.0)
 check('single reactor remains functional',
@@ -169,6 +193,8 @@ write_config(AUTO_HOME, 'auto')
 auto_client = stlib.Client(AUTO_HOME, w=90, h=25)
 auto_client.drain(2.0)
 auto_state = wait_state(AUTO_HOME, lambda s: s['panes'] == 1)
+check('auto independently detects CPUs', bool(auto_state) and
+      auto_state['cpus'] == available_cpu_oracle())
 auto_limit = min(auto_state['cpus'], 17) if auto_state else -1
 check('auto uses available CPU limit', bool(auto_state) and
       auto_state['thread_limit'] == auto_limit)
