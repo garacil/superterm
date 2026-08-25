@@ -117,6 +117,11 @@ For extra compiler flags:
 make MODE=debug FPCFLAGS_EXTRA='-Sa'
 ```
 
+For memory audits, `make debug-heap` builds the separate
+`bin/superterm-debug-heap` executable with FPC HeapTrc and per-process memory
+reports. See [HEAP_DEBUGGING.md](HEAP_DEBUGGING.md) for the required variables,
+report lifecycle and stress-test examples.
+
 The compatibility wrapper is still available:
 
 ```sh
@@ -134,6 +139,17 @@ Build the release binary and run every Python/pyte regression test:
 ```sh
 make test
 ```
+
+Each suite has an independent 15-minute deadline. A timed-out suite and its
+process group are terminated, the remaining suites still run, and the final
+summary lists every failure. Override the per-suite deadline when required:
+
+```sh
+SUPERTERM_TEST_TIMEOUT=1200 make test
+```
+
+The runner is implemented in Python and works on Linux and macOS; it does not
+depend on the GNU `timeout` utility.
 
 The tests launch isolated PTYs. They do not attach to, restart, or modify a
 user's tmux server. The detach test starts superterm's own per-user server,

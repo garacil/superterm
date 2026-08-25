@@ -3,7 +3,11 @@
 import os, pty, time, select, sys, fcntl, termios, struct, subprocess
 import pyte
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+sys.path.insert(0, os.path.dirname(__file__))
+from stlib import close_all_daemons, wait_pid
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/st-restore'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
@@ -44,10 +48,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        wait_pid(self.pid)
 
 fails = []
 def check(name, cond):
@@ -55,6 +56,12 @@ def check(name, cond):
     if not cond:
         fails.append(name)
 
+close_all_daemons(HOME)
+os.makedirs(HOME + '/.superterm', exist_ok=True)
+with open(HOME + '/.superterm/superterm.ini', 'w') as f:
+    # Saved fallback layouts are a local-mode feature. Live sessions retain
+    # their in-memory state and deliberately have no save/no-save Exit split.
+    f.write('[session]\nserver=detach\nautosave=1\nautorestore=1\n')
 if os.path.exists(SESS):
     os.remove(SESS)
 
@@ -64,7 +71,7 @@ a.drain(2.0)
 a.send(b'\x1bOQ', 1.2)              # F2 vertical split
 a.send(b'sleep 987\r', 1.2)         # distinctive command in pane 2
 a.send(b'cd /tmp\r', 0.8)           # change cwd of pane... goes to pane2 (focused); pane1 keep
-a.send(b'\x1bx', 1.0)               # Alt-X quit & save
+a.send(b'\x1bx', 1.0)               # Alt-X: local autosave on Exit
 a.close()
 time.sleep(0.4)
 
@@ -127,7 +134,7 @@ c = Session()
 c.drain(2.0)
 c.send(b'echo RESTORED_SHELL\r', 1.0)
 check("C: lower-left returns to shell", 'RESTORED_SHELL' in c.text())
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 c.close()
 
 # --- run D: manually moved/resized windows must restore at their saved
@@ -164,7 +171,7 @@ corner = d.screen.buffer[1 + BY][BX].data
 check("D: moved window at saved pos", corner == '╔')
 d.send(b'\x13', 1.0)  # Ctrl-S: save session
 d.send(b'\r', 0.5)    # close the "Session saved." notice
-d.send(b'\x1bq', 1.0) # Alt-Q: exit closing the session daemon too
+d.send(b'\x1bx', 1.0) # Alt-X: the one Exit command
 d.close()
 time.sleep(0.6)
 txt = open(SESS).read()

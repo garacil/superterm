@@ -3,7 +3,10 @@
 import os, pty, time, select, sys, fcntl, termios, struct, shutil
 import pyte
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+from stlib import wait_pid
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/sthome-profile'
 USERINI = HOME + '/.superterm/superterm.ini'
 SYSINI = HOME + '/system.ini'
@@ -18,6 +21,9 @@ os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(USERINI, 'w') as f:
     f.write("""[session]
 default_profile=dev
+server=detach
+autosave=0
+autorestore=0
 
 [class.keepme]
 name=keepme
@@ -117,8 +123,7 @@ class Session:
     def close(self):
         try: os.close(self.fd)
         except OSError: pass
-        try: os.waitpid(self.pid, 0)
-        except ChildProcessError: pass
+        wait_pid(self.pid)
 
 fails = []
 def check(name, cond):
@@ -189,7 +194,7 @@ check("ini keeps class section", "[class.keepme]" in txt)
 check("template absorbed", "[template.oldtpl]" not in txt)
 check("oldtpl now a profile", "[profile.oldtpl]" in txt)
 
-s.send(b'\x1bq', 1.0)              # exit without saving
+s.send(b'\x1bx', 1.0)              # the single Exit path
 s.close()
 time.sleep(0.4)
 
@@ -222,7 +227,7 @@ s.send(b'print(40600+2)\r', 0.8)
 scr = s.text()
 check("captured activates", "40602" in scr)
 
-s.send(b'\x1bq', 1.0)              # exit without saving
+s.send(b'\x1bx', 1.0)              # the single Exit path
 s.close()
 
 sys.exit(1 if fails else 0)

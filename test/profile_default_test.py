@@ -102,7 +102,7 @@ with open(INI) as f:
 check('default persisted in config', 'default_profile=beta' in saved)
 check('default window follows beta', 'default_window=work' in saved)
 
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 c.close()
 stlib.close_all_daemons(HOME)
 stlib.report()

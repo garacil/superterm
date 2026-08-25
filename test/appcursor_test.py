@@ -43,7 +43,7 @@ check('DECKPAM/DECKPNM are consumed silently',
       not any('=KP_OK' in r or '>' in r.split('#')[-1] for r in c.screen.display
               if 'KP_OK' in r))
 
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

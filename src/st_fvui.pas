@@ -38,7 +38,7 @@ const
   cmShrinkV    = 2107;
   cmGrowH      = 2108;
   cmShrinkH    = 2109;
-  cmQuitNoSave = 2110;
+  // 2110 retired: a live session has one Exit path and no save variant.
   cmPaneTile    = 2111;    // retile as a mosaic (classic Window|Tile)
   cmPaneCascade = 2112;
   cmPaneList    = 2113;    // pane list (Alt+0)
@@ -62,10 +62,12 @@ const
   cmWindowMinimize = 2500;
   cmWindowMinimizeAll = 2501;
   cmWindowRestoreAll = 2502;
+  cmWindowCloseAll = 2503;
   cmWindowRestoreBase = 2520;  // + pane index (0..15)
   cmDetach        = 2550;
   cmSessionPick   = 2551;   // picker/manager of detached sessions
   cmSessionWizard = 2560;
+  cmShowMaxPanes  = 2561;   // deferred daemon rejection dialog
   cmHelp        = 2600;
   cmAbout       = 2601;
   cmLanguageBase = 2700;
@@ -128,6 +130,15 @@ type
     FullScreen: boolean;
     TitleFixed: boolean;       // custom title: cwd refresh must not touch it
     SavedRect: Objects.TRect;  // bounds before the minimized icon
+    // FreeVision timestamps the first mouse-down. A remote title click then
+    // runs a complete lock/drag/unlock path before the second mouse-down is
+    // read, so an ordinary human double-click can miss its 8-tick deadline
+    // and require a third click. Remember completion of an active, unmoved
+    // title click; it is the only click eligible to begin our fallback pair.
+    TitleClickTick: QWord;
+    TitleClickX: integer;
+    TitleClickArmed: boolean;
+    PreviewGestureId, PreviewSeq: QWord;
     constructor Init(var Bounds: Objects.TRect; const ATitle: string; APane: integer);
     procedure InitFrame; virtual;
     procedure HandleEvent(var Event: TEvent); virtual;
@@ -138,6 +149,9 @@ type
     procedure Minimize;
     procedure Restore;
     procedure SetTitle(const S: string);
+    // Resolve the same active-frame attribute that FreeVision's TFrame.Draw
+    // uses, through the complete frame -> window -> application palette.
+    function ActiveFrameAttr: byte;
     // show/hide and position the scrollbar from the pane's history state.
     // AValueOnly skips Show/Hide, which redraw the owner and must not be
     // called from inside a Draw.
@@ -148,6 +162,7 @@ type
     // pane's viewport: the thumb moves, snaps back on the next sync, and
     // the text of this window never scrolls.
     procedure SetPaneIdx(APane: integer);
+    procedure SendGesturePreview(AForce: boolean);
   end;
 
   // Desktop background that paints an ASCII art picture behind the windows.
@@ -188,8 +203,53 @@ type
     DetachRequested: boolean;
     PrefixPending: boolean;
     Remote: TSessionClient;
-    RemoteResizePolicy: TResizePolicy; // authoritative value from snapshot
     RemoteLayoutHash: string;   // last geometry pushed/applied
+    RemoteGeom: TPaneGeomArray; // the one canonical geometry from the daemon
+    RemoteDeskW, RemoteDeskH: integer;
+    RemoteClientCount: integer;
+    RemoteMinHostW, RemoteMinHostH: integer;
+    RemoteHostSizesMatch: boolean;
+    RemoteHostSummaryValid: boolean;
+    // Remote zoom/F5 is proposed first and becomes visible only when the
+    // daemon echoes its authoritative LAYOUT_EV. Output already queued before
+    // that event must still be parsed using the old TScreen width.
+    RemoteZoomPending: boolean;
+    RemoteZoomPane: integer;
+    RemoteZoomTarget: TPaneGeom;
+    RemoteZoomContractPending: boolean;
+    RemoteZoomContractPane: integer;
+    RemoteZoomOldX1, RemoteZoomOldY1: integer;
+    RemoteZoomOldX2, RemoteZoomOldY2: integer;
+    RemoteZoomBaseRevision, RemoteZoomSentTick: QWord;
+    RemoteZoomPreviewId, RemoteZoomPreviewSeq: QWord;
+    // Cosmetic shared gesture state. Bounds and rings are presentations only:
+    // RemoteGeom/Scr remain daemon-canonical until the final LAYOUT_EV.
+    RemotePreviewMode: array[0..MAX_PANES - 1] of byte;
+    RemotePreviewGesture: array[0..MAX_PANES - 1] of QWord;
+    RemotePreviewRect: array[0..MAX_PANES - 1] of Objects.TRect;
+    RemotePreviewOverlayOn: array[0..MAX_PANES - 1] of boolean;
+    RemotePreviewOverlayGesture: array[0..MAX_PANES - 1] of QWord;
+    RemotePreviewOverlayRect: array[0..MAX_PANES - 1] of Objects.TRect;
+    RemotePreviewOverlayAttr: array[0..MAX_PANES - 1] of byte;
+    // CLEAR and its canonical layout are adjacent on the socket, but Idle may
+    // stop at its frame/time budget between them. Keep the last preview on
+    // screen until that canonical transaction arrives; otherwise the old
+    // RemoteGeom would be exposed for one physical frame.
+    RemotePreviewClearPending: array[0..MAX_PANES - 1] of boolean;
+    // Armed only after attach has consumed its startup TIOCGWINSZ. Therefore
+    // the attaching terminal's initial size is metadata, while a later edge
+    // is a deliberate request to replace the shared canonical desktop.
+    RemoteHostSizeArmed: boolean;
+    HostResizePending, HostResizeInFlight: boolean;
+    PendingHostDeskW, PendingHostDeskH: integer;
+    InFlightHostDeskW, InFlightHostDeskH: integer;
+    HostResizeTick, HostResizeFlightTick: QWord;
+    RemoteLockedPanes: LongWord; // one daemon-authoritative bit per pane
+    RemoteSharedFocus: integer;
+    SharedFullScreenRendered: boolean;
+    RemoteGeometryDirty: boolean;
+    RemoteTreeDirty: boolean;
+    RemoteGeomDirtyPanes: array[0..MAX_PANES - 1] of boolean;
     CurrentSessionSocket: string;  // socket of the attached session
     // attach under construction: windows pass through intermediate
     // bounds (tile -> final geometry) and must NOT request transient
@@ -204,13 +264,17 @@ type
     // cannot use the mirror's size: a daemon that keeps a pane smaller than
     // this client's window would otherwise be asked again on every drag step.
     ReqCols, ReqRows: array[0..MAX_PANES - 1] of integer;
-    // Per-client live viewport into the canonical server-side TScreen. These
-    // offsets never leave this process and therefore cannot move another UI.
+    // Kept at zero: protocol v5 crops the whole canonical desktop at the host
+    // edge and never creates a private per-pane viewport.
     PaneViewX, PaneViewY: array[0..MAX_PANES - 1] of integer;
     // rectangle for the next window StartPaneEx creates, when the caller has
     // already decided where it goes (a split); consumed by NewWindowRect
     NextRect: Objects.TRect;
     NextRectSet: boolean;
+    // Profile construction creates every window off-desktop.  Only after all
+    // panes have their definitive layout/state are they inserted as one
+    // complete workspace; no provisional one-pane desktop ever exists.
+    DeferWindowInsert: boolean;
     // mouse forwarding: the pane a button went down in (-1 none) and which
     // button, so the release and the drag reach the same application even
     // if the pointer wanders; the host's any-motion tracking (?1003) is
@@ -219,11 +283,6 @@ type
     MouseGrabButton: integer;
     HostAnyMotion: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
-    // Raw passthrough is only geometrically correct when the daemon accepts
-    // the host's full size. If another client imposes a smaller common size,
-    // temporarily render through the grid while preserving our full-size
-    // request; the daemon's grow event after that client leaves resumes raw.
-    PassBlockedPane, PassBlockedW, PassBlockedH: integer;
     PassFilterState: TPassFilterState;
     PassFilterBuf: RawByteString;
     PassFilterLen: integer;
@@ -253,6 +312,7 @@ type
     procedure FallbackPane(i: integer);
     procedure DoSplit(ADir: TSplitDir; ASysIdx: integer);
     procedure DoClosePane(i: integer);
+    procedure DoCloseAllPanes;
     procedure DoOpenClassPane(ASysIdx: integer);
     procedure RelayoutAll;
     procedure FocusPane(i: integer);
@@ -274,7 +334,9 @@ type
     procedure ApplyPalette(AKind: integer);
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
-    procedure SyncRemoteLayout;
+    // -2 acquires the required lock here; -1 is a preheld global lock;
+    // non-negative values name the one preheld pane lock.
+    procedure SyncRemoteLayout(APrelockedPane: integer = -2);
     // incremental repaint: redraw the view tree into the buffer but push
     // ONLY the changed cells (the FreeVision diff), instead of the
     // ResetVideoSurface+ReDraw sledgehammer that re-sends every cell
@@ -284,11 +346,28 @@ type
     procedure FinishBoot;
     // passthrough of a maximized pane straight to the host terminal
     procedure EnterPassthrough(i: integer);
-    procedure ExitPassthrough(AKeepRemoteRequest: boolean = False);
+    procedure ExitPassthrough;
     procedure UpdatePassthrough;
-    procedure ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
+    procedure SharedFullScreenSize(out ADeskW, ADeskH, ACols, ARows: integer);
+    procedure ResetRemotePreviewState;
+    procedure ShowRemotePreviewWindow(APane: integer);
+    procedure ClearRemotePreview(APane: integer; ARestoreWindow: boolean);
+    procedure SettleRemotePreviewsForOwnedAction(APane: integer);
+    function LockRemoteLayout(APane: integer): boolean;
+    procedure ApplyRemoteLayoutPreviewEv(APane: integer;
+      const AData: TByteArray);
+    procedure PrepareRemotePreviewsForLayout(ALockedPanes: LongWord);
+    procedure ReapplyRemotePreviewsAfterLayout(ALockedPanes: LongWord);
+    procedure ResetRemoteZoomState;
+    procedure BeginRemoteZoom(ACommand: word; AInfoPtr: Pointer);
+    procedure FinishRemoteZoomAnimation;
+    procedure TryCommitHostResize;
+    procedure ZoomAnimate(AWindow: PTermWindow;
+      AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
     function ComputeLayoutHash: string;
-    procedure ApplyRemoteLayoutEv(const AData: TByteArray);
+    procedure ApplyRemoteLayoutEv(const AData: TByteArray;
+      APeer: boolean = False; ALocalPreservePane: integer = -1);
+    procedure ApplyRemoteHostSummaryEv(const AData: TByteArray);
     procedure ApplyRemoteKillPane(APane: integer);
     procedure ApplyRemoteNewPane(const AData: TByteArray);
     procedure ApplyRemoteResize(APane: integer; const AData: TByteArray);
@@ -303,6 +382,7 @@ type
     procedure DoProfileManage;
     procedure StopRuntime;
     procedure ReleaseRuntime;
+    procedure PrepareDetachedServerChild;
     function NewWindowRect(ASysIdx: integer): Objects.TRect;
     procedure CreateWindowForPane(i: integer; const ATitle: string;
       const ARect: Objects.TRect);
@@ -343,6 +423,9 @@ type
     function HandleCopyKey(var Event: TEvent): boolean;
     procedure DrainPaneOsc52(i: integer; AAlreadyPassed: boolean);
     function AttachRemoteSession(const APath: string): boolean;
+    // server-always promotion keeps the already final local windows/screens;
+    // it only adopts the newborn daemon transport and its latest snapshots.
+    function AttachPromotedSession(const APath: string): boolean;
     // why the last attach attempt failed (empty = generic/none)
     // server-always: converts the freshly built local workspace into a
     // daemon session and attaches to it as a client
@@ -490,7 +573,13 @@ begin
   // an oracle can match by coincidence and resurrect a stale glyph. Drop it;
   // every view repopulates it as it draws.
   RichInvalidate;
-  ClearScreen;
+  // ClearScreen belongs to FPC's console driver, not our renderer. On Unix it
+  // writes ESC[H ESC[J immediately, bypassing SuppressFlush and DECSET 2026.
+  // During the atomic F5 return that exposed a physically blank terminal
+  // between the restored IDE and its final repaint. The poisoned old frame is
+  // already sufficient to overwrite every cell once flushing resumes.
+  if not SuppressFlush then
+    ClearScreen;
 end;
 
 // Incremental full-tree repaint. TView.DrawView redraws every subview
@@ -765,8 +854,7 @@ procedure TTermView.Draw;
 var
   B: TDrawBuffer;
   x, y, w, h: integer;
-  ViewX, ViewY, SourceX, SourceY, MaxViewX, MaxViewY: integer;
-  FollowX, FollowY: integer;
+  ViewX, ViewY, SourceX, SourceY: integer;
   cell: TCell;
   fg, bg: byte;
   App: PSuperApp;
@@ -933,54 +1021,10 @@ begin
   end;
   BlankWord := RenderAttr(App^.Scr[PaneIdx].Attr);
   Scrolled := App^.Scr[PaneIdx].ViewOffset > 0;
-  ViewX := App^.PaneViewX[PaneIdx];
-  ViewY := App^.PaneViewY[PaneIdx];
-  MaxViewX := App^.Scr[PaneIdx].Width - w;
-  MaxViewY := App^.Scr[PaneIdx].Height - h;
-  if MaxViewX < 0 then MaxViewX := 0;
-  if MaxViewY < 0 then MaxViewY := 0;
-  if ViewX < 0 then ViewX := 0;
-  if ViewY < 0 then ViewY := 0;
-  if ViewX > MaxViewX then ViewX := MaxViewX;
-  if ViewY > MaxViewY then ViewY := MaxViewY;
-  FollowX := App^.Scr[PaneIdx].CursorX;
-  FollowY := App^.Scr[PaneIdx].CursorY;
-  // Copy mode has its own cursor in absolute history coordinates. Follow it
-  // through the same private viewport, including while browsing scrollback;
-  // otherwise keyboard selection can walk outside a small client's window.
-  if App^.CopyMode and (App^.CopyPane = PaneIdx) then
-  begin
-    FollowX := App^.CopyCursorCol;
-    FollowY := App^.CopyCursorRow -
-      (App^.Scr[PaneIdx].HistoryRows - App^.Scr[PaneIdx].ViewOffset);
-    if FollowX < 0 then FollowX := 0;
-    if FollowX >= App^.Scr[PaneIdx].Width then
-      FollowX := App^.Scr[PaneIdx].Width - 1;
-    if FollowY < 0 then FollowY := 0;
-    if FollowY >= App^.Scr[PaneIdx].Height then
-      FollowY := App^.Scr[PaneIdx].Height - 1;
-  end;
-  // A small client follows the active cursor inside the canonical screen.
-  // The offset is local to this UI; the PTY, daemon and other clients never
-  // see it. Ordinary history browsing keeps the current viewport stable.
-  if (not Scrolled) or
-     (App^.CopyMode and (App^.CopyPane = PaneIdx)) then
-  begin
-    if FollowX < ViewX then
-      ViewX := FollowX
-    else if FollowX >= ViewX + w then
-      ViewX := FollowX - w + 1;
-    if FollowY < ViewY then
-      ViewY := FollowY
-    else if FollowY >= ViewY + h then
-      ViewY := FollowY - h + 1;
-    if ViewX < 0 then ViewX := 0;
-    if ViewY < 0 then ViewY := 0;
-    if ViewX > MaxViewX then ViewX := MaxViewX;
-    if ViewY > MaxViewY then ViewY := MaxViewY;
-  end;
-  App^.PaneViewX[PaneIdx] := ViewX;
-  App^.PaneViewY[PaneIdx] := ViewY;
+  // There is no client-local pane viewport. A smaller host clips the common
+  // desktop at its outer edge; it never pans an individual pane to its cursor.
+  ViewX := 0;
+  ViewY := 0;
   cx := App^.Scr[PaneIdx].CursorX - ViewX;
   cy := App^.Scr[PaneIdx].CursorY - ViewY;
   // DECSCUSR 2/4/6 = steady style (no blink); 0/1/3/5 blinks
@@ -1346,10 +1390,17 @@ procedure TTermFrame.Draw;
 var
   B: TDrawBuffer;
   Color: byte;
-  W, i, xo: integer;
+  W, i, xo, WindowNumber, SavedNumber: integer;
   T: string;
+  App: PSuperApp;
+  Locked: boolean;
 begin
   B := Default(TDrawBuffer);
+  App := PSuperApp(Application);
+  Locked := (App <> nil) and App^.RemoteMode and (Owner <> nil) and
+    (PTermWindow(Owner)^.PaneIdx >= 0) and
+    ((App^.RemoteLockedPanes and
+      (LongWord(1) shl PTermWindow(Owner)^.PaneIdx)) <> 0);
   // minimized icon: frame and title in black (the passive gray is
   // unreadable on light blue); custom drawing of the two rows
   if (Owner <> nil) and PTermWindow(Owner)^.Minimized then
@@ -1362,25 +1413,86 @@ begin
     T := '';
     if PTermWindow(Owner)^.Title <> nil then
       T := PTermWindow(Owner)^.Title^;
+    if Locked then
+      T := ' LOCK ' + T;
     if Length(T) > W - 6 then
       T := Copy(T, 1, W - 6);
     T := ' ' + T + ' ';
-    MoveChar(B, #196, $10, W);
-    B[0] := (B[0] and $FF00) or word(byte(#218));
-    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#191));
+    if Locked then
+      MoveChar(B, #176, $10, W)
+    else
+      MoveChar(B, #196, $10, W);
+    if Locked then
+    begin
+      B[0] := (B[0] and $FF00) or word(byte(#177));
+      B[W - 1] := (B[W - 1] and $FF00) or word(byte(#177));
+    end
+    else
+    begin
+      B[0] := (B[0] and $FF00) or word(byte(#218));
+      B[W - 1] := (B[W - 1] and $FF00) or word(byte(#191));
+    end;
     xo := (W - Length(T)) div 2;
     for i := 1 to Length(T) do
       B[xo + i - 1] := (B[xo + i - 1] and $FF00) or word(byte(T[i]));
     WriteLine(0, 0, W, 1, B);
-    MoveChar(B, #196, $10, W);
-    B[0] := (B[0] and $FF00) or word(byte(#192));
-    B[W - 1] := (B[W - 1] and $FF00) or word(byte(#217));
+    if Locked then
+      MoveChar(B, #176, $10, W)
+    else
+      MoveChar(B, #196, $10, W);
+    if Locked then
+    begin
+      B[0] := (B[0] and $FF00) or word(byte(#177));
+      B[W - 1] := (B[W - 1] and $FF00) or word(byte(#177));
+    end
+    else
+    begin
+      B[0] := (B[0] and $FF00) or word(byte(#192));
+      B[W - 1] := (B[W - 1] and $FF00) or word(byte(#217));
+    end;
     WriteLine(0, 1, W, 1, B);
     Exit;
   end;
-  inherited Draw;
-  // FreeVision has close and zoom buttons but no minimize button. Keep the
-  // minimize control in the same title-bar language as the native controls.
+  WindowNumber := wnNoNumber;
+  if Owner <> nil then
+    WindowNumber := PTermWindow(Owner)^.Number;
+  // FreeVision 3.2.2 intentionally draws a window number only when it is
+  // below 10 (vendor/fv322/views.pas:TFrame.Draw).  Let it reserve exactly
+  // the normal number/title space for panes 10..16 by drawing a temporary
+  // one-digit placeholder, then replace that cell plus its right separator
+  // with the real two digits below.  The native close/zoom frame code remains
+  // the single source of truth.
+  if (WindowNumber >= 10) and (WindowNumber <= MAX_PANES) and
+     (Size.X >= 14) then
+  begin
+    SavedNumber := PTermWindow(Owner)^.Number;
+    PTermWindow(Owner)^.Number := 1;
+    try
+      inherited Draw;
+    finally
+      PTermWindow(Owner)^.Number := SavedNumber;
+    end;
+  end
+  else
+    inherited Draw;
+  if (WindowNumber >= 10) and (WindowNumber <= MAX_PANES) and
+     (Size.X >= 14) then
+  begin
+    if State and sfDragging <> 0 then
+      Color := byte(GetColor($0505))
+    else if State and sfActive = 0 then
+      Color := byte(GetColor($0101))
+    else
+      Color := byte(GetColor($0503));
+    T := IntToStr(WindowNumber);
+    MoveChar(B, ' ', Color, 2);
+    B[0] := (B[0] and $FF00) or word(byte(T[1]));
+    B[1] := (B[1] and $FF00) or word(byte(T[2]));
+    WriteLine(Size.X - 7, 0, 2, 1, B);
+  end;
+  // FreeVision has close and zoom buttons but no minimize button. Restore the
+  // original SuperTerm control in its traditional slot, immediately before
+  // the window number/zoom controls on the right.
   if (Owner <> nil) and (State and sfActive <> 0) and (Size.X >= 14) then
   begin
     Color := byte(GetColor($0503));
@@ -1389,6 +1501,36 @@ begin
     B[1] := (B[1] and $FF00) or word('-');
     B[2] := (B[2] and $FF00) or word(']');
     WriteLine(Size.X - 10, 0, 3, 1, B);
+  end;
+  // A lock owned by another client is visible in the border itself. Preserve
+  // the title/buttons on the top row; shade both sides, corners and the base.
+  if Locked and (Size.X >= 2) and (Size.Y >= 2) then
+  begin
+    W := Size.X;
+    if W > MaxViewWidth then
+      W := MaxViewWidth;
+    Color := byte(GetColor($0503));
+    MoveChar(B, #176, Color, W);
+    WriteLine(0, Size.Y - 1, W, 1, B);
+    MoveChar(B, #177, Color, 1);
+    WriteLine(0, 0, 1, 1, B);
+    WriteLine(W - 1, 0, 1, 1, B);
+    for i := 1 to Size.Y - 2 do
+    begin
+      WriteLine(0, i, 1, 1, B);
+      WriteLine(W - 1, i, 1, 1, B);
+    end;
+    if Size.Y >= 6 then
+    begin
+      T := 'LOCK';
+      xo := (Size.Y - Length(T)) div 2;
+      if xo < 1 then xo := 1;
+      for i := 1 to Length(T) do
+      begin
+        MoveChar(B, T[i], Color, 1);
+        WriteLine(0, xo + i - 1, 1, 1, B);
+      end;
+    end;
   end;
 end;
 
@@ -1408,20 +1550,18 @@ begin
       Exit;
     end;
     if (App <> nil) and (Owner <> nil) then
-      App^.FocusPane(PTermWindow(Owner)^.PaneIdx);
-    Mouse := Default(Objects.TPoint);
-    MakeLocal(Event.Where, Mouse);
-    if (State and sfActive <> 0) and (Mouse.Y = 0) and
-       (Size.X >= 14) and (Mouse.X >= Size.X - 10) and
-       (Mouse.X <= Size.X - 8) then
     begin
-      Event.What := evCommand;
-      Event.Command := cmWindowMinimize;
-      Event.InfoPtr := Owner;
-      PutEvent(Event);
-      ClearEvent(Event);
-      DrawView;
-      Exit;
+      Mouse := Default(Objects.TPoint);
+      MakeLocal(Event.Where, Mouse);
+      if (State and sfActive <> 0) and (Size.X >= 14) and
+         (Mouse.Y = 0) and (Mouse.X >= Size.X - 10) and
+         (Mouse.X <= Size.X - 8) then
+      begin
+        App^.MinimizeWindow(PTermWindow(Owner)^.PaneIdx);
+        ClearEvent(Event);
+        Exit;
+      end;
+      App^.FocusPane(PTermWindow(Owner)^.PaneIdx);
     end;
   end;
   inherited HandleEvent(Event);
@@ -1471,6 +1611,11 @@ begin
   Minimized := False;
   Zoomed := False;
   FullScreen := False;
+  TitleClickTick := 0;
+  TitleClickX := 0;
+  TitleClickArmed := False;
+  PreviewGestureId := 0;
+  PreviewSeq := 0;
   State := State and (not sfShadow);     // no shadow: exact tiling
   R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
   Term := New(PTermView, Init(R, APane));
@@ -1488,6 +1633,18 @@ begin
   SBShown := False;
 end;
 
+function TTermWindow.ActiveFrameAttr: byte;
+begin
+  // Keep this in lockstep with vendor/fv322/views.pas:TFrame.Draw. Calling
+  // GetColor on the window would skip CFrame and therefore address a
+  // different palette entry. Frame is installed by TWindow.Init/InitFrame;
+  // the neutral fallback only covers a partially constructed window.
+  if Frame <> nil then
+    Result := byte(Frame^.GetColor($0503))
+  else
+    Result := $07;
+end;
+
 procedure TTermWindow.SetPaneIdx(APane: integer);
 begin
   PaneIdx := APane;
@@ -1496,6 +1653,33 @@ begin
     Term^.PaneIdx := APane;
   if SB <> nil then
     SB^.PaneIdx := APane;
+end;
+
+procedure TTermWindow.SendGesturePreview(AForce: boolean);
+var
+  App: PSuperApp;
+  R: Objects.TRect;
+  Op: byte;
+begin
+  App := PSuperApp(Application);
+  if (PreviewGestureId = 0) or (App = nil) or (not App^.RemoteMode) or
+     (App^.Remote = nil) or (not App^.Remote.Connected) or
+     ((not AForce) and (not GetState(sfDragging))) then
+    Exit;
+  R := Default(Objects.TRect);
+  GetBounds(R);
+  Inc(PreviewSeq);
+  if App^.Cfg.DragContent then
+    Op := PREVIEW_OP_BOUNDS
+  else
+    Op := PREVIEW_OP_WIREFRAME;
+  // SendLayoutPreview owns the one 16 ms rate limiter. Keeping a second
+  // timestamp here caused starvation with a steady 100 Hz mouse: every
+  // locally coalesced call moved this deadline although no frame was sent,
+  // so observers saw only the first point and the final commit.
+  App^.Remote.SendLayoutPreview(PaneIdx, PreviewGestureId,
+    App^.Remote.LayoutRevision, PreviewSeq, Op, R.A.X, R.A.Y,
+    R.B.X - R.A.X, R.B.Y - R.A.Y, AForce);
 end;
 
 procedure TTermWindow.SyncScrollBar(AValueOnly: boolean);
@@ -1534,10 +1718,40 @@ begin
   SB^.Syncing := False;
 end;
 
+// Restore FreeVision's current view without changing Z order. TView.Select
+// normally routes a top-selectable window through MakeFirst; temporarily
+// removing that flag exercises TGroup.SetCurrent instead, preserving all of
+// its selected/focused broadcasts and invariants through the public API.
+procedure RestoreDesktopCurrent(AView: PView);
+var
+  SavedOptions: Word;
+begin
+  if (Desktop = nil) or (AView = nil) or
+     (Desktop^.Current = AView) then
+    Exit;
+  SavedOptions := AView^.Options;
+  AView^.Options := SavedOptions and (not ofTopSelect);
+  try
+    AView^.Select;
+  finally
+    AView^.Options := SavedOptions;
+  end;
+end;
+
 procedure TTermWindow.HandleEvent(var Event: TEvent);
+const
+  // KDE's normal physical double-click is commonly around half a second.
+  // Measure from completion of click one, not its pre-lock mouse-down.
+  TITLE_DOUBLE_CLICK_MS = 650;
 var
   App: PSuperApp;
-  Dragging: boolean;
+  Dragging, MinimizeHit, ZoomHit, CloseHit, FrameControlHit: boolean;
+  TitlePress, TitleWasActive, TitleDouble, BoundsChanged: boolean;
+  LayoutLocked, WireframeRelease, SavedSuppress: boolean;
+  SavedCurrent: PView;
+  Mouse: Objects.TPoint;
+  BeforeBounds, AfterBounds: Objects.TRect;
+  NowTick: QWord;
 begin
   // a click on the minimized icon restores it, before the vendor
   // window selection swallows the event
@@ -1555,35 +1769,203 @@ begin
   // flagging it around the inherited call covers the whole gesture. Only a
   // press on the FRAME drags -- a click inside the pane must not blank it.
   App := PSuperApp(Application);
-  Dragging := (App <> nil) and (not App^.Cfg.DragContent) and (not Minimized) and
-    (((Event.What = evMouseDown) and (Term <> nil) and
+  MinimizeHit := False;
+  ZoomHit := False;
+  CloseHit := False;
+  TitlePress := False;
+  TitleWasActive := False;
+  TitleDouble := False;
+  LayoutLocked := False;
+  Mouse := Default(Objects.TPoint);
+  if Event.What = evMouseDown then
+  begin
+    MakeLocal(Event.Where, Mouse);
+    MinimizeHit := (Size.X >= 14) and (Mouse.Y = 0) and
+      (Mouse.X >= Size.X - 10) and (Mouse.X <= Size.X - 8);
+    CloseHit := (Mouse.Y = 0) and (Mouse.X >= 2) and (Mouse.X <= 4);
+    TitlePress := (Mouse.Y = 0) and (not MinimizeHit) and
+      (not CloseHit) and
+      (not ((Mouse.X >= Size.X - 5) and (Mouse.X <= Size.X - 3)));
+    TitleWasActive := State and sfActive <> 0;
+    if TitlePress then
+    begin
+      NowTick := GetTickCount64;
+      if TitleWasActive and TitleClickArmed and
+         (NowTick >= TitleClickTick) and
+         (NowTick - TitleClickTick <= TITLE_DOUBLE_CLICK_MS) and
+         (Abs(Mouse.X - TitleClickX) <= 1) then
+      begin
+        // Preserve a native Event.Double, or supply the one FreeVision lost
+        // while the first remote click was completing. Consume the pair so a
+        // third click starts a new gesture instead of zooming a second time.
+        Event.Double := True;
+        TitleClickArmed := False;
+      end
+      else
+      begin
+        if not TitleWasActive then
+          TitleClickArmed := False;
+        if TitleClickArmed and
+           ((NowTick < TitleClickTick) or
+            (NowTick - TitleClickTick > TITLE_DOUBLE_CLICK_MS) or
+            (Abs(Mouse.X - TitleClickX) > 1)) then
+          TitleClickArmed := False;
+        // A native double whose first click merely focused an inactive pane
+        // is not a title double-click. That second click becomes click one;
+        // the following click may then zoom, exactly like a desktop WM.
+        if Event.Double and (not TitleClickArmed) then
+          Event.Double := False;
+      end;
+      TitleDouble := Event.Double;
+    end
+    else
+      // A click on pane contents or a title control breaks a pending pair.
+      // In particular, returning to this title after focusing another view
+      // must never turn one new click into a stale double-click.
+      TitleClickArmed := False;
+    // These are FreeVision's native title controls (see
+    // vendor/fv322/views.pas, TFrame.HandleEvent).  A double-click on the
+    // active title is zoom too.  None of them is a move gesture.
+    ZoomHit := (Mouse.Y = 0) and
+      (((Mouse.X >= Size.X - 5) and (Mouse.X <= Size.X - 3)) or
+       Event.Double);
+  end;
+  FrameControlHit := MinimizeHit or ZoomHit or CloseHit;
+  Dragging := (App <> nil) and (not Minimized) and
+    (((Event.What = evMouseDown) and (not FrameControlHit) and
+      (Term <> nil) and
       MouseInView(Event.Where) and (not Term^.MouseInView(Event.Where)) and
       ((SB = nil) or (not SBShown) or (not SB^.MouseInView(Event.Where)))) or
      ((Event.What = evCommand) and (Event.Command = cmResize)));
   if Dragging then
   begin
+    // Preview identifiers belong to exactly one acquired pane lease. Never
+    // let an identifier from a completed/cancelled modal loop leak into the
+    // next physical gesture.
+    PreviewGestureId := 0;
+    PreviewSeq := 0;
     if DebugActive then DebugLog(Format('drag: ARMED pane=%d',[PaneIdx]));
-    OutlineArmed := PaneIdx;   // armed only; hidden later, see ChangeBounds
+    // A title drag focuses its window at mouse-down. Focus is deliberately
+    // lock-free and shared, so keep it independent from whether geometry
+    // ownership is granted below.
+    if App <> nil then
+      App^.FocusPane(PaneIdx);
+    if (App <> nil) and App^.RemoteMode and (App^.Remote <> nil) and
+       App^.Remote.Connected then
+      // Acquire before the vendor enters its modal move/resize loop. The
+      // daemon remains fully event-driven; only this pane's geometry is owned.
+      if not App^.LockRemoteLayout(PaneIdx) then
+      begin
+        ClearEvent(Event);
+        Exit;
+      end
+      else
+      begin
+        LayoutLocked := True;
+        PreviewGestureId := App^.Remote.NewPreviewId;
+      end;
+    // LockRemoteLayout first restores any preview already rendered by the
+    // pane's previous owner. Capture the real canonical starting rectangle,
+    // never that superseded cosmetic position.
+    BeforeBounds := Default(Objects.TRect);
+    GetBounds(BeforeBounds);
+    if not App^.Cfg.DragContent then
+      OutlineArmed := PaneIdx; // armed only; hidden later, see ChangeBounds
   end;
   inherited HandleEvent(Event);
   if Dragging then
   begin
-    OutlineArmed := -1;
-    if OutlineOn then
-    begin
-      // forget the ring, then Show: the regular (rich-aware) repaint puts the
-      // real colours back. Repainting it by hand would restore the text but
-      // not the attributes.
-      OutlineInvalidate(OutlineX1, OutlineY1, OutlineX2, OutlineY2);
-      OutlineOn := False;
-      Show;                    // released: the window comes back, moved
+    AfterBounds := Default(Objects.TRect);
+    GetBounds(AfterBounds);
+    BoundsChanged :=
+      (BeforeBounds.A.X <> AfterBounds.A.X) or
+      (BeforeBounds.A.Y <> AfterBounds.A.Y) or
+      (BeforeBounds.B.X <> AfterBounds.B.X) or
+      (BeforeBounds.B.Y <> AfterBounds.B.Y);
+    WireframeRelease := (App <> nil) and (not App^.Cfg.DragContent) and
+      OutlineOn;
+    SavedCurrent := nil;
+    if WireframeRelease and (Desktop <> nil) then
+      SavedCurrent := Desktop^.Current;
+    SavedSuppress := SuppressFlush;
+    if WireframeRelease then
+      SuppressFlush := True;
+    try
+      if (App <> nil) and (not App^.Cfg.DragContent) then
+      begin
+        OutlineArmed := -1;
+        if OutlineOn then
+        begin
+          // Clear the ring and restore the real window inside the same
+          // suppressed transaction.  Otherwise Show publishes the moved
+          // window while ResetCurrent still has the fallback pane selected.
+          TransientOutlineClear(PaneIdx);
+          OutlineOn := False;
+          Show;
+          // Show calls ResetCurrent after drawing. Put back the exact local
+          // current view which existed at mouse-up: DragView pumps Idle, so a
+          // different client may legitimately have focused another pane
+          // since this actor started the gesture.
+          RestoreDesktopCurrent(SavedCurrent);
+        end;
+      end;
+    finally
+      SuppressFlush := SavedSuppress;
     end;
+    if WireframeRelease and (not SavedSuppress) then
+      UpdateScreen(False);
+    if TitlePress and TitleWasActive and (not TitleDouble) and
+       (not BoundsChanged) then
+    begin
+      TitleClickTick := GetTickCount64;
+      TitleClickX := Mouse.X;
+      TitleClickArmed := True;
+    end
+    else if BoundsChanged or (not TitlePress) or (not TitleWasActive) then
+      TitleClickArmed := False;
+    if (App <> nil) and App^.RemoteMode then
+    begin
+      if BoundsChanged then
+      begin
+        // The modal DragView loop has consumed mouse-up by now. Publish its
+        // exact last visual rectangle before the reliable canonical commit;
+        // socket FIFO order makes observers move preview -> final without a
+        // jump through the old geometry.
+        if LayoutLocked then
+          SendGesturePreview(True);
+        App^.RemoteGeometryDirty := True;
+        App^.RemoteGeomDirtyPanes[PaneIdx] := True;
+        // SyncRemoteLayout repeats the idempotent lock and sends the final
+        // bounds.  That commit releases ownership in the daemon, so socket
+        // ordering keeps it continuous throughout the modal gesture.
+        App^.SyncRemoteLayout(PaneIdx);
+      end
+      else if LayoutLocked and (App^.Remote <> nil) and
+              App^.Remote.Connected then
+        // A click without movement is focus/double-click input, not a layout
+        // revision. Release its gesture lease without resending unchanged
+        // geometry; this also lets click two reach the detector promptly.
+        App^.Remote.UnlockLayout(PaneIdx);
+    end;
+    PreviewGestureId := 0;
+    PreviewSeq := 0;
   end;
 end;
 
 procedure TTermWindow.SizeLimits(var Min, Max: Objects.TPoint);
+var
+  App: PSuperApp;
 begin
   inherited SizeLimits(Min, Max);
+  App := PSuperApp(Application);
+  if (App <> nil) and App^.RemoteMode and
+     (App^.RemoteDeskW > 0) and (App^.RemoteDeskH > 0) then
+  begin
+    // Every viewer uses the daemon desktop as its sizing limit. A physically
+    // smaller terminal clips these bounds; it never substitutes its own.
+    Max.X := App^.RemoteDeskW;
+    Max.Y := App^.RemoteDeskH;
+  end;
   if Minimized then
   begin
     // the minimized icon is a small 2-row bar
@@ -1605,60 +1987,105 @@ procedure TTermWindow.ChangeBounds(var Bounds: Objects.TRect);
 var
   R: Objects.TRect;
   App: PSuperApp;
+  SavedCurrent: PView;
   pw, ph: integer;
   gx1, gy1, gx2, gy2: integer;
+  FrameAttr: byte;
+  PreviewVisualChanged, FirstWireStep, SavedSuppress: boolean;
 begin
-  inherited ChangeBounds(Bounds);
-  // Wireframe drag, step by step. On the first step (DragView has just set
-  // sfDragging) hide the WHOLE window: the frame paints its interior full
-  // width (vendor/fv322/views.pas:2935-2939) and a visible window keeps
-  // clipping the desktop underneath, so nothing else can make the interior
-  // see-through. Hidden, FreeVision repaints the desktop and the other
-  // windows normally and VideoBuf holds the true screen; the outline is then
-  // painted on top of it and erased straight back from the buffer.
-  if (OutlineArmed = PaneIdx) and (Desktop <> nil) and GetState(sfDragging) then
-  begin
-    gx1 := Desktop^.Origin.X + Bounds.A.X;
-    gy1 := Desktop^.Origin.Y + Bounds.A.Y;
-    gx2 := Desktop^.Origin.X + Bounds.B.X - 1;
-    gy2 := Desktop^.Origin.Y + Bounds.B.Y - 1;
-    if DebugActive then DebugLog(Format('drag: step pane=%d rect=%d,%d..%d,%d on=%d',[PaneIdx,gx1,gy1,gx2,gy2,Ord(OutlineOn)]));
-    if not OutlineOn then
+  PreviewVisualChanged := False;
+  SavedCurrent := nil;
+  FirstWireStep := (OutlineArmed = PaneIdx) and (Desktop <> nil) and
+    GetState(sfDragging) and (not OutlineOn);
+  SavedSuppress := SuppressFlush;
+  if FirstWireStep then
+    SuppressFlush := True;
+  try
+    if FirstWireStep then
     begin
-      Hide;
-      OutlineOn := True;
-      OutlineX1 := gx1; OutlineY1 := gy1;
-      OutlineX2 := gx2; OutlineY2 := gy2;
-      OutlinePaint(gx1, gy1, gx2, gy2, $1F);
-    end
-    else if ((gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
-             (gx2 <> OutlineX2) or (gy2 <> OutlineY2)) and
-            (not InputPending) then
+      // DragView has already taken ownership of the modal mouse gesture
+      // before calling ChangeBounds (vendor/fv322/views.pas). Hide the old
+      // rectangle before applying the first proposed one. TGroup.Lock alone
+      // is not a physical-output barrier, hence the enclosing SuppressFlush.
+      SavedCurrent := Desktop^.Current;
+      Desktop^.Lock;
+      try
+        Hide;
+        // DragView pumps Idle while its mouse loop is active, so another
+        // client may have supplied a newer shared focus. Preserve exactly the
+        // Current that existed at this step; never hard-code the actor pane.
+        RestoreDesktopCurrent(SavedCurrent);
+      finally
+        Desktop^.Unlock;
+      end;
+    end;
+    inherited ChangeBounds(Bounds);
+    // Wireframe drag, step by step. The real window stays hidden: VideoBuf
+    // therefore contains the actual uncovered desktop and the renderer owns
+    // the transient ring above it.
+    if (OutlineArmed = PaneIdx) and (Desktop <> nil) and
+       GetState(sfDragging) then
     begin
-      // another mouse event is already queued: this position is about to be
-      // superseded, so do not spend a round trip drawing it. OutlineX* still
-      // names what is ON SCREEN, so the next move goes straight from there to
-      // the newest position -- the intermediate steps cost nothing.
-      // Touch ONLY the difference between the two rings: give back the cells
-      // the frame leaves (invalidated, so the rich renderer repaints them with
-      // their real colours) and draw only the ones it newly occupies. A
-      // one-cell step then costs a sliver, not two whole perimeters.
-      OutlineLeaveDiff(OutlineX1, OutlineY1, OutlineX2, OutlineY2,
-                       gx1, gy1, gx2, gy2);
-      UpdateScreen(False);
-      OutlineEnterDiff(gx1, gy1, gx2, gy2,
-                       OutlineX1, OutlineY1, OutlineX2, OutlineY2, $1F);
-      OutlineX1 := gx1; OutlineY1 := gy1;
-      OutlineX2 := gx2; OutlineY2 := gy2;
+      FrameAttr := ActiveFrameAttr;
+      gx1 := Desktop^.Origin.X + Bounds.A.X;
+      gy1 := Desktop^.Origin.Y + Bounds.A.Y;
+      gx2 := Desktop^.Origin.X + Bounds.B.X - 1;
+      gy2 := Desktop^.Origin.Y + Bounds.B.Y - 1;
+      if DebugActive then
+        DebugLog(Format('drag: step pane=%d rect=%d,%d..%d,%d on=%d',
+          [PaneIdx, gx1, gy1, gx2, gy2, Ord(OutlineOn)]));
+      if FirstWireStep or
+         (((gx1 <> OutlineX1) or (gy1 <> OutlineY1) or
+           (gx2 <> OutlineX2) or (gy2 <> OutlineY2)) and
+          (not InputPending)) then
+      begin
+        // The compositor invalidates only the old/new rings plus wide-glyph
+        // partners, so a one-cell step is a small delta rather than two full
+        // perimeters.
+        TransientOutlineSet(PaneIdx, gx1, gy1, gx2, gy2, FrameAttr);
+        if FirstWireStep then
+          OutlineOn := True;
+        OutlineX1 := gx1; OutlineY1 := gy1;
+        OutlineX2 := gx2; OutlineY2 := gy2;
+        PreviewVisualChanged := True;
+      end;
+    end;
+    if Term <> nil then
+    begin
+      R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1,
+        Bounds.B.Y - Bounds.A.Y - 1);
+      if (R.B.X > R.A.X) and (R.B.Y > R.A.Y) then
+        Term^.Locate(R);
+    end;
+  finally
+    if FirstWireStep then
+    begin
+      try
+        // If FreeVision rejected the proposed bounds or a drawing operation
+        // raised before the compositor accepted its ring, do not strand a
+        // hidden window behind a logically inactive gesture.
+        if not OutlineOn then
+        begin
+          TransientOutlineClear(PaneIdx);
+          Show;
+          RestoreDesktopCurrent(SavedCurrent);
+        end;
+      finally
+        SuppressFlush := SavedSuppress;
+        if not SavedSuppress then
+          UpdateScreen(False);
+      end;
     end;
   end;
-  if Term <> nil then
-  begin
-    R.Assign(1, 1, Bounds.B.X - Bounds.A.X - 1, Bounds.B.Y - Bounds.A.Y - 1);
-    if (R.B.X > R.A.X) and (R.B.Y > R.A.Y) then
-      Term^.Locate(R);
-  end;
+  // Never hold a visual transaction across socket I/O or PTY bookkeeping.
+  // A slow peer may delay its preview, but cannot freeze an already-built
+  // local frame behind SuppressFlush.
+  if PreviewVisualChanged and (not FirstWireStep) then
+    UpdateScreen(False);
   App := PSuperApp(Application);
+  if (App <> nil) and App^.RemoteMode and
+     (App^.Cfg.DragContent or PreviewVisualChanged) then
+    SendGesturePreview(False);
   if (App <> nil) and App^.RemoteMode and App^.RemoteAttachSettling then
     Exit;   // attach does ONE final pass with the definitive geometry
   if (App <> nil) and (App^.PassPane = PaneIdx) then
@@ -1695,6 +2122,15 @@ begin
   Zoomed := not WasZoomed;
   if WasZoomed then
     FullScreen := False;   // back to a window: nothing owns the terminal
+  if (App <> nil) and App^.RemoteMode and (not App^.RemoteAttachSettling) then
+  begin
+    App^.RemoteGeometryDirty := True;
+    for i := 0 to MAX_PANES - 1 do
+      if (App^.Win[i] <> nil) and (i < Length(App^.RemoteGeom)) and
+         ((App^.RemoteGeom[i].Zoomed <> App^.Win[i]^.Zoomed) or
+          (App^.RemoteGeom[i].FullScreen <> App^.Win[i]^.FullScreen)) then
+        App^.RemoteGeomDirtyPanes[i] := True;
+  end;
 end;
 
 procedure TTermWindow.Close;
@@ -1817,6 +2253,7 @@ begin
     ReqRows[i] := 0;
     PaneViewX[i] := 0;
     PaneViewY[i] := 0;
+    RemoteGeomDirtyPanes[i] := False;
   end;
   SyncTerminalSize;
   for i := 0 to MAX_PANES - 1 do
@@ -1831,19 +2268,40 @@ begin
   DetachRequested := False;
   PrefixPending := False;
   Remote := nil;
-  RemoteResizePolicy := rpSession;
   RemoteLayoutHash := '';
+  RemoteGeom := nil;
+  RemoteDeskW := 0;
+  RemoteDeskH := 0;
+  RemoteClientCount := 0;
+  RemoteMinHostW := 0;
+  RemoteMinHostH := 0;
+  RemoteHostSizesMatch := False;
+  RemoteHostSummaryValid := False;
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
+  RemoteHostSizeArmed := False;
+  HostResizePending := False;
+  HostResizeInFlight := False;
+  PendingHostDeskW := 0;
+  PendingHostDeskH := 0;
+  InFlightHostDeskW := 0;
+  InFlightHostDeskH := 0;
+  HostResizeTick := 0;
+  HostResizeFlightTick := 0;
+  RemoteLockedPanes := 0;
+  RemoteSharedFocus := -1;
+  SharedFullScreenRendered := False;
+  RemoteGeometryDirty := False;
+  RemoteTreeDirty := False;
   CurrentSessionSocket := '';
   RemoteAttachSettling := False;
+  DeferWindowInsert := False;
   PassPane := -1;
   MouseGrabPane := -1;
   MouseGrabButton := MB_NONE;
   HostAnyMotion := False;
   PassReqW := 0;
   PassReqH := 0;
-  PassBlockedPane := -1;
-  PassBlockedW := 0;
-  PassBlockedH := 0;
   PassFilterState := pfsGround;
   PassFilterBuf := '';
   PassFilterLen := 0;
@@ -2018,6 +2476,7 @@ begin
         end;
         if Pin[i].Zoomed and (not Win[i]^.Zoomed) then
           Win[i]^.Zoom;
+        Win[i]^.FullScreen := Pin[i].FullScreen;
       end;
     // minimized ones last: MinimizeWindow manages the focus
     for i := 0 to n - 1 do
@@ -2057,10 +2516,10 @@ begin
          Ord((Remote <> nil) and Remote.Connected)]));
     if (Remote <> nil) and Remote.Connected then
     begin
-      // push the final geometry and ask the daemon to save (Alt-X);
-      // with Alt-Q SkipSave rules and it dies without saving, as locally
+      // The daemon already owns the one live canonical desktop. Exit closes
+      // this viewer; the daemon closes too iff this was the last viewer.
       SyncRemoteLayout;
-      Remote.CloseSession(Cfg.AutoSave and (not SkipSave));
+      Remote.CloseSession;
     end;
     ReleaseRuntime;
   end
@@ -2093,8 +2552,9 @@ procedure TSuperApp.ApplyTerminalSize(ACols, ARows: integer);
 { logs a forced full repaint when the terminal actually changed size }
 var
   Mode: TVideoMode;
-  R: Objects.TRect;
-  NeedVideo, NeedBounds: boolean;
+  R, WR: Objects.TRect;
+  I, SavedPalette, NewDeskW, NewDeskH: integer;
+  NeedVideo, NeedBounds, SavedSuppress, SavedSettling: boolean;
 begin
   if (ACols < 1) or (ARows < 1) then
     Exit;
@@ -2104,26 +2564,107 @@ begin
   NeedBounds := (Size.X <> ACols) or (Size.Y <> ARows);
   if (not NeedVideo) and (not NeedBounds) then
     Exit;
-
-  if NeedVideo then
+  // The physical surface and the canonical desktop are distinct on attach.
+  // Only a later TIOCGWINSZ edge, after RemoteHostSizeArmed, is a shared
+  // resize operation. Coalesce here; Idle commits the latest target after it
+  // has drained all preceding authoritative socket events.
+  if NeedVideo and RemoteMode and RemoteHostSizeArmed and
+     (Remote <> nil) and Remote.Connected and (Lay <> nil) and
+     (Length(RemoteGeom) = Lay.PaneCount) then
   begin
-    Mode.Col := ACols;
-    Mode.Row := ARows;
-    Mode.Color := True;
-    SetScreenVideoMode(Mode);
+    if Remote.SendClientSize(ACols, ARows) then
+      // Until FRAME_HOST_SUMMARY_EV returns in socket order, the previous
+      // comparison does not describe this physical surface any more.
+      RemoteHostSummaryValid := False;
+    NewDeskW := ACols;
+    NewDeskH := ARows;
+    if MenuBar <> nil then Dec(NewDeskH);
+    if StatusLine <> nil then Dec(NewDeskH);
+    if (NewDeskW >= 16) and (NewDeskH >= 6) then
+    begin
+      PendingHostDeskW := NewDeskW;
+      PendingHostDeskH := NewDeskH;
+      HostResizePending := True;
+      HostResizeTick := GetTickCount64;
+    end;
   end;
+  // SetScreenVideoMode itself calls ChangeBounds, and every Locate below can
+  // draw. Keep the whole host-resize as one buffered visual transaction; the
+  // user must never see the temporary apColor selected by InitScreen or two
+  // successive layouts. ResetVideoSurface also avoids its direct ClearScreen
+  // while SuppressFlush is set.
+  SavedSuppress := SuppressFlush;
+  SavedSettling := RemoteAttachSettling;
+  SuppressFlush := True;
+  RemoteAttachSettling := True;
+  try
+    if NeedVideo then
+    begin
+      SavedPalette := AppPalette;
+      Mode.Col := ACols;
+      Mode.Row := ARows;
+      Mode.Color := True;
+      // FreeVision's SetScreenVideoMode calls TProgram.InitScreen, which
+      // detects the terminal as colour-capable and resets AppPalette to
+      // apColor. Capability and the user's selected palette are different
+      // things: restore the logical choice before the final resized draw.
+      try
+        SetScreenVideoMode(Mode);
+      finally
+        AppPalette := SavedPalette;
+      end;
+    end;
 
-  if NeedBounds then
-  begin
-    R.Assign(0, 0, ACols, ARows);
-    ChangeBounds(R);
-  end;
-  if Lay <> nil then
-  begin
-    RelayoutAll;
+    // SetScreenVideoMode already applies these bounds. Re-evaluate instead of
+    // replaying ChangeBounds a second time (the old duplicate resize pass).
+    NeedBounds := (Size.X <> ACols) or (Size.Y <> ARows);
+    if NeedBounds then
+    begin
+      R.Assign(0, 0, ACols, ARows);
+      ChangeBounds(R);
+    end;
+    if Lay <> nil then
+    begin
+      if RemoteMode and (Length(RemoteGeom) = Lay.PaneCount) and
+         (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+      begin
+        RemoteAttachSettling := True;
+        try
+          for I := 0 to Lay.PaneCount - 1 do
+            if (I < MAX_PANES) and (Win[I] <> nil) then
+            begin
+              WR.Assign(RemoteGeom[I].BX, RemoteGeom[I].BY,
+                RemoteGeom[I].BX + RemoteGeom[I].BW,
+                RemoteGeom[I].BY + RemoteGeom[I].BH);
+              if Win[I]^.Minimized then
+                Win[I]^.SavedRect := WR
+              else if RemoteGeom[I].Zoomed then
+              begin
+                Win[I]^.ZoomRect := WR;
+                R.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+                Win[I]^.Locate(R);
+              end
+              else
+                Win[I]^.Locate(WR);
+            end;
+          ArrangeIcons;
+        finally
+          RemoteAttachSettling := False;
+        end;
+      end
+      else
+        RelayoutAll;
+    end;
     ResetVideoSurface;
+    // Build the final frame while writes are held. EffOld remains invalid,
+    // so the post-transaction ReDraw below emits every settled cell once.
     ReDraw;
+  finally
+    RemoteAttachSettling := SavedSettling;
+    SuppressFlush := SavedSuppress;
   end;
+  if not SavedSuppress then
+    ReDraw;
 end;
 
 procedure TSuperApp.SyncTerminalSize;
@@ -2132,6 +2673,145 @@ var
 begin
   if ReadTerminalSize(Cols, Rows) then
     ApplyTerminalSize(Cols, Rows);
+end;
+
+procedure TSuperApp.TryCommitHostResize;
+const
+  RESIZE_DEBOUNCE_MS = 100;
+  RESIZE_ACK_TIMEOUT_MS = 3000;
+var
+  Candidate: TPaneGeomArray;
+  Titles: TStrArray;
+  ChangeMask: LongWord;
+  OldW, OldH, NewW, NewH: integer;
+  I, L, T, R, B, MinW, MinH: integer;
+  Tick: QWord;
+
+  function ScaleEdge(AValue, AOldSize, ANewSize: integer): integer;
+  var
+    N: Int64;
+  begin
+    if AOldSize <= 0 then
+      Exit(AValue);
+    N := Int64(AValue) * ANewSize + AOldSize div 2;
+    Result := N div AOldSize;
+  end;
+
+  procedure ScaleRect(var G: TPaneGeom);
+  begin
+    L := ScaleEdge(G.BX, OldW, NewW);
+    T := ScaleEdge(G.BY, OldH, NewH);
+    R := ScaleEdge(G.BX + G.BW, OldW, NewW);
+    B := ScaleEdge(G.BY + G.BH, OldH, NewH);
+    MinW := 16;
+    MinH := 6;
+    if MinW > NewW then MinW := NewW;
+    if MinH > NewH then MinH := NewH;
+    if L < 0 then L := 0;
+    if T < 0 then T := 0;
+    if R > NewW then R := NewW;
+    if B > NewH then B := NewH;
+    if R - L < MinW then R := L + MinW;
+    if B - T < MinH then B := T + MinH;
+    if R > NewW then
+    begin
+      R := NewW;
+      L := R - MinW;
+    end;
+    if B > NewH then
+    begin
+      B := NewH;
+      T := B - MinH;
+    end;
+    if L < 0 then L := 0;
+    if T < 0 then T := 0;
+    G.BX := L;
+    G.BY := T;
+    G.BW := R - L;
+    G.BH := B - T;
+    if G.FullScreen then
+    begin
+      if (RemoteMinHostW > 0) and (RemoteMinHostH > 0) then
+      begin
+        G.Cols := RemoteMinHostW;
+        G.Rows := RemoteMinHostH;
+      end
+      else
+      begin
+        G.Cols := NewW;
+        G.Rows := NewH + 2;
+      end;
+    end
+    else if G.Zoomed then
+    begin
+      G.Cols := NewW - 2;
+      G.Rows := NewH - 2;
+    end
+    else if not G.Minimized then
+    begin
+      G.Cols := G.BW - 2;
+      G.Rows := G.BH - 2;
+    end;
+    if G.Cols < 4 then G.Cols := 4;
+    if G.Rows < 2 then G.Rows := 2;
+  end;
+
+begin
+  Candidate := nil;
+  Titles := nil;
+  if (not HostResizePending) or (not RemoteMode) or
+     (Remote = nil) or (not Remote.Connected) or (Lay = nil) or
+     (Length(RemoteGeom) <> Lay.PaneCount) then
+    Exit;
+  Tick := GetTickCount64;
+  if HostResizeInFlight then
+  begin
+    if Tick - HostResizeFlightTick < RESIZE_ACK_TIMEOUT_MS then
+      Exit;
+    HostResizeInFlight := False;
+  end;
+  if Tick - HostResizeTick < RESIZE_DEBOUNCE_MS then
+    Exit;
+  NewW := PendingHostDeskW;
+  NewH := PendingHostDeskH;
+  if (NewW < 16) or (NewH < 6) then
+    Exit;
+  if (NewW = RemoteDeskW) and (NewH = RemoteDeskH) then
+  begin
+    HostResizePending := False;
+    Exit;
+  end;
+  if not LockRemoteLayout(-1) then
+  begin
+    HostResizeTick := Tick;
+    Exit;
+  end;
+  OldW := RemoteDeskW;
+  OldH := RemoteDeskH;
+  Candidate := Copy(RemoteGeom, 0, Length(RemoteGeom));
+  SetLength(Titles, Lay.PaneCount);
+  ChangeMask := LAYOUT_CHANGE_DESKTOP;
+  for I := 0 to Lay.PaneCount - 1 do
+  begin
+    ScaleRect(Candidate[I]);
+    if (I < MAX_PANES) and (Win[I] <> nil) then
+      Titles[I] := Win[I]^.GetTitle(80);
+    ChangeMask := ChangeMask or (LongWord(1) shl I);
+  end;
+  if not Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles,
+    Candidate, NewW, NewH, ChangeMask) then
+  begin
+    Remote.UnlockLayout(-1);
+    HostResizeTick := Tick;
+    Exit;
+  end;
+  HostResizeInFlight := True;
+  InFlightHostDeskW := NewW;
+  InFlightHostDeskH := NewH;
+  HostResizeFlightTick := Tick;
+  if DebugActive then
+    DebugLog(Format('host-resize: queued canonical %dx%d panes=%d',
+      [NewW, NewH, Lay.PaneCount]));
 end;
 
 function TSuperApp.PaneCount: integer;
@@ -2304,6 +2984,12 @@ begin
   Desktop^.GetExtent(RD);
   DW := RD.B.X - RD.A.X;
   DH := RD.B.Y - RD.A.Y;
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+  begin
+    DW := RemoteDeskW;
+    DH := RemoteDeskH;
+    RD.Assign(0, 0, DW, DH);
+  end;
   Cols := 0;
   Rows := 0;
   if (ASysIdx >= 0) and (ASysIdx <= High(WClasses)) then
@@ -2341,7 +3027,18 @@ begin
     Exit;
   R := ARect;
   Win[i] := New(PTermWindow, Init(R, ' ' + ATitle, i));
-  Desktop^.Insert(Win[i]);
+  // FPC's FreeVision TView.Init initializes neither Owner nor Next
+  // (vendor/fv322/views.pas). Normally InsertView overwrites both
+  // immediately; deferred profile windows live long enough for their old
+  // heap bytes to be observed, so make the detached state explicit.
+  Win[i]^.Owner := nil;
+  Win[i]^.Next := nil;
+  // A profile is assembled away from Desktop.  Its windows can be sized,
+  // zoomed and minimized without ever becoming a half-built workspace in
+  // FreeVision's view tree or VideoBuf.  ActivateProfile inserts the complete
+  // set after every pane succeeded.
+  if not DeferWindowInsert then
+    Desktop^.Insert(Win[i]);
 end;
 
 function TSuperApp.PaneWantsAppCursor(i: integer): boolean;
@@ -2365,12 +3062,6 @@ begin
   // into another application's pty
   MouseGrabPane := -1;
   MouseGrabButton := MB_NONE;
-  // A pane renumbering invalidates the index held by the passthrough
-  // constraint state. The normal bounds synchronization will issue fresh
-  // requests for the resulting layout.
-  PassBlockedPane := -1;
-  PassBlockedW := 0;
-  PassBlockedH := 0;
 end;
 
 function TSuperApp.ForwardMouse(i: integer; const Event: TEvent;
@@ -2495,13 +3186,8 @@ begin
       Exit;
     ReqCols[i] := ACols;
     ReqRows[i] := ARows;
-    // Session policy: this is only the local viewport. The canonical PTY
-    // keeps parsing at one stable geometry, so resizing this window cannot
-    // reflow another client. Compatibility mode retains common-minimum
-    // negotiation and therefore still sends every request.
-    if (RemoteResizePolicy = rpSmallest) and (Remote <> nil) and
-       Remote.Connected then
-      Remote.SendResize(i, ACols, ARows);
+    // Physical bounds are presentation-only. They never resize the shared
+    // desktop or its PTY.
     Exit;
   end;
   if (ACols = Scr[i].Width) and (ARows = Scr[i].Height) then
@@ -2536,9 +3222,7 @@ begin
   RequestPaneSize(i, pw, ph);
 end;
 
-// Automatic window changes are viewport-only in session policy. This command
-// is the deliberate escape hatch: make the focused pane's real PTY adopt this
-// client's current interior, then let every mirror follow the daemon event.
+// Explicit escape hatch: resize the focused pane's real PTY globally.
 procedure TSuperApp.FitSessionToWindow;
 var
   i, PW, PH: integer;
@@ -2566,7 +3250,11 @@ begin
     EndCopyMode(False);
   if Win[i] <> nil then
   begin
-    Desktop^.Delete(Win[i]);
+    // A deferred profile window has deliberately never entered Desktop.
+    // Disposing it through TGroup.Delete would pretend it was linked into the
+    // view ring and can disturb an unrelated current view.
+    if (Desktop <> nil) and (Win[i]^.Owner = PGroup(Desktop)) then
+      Desktop^.Delete(Win[i]);
     Dispose(Win[i], Done);
     Win[i] := nil;
   end;
@@ -2622,21 +3310,28 @@ procedure TSuperApp.RelayoutAll;
 var
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
   LR, TileR: Objects.TRect;
-  i, TileH: integer;
+  i, TileH, DeskW, DeskH: integer;
   R: Objects.TRect;
   HasIcons: boolean;
 begin
   R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
+  DeskW := R.B.X - R.A.X;
+  DeskH := R.B.Y - R.A.Y;
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+  begin
+    DeskW := RemoteDeskW;
+    DeskH := RemoteDeskH;
+  end;
   // with minimized windows, the tile reserves the bottom icon strip
   HasIcons := False;
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
       HasIcons := True;
-  TileH := R.B.Y - R.A.Y;
+  TileH := DeskH;
   if HasIcons then
     Dec(TileH, 2);
-  Lay.ComputeRects(R.B.X - R.A.X, TileH, Rects);
+  Lay.ComputeRects(DeskW, TileH, Rects);
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and (not Win[i]^.Minimized) then
     begin
@@ -2649,7 +3344,7 @@ begin
       // Keep the tile as the restore target while a window is maximized.
       Win[i]^.ZoomRect := TileR;
       if Win[i]^.Zoomed then
-        LR.Assign(0, 0, R.B.X - R.A.X, R.B.Y - R.A.Y)
+        LR.Assign(0, 0, DeskW, DeskH)
       else
         LR := TileR;
       Win[i]^.Locate(LR);
@@ -2657,14 +3352,51 @@ begin
 end;
 
 procedure TSuperApp.FocusPane(i: integer);
+var
+  SavedOptions: word;
 begin
   if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
      (not Win[i]^.Minimized) then
   begin
+    if DebugFull then
+      DebugLog(Format('focus: pane=%d remote=%d settling=%d shared=%d',
+        [i, Ord(RemoteMode), Ord(RemoteAttachSettling),
+         RemoteSharedFocus]));
     Lay.Focused := i;
     Win[i]^.Select;
+    // TView.Select delegates top-selectable windows to MakeFirst.  In the
+    // FreeVision implementation MakeFirst is intentionally a no-op when the
+    // view is already first.  A minimized icon is kept first in Z order, so
+    // after Restore it can already be first while Desktop.Current still names
+    // the fallback window selected by Minimize.  Exercise Select again without
+    // ofTopSelect so FreeVision's own TGroup.SetCurrent establishes the exact
+    // selected/focused view; do not assign Current or state bits by hand.
+    if (Desktop <> nil) and
+       (Pointer(Desktop^.Current) <> Pointer(Win[i])) then
+    begin
+      SavedOptions := Win[i]^.Options;
+      Win[i]^.Options := SavedOptions and (not ofTopSelect);
+      try
+        Win[i]^.Select;
+      finally
+        Win[i]^.Options := SavedOptions;
+      end;
+    end;
     if Win[i]^.Term <> nil then
       Win[i]^.Term^.Select;
+    // TWindow.Select is allowed to raise the focused normal window. Minimized
+    // icons are desktop controls and must remain above it, without becoming
+    // the current/focused view themselves.
+    ArrangeIcons;
+    // Focus is the only shared window state that is deliberately lock-free.
+    // Each click/key selection is an ordered frame; the daemon echoes the
+    // winner to every viewer. Input itself remains independently writable.
+    if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+       Remote.Connected and (RemoteSharedFocus <> i) then
+    begin
+      if Remote.SendFocus(i) then
+        RemoteSharedFocus := i;
+    end;
   end;
 end;
 
@@ -2718,11 +3450,14 @@ const
 var
   RD, R: Objects.TRect;
   i, k, PerRow, DeskW: integer;
+  SavedOptions: word;
 begin
   if Desktop = nil then
     Exit;
   RD := Default(Objects.TRect);
   Desktop^.GetExtent(RD);
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+    RD.Assign(0, 0, RemoteDeskW, RemoteDeskH);
   DeskW := RD.B.X - RD.A.X;
   PerRow := DeskW div (ICON_W + 1);
   if PerRow < 1 then
@@ -2732,10 +3467,26 @@ begin
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
       R.Assign((k mod PerRow) * (ICON_W + 1),
-        RD.B.Y - RD.A.Y - ICON_H * (1 + k div PerRow),
+        RD.B.Y - ICON_H * (1 + k div PerRow),
         (k mod PerRow) * (ICON_W + 1) + ICON_W,
-        RD.B.Y - RD.A.Y - ICON_H * (k div PerRow));
+        RD.B.Y - ICON_H * (k div PerRow));
       Win[i]^.Locate(R);
+      // Icons are desktop controls, not ordinary windows occupying their old
+      // Z slot. Keep every icon above every non-minimized pane; otherwise a
+      // large visible pane hides the first slots and only the last icon moved
+      // to the front appears to exist. The icons do not overlap each other,
+      // so their relative front-to-back order is irrelevant.
+      // MakeFirst normally calls ResetCurrent for a selectable view. An icon
+      // must move in Z without stealing selection from the shared focused
+      // pane, so make it non-selectable only for the relink operation. Its
+      // own mouse handler still receives clicks after the option is restored.
+      SavedOptions := Win[i]^.Options;
+      Win[i]^.Options := SavedOptions and (not ofSelectable);
+      Win[i]^.MakeFirst;
+      Win[i]^.Options := SavedOptions;
+      if DebugFull then
+        DebugLog(Format('icon: pane=%d slot=%d rect=%d,%d %dx%d',
+          [i, k, R.A.X, R.A.Y, R.B.X - R.A.X, R.B.Y - R.A.Y]));
       Inc(k);
     end;
 end;
@@ -2743,45 +3494,112 @@ end;
 procedure TSuperApp.MinimizeWindow(i: integer);
 var
   NextPane: integer;
+  SavedSuppress: boolean;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      Win[i]^.Minimized then
     Exit;
+  // Own the pane before changing even the author's local view.  The final
+  // FRAME_LAYOUT is the commit (and releases this lock in the daemon), so no
+  // authoritative snapshot can roll the icon back between click and commit.
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+    if not LockRemoteLayout(i) then
+      Exit;
+  if RemoteMode and (i < Length(RemoteGeom)) then
+  begin
+    RemoteGeom[i].Minimized := True;
+    if not RemoteAttachSettling then
+      RemoteGeomDirtyPanes[i] := True;
+  end;
   NextPane := FindVisiblePane(i, 1);
   if NextPane = i then
     NextPane := -1;
-  Win[i]^.Minimize;
-  // do NOT re-tile: the other windows stay where the user left them.
-  // Only the minimized icons are re-placed at the desktop bottom.
-  ArrangeIcons;
-  if Lay.Focused = i then
-  begin
-    if NextPane >= 0 then
-    begin
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    Win[i]^.Minimize;
+    // do NOT re-tile: the other windows stay where the user left them.
+    // Only the minimized icons are re-placed at the desktop bottom.
+    ArrangeIcons;
+    if Lay.Focused = i then
       Lay.Focused := NextPane;
-      FocusPane(NextPane);
-    end
-    else
-      Lay.Focused := -1;
+    // Publish the definitive shared focus before committing the geometry.
+    // The daemon's final layout snapshot must already contain that winner;
+    // sending focus afterwards produced old-focus -> new-focus and two full
+    // frame paints during one minimize/restore action.
+    if Lay.Focused >= 0 then
+    begin
+      // The geometry commit makes the old focused pane invalid and carries
+      // our intended fallback. Do not also emit a standalone FOCUS frame:
+      // observers would otherwise paint the same locked window twice before
+      // the final icon. The daemon accepts this fallback only if no newer
+      // valid focus won concurrently.
+      if RemoteMode and (not RemoteAttachSettling) then
+      begin
+        RemoteAttachSettling := True;
+        try
+          FocusPane(Lay.Focused);
+        finally
+          RemoteAttachSettling := False;
+        end;
+      end
+      else
+        FocusPane(Lay.Focused);
+    end;
+    if RemoteMode and (not RemoteAttachSettling) then
+      SyncRemoteLayout(i);
+    RebuildMenu;
+  finally
+    SuppressFlush := SavedSuppress;
   end;
-  RebuildMenu;
+  if DebugActive then
+    DebugLog(Format('minimize: pane=%d focus=%d', [i, Lay.Focused]));
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 procedure TSuperApp.RestoreWindow(i: integer);
+var
+  SavedSuppress: boolean;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (not Win[i]^.Minimized) then
     Exit;
-  Win[i]^.Restore;
-  // go back EXACTLY to where it was before minimizing, without
-  // re-tiling or touching other windows (the user rules positions)
-  if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
-     (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
-    Win[i]^.Locate(Win[i]^.SavedRect);
-  Lay.Focused := i;
-  ArrangeIcons;   // re-place the icons that remain minimized
-  FocusPane(i);
-  RebuildMenu;
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+    if not LockRemoteLayout(i) then
+      Exit;
+  if RemoteMode and (i < Length(RemoteGeom)) then
+  begin
+    RemoteGeom[i].Minimized := False;
+    if not RemoteAttachSettling then
+      RemoteGeomDirtyPanes[i] := True;
+  end;
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    Win[i]^.Restore;
+    // go back EXACTLY to where it was before minimizing, without
+    // re-tiling or touching other windows (the user rules positions)
+    if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
+       (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
+      Win[i]^.Locate(Win[i]^.SavedRect);
+    Lay.Focused := i;
+    ArrangeIcons;   // re-place the icons that remain minimized
+    // Focus first so the following atomic layout snapshot carries the same
+    // final pane; observers never paint an obsolete focus in between.
+    FocusPane(i);
+    if RemoteMode and (not RemoteAttachSettling) then
+      SyncRemoteLayout(i);
+    RebuildMenu;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if DebugActive then
+    DebugLog(Format('restore: pane=%d focus=%d', [i, Lay.Focused]));
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 procedure TSuperApp.MinimizeAllWindows;
@@ -2789,6 +3607,17 @@ var
   i: integer;
   SavedSuppress: boolean;
 begin
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+    if not LockRemoteLayout(-1) then
+      Exit;
+  if RemoteMode then
+    for i := 0 to High(RemoteGeom) do
+    begin
+      RemoteGeom[i].Minimized := True;
+      if not RemoteAttachSettling then
+        RemoteGeomDirtyPanes[i] := True;
+    end;
   SavedSuppress := SuppressFlush;
   SuppressFlush := True;
   try
@@ -2797,6 +3626,8 @@ begin
         Win[i]^.Minimize;
     Lay.Focused := -1;
     ArrangeIcons;   // place all icons at the bottom, without re-tiling
+    if RemoteMode and (not RemoteAttachSettling) then
+      SyncRemoteLayout(-1);
     RebuildMenu;
   finally
     SuppressFlush := SavedSuppress;
@@ -2810,6 +3641,17 @@ var
   i, LastRestored: integer;
   SavedSuppress: boolean;
 begin
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+    if not LockRemoteLayout(-1) then
+      Exit;
+  if RemoteMode then
+    for i := 0 to High(RemoteGeom) do
+    begin
+      RemoteGeom[i].Minimized := False;
+      if not RemoteAttachSettling then
+        RemoteGeomDirtyPanes[i] := True;
+    end;
   // each window returns to its pre-minimize position; nothing re-tiles.
   // Windows may overlap now, so the ones coming back are brought to the
   // front and the last of them takes the focus: the user asked to see them,
@@ -2834,6 +3676,8 @@ begin
        (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
       Lay.Focused := FirstVisiblePane;
     FocusPane(Lay.Focused);
+    if RemoteMode and (not RemoteAttachSettling) then
+      SyncRemoteLayout(-1);
     RebuildMenu;
   finally
     SuppressFlush := SavedSuppress;
@@ -2847,9 +3691,21 @@ var
   OldCount, NewIdx, j: integer;
   DirB: byte;
   ClassS: string;
+  SavedSuppress: boolean;
 begin
   if CopyMode then
     EndCopyMode(False);
+  // Every pane-creation entry point converges here: Classes -> Local shell,
+  // configured classes, F2/F3 and the class picker.  Check the one hard
+  // limit before the remote branch as well; previously Local shell sent a
+  // request that the daemon rejected silently while configured classes used
+  // DoOpenClassPane's separate check and showed the dialog.
+  if PaneCount >= MAX_PANES then
+  begin
+    MessageBox(UiText('Maximum 16 panes', 'Maximo 16 paneles'), nil,
+      mfInformation or mfOKButton);
+    Exit;
+  end;
   if Lay.Focused < 0 then
     Lay.Focused := FirstVisiblePane;
   // With no panes at all there is nothing to focus and nothing to split, and
@@ -2878,6 +3734,13 @@ begin
         nil, mfError or mfOKButton);
     Exit;
   end;
+  // TGroup.InsertBefore deliberately hides, links and shows a view, and each
+  // state change draws (vendor/fv322/views.pas).  Keep that supported
+  // sequence off the physical terminal until the class-sized window and its
+  // focus are both final, then publish one diff.
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
   OldCount := Lay.PaneCount;
   if (Lay.PaneCount = 0) and Lay.AddFirstPane then
   begin
@@ -2953,18 +3816,17 @@ begin
   // Window|Tile (prefix + t) is how you ask for a re-tile.
   Lay.Focused := NewIdx;
   FocusPane(Lay.Focused);
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if not SavedSuppress then
+    RepaintChanges;
 end;
 
 procedure TSuperApp.DoOpenClassPane(ASysIdx: integer);
 var
   Dir: TSplitDir;
 begin
-  if PaneCount >= MAX_PANES then
-  begin
-    MessageBox(UiText('Maximum 16 panes', 'Maximo 16 paneles'), nil,
-      mfInformation or mfOKButton);
-    Exit;
-  end;
   if PaneCount = 1 then Dir := sdV else Dir := sdH;
   DoSplit(Dir, ASysIdx);
 end;
@@ -2997,8 +3859,17 @@ procedure TSuperApp.StopRuntime;
 var
   i: integer;
 begin
-  for i := 0 to MAX_PANES - 1 do
-    KillPane(i);
+  // Close every view through FreeVision's supported Delete path.  The group
+  // lock defers drawing until the old workspace has been removed completely.
+  if Desktop <> nil then
+    Desktop^.Lock;
+  try
+    for i := 0 to MAX_PANES - 1 do
+      KillPane(i);
+  finally
+    if Desktop <> nil then
+      Desktop^.Unlock;
+  end;
   for i := 0 to MAX_PANES - 1 do
   begin
     Panes[i] := nil;
@@ -3013,23 +3884,90 @@ procedure TSuperApp.ReleaseRuntime;
 var
   i: integer;
 begin
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
   ResetSizeRequests;
-  // Release only the client-side objects. PTy objects are deliberately left
-  // untouched when the detached server owns them.
-  for i := 0 to MAX_PANES - 1 do
-  begin
-    if Win[i] <> nil then
+  // Release only this process's client-side objects.  After local detach the
+  // forked daemon owns the live child and its duplicate master descriptor;
+  // Abandon closes the parent's descriptor and clears the pid before Free,
+  // so the destructor cannot signal the daemon-owned PTY process.
+  if Desktop <> nil then
+    Desktop^.Lock;
+  try
+    for i := 0 to MAX_PANES - 1 do
     begin
-      if Desktop <> nil then
-        Desktop^.Delete(Win[i]);
-      Dispose(Win[i], Done);
-      Win[i] := nil;
+      if Win[i] <> nil then
+      begin
+        if (Desktop <> nil) and (Win[i]^.Owner = PGroup(Desktop)) then
+          Desktop^.Delete(Win[i]);
+        Dispose(Win[i], Done);
+        Win[i] := nil;
+      end;
+      if Scr[i] <> nil then
+        FreeAndNil(Scr[i]);
+      if Panes[i] <> nil then
+      begin
+        Panes[i].Abandon;
+        FreeAndNil(Panes[i]);
+      end;
+      PaneTerm[i] := -1;
+      PaneConnect[i] := '';
     end;
-    if Scr[i] <> nil then
-      FreeAndNil(Scr[i]);
-    Panes[i] := nil;
-    PaneTerm[i] := -1;
-    PaneConnect[i] := '';
+  finally
+    if Desktop <> nil then
+      Desktop^.Unlock;
+  end;
+end;
+
+procedure TSuperApp.PrepareDetachedServerChild;
+var
+  i: integer;
+begin
+  // This hook runs only in the forked child, after setsid and stdio
+  // redirection.  Mark the inherited application for the detach-only Done
+  // path before touching a view, so even an exceptional cleanup cannot run
+  // the local StopRuntime ownership path afterwards.
+  DetachRequested := True;
+  AbortRun := True;
+  SkipSave := True;
+  PassthroughActive := False;
+  PassPane := -1;
+
+  // FreeVision views remain client-side objects and must be disposed before
+  // the long-lived daemon starts.  PTYs, parsers and layout are deliberately
+  // NOT freed: StartDetachedServer retained independent parameter references
+  // and TDetachedSession becomes their sole owner in this process.
+  if Desktop <> nil then
+    Desktop^.Lock;
+  try
+    for i := 0 to MAX_PANES - 1 do
+      if Win[i] <> nil then
+      begin
+        if (Desktop <> nil) and (Win[i]^.Owner = PGroup(Desktop)) then
+          Desktop^.Delete(Win[i]);
+        Dispose(Win[i], Done);
+        Win[i] := nil;
+      end;
+  finally
+    // Clear every transferred reference even if disposing a view raises.
+    // Done may now unwind normally without touching daemon-owned objects.
+    for i := 0 to MAX_PANES - 1 do
+    begin
+      Win[i] := nil;
+      Panes[i] := nil;
+      Scr[i] := nil;
+      PaneTerm[i] := -1;
+      PaneConnect[i] := '';
+    end;
+    // Unlock may repaint the now-empty desktop. Keep the layout alive for
+    // that last FreeVision operation, but guarantee it is relinquished even
+    // if the video driver raises while completing the unlock.
+    try
+      if Desktop <> nil then
+        Desktop^.Unlock;
+    finally
+      Lay := nil;
+    end;
   end;
 end;
 
@@ -3040,7 +3978,11 @@ begin
   if RemoteMode then
   begin
     if (Remote <> nil) and Remote.Connected then
+    begin
+      if DebugFull then
+        DebugLog(Format('input-send: pane=%d bytes=%d', [i, Length(S)]));
       Remote.SendInput(i, S);
+    end;
   end
   else if (Panes[i] <> nil) and Panes[i].Alive then
     Panes[i].WriteStr(S);
@@ -3531,19 +4473,24 @@ var
   Snapshot: TSessionSnapshot;
   NewLay, OldLay: TLayout;
   Stream: TMemoryStream;
-  I, N, SysIdx: integer;
+  I, N, SysIdx, FullDeskW, FullDeskH, FullCols, FullRows: integer;
   OldActiveProfile, OldActiveWindow: integer;
   OldProfileMode: boolean;
   OldSessionName: string;
   TitleS: string;
   Loaded: boolean;
   GR: Objects.TRect;
-  PW, PH: integer;
 begin
   if DebugActive then DebugLog('attach: AttachRemoteSession begin (build remote workspace)');
   Result := False;
+  RemoteHostSizeArmed := False;
+  RemoteHostSummaryValid := False;
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
+  HostResizePending := False;
+  HostResizeInFlight := False;
   Remote := TSessionClient.Create;
-  if not Remote.Connect(APath, Snapshot) then
+  if not Remote.Connect(APath, Snapshot, ScreenWidth, ScreenHeight) then
   begin
     // a version mismatch is worth explaining: otherwise the user just gets a
     // fresh local session and no idea why the attach did not happen
@@ -3554,15 +4501,29 @@ begin
     Remote := nil;
     Exit;
   end;
-  RemoteResizePolicy := Snapshot.ResizePolicy;
-  if not LoadLayoutString(Snapshot.LayoutNodes, NewLay) then
+  RemoteDeskW := Snapshot.DeskW;
+  RemoteDeskH := Snapshot.DeskH;
+  RemoteClientCount := Snapshot.ClientCount;
+  RemoteMinHostW := Snapshot.MinHostW;
+  RemoteMinHostH := Snapshot.MinHostH;
+  RemoteHostSizesMatch := Snapshot.HostSizesMatch;
+  RemoteHostSummaryValid := Snapshot.HostSummaryValid;
+  RemoteLockedPanes := Snapshot.LockedPanes;
+  RemoteSharedFocus := Snapshot.Focused;
+  RemoteGeom := Copy(Snapshot.Geom, 0, Length(Snapshot.Geom));
+  RemoteGeometryDirty := False;
+  RemoteTreeDirty := False;
+  for I := 0 to MAX_PANES - 1 do
+    RemoteGeomDirtyPanes[I] := False;
+  SharedFullScreenRendered := False;
+  if not LoadLayoutString(Snapshot.LayoutNodes, NewLay, True) then
   begin
     Remote.Free;
     Remote := nil;
     Exit;
   end;
   N := Snapshot.PaneCount;
-  if (N < 1) or (N > MAX_PANES) or (NewLay.PaneCount <> N) then
+  if (N < 0) or (N > MAX_PANES) or (NewLay.PaneCount <> N) then
   begin
     NewLay.Free;
     Remote.Free;
@@ -3578,7 +4539,9 @@ begin
   OldSessionName := CurrentSessionName;
   Lay := NewLay;
   Lay.Focused := Snapshot.Focused;
-  if (Lay.Focused < 0) or (Lay.Focused >= N) then
+  if N = 0 then
+    Lay.Focused := -1
+  else if (Lay.Focused < 0) or (Lay.Focused >= N) then
     Lay.Focused := 0;
   ProfileMode := False;
   ActiveProfile := -1;
@@ -3637,9 +4600,8 @@ begin
   end;
   OldLay.Free;
   RelayoutAll;
-  // Saved seed geometry (moved, maximized, minimized). In session policy it
-  // initializes this new client but never changes already attached clients;
-  // only applicable if the desktop size matches the one at save time.
+  // The daemon's geometry is absolute and canonical. A differently sized host
+  // clips it or leaves outer margin; it never substitutes its own desktop.
   if DebugActive then
   begin
     GR := Default(Objects.TRect);
@@ -3653,55 +4615,165 @@ begin
          Snapshot.Geom[I].BH, Ord(Snapshot.Geom[I].Zoomed),
          Ord(Snapshot.Geom[I].Minimized)]));
   end;
-  if (Length(Snapshot.Geom) = Lay.PaneCount) and (Desktop <> nil) then
+  if Length(Snapshot.Geom) = Lay.PaneCount then
   begin
-    GR := Default(Objects.TRect);
-    Desktop^.GetExtent(GR);
-    if (Snapshot.DeskW = GR.B.X - GR.A.X) and
-       (Snapshot.DeskH = GR.B.Y - GR.A.Y) then
-    begin
-      for I := 0 to Lay.PaneCount - 1 do
-        if (I < MAX_PANES) and (Win[I] <> nil) then
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) then
+      begin
+        if (Snapshot.Geom[I].BW > 0) and (Snapshot.Geom[I].BH > 0) then
         begin
-          if (Snapshot.Geom[I].BW > 0) and (Snapshot.Geom[I].BH > 0) then
-          begin
-            GR.Assign(Snapshot.Geom[I].BX, Snapshot.Geom[I].BY,
-              Snapshot.Geom[I].BX + Snapshot.Geom[I].BW,
-              Snapshot.Geom[I].BY + Snapshot.Geom[I].BH);
-            Win[I]^.Locate(GR);
-          end;
-          if Snapshot.Geom[I].Zoomed and (not Win[I]^.Zoomed) then
-            Win[I]^.Zoom;
+          GR.Assign(Snapshot.Geom[I].BX, Snapshot.Geom[I].BY,
+            Snapshot.Geom[I].BX + Snapshot.Geom[I].BW,
+            Snapshot.Geom[I].BY + Snapshot.Geom[I].BH);
+          Win[I]^.Locate(GR);
         end;
-      for I := 0 to Lay.PaneCount - 1 do
-        if (I < MAX_PANES) and (Win[I] <> nil) and
-           Snapshot.Geom[I].Minimized then
-          MinimizeWindow(I);
-    end;
+        if Snapshot.Geom[I].Zoomed and (not Win[I]^.Zoomed) then
+          Win[I]^.Zoom;
+        if Snapshot.Geom[I].Zoomed then
+        begin
+          if Snapshot.Geom[I].FullScreen then
+          begin
+            SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+            GR.Assign(0, 0, FullDeskW, FullDeskH);
+          end
+          else
+            GR.Assign(0, 0, Snapshot.DeskW, Snapshot.DeskH);
+          Win[I]^.Locate(GR);
+        end;
+        Win[I]^.FullScreen := Snapshot.Geom[I].FullScreen;
+        if Snapshot.Geom[I].FullScreen and
+           ((Snapshot.ClientCount > 1) or
+            (not Snapshot.HostSizesMatch)) then
+          SharedFullScreenRendered := True;
+      end;
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) and
+         Snapshot.Geom[I].Minimized then
+        MinimizeWindow(I);
   end;
-  // The windows are already in their final place: record one definitive
-  // viewport size per pane. Smallest policy sends it for negotiation;
-  // session policy keeps it local and cannot bounce another client's PTY.
+  // Attaching never sends the host's size to the daemon.
   RemoteAttachSettling := False;
-  for I := 0 to Lay.PaneCount - 1 do
-    if (I < MAX_PANES) and (Win[I] <> nil) and
-       (not Win[I]^.Minimized) and (Scr[I] <> nil) then
-    begin
-      PW := Win[I]^.Size.X - 2;
-      PH := Win[I]^.Size.Y - 2;
-      if PW < 4 then PW := 4;
-      if PH < 2 then PH := 2;
-      if DebugActive then
-        DebugLog(Format('resize: pane=%d attach final request %dx%d (mirror %dx%d)',
-          [I, PW, PH, Scr[I].Width, Scr[I].Height]));
-      RequestPaneSize(I, PW, PH);
-    end;
   RepaintChanges;
-  FocusPane(Lay.Focused);
+  if Lay.Focused >= 0 then
+    FocusPane(Lay.Focused);
   RebuildMenu;
   CurrentSessionSocket := APath;
   RemoteLayoutHash := ComputeLayoutHash;
+  RemoteHostSizeArmed := True;
   Result := True;
+end;
+
+// The daemon created by this very client is a fork of the already settled
+// local runtime.  Releasing every Win/Scr and feeding the same snapshot back
+// through AttachRemoteSession rebuilt an identical desktop a second time.
+// Adopt only the transport/canonical metadata and refresh the existing screen
+// models with the daemon snapshot; window objects and their final bounds stay
+// in place throughout.
+function TSuperApp.AttachPromotedSession(const APath: string): boolean;
+var
+  Candidate: TSessionClient;
+  Snapshot: TSessionSnapshot;
+  CheckLay: TLayout;
+  Stream: TMemoryStream;
+  I, N: integer;
+  Loaded: boolean;
+begin
+  Result := False;
+  RemoteHostSizeArmed := False;
+  RemoteHostSummaryValid := False;
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
+  HostResizePending := False;
+  HostResizeInFlight := False;
+  Candidate := TSessionClient.Create;
+  CheckLay := nil;
+  try
+    if not Candidate.Connect(APath, Snapshot, ScreenWidth, ScreenHeight) then
+    begin
+      AttachFailReason := Candidate.AttachError;
+      Exit;
+    end;
+    N := Snapshot.PaneCount;
+    if (Lay = nil) or (N <> Lay.PaneCount) or
+       (N < 1) or (N > MAX_PANES) or
+       (Length(Snapshot.Geom) <> N) or
+       (Snapshot.DeskW <= 0) or (Snapshot.DeskH <= 0) or
+       (Snapshot.LayoutNodes <> SaveLayoutString(Lay)) then
+    begin
+      if DebugActive then
+        DebugLog('promote-adopt: newborn snapshot does not match local workspace');
+      Exit;
+    end;
+    if not LoadLayoutString(Snapshot.LayoutNodes, CheckLay) or
+       (CheckLay.PaneCount <> N) then
+      Exit;
+
+    // Output can arrive in the child between fork and ATTACH.  Loading the
+    // daemon's current screens into the existing models closes that tiny gap
+    // without creating or relocating a single FreeVision view.
+    Loaded := True;
+    for I := 0 to N - 1 do
+    begin
+      if (Scr[I] = nil) or (Win[I] = nil) or
+         (Length(Snapshot.Panes[I].ScreenData) = 0) then
+      begin
+        Loaded := False;
+        Break;
+      end;
+      Stream := TMemoryStream.Create;
+      try
+        Stream.WriteBuffer(Snapshot.Panes[I].ScreenData[0],
+          Length(Snapshot.Panes[I].ScreenData));
+        Stream.Position := 0;
+        Loaded := Scr[I].LoadFromStream(Stream);
+      finally
+        Stream.Free;
+      end;
+      if not Loaded then
+        Break;
+    end;
+    if not Loaded then
+    begin
+      if DebugActive then
+        DebugLog('promote-adopt: invalid newborn screen snapshot');
+      Exit;
+    end;
+
+    Remote := Candidate;
+    Candidate := nil;
+    RemoteMode := True;
+    RemoteLost := False;
+    RemoteAttachSettling := False;
+    RemoteDeskW := Snapshot.DeskW;
+    RemoteDeskH := Snapshot.DeskH;
+    RemoteClientCount := Snapshot.ClientCount;
+    RemoteMinHostW := Snapshot.MinHostW;
+    RemoteMinHostH := Snapshot.MinHostH;
+    RemoteHostSizesMatch := Snapshot.HostSizesMatch;
+    RemoteHostSummaryValid := Snapshot.HostSummaryValid;
+    RemoteLockedPanes := Snapshot.LockedPanes;
+    RemoteSharedFocus := Snapshot.Focused;
+    RemoteGeom := Copy(Snapshot.Geom, 0, Length(Snapshot.Geom));
+    RemoteGeometryDirty := False;
+    RemoteTreeDirty := False;
+    for I := 0 to MAX_PANES - 1 do
+      RemoteGeomDirtyPanes[I] := False;
+    SharedFullScreenRendered := False;
+    Lay.Focused := Snapshot.Focused;
+    CurrentSessionName := Snapshot.Name;
+    CurrentSessionSocket := APath;
+    ResetSizeRequests;
+    RemoteLayoutHash := ComputeLayoutHash;
+    RemoteHostSizeArmed := True;
+    if DebugActive then
+      DebugLog(Format('promote-adopt: panes=%d desk=%dx%d focused=%d revision=%d',
+        [N, Snapshot.DeskW, Snapshot.DeskH, Snapshot.Focused,
+         Snapshot.Revision]));
+    Result := True;
+  finally
+    CheckLay.Free;
+    Candidate.Free;
+  end;
 end;
 
 // server-always startup: the local workspace (panes already alive)
@@ -3717,8 +4789,7 @@ var
   DGeom: TPaneGeomArray;
   DW, DH: integer;
   SessName, ProfName, Sock: string;
-  WasProfile: boolean;
-  OldActiveProfile, OldActiveWindow: integer;
+  StartResult: TDetachedServerStartResult;
 begin
   if RemoteMode or AbortRun or DetachRequested then
     Exit;
@@ -3764,26 +4835,31 @@ begin
       Exit;   // pane without a live terminal: stay in local mode
   end;
   CollectPaneGeom(DGeom, DW, DH);
-  if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
-    Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
-    Exit;   // no daemon: classic local mode
+  StartResult := StartDetachedServer(SessName, ProfName, Lay, PtyRefs,
+    ScreenRefs, Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed,
+    @PrepareDetachedServerChild);
+  case StartResult of
+    dssFailed:
+      Exit;   // no daemon: classic local mode
+    dssChildFinished:
+      begin
+        // PromoteToServer is also called from profile/window activation and
+        // the wizard, while TApplication.Execute is already running.  Merely
+        // returning is sufficient during startup because Main observes
+        // AbortRun, but here it would resume the inherited FreeVision loop
+        // after the child hook has deliberately disposed every pane window.
+        // End that current modal loop synchronously, exactly as detach does.
+        DetachRequested := True;
+        AbortRun := True;
+        Message(@Self, evCommand, cmQuit, nil);
+        Exit;
+      end;
+  end;
   Sock := SessionSocketPathFor(SessName);
-  // the daemon now owns the processes: release the parent's PTYs
-  // without signalling anyone and swap the workspace for the remote
-  for I := 0 to MAX_PANES - 1 do
-    if Panes[I] <> nil then
-    begin
-      Panes[I].Abandon;
-      Panes[I].Free;
-      Panes[I] := nil;
-    end;
-  ReleaseRuntime;
-  // attach resets the profile state (it is meant for attaching to
-  // foreign sessions); here the session IS the active profile: keep it
-  WasProfile := ProfileMode;
-  OldActiveProfile := ActiveProfile;
-  OldActiveWindow := ActiveWindow;
-  if not AttachRemoteSession(Sock) then
+  // This is our own fork: connect its transport and keep the final Win/Scr
+  // objects that are already on Desktop. Releasing and calling the generic
+  // attach path here used to destroy and reconstruct the same profile.
+  if not AttachPromotedSession(Sock) then
   begin
     // very rare (newborn daemon): do not orphan it nor pretend there
     // is a workspace; shut down in an orderly fashion
@@ -3793,9 +4869,16 @@ begin
     Message(@Self, evCommand, cmQuit, nil);
     Exit;
   end;
-  ProfileMode := WasProfile;
-  ActiveProfile := OldActiveProfile;
-  ActiveWindow := OldActiveWindow;
+
+  // The child daemon now owns the PTYs.  Abandon only the parent's duplicate
+  // descriptors; the screen/window models remain the attached client view.
+  for I := 0 to MAX_PANES - 1 do
+    if Panes[I] <> nil then
+    begin
+      Panes[I].Abandon;
+      Panes[I].Free;
+      Panes[I] := nil;
+    end;
   if ProfileMode then
     RebuildMenu;
 end;
@@ -3807,12 +4890,18 @@ begin
   if not RemoteMode then
     Exit;
   if (Remote <> nil) and Remote.Connected then
-    Remote.CloseSession(False);
+    Remote.CloseSession;
   if Remote <> nil then
   begin
     Remote.Free;
     Remote := nil;
   end;
+  RemoteHostSizeArmed := False;
+  RemoteHostSummaryValid := False;
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
+  HostResizePending := False;
+  HostResizeInFlight := False;
   RemoteMode := False;
   CurrentSessionSocket := '';
   CurrentSessionName := '';
@@ -3890,13 +4979,14 @@ var
   DW, DH: integer;
   NameBuf: ShortString;
   SessName, ProfName: string;
+  StartResult: TDetachedServerStartResult;
 begin
   if DetachRequested then
     Exit;
   if RemoteMode then
   begin
-    // client already attached: the daemon keeps its name, no prompt;
-    // push the layout first so the next attach restores it
+    // Push the current live shared state before detaching. The daemon keeps
+    // that exact object alive; no save/reload cycle is involved.
     SyncRemoteLayout;
     if (Remote = nil) or (not Remote.Connected) or (not Remote.Detach) then
     begin
@@ -3973,14 +5063,18 @@ begin
   end;
   // the daemon is born knowing the current window geometry
   CollectPaneGeom(DGeom, DW, DH);
-  if not StartDetachedServer(SessName, ProfName, Lay, PtyRefs, ScreenRefs,
-    Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed) then
+  StartResult := StartDetachedServer(SessName, ProfName, Lay, PtyRefs,
+    ScreenRefs, Titles, Terms, Lay.Focused, DGeom, DW, DH, Fixed,
+    @PrepareDetachedServerChild);
+  if StartResult = dssFailed then
   begin
     MessageBox(UiText('Could not create the detached session server.',
       'No se pudo crear el servidor de la sesion separada.'), nil,
       mfError or mfOKButton);
     Exit;
   end;
+  // Both processes leave this event loop through the same path.  In the
+  // parent the daemon is now ready; in the child its Run has just finished.
   DetachRequested := True;
   Message(@Self, evCommand, cmQuit, nil);
 end;
@@ -4028,59 +5122,68 @@ begin
   ActiveProfile := AProfile;
   ActiveWindow := AWindow;
 
+  // Build the profile as data and detached view objects.  CreateWindowForPane
+  // deliberately does not insert them into Desktop in this scope, so the
+  // only application states are the closed old workspace and the complete
+  // new one -- never one provisional window followed by two.
   Started := True;
-  for i := 0 to n - 1 do
-  begin
-    PS := Default(TProfilePaneSpec);
-    PS.Name := 'pane' + IntToStr(i);
-    PS.Enabled := True;
-    if i <= High(WS.Panes) then
-      PS := WS.Panes[i];
-    SysIdx := FindWindowClass(PS.WClass);
-    TitleS := Profiles[AProfile].Name + '/' + WS.Name;
-    DebugLog(Format('profile pane=%d enabled=%d class=%s cmd=%s post=%s sysidx=%d',
-      [i, Ord(PS.Enabled), PS.WClass, PS.Cmd, PS.PostConnect, SysIdx]));
-    if not PS.Enabled then
-      StartPane(i, '', '')
-    else if (SysIdx >= 0) and (WClasses[SysIdx].Kind = wcSSH) then
+  DeferWindowInsert := True;
+  try
+    for i := 0 to n - 1 do
     begin
-      // ssh: the pane.post > class.post > pane.cmd > class.cmd precedence
-      // is resolved between the override and BuildWindowClassExec
-      CommandOverride := PS.PostConnect;
-      if CommandOverride = '' then
-        CommandOverride := PS.Cmd;
-      StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
-        CommandOverride);
-    end
-    else if SysIdx >= 0 then
-    begin
-      // local or free-command class with pane overrides
-      if WClasses[SysIdx].Shell <> '' then
-        ShellFor := WClasses[SysIdx].Shell
+      PS := Default(TProfilePaneSpec);
+      PS.Name := 'pane' + IntToStr(i);
+      PS.Enabled := True;
+      if i <= High(WS.Panes) then
+        PS := WS.Panes[i];
+      SysIdx := FindWindowClass(PS.WClass);
+      TitleS := Profiles[AProfile].Name + '/' + WS.Name;
+      DebugLog(Format('profile pane=%d enabled=%d class=%s cmd=%s post=%s sysidx=%d',
+        [i, Ord(PS.Enabled), PS.WClass, PS.Cmd, PS.PostConnect, SysIdx]));
+      if not PS.Enabled then
+        StartPane(i, '', '')
+      else if (SysIdx >= 0) and (WClasses[SysIdx].Kind = wcSSH) then
+      begin
+        // ssh: the pane.post > class.post > pane.cmd > class.cmd precedence
+        // is resolved between the override and BuildWindowClassExec
+        CommandOverride := PS.PostConnect;
+        if CommandOverride = '' then
+          CommandOverride := PS.Cmd;
+        StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
+          CommandOverride);
+      end
+      else if SysIdx >= 0 then
+      begin
+        // local or free-command class with pane overrides
+        if WClasses[SysIdx].Shell <> '' then
+          ShellFor := WClasses[SysIdx].Shell
+        else
+          ShellFor := Cfg.Shell;
+        LocalCmd := ComposePaneCommand(WClasses[SysIdx], PS.Cmd, PS.PostConnect,
+          PS.Connect, ShellFor, Cfg.LoginShell);
+        StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
+          LocalCmd);
+      end
       else
-        ShellFor := Cfg.Shell;
-      LocalCmd := ComposePaneCommand(WClasses[SysIdx], PS.Cmd, PS.PostConnect,
-        PS.Connect, ShellFor, Cfg.LoginShell);
-      StartPaneEx(i, PS.Cwd, '', SysIdx, '', '', TitleS, PS.ScrollBack,
-        LocalCmd);
-    end
-    else
-    begin
-      // ad-hoc pane without a class (includes persisted wizard ones)
-      AdHoc := DefaultWindowClass;
-      LocalCmd := ComposePaneCommand(AdHoc, PS.Cmd, PS.PostConnect,
-        PS.Connect, Cfg.Shell, Cfg.LoginShell);
-      StartPaneEx(i, PS.Cwd, LocalCmd, -1, '', '', TitleS, PS.ScrollBack);
-      PaneConnect[i] := PS.Connect;
+      begin
+        // ad-hoc pane without a class (includes persisted wizard ones)
+        AdHoc := DefaultWindowClass;
+        LocalCmd := ComposePaneCommand(AdHoc, PS.Cmd, PS.PostConnect,
+          PS.Connect, Cfg.Shell, Cfg.LoginShell);
+        StartPaneEx(i, PS.Cwd, LocalCmd, -1, '', '', TitleS, PS.ScrollBack);
+        PaneConnect[i] := PS.Connect;
+      end;
+      // custom title saved in the profile: wins over class/cwd
+      if (PS.Title <> '') and (Win[i] <> nil) then
+      begin
+        Win[i]^.SetTitle(' ' + PS.Title);
+        Win[i]^.TitleFixed := True;
+      end;
+      if Win[i] = nil then
+        Started := False;
     end;
-    // custom title saved in the profile: wins over class/cwd
-    if (PS.Title <> '') and (Win[i] <> nil) then
-    begin
-      Win[i]^.SetTitle(' ' + PS.Title);
-      Win[i]^.TitleFixed := True;
-    end;
-    if Win[i] = nil then
-      Started := False;
+  finally
+    DeferWindowInsert := False;
   end;
   if not Started then
   begin
@@ -4092,7 +5195,21 @@ begin
     Lay.Focused := 0;
   RelayoutAll;
   ApplyWindowGeometry(WS);
-  FocusPane(Lay.Focused);
+  // Insert the complete, already-sized set only after every pane succeeded.
+  // Use FreeVision's supported insertion path; it establishes the view ring,
+  // activation and current-view invariants that raw linking cannot reproduce.
+  if Desktop <> nil then
+    Desktop^.Lock;
+  try
+    for i := 0 to n - 1 do
+      if (Win[i] <> nil) and (Win[i]^.Owner = nil) then
+        Desktop^.Insert(Win[i]);
+    FocusPane(Lay.Focused);
+    ArrangeIcons;
+  finally
+    if Desktop <> nil then
+      Desktop^.Unlock;
+  end;
   RebuildMenu;
   Result := True;
   if WasRemote then
@@ -4124,14 +5241,30 @@ begin
           WS.Panes[i].BX + WS.Panes[i].BW, WS.Panes[i].BY + WS.Panes[i].BH);
         Win[i]^.Locate(WR);
       end;
-      if WS.Panes[i].Zoomed and (not Win[i]^.Zoomed) then
-        Win[i]^.Zoom;
+      if WS.Panes[i].Zoomed then
+      begin
+        // The window is still outside Desktop while a profile is built.
+        // TWindow.Zoom cannot be used there: without an owner its SizeLimits
+        // maximum is High(Sw_Integer).  Install the same final state directly
+        // from the already definitive restore rectangle.
+        Win[i]^.GetBounds(Win[i]^.ZoomRect);
+        WR.Assign(0, 0, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
+        Win[i]^.Locate(WR);
+        Win[i]^.Zoomed := True;
+        Win[i]^.FullScreen := False;
+      end;
     end;
-  // minimized ones last (MinimizeWindow manages focus and icons)
+  // Minimized windows are also prepared off-desktop.  Calling the interactive
+  // MinimizeWindow path here would rebuild menus, focus and repaint after
+  // each pane, creating states that are not part of the saved profile.
   for i := 0 to n - 1 do
     if (i <= High(WS.Panes)) and (i < MAX_PANES) and (Win[i] <> nil) and
        WS.Panes[i].Minimized then
-      MinimizeWindow(i);
+      Win[i]^.Minimize;
+  ArrangeIcons;
+  if (Lay.Focused < 0) or (Lay.Focused >= n) or
+     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+    Lay.Focused := FirstVisiblePane;
 end;
 
 function TSuperApp.CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
@@ -4490,11 +5623,18 @@ begin
     PrefixKeyLabel(Cfg.PrefixKey) + ' arrows resize the pane',
     PrefixKeyLabel(Cfg.PrefixKey) + ' c abre una clase en panel nuevo; ' +
     PrefixKeyLabel(Cfg.PrefixKey) + ' flechas dan tamano');
-  Lines[4] := UiText(
-    PrefixKeyLabel(Cfg.PrefixKey) + ' d detach; superterm --attach ' +
-    'returns; Ctrl-S save',
-    PrefixKeyLabel(Cfg.PrefixKey) + ' d separa; superterm --attach ' +
-    'vuelve; Ctrl-S guarda');
+  if RemoteMode then
+    Lines[4] := UiText(
+      PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d detach; --attach returns exactly where you left it',
+      PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d separa; --attach vuelve exactamente a como estaba')
+  else
+    Lines[4] := UiText(
+      PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d detach; superterm --attach returns; Ctrl-S save',
+      PrefixKeyLabel(Cfg.PrefixKey) +
+      ' d separa; superterm --attach vuelve; Ctrl-S guarda');
   Lines[5] := UiText(
     PrefixKeyLabel(Cfg.PrefixKey) + ' [ copy; ' +
     PrefixKeyLabel(Cfg.PrefixKey) + ' ] paste; ' +
@@ -4506,8 +5646,8 @@ begin
     'Profiles menu saves and restores named workspaces',
     'El menu Perfiles guarda y restaura areas de trabajo con nombre');
   Lines[7] := UiText(
-    'Alt-X save and exit; Alt-Q quit without saving',
-    'Alt-X guarda y sale; Alt-Q sale sin guardar');
+    'Alt-X exits; the last viewer closes the live session',
+    'Alt-X sale; el ultimo cliente cierra la sesion viva');
   R.Assign(0, 0, 74, 14);
   D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
   D^.Options := D^.Options or ofCentered;
@@ -4582,12 +5722,13 @@ begin
   Cur := Trim(Buf);
   if Cur = '' then
     Cur := UiText('shell', 'shell');
+  // The daemon must grant ownership before the actor changes its own title;
+  // otherwise a denied concurrent rename visibly diverges until a snapshot.
+  if RemoteMode and (Remote <> nil) and Remote.Connected then
+    if not Remote.SendRename(i, Cur) then
+      Exit;
   Win[i]^.SetTitle(' ' + Cur);
   Win[i]^.TitleFixed := True;
-  // in remote mode the fixed title must live in the daemon (it is
-  // broadcast to other clients and survives the daemon-side save)
-  if RemoteMode and (Remote <> nil) and Remote.Connected then
-    Remote.SendRename(i, Cur);
 end;
 
 procedure TSuperApp.RebuildMenu;
@@ -4718,7 +5859,8 @@ begin
   // in remote mode the pane lives in the daemon: kill it there and
   // compact mirroring it (same indexes); locally KillPane does the job
   if RemoteMode and (Remote <> nil) and Remote.Connected then
-    Remote.SendKillPane(i);
+    if not Remote.SendKillPane(i) then
+      Exit;
   Lay.ClosePane(i);
   KillPane(i);
   for j := i to MAX_PANES - 2 do
@@ -4738,8 +5880,8 @@ begin
   Win[MAX_PANES - 1] := nil;
   PaneTerm[MAX_PANES - 1] := -1;
   PaneConnect[MAX_PANES - 1] := '';
-  // ReqCols/Rows and the private viewport offsets use the same pane indexes
-  // as the arrays above. The server excludes the requesting client from the
+  // The local resize cache and zero-only crop offsets use the same pane
+  // indexes as the arrays above. The server excludes the requester from the
   // kill event, so this local close must invalidate them itself.
   ResetSizeRequests;
   if OldFocused > i then
@@ -4755,7 +5897,42 @@ begin
   // KillPane already removed the closed one from the desktop; repaint.
   RepaintChanges;
   FocusPane(Lay.Focused);
-  SyncRemoteLayout; // the tree changed: mirror it in the daemon
+  // The daemon already changed and broadcast the authoritative tree. The
+  // requester mirrors it locally because KILLPANE_EV excludes the actor.
+end;
+
+procedure TSuperApp.DoCloseAllPanes;
+var
+  I: integer;
+  SavedSuppress: boolean;
+begin
+  if PaneCount = 0 then
+    Exit;
+  if RemoteMode and (Remote <> nil) and Remote.Connected then
+  begin
+    // Pane=-1 means one daemon-authoritative structural transaction. The
+    // actor does not pre-delete anything; descending KILLPANE_EV frames bring
+    // every client, including this one, to the same empty desktop.
+    Remote.SendKillPane(-1);
+    Exit;
+  end;
+  if PassthroughActive then
+    ExitPassthrough;
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    // Descending order never shifts a surviving slot. Reuse the exact mirror
+    // deletion path employed by remote events, but publish only the settled
+    // empty desktop after the complete batch.
+    for I := PaneCount - 1 downto 0 do
+      ApplyRemoteKillPane(I);
+    ResetSizeRequests;
+    RebuildMenu;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if not SavedSuppress then
+    RepaintChanges;
 end;
 
 // current geometry of all windows (same rules as the local save: a
@@ -4765,6 +5942,8 @@ procedure TSuperApp.CollectPaneGeom(out AGeom: TPaneGeomArray;
 var
   n, i: integer;
   WR, RD: Objects.TRect;
+  CanonicalBase: boolean;
+  FullDeskW, FullDeskH, FullCols, FullRows: integer;
 begin
   AGeom := Default(TPaneGeomArray);
   ADeskW := 0;
@@ -4772,13 +5951,33 @@ begin
   n := Lay.PaneCount;
   if (n < 1) or (Desktop = nil) then
     Exit;
+  CanonicalBase := RemoteMode and (Length(RemoteGeom) = n) and
+    (RemoteDeskW > 0) and (RemoteDeskH > 0);
+  if CanonicalBase then
+  begin
+    AGeom := Copy(RemoteGeom, 0, Length(RemoteGeom));
+    ADeskW := RemoteDeskW;
+    ADeskH := RemoteDeskH;
+    if not RemoteGeometryDirty then
+      Exit;
+  end;
   RD := Default(Objects.TRect);
   Desktop^.GetExtent(RD);
-  ADeskW := RD.B.X - RD.A.X;
-  ADeskH := RD.B.Y - RD.A.Y;
-  SetLength(AGeom, n);
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+  begin
+    ADeskW := RemoteDeskW;
+    ADeskH := RemoteDeskH;
+  end
+  else
+  begin
+    ADeskW := RD.B.X - RD.A.X;
+    ADeskH := RD.B.Y - RD.A.Y;
+  end;
+  if not CanonicalBase then
+    SetLength(AGeom, n);
   for i := 0 to n - 1 do
-    if (i < MAX_PANES) and (Win[i] <> nil) then
+    if (i < MAX_PANES) and (Win[i] <> nil) and
+       ((not CanonicalBase) or RemoteGeomDirtyPanes[i]) then
     begin
       if Win[i]^.Zoomed then
         WR := Win[i]^.ZoomRect
@@ -4795,33 +5994,125 @@ begin
       AGeom[i].BH := WR.B.Y - WR.A.Y;
       AGeom[i].Zoomed := Win[i]^.Zoomed;
       AGeom[i].Minimized := Win[i]^.Minimized;
+      AGeom[i].FullScreen := Win[i]^.FullScreen;
+      if Win[i]^.Minimized and (Scr[i] <> nil) then
+      begin
+        AGeom[i].Cols := Scr[i].Width;
+        AGeom[i].Rows := Scr[i].Height;
+      end
+      else if Win[i]^.FullScreen then
+      begin
+        if RemoteMode then
+        begin
+          SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+          AGeom[i].Cols := FullCols;
+          AGeom[i].Rows := FullRows;
+        end
+        else
+        begin
+          AGeom[i].Cols := ADeskW;
+          AGeom[i].Rows := ADeskH + 2;
+        end;
+      end
+      else if Win[i]^.Zoomed then
+      begin
+        AGeom[i].Cols := ADeskW - 2;
+        AGeom[i].Rows := ADeskH - 2;
+      end
+      else
+      begin
+        AGeom[i].Cols := AGeom[i].BW - 2;
+        AGeom[i].Rows := AGeom[i].BH - 2;
+      end;
+      if AGeom[i].Cols < 4 then AGeom[i].Cols := 4;
+      if AGeom[i].Rows < 2 then AGeom[i].Rows := 2;
     end;
 end;
 
 // while attached, pushes the client state to the daemon so the next
 // attach restores exactly what is on screen now
-procedure TSuperApp.SyncRemoteLayout;
+procedure TSuperApp.SyncRemoteLayout(APrelockedPane: integer);
 var
   Geom: TPaneGeomArray;
   Titles: TStrArray;
   DeskW, DeskH: integer;
-  n, i: integer;
+  n, i, LockPane, ChangedPane: integer;
+  ChangeMask: LongWord;
+  Locked, Sent: boolean;
 begin
   if (not RemoteMode) or (Remote = nil) or (not Remote.Connected) then
     Exit;
   n := Lay.PaneCount;
   if n < 1 then
+  begin
+    if APrelockedPane <> -2 then
+      Remote.UnlockLayout(-1);
     Exit;
+  end;
   CollectPaneGeom(Geom, DeskW, DeskH);
   if Length(Geom) <> n then
+  begin
+    if APrelockedPane <> -2 then
+      Remote.UnlockLayout(-1);
     Exit;
+  end;
   Titles := Default(TStrArray);
   SetLength(Titles, n);
   for i := 0 to n - 1 do
     if (i < MAX_PANES) and (Win[i] <> nil) then
       Titles[i] := Win[i]^.GetTitle(80);
-  Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
-    DeskW, DeskH);
+  ChangeMask := 0;
+  for i := 0 to n - 1 do
+    if RemoteGeomDirtyPanes[i] then
+      ChangeMask := ChangeMask or (LongWord(1) shl i);
+  if RemoteTreeDirty then
+    ChangeMask := ChangeMask or LAYOUT_CHANGE_TREE;
+  LockPane := -1;
+  ChangedPane := -1;
+  if (ChangeMask and LAYOUT_CHANGE_TREE) = 0 then
+    for i := 0 to n - 1 do
+      if (ChangeMask and (LongWord(1) shl i)) <> 0 then
+        if ChangedPane = -1 then
+          ChangedPane := i
+        else if ChangedPane >= 0 then
+          ChangedPane := -2;
+  if ChangedPane >= 0 then
+    LockPane := ChangedPane;
+  // LOCK and the final proposal are ordered on the same non-blocking socket.
+  // FRAME_LAYOUT is a commit: the daemon applies/rejects it, releases every
+  // pane owned by this client, then emits exactly one canonical snapshot.
+  // Sending a separate successful UNLOCK here used to insert an old snapshot
+  // between the user's click and that commit (the visible minimize/zoom
+  // flash).  UNLOCK is now only cancellation if the proposal cannot be sent.
+  if APrelockedPane = -2 then
+    Locked := LockRemoteLayout(LockPane)
+  else
+  begin
+    // A pane lease covers only that pane. A tree/multi-pane proposal needs
+    // the global lease, while a global lease safely covers one pane too.
+    Locked := (APrelockedPane = -1) or
+      ((LockPane >= 0) and (APrelockedPane = LockPane));
+    if not Locked then
+      Remote.UnlockLayout(-1);
+  end;
+  if not Locked then
+    Exit;
+  Sent := Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles, Geom,
+    DeskW, DeskH, ChangeMask);
+  if not Sent then
+  begin
+    // A global cancellation releases whichever pane this client prelocked;
+    // it is also safe for a lock acquired internally above.
+    Remote.UnlockLayout(-1);
+    Exit;
+  end;
+  RemoteGeom := Copy(Geom, 0, Length(Geom));
+  RemoteDeskW := DeskW;
+  RemoteDeskH := DeskH;
+  RemoteGeometryDirty := False;
+  RemoteTreeDirty := False;
+  for I := 0 to MAX_PANES - 1 do
+    RemoteGeomDirtyPanes[I] := False;
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
@@ -4855,19 +6146,15 @@ begin
   // every-motion tracking never got it back after a maximise and restore --
   // silently, because both sides thought it was already there.
   HostAnyMotion := False;
-  // resize the pane's PTY to the full terminal (menu + desktop + status
-  // rows included). Single client => the daemon applies it as-is; the
-  // RESIZE_EV round-trip in ApplyRemoteResize aborts if another client
-  // constrains the size (falls back to grid rendering).
-  if Scr[i] <> nil then
-    Scr[i].Resize(ScreenWidth, ScreenHeight);
-  if RemoteMode then
+  // In remote mode the daemon already applied the canonical fullscreen size
+  // before broadcasting this state. Never substitute the host geometry.
+  if not RemoteMode then
   begin
-    if (Remote <> nil) and Remote.Connected then
-      Remote.SendResize(i, ScreenWidth, ScreenHeight);
-  end
-  else if Panes[i] <> nil then
-    Panes[i].Resize(ScreenWidth, ScreenHeight);
+    if Scr[i] <> nil then
+      Scr[i].Resize(ScreenWidth, ScreenHeight);
+    if Panes[i] <> nil then
+      Panes[i].Resize(ScreenWidth, ScreenHeight);
+  end;
 end;
 
 // reclaim the terminal for the window manager: reset the modes the app may
@@ -4877,29 +6164,66 @@ end;
 // the window's rectangle and the full desktop. It reuses the wireframe-drag
 // primitives, so each frame costs only its ring. Opt-in (Options > zoom
 // transition); the default F5 stays instant.
-procedure TSuperApp.ZoomAnimate(AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
+procedure TSuperApp.ZoomAnimate(AWindow: PTermWindow;
+  AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
 const
   STEPS = 8;
   FRAME_MS = 45;
 var
-  k, x1, y1, x2, y2: integer;
+  k, x1, y1, x2, y2, P: integer;
+  FrameAttr: byte;
+  SharePreview: boolean;
+
+  procedure SendOutlineStep(AOp: byte);
+  begin
+    if not SharePreview then
+      Exit;
+    Inc(RemoteZoomPreviewSeq);
+    if not Remote.SendLayoutPreview(P, RemoteZoomPreviewId,
+      Remote.LayoutRevision, RemoteZoomPreviewSeq, AOp,
+      x1 - Desktop^.Origin.X, y1 - Desktop^.Origin.Y,
+      x2 - x1 + 1, y2 - y1 + 1) then
+    begin
+      // Cosmetic relay failure must never leave the local renderer dirty or
+      // prevent the reliable canonical layout from being proposed. Stop
+      // adding preview frames; the daemon's lease cleanup supplies CLEAR.
+      SharePreview := False;
+      if DebugActive then
+        DebugLog(Format('remote-zoom: preview send failed pane=%d op=%d',
+          [P, AOp]));
+    end;
+  end;
 begin
   if PassthroughActive or (Desktop = nil) then
     Exit;
+  P := 0;
+  if AWindow <> nil then
+  begin
+    FrameAttr := AWindow^.ActiveFrameAttr;
+    P := AWindow^.PaneIdx;
+  end
+  else
+    FrameAttr := $07;
+  SharePreview := RemoteMode and (Remote <> nil) and Remote.Connected and
+    (RemoteZoomPreviewId <> 0) and (AWindow <> nil) and
+    (P >= 0) and (P < MAX_PANES);
   for k := 1 to STEPS do
   begin
     x1 := AX1 + ((BX1 - AX1) * k) div STEPS;
     y1 := AY1 + ((BY1 - AY1) * k) div STEPS;
     x2 := AX2 + ((BX2 - AX2) * k) div STEPS;
     y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
-    OutlinePaint(x1, y1, x2, y2, $1F);
+    TransientOutlineSet(P, x1, y1, x2, y2, FrameAttr);
+    SendOutlineStep(PREVIEW_OP_OUTLINE_SHOW);
+    UpdateScreen(False);
     Sleep(FRAME_MS);
-    OutlineInvalidate(x1, y1, x2, y2);
+    TransientOutlineClear(P);
+    SendOutlineStep(PREVIEW_OP_OUTLINE_HIDE);
     UpdateScreen(False);
   end;
 end;
 
-procedure TSuperApp.ExitPassthrough(AKeepRemoteRequest: boolean);
+procedure TSuperApp.ExitPassthrough;
 var
   P, pw, ph: integer;
 begin
@@ -4950,7 +6274,7 @@ begin
   // so the PTY is still full-screen and must be synced here. Do NOT call
   // RelayoutAll: that re-tiles every window and overwrites the size the user's
   // window had (an 80x20 pane came back filling the whole screen).
-  if (not (AKeepRemoteRequest and RemoteMode)) and
+  if (not RemoteMode) and
      (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
      (not Win[P]^.Minimized) and (Scr[P] <> nil) then
   begin
@@ -4961,19 +6285,610 @@ begin
     if (pw <> Scr[P].Width) or (ph <> Scr[P].Height) then
     begin
       Scr[P].Resize(pw, ph);
-      if RemoteMode then
-      begin
-        if (Remote <> nil) and Remote.Connected then
-          Remote.SendResize(P, pw, ph);
-      end
-      else if Panes[P] <> nil then
+      if Panes[P] <> nil then
         Panes[P].Resize(pw, ph);
     end;
   end;
-  ResetVideoSurface;   // blank both buffers
+  ResetVideoSurface;   // invalidate both buffers; never blank mid-transaction
   ReDraw;              // full repaint of menu, desktop, windows and status
   if (Lay.Focused >= 0) and (Lay.Focused < MAX_PANES) then
     FocusPane(Lay.Focused);
+end;
+
+procedure TSuperApp.SharedFullScreenSize(out ADeskW, ADeskH, ACols,
+  ARows: integer);
+begin
+  ADeskW := RemoteDeskW;
+  ADeskH := RemoteDeskH;
+  ACols := RemoteDeskW;
+  ARows := RemoteDeskH + 2;
+  if (RemoteMinHostW > 0) and (RemoteMinHostH > 2) then
+  begin
+    ACols := RemoteMinHostW;
+    ARows := RemoteMinHostH;
+    // Equal hosts can all take the exact same raw stream. With unequal hosts
+    // keep FreeVision visible and make the shared fullscreen rectangle fit
+    // the smallest physical viewport; the normal saved desktop is untouched.
+    if (RemoteClientCount > 1) and (not RemoteHostSizesMatch) then
+    begin
+      if ADeskW > ACols then ADeskW := ACols;
+      if ADeskH > ARows - 2 then ADeskH := ARows - 2;
+    end;
+  end;
+  if ADeskW < 1 then ADeskW := 1;
+  if ADeskH < 1 then ADeskH := 1;
+  if ACols < 4 then ACols := 4;
+  if ARows < 2 then ARows := 2;
+end;
+
+procedure TSuperApp.ResetRemotePreviewState;
+var
+  I: integer;
+begin
+  TransientOutlineClearAll;
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    RemotePreviewMode[I] := 0;
+    RemotePreviewGesture[I] := 0;
+    RemotePreviewRect[I] := Default(Objects.TRect);
+    RemotePreviewOverlayOn[I] := False;
+    RemotePreviewOverlayGesture[I] := 0;
+    RemotePreviewOverlayRect[I] := Default(Objects.TRect);
+    RemotePreviewOverlayAttr[I] := 0;
+    RemotePreviewClearPending[I] := False;
+  end;
+end;
+
+procedure TSuperApp.ShowRemotePreviewWindow(APane: integer);
+var
+  SavedCurrent: PView;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
+     Win[APane]^.GetState(sfVisible) then
+    Exit;
+  if Desktop = nil then
+  begin
+    Win[APane]^.Show;
+    Exit;
+  end;
+  SavedCurrent := Desktop^.Current;
+  Desktop^.Lock;
+  try
+    Win[APane]^.Show;
+    // TView.SetState(sfVisible) calls TGroup.ResetCurrent. Cosmetic
+    // wireframe cleanup must not steal a newer shared focus from another
+    // client, so restore the precise current view inside the same transaction.
+    if (SavedCurrent <> nil) and (Desktop^.Current <> SavedCurrent) then
+    begin
+      if Desktop^.Current <> nil then
+      begin
+        Desktop^.Current^.SetState(sfFocused, False);
+        Desktop^.Current^.SetState(sfSelected, False);
+      end;
+      SavedCurrent^.SetState(sfSelected, True);
+      if (Desktop^.State and sfFocused) <> 0 then
+        SavedCurrent^.SetState(sfFocused, True);
+      Desktop^.Current := SavedCurrent;
+    end;
+  finally
+    Desktop^.Unlock;
+  end;
+end;
+
+procedure TSuperApp.ClearRemotePreview(APane: integer;
+  ARestoreWindow: boolean);
+var
+  R: Objects.TRect;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) then
+    Exit;
+  TransientOutlineClear(APane);
+  RemotePreviewOverlayOn[APane] := False;
+  RemotePreviewOverlayGesture[APane] := 0;
+  RemotePreviewOverlayRect[APane] := Default(Objects.TRect);
+  RemotePreviewOverlayAttr[APane] := 0;
+  if (Win[APane] <> nil) and (RemotePreviewMode[APane] = 2) and
+     (not Win[APane]^.GetState(sfVisible)) then
+    ShowRemotePreviewWindow(APane);
+  if ARestoreWindow and (Win[APane] <> nil) and
+     (APane < Length(RemoteGeom)) and (not RemoteGeom[APane].Minimized) and
+     (not RemoteGeom[APane].Zoomed) and (RemoteGeom[APane].BW > 0) and
+     (RemoteGeom[APane].BH > 0) then
+  begin
+    R.Assign(RemoteGeom[APane].BX, RemoteGeom[APane].BY,
+      RemoteGeom[APane].BX + RemoteGeom[APane].BW,
+      RemoteGeom[APane].BY + RemoteGeom[APane].BH);
+    Win[APane]^.Locate(R);
+  end;
+  RemotePreviewMode[APane] := 0;
+  RemotePreviewGesture[APane] := 0;
+  RemotePreviewRect[APane] := Default(Objects.TRect);
+  RemotePreviewClearPending[APane] := False;
+end;
+
+// A successful daemon lease is the ordering barrier between an old remote
+// gesture and a new local action. Some of the old preview may already have
+// been rendered while its CLEAR/canonical pair is still queued. Restore the
+// daemon's canonical mirror before the new owner reads bounds or SavedRect;
+// the transport discards the matching queued cosmetic frames after the grant.
+procedure TSuperApp.SettleRemotePreviewsForOwnedAction(APane: integer);
+var
+  I, FirstPane, LastPane: integer;
+  SavedSuppress, SavedSettling, HadPreview: boolean;
+begin
+  if APane < 0 then
+  begin
+    FirstPane := 0;
+    LastPane := MAX_PANES - 1;
+  end
+  else
+  begin
+    if APane >= MAX_PANES then
+      Exit;
+    FirstPane := APane;
+    LastPane := APane;
+  end;
+  SavedSuppress := SuppressFlush;
+  SavedSettling := RemoteAttachSettling;
+  SuppressFlush := True;
+  RemoteAttachSettling := True;
+  try
+    for I := FirstPane to LastPane do
+    begin
+      HadPreview := (RemotePreviewMode[I] <> 0) or
+        RemotePreviewOverlayOn[I] or RemotePreviewClearPending[I] or
+        TransientOutlineActive(I);
+      if HadPreview then
+      begin
+        if DebugFull then
+          DebugLog(Format('preview-settle: owned action pane=%d lease=%d',
+            [I, APane]));
+        ClearRemotePreview(I, True);
+      end;
+    end;
+  finally
+    RemoteAttachSettling := SavedSettling;
+    SuppressFlush := SavedSuppress;
+  end;
+end;
+
+function TSuperApp.LockRemoteLayout(APane: integer): boolean;
+begin
+  Result := (Remote <> nil) and Remote.Connected and
+    Remote.LockLayout(APane);
+  if Result then
+    SettleRemotePreviewsForOwnedAction(APane);
+end;
+
+procedure TSuperApp.ApplyRemoteLayoutPreviewEv(APane: integer;
+  const AData: TByteArray);
+var
+  Preview: TLayoutPreview;
+  R: Objects.TRect;
+  SavedSuppress, SavedSettling: boolean;
+  FrameAttr: byte;
+  SavedCurrent: PView;
+begin
+  if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) or
+     (Desktop = nil) or
+     (not DecodeLayoutPreviewBlob(AData, Preview)) then
+    Exit;
+  if DebugFull then
+    DebugLog(Format('preview-event: pane=%d id=%d base=%d seq=%d ' +
+      'op=%d rect=%d,%d %dx%d', [APane, Preview.GestureId,
+      Preview.BaseRevision, Preview.Seq, Preview.Op, Preview.X, Preview.Y,
+      Preview.W, Preview.H]));
+
+  if Preview.Op = PREVIEW_OP_CLEAR then
+  begin
+    if ((RemotePreviewMode[APane] <> 0) and
+        (RemotePreviewGesture[APane] <> Preview.GestureId)) or
+       (RemotePreviewOverlayOn[APane] and
+        (RemotePreviewOverlayGesture[APane] <> Preview.GestureId)) then
+      Exit;
+    // Keep the last BOUNDS/ring physically intact. CLEAR is followed by the
+    // authoritative LAYOUT/PEER event, but the 32-frame/20-ms Idle budget can
+    // split those adjacent frames across ticks. Restoring RemoteGeom here
+    // exposed the old rectangle for one frame at exactly that boundary.
+    RemotePreviewClearPending[APane] := True;
+    Exit;
+  end;
+  if (Preview.W <= 0) or (Preview.H <= 0) then
+    Exit;
+  R.Assign(Preview.X, Preview.Y, Preview.X + Preview.W,
+    Preview.Y + Preview.H);
+
+  case Preview.Op of
+    PREVIEW_OP_BOUNDS, PREVIEW_OP_WIREFRAME:
+      begin
+        RemotePreviewClearPending[APane] := False;
+        SavedSuppress := SuppressFlush;
+        SavedSettling := RemoteAttachSettling;
+        SuppressFlush := True;
+        RemoteAttachSettling := True;
+        try
+          if (RemotePreviewGesture[APane] <> 0) and
+             (RemotePreviewGesture[APane] <> Preview.GestureId) then
+            ClearRemotePreview(APane, True);
+          RemotePreviewGesture[APane] := Preview.GestureId;
+          RemotePreviewRect[APane] := R;
+          if Preview.Op = PREVIEW_OP_BOUNDS then
+          begin
+            if RemotePreviewOverlayOn[APane] then
+            begin
+              TransientOutlineClear(APane);
+              RemotePreviewOverlayOn[APane] := False;
+            end;
+            if not Win[APane]^.GetState(sfVisible) then
+              ShowRemotePreviewWindow(APane);
+            Win[APane]^.Locate(R);
+            RemotePreviewMode[APane] := 1;
+          end
+          else
+          begin
+            FrameAttr := Win[APane]^.ActiveFrameAttr;
+            if Win[APane]^.GetState(sfVisible) then
+            begin
+              SavedCurrent := Desktop^.Current;
+              Desktop^.Lock;
+              try
+                Win[APane]^.Hide;
+                // Hide must not select an arbitrary uncovered pane. Preserve
+                // exactly the shared focus which was current when this FIFO
+                // preview arrived: it may be this hidden dragged pane, or a
+                // different pane focused later by another client.
+                if (SavedCurrent <> nil) and
+                   (Desktop^.Current <> SavedCurrent) then
+                begin
+                  if Desktop^.Current <> nil then
+                  begin
+                    Desktop^.Current^.SetState(sfFocused, False);
+                    Desktop^.Current^.SetState(sfSelected, False);
+                  end;
+                  SavedCurrent^.SetState(sfSelected, True);
+                  if (Desktop^.State and sfFocused) <> 0 then
+                    SavedCurrent^.SetState(sfFocused, True);
+                  Desktop^.Current := SavedCurrent;
+                end;
+              finally
+                Desktop^.Unlock;
+              end;
+            end;
+            RemotePreviewMode[APane] := 2;
+            RemotePreviewOverlayOn[APane] := True;
+            RemotePreviewOverlayGesture[APane] := Preview.GestureId;
+            RemotePreviewOverlayRect[APane] := R;
+            RemotePreviewOverlayAttr[APane] := FrameAttr;
+            TransientOutlineSet(APane, Desktop^.Origin.X + R.A.X,
+              Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
+              Desktop^.Origin.Y + R.B.Y - 1, FrameAttr, True);
+          end;
+        finally
+          RemoteAttachSettling := SavedSettling;
+          SuppressFlush := SavedSuppress;
+        end;
+        if not SavedSuppress then
+          // Locate/Hide/Show have already rebuilt the affected FreeVision
+          // regions while flushing was suppressed. Publish that settled
+          // buffer directly; redrawing all sixteen possible windows for
+          // every 60 Hz pointer sample wastes CPU without changing a cell.
+          UpdateScreen(False);
+      end;
+    PREVIEW_OP_OUTLINE_SHOW:
+      begin
+        RemotePreviewClearPending[APane] := False;
+        FrameAttr := Win[APane]^.ActiveFrameAttr;
+        RemotePreviewOverlayOn[APane] := True;
+        RemotePreviewOverlayGesture[APane] := Preview.GestureId;
+        RemotePreviewOverlayRect[APane] := R;
+        RemotePreviewOverlayAttr[APane] := FrameAttr;
+        TransientOutlineSet(APane, Desktop^.Origin.X + R.A.X,
+          Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
+          Desktop^.Origin.Y + R.B.Y - 1, FrameAttr);
+        UpdateScreen(False);
+      end;
+    PREVIEW_OP_OUTLINE_HIDE:
+      if RemotePreviewOverlayGesture[APane] = Preview.GestureId then
+      begin
+        TransientOutlineClear(APane);
+        RemotePreviewOverlayOn[APane] := False;
+        RemotePreviewOverlayGesture[APane] := 0;
+        UpdateScreen(False);
+      end;
+  end;
+end;
+
+procedure TSuperApp.PrepareRemotePreviewsForLayout(ALockedPanes: LongWord);
+var
+  I: integer;
+begin
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    if RemotePreviewClearPending[I] then
+    begin
+      // The enclosing layout transaction already suppresses physical output.
+      // Drop the held last preview now, without restoring the old RemoteGeom;
+      // the canonical loop which follows places the real final/cancel bounds.
+      ClearRemotePreview(I, False);
+      RemotePreviewClearPending[I] := False;
+      Continue;
+    end;
+    if RemotePreviewOverlayOn[I] then
+      TransientOutlineClear(I);
+    if (RemotePreviewMode[I] = 2) and (Win[I] <> nil) and
+       (not Win[I]^.GetState(sfVisible)) then
+      ShowRemotePreviewWindow(I);
+    if (ALockedPanes and (LongWord(1) shl I)) = 0 then
+    begin
+      RemotePreviewMode[I] := 0;
+      RemotePreviewGesture[I] := 0;
+      RemotePreviewOverlayOn[I] := False;
+      RemotePreviewOverlayGesture[I] := 0;
+    end;
+  end;
+end;
+
+procedure TSuperApp.ReapplyRemotePreviewsAfterLayout(
+  ALockedPanes: LongWord);
+var
+  I: integer;
+  R: Objects.TRect;
+begin
+  if Desktop = nil then
+    Exit;
+  for I := 0 to MAX_PANES - 1 do
+    if ((ALockedPanes and (LongWord(1) shl I)) <> 0) and
+       (Win[I] <> nil) then
+    begin
+      R := RemotePreviewRect[I];
+      case RemotePreviewMode[I] of
+        1:
+          if (R.B.X > R.A.X) and (R.B.Y > R.A.Y) then
+            Win[I]^.Locate(R);
+        2:
+          if (R.B.X > R.A.X) and (R.B.Y > R.A.Y) then
+          begin
+            if Win[I]^.GetState(sfVisible) then
+              Win[I]^.Hide;
+            RemotePreviewOverlayOn[I] := True;
+            TransientOutlineSet(I, Desktop^.Origin.X + R.A.X,
+              Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
+              Desktop^.Origin.Y + R.B.Y - 1,
+              RemotePreviewOverlayAttr[I], True);
+          end;
+      end;
+      if RemotePreviewOverlayOn[I] and (RemotePreviewMode[I] <> 2) then
+      begin
+        R := RemotePreviewOverlayRect[I];
+        if (R.B.X > R.A.X) and (R.B.Y > R.A.Y) then
+          TransientOutlineSet(I, Desktop^.Origin.X + R.A.X,
+            Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
+            Desktop^.Origin.Y + R.B.Y - 1,
+            RemotePreviewOverlayAttr[I]);
+      end;
+    end;
+end;
+
+procedure TSuperApp.ResetRemoteZoomState;
+begin
+  RemoteZoomPending := False;
+  RemoteZoomPane := -1;
+  RemoteZoomTarget := Default(TPaneGeom);
+  RemoteZoomContractPending := False;
+  RemoteZoomContractPane := -1;
+  RemoteZoomOldX1 := 0;
+  RemoteZoomOldY1 := 0;
+  RemoteZoomOldX2 := 0;
+  RemoteZoomOldY2 := 0;
+  RemoteZoomBaseRevision := 0;
+  RemoteZoomSentTick := 0;
+  RemoteZoomPreviewId := 0;
+  RemoteZoomPreviewSeq := 0;
+end;
+
+procedure TSuperApp.BeginRemoteZoom(ACommand: word; AInfoPtr: Pointer);
+var
+  Candidate: TPaneGeomArray;
+  Titles: TStrArray;
+  P, I, FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  Target: TPaneGeom;
+  WR: Objects.TRect;
+  EntersZoom, LeavesZoom: boolean;
+begin
+  if (not RemoteMode) or (Remote = nil) or (not Remote.Connected) or
+     RemoteZoomPending or (Lay = nil) or (Desktop = nil) or
+     ((ACommand <> cmZoom) and (ACommand <> cmFullScreen)) then
+    Exit;
+
+  // A frame command names its window through InfoPtr. Menu/key commands use
+  // nil and act on the shared focus. Never let a delayed mouse command zoom a
+  // different window merely because another client changed focus meanwhile.
+  P := -1;
+  if AInfoPtr <> nil then
+    for I := 0 to Lay.PaneCount - 1 do
+      if Pointer(Win[I]) = AInfoPtr then
+      begin
+        P := I;
+        Break;
+      end;
+  if P < 0 then
+    P := Lay.Focused;
+  if (P < 0) or (P >= Lay.PaneCount) or (P >= Length(RemoteGeom)) or
+     (Win[P] = nil) or Win[P]^.Minimized then
+    Exit;
+
+  // LockLayout may have decoded a newer host-summary frame while waiting for
+  // its reply. Use that transport metadata for this proposal even though the
+  // normal Idle loop has not consumed the queued UI event yet.
+  if Remote.HostSummaryValid then
+  begin
+    RemoteClientCount := Remote.ClientCount;
+    RemoteMinHostW := Remote.MinHostW;
+    RemoteMinHostH := Remote.MinHostH;
+    RemoteHostSizesMatch := Remote.HostSizesMatch;
+    RemoteHostSummaryValid := True;
+  end;
+  if (ACommand = cmFullScreen) and (not RemoteHostSummaryValid) then
+    Exit;
+  if not LockRemoteLayout(P) then
+    Exit;
+
+  Candidate := Copy(RemoteGeom, 0, Length(RemoteGeom));
+  Target := Candidate[P];
+  if ACommand = cmFullScreen then
+  begin
+    if Target.FullScreen then
+    begin
+      Target.FullScreen := False;
+      Target.Zoomed := False;
+    end
+    else
+    begin
+      Target.FullScreen := True;
+      Target.Zoomed := True;
+    end;
+  end
+  else
+  begin
+    Target.FullScreen := False;
+    Target.Zoomed := not Target.Zoomed;
+  end;
+  Target.Minimized := False;
+  if Target.FullScreen then
+  begin
+    SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+    Target.Cols := FullCols;
+    Target.Rows := FullRows;
+  end
+  else if Target.Zoomed then
+  begin
+    Target.Cols := RemoteDeskW - 2;
+    Target.Rows := RemoteDeskH - 2;
+  end
+  else
+  begin
+    Target.Cols := Target.BW - 2;
+    Target.Rows := Target.BH - 2;
+  end;
+  if Target.Cols < 4 then Target.Cols := 4;
+  if Target.Rows < 2 then Target.Rows := 2;
+  Candidate[P] := Target;
+
+  WR := Default(Objects.TRect);
+  Win[P]^.GetBounds(WR);
+  RemoteZoomOldX1 := Desktop^.Origin.X + WR.A.X;
+  RemoteZoomOldY1 := Desktop^.Origin.Y + WR.A.Y;
+  RemoteZoomOldX2 := Desktop^.Origin.X + WR.B.X - 1;
+  RemoteZoomOldY2 := Desktop^.Origin.Y + WR.B.Y - 1;
+  EntersZoom := (not RemoteGeom[P].Zoomed) and Target.Zoomed;
+  LeavesZoom := RemoteGeom[P].Zoomed and (not Target.Zoomed);
+  RemoteZoomPreviewId := 0;
+  RemoteZoomPreviewSeq := 0;
+  if Cfg.ZoomAnim and (EntersZoom or LeavesZoom) then
+    RemoteZoomPreviewId := Remote.NewPreviewId;
+
+  // Expansion belongs before the proposal: output produced during these
+  // eight frames is still old-geometry output and must be parsed by the old
+  // mirror. The authoritative LAYOUT_EV performs the only structural paint.
+  if Cfg.ZoomAnim and EntersZoom then
+  begin
+    if Target.FullScreen then
+      SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows)
+    else
+    begin
+      FullDeskW := RemoteDeskW;
+      FullDeskH := RemoteDeskH;
+    end;
+    ZoomAnimate(Win[P], RemoteZoomOldX1, RemoteZoomOldY1,
+      RemoteZoomOldX2, RemoteZoomOldY2, Desktop^.Origin.X,
+      Desktop^.Origin.Y, Desktop^.Origin.X + FullDeskW - 1,
+      Desktop^.Origin.Y + FullDeskH - 1);
+  end;
+
+  Titles := Default(TStrArray);
+  SetLength(Titles, Lay.PaneCount);
+  for I := 0 to Lay.PaneCount - 1 do
+    if Win[I] <> nil then
+      Titles[I] := Win[I]^.GetTitle(80);
+  // Restore/contraction frames belong after the authoritative ACK. Reserve
+  // that short cosmetic tail while this client still owns the pane; the
+  // daemon releases the structural lease immediately on commit but keeps the
+  // same generation/id authorized for at most two seconds.
+  if Cfg.ZoomAnim and LeavesZoom then
+  begin
+    Inc(RemoteZoomPreviewSeq);
+    if not Remote.SendLayoutPreview(P, RemoteZoomPreviewId,
+      Remote.LayoutRevision, RemoteZoomPreviewSeq, PREVIEW_OP_TAIL_BEGIN,
+      0, 0, 0, 0) then
+    begin
+      Remote.UnlockLayout(P);
+      ResetRemoteZoomState;
+      Exit;
+    end;
+  end;
+  if not Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles,
+    Candidate, RemoteDeskW, RemoteDeskH, LongWord(1) shl P) then
+  begin
+    Remote.UnlockLayout(P);
+    ResetRemoteZoomState;
+    Exit;
+  end;
+
+  RemoteZoomPending := True;
+  RemoteZoomPane := P;
+  RemoteZoomTarget := Target;
+  RemoteZoomBaseRevision := Remote.LayoutRevision;
+  RemoteZoomSentTick := GetTickCount64;
+  RemoteZoomContractPending := False;
+  RemoteZoomContractPane := P;
+  // Contraction is delayed until the ACK has restored and physically painted
+  // the IDE. Running it here would either parse old output at the new width or
+  // draw its rings over the raw application's stale surface.
+  if not (Cfg.ZoomAnim and LeavesZoom) then
+    RemoteZoomContractPane := -1;
+  if DebugActive then
+    DebugLog(Format('remote-zoom: proposed pane=%d zoom=%d full=%d pty=%dx%d',
+      [P, Ord(Target.Zoomed), Ord(Target.FullScreen),
+       Target.Cols, Target.Rows]));
+end;
+
+procedure TSuperApp.FinishRemoteZoomAnimation;
+var
+  P: integer;
+  WR: Objects.TRect;
+  NewX1, NewY1, NewX2, NewY2: integer;
+  CanAnimate: boolean;
+begin
+  if not RemoteZoomContractPending then
+    Exit;
+  RemoteZoomContractPending := False;
+  P := RemoteZoomContractPane;
+  CanAnimate := (P >= 0) and (P < MAX_PANES) and (Win[P] <> nil) and
+    (not PassthroughActive) and (Desktop <> nil);
+  if CanAnimate then
+  begin
+    WR := Default(Objects.TRect);
+    Win[P]^.GetBounds(WR);
+    NewX1 := Desktop^.Origin.X + WR.A.X;
+    NewY1 := Desktop^.Origin.Y + WR.A.Y;
+    NewX2 := Desktop^.Origin.X + WR.B.X - 1;
+    NewY2 := Desktop^.Origin.Y + WR.B.Y - 1;
+    ZoomAnimate(Win[P], RemoteZoomOldX1, RemoteZoomOldY1,
+      RemoteZoomOldX2, RemoteZoomOldY2, NewX1, NewY1, NewX2, NewY2);
+  end;
+  // End the authorized post-commit tail even if the local renderer could no
+  // longer animate (for example, its terminal disappeared during the ACK).
+  // That makes observers clear any last ring immediately instead of waiting
+  // for the daemon's defensive timeout.
+  if (P >= 0) and (P < MAX_PANES) and (Remote <> nil) and
+     Remote.Connected and (RemoteZoomPreviewId <> 0) then
+  begin
+    Inc(RemoteZoomPreviewSeq);
+    Remote.SendLayoutPreview(P, RemoteZoomPreviewId,
+      Remote.LayoutRevision, RemoteZoomPreviewSeq, PREVIEW_OP_TAIL_END,
+      0, 0, 0, 0);
+  end;
+  ResetRemoteZoomState;
 end;
 
 // derive passthrough purely from the maximized state, once per Idle tick,
@@ -4981,49 +6896,60 @@ end;
 // leaves it automatically without wiring every command.
 procedure TSuperApp.UpdatePassthrough;
 var
-  f, P: integer;
+  f: integer;
   want: boolean;
 begin
   f := Lay.Focused;
   want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
-    Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop));
-  // F5 may have been forced back to the grid because another client made the
-  // common PTY smaller. Once the user leaves that pane/mode, discard the
-  // deferred full-size request and synchronize its ordinary window bounds.
-  if (PassBlockedPane >= 0) and
-     ((not want) or (PassBlockedPane <> f)) then
-  begin
-    P := PassBlockedPane;
-    PassBlockedPane := -1;
-    PassBlockedW := 0;
-    PassBlockedH := 0;
-    SyncPaneToWindow(P);
-  end;
-  if want and (not PassthroughActive) and (PassBlockedPane <> f) then
+    Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop)) and
+    ((not RemoteMode) or
+     (RemoteHostSummaryValid and RemoteHostSizesMatch and
+      (ScreenWidth = RemoteMinHostW) and
+      (ScreenHeight = RemoteMinHostH) and
+      (not SharedFullScreenRendered) and
+      (Scr[f] <> nil) and (Scr[f].Width = ScreenWidth) and
+      (Scr[f].Height = ScreenHeight)));
+  if want and (not PassthroughActive) then
     EnterPassthrough(f)
   else if PassthroughActive and (not want) then
     ExitPassthrough
   else if PassthroughActive and
     ((ScreenWidth <> PassReqW) or (ScreenHeight <> PassReqH)) then
   begin
-    // host terminal was resized while passthrough was on: re-request the
-    // new full size so the app repaints to fit
-    PassReqW := ScreenWidth;
-    PassReqH := ScreenHeight;
-    if Scr[PassPane] <> nil then
-      Scr[PassPane].Resize(ScreenWidth, ScreenHeight);
     if RemoteMode then
     begin
-      if (Remote <> nil) and Remote.Connected then
-        Remote.SendResize(PassPane, ScreenWidth, ScreenHeight);
+      if RemoteHostSummaryValid and RemoteHostSizesMatch and
+         (ScreenWidth = RemoteMinHostW) and
+         (ScreenHeight = RemoteMinHostH) and (PassPane >= 0) and
+         (PassPane < MAX_PANES) and (Scr[PassPane] <> nil) and
+         (Scr[PassPane].Width = ScreenWidth) and
+         (Scr[PassPane].Height = ScreenHeight) then
+      begin
+        PassReqW := ScreenWidth;
+        PassReqH := ScreenHeight;
+      end
+      else
+      begin
+        // Until the serialized desktop transaction is acknowledged, raw
+        // bytes cannot map one-to-one on every physical viewer.
+        SharedFullScreenRendered := True;
+        ExitPassthrough;
+      end;
     end
-    else if Panes[PassPane] <> nil then
-      Panes[PassPane].Resize(ScreenWidth, ScreenHeight);
+    else
+    begin
+      PassReqW := ScreenWidth;
+      PassReqH := ScreenHeight;
+      if Scr[PassPane] <> nil then
+        Scr[PassPane].Resize(ScreenWidth, ScreenHeight);
+      if Panes[PassPane] <> nil then
+        Panes[PassPane].Resize(ScreenWidth, ScreenHeight);
+    end;
   end;
 end;
 
-// fingerprint of the visible state (geometry+titles+focus): if it
-// differs from the last sync, the layout must be pushed to the daemon
+// Fingerprint of shared visible geometry+titles. Focus and the lock mask use
+// their own ordered server events and must not trigger a geometry proposal.
 function TSuperApp.ComputeLayoutHash: string;
 var
   Geom: TPaneGeomArray;
@@ -5034,97 +6960,374 @@ begin
   if Lay = nil then
     Exit;
   CollectPaneGeom(Geom, DeskW, DeskH);
-  Result := IntToStr(Lay.PaneCount) + ':' + IntToStr(Lay.Focused) + ':' +
+  Result := IntToStr(Lay.PaneCount) + ':' +
     IntToStr(DeskW) + 'x' + IntToStr(DeskH);
   for i := 0 to Length(Geom) - 1 do
   begin
-    Result := Result + Format('|%d,%d,%d,%d,%d,%d',
+    Result := Result + Format('|%d,%d,%d,%d,%d,%d,%d,%d,%d',
       [Geom[i].BX, Geom[i].BY, Geom[i].BW, Geom[i].BH,
-       Ord(Geom[i].Zoomed), Ord(Geom[i].Minimized)]);
+       Geom[i].Cols, Geom[i].Rows, Ord(Geom[i].Zoomed),
+       Ord(Geom[i].Minimized), Ord(Geom[i].FullScreen)]);
     if (i < MAX_PANES) and (Win[i] <> nil) then
       Result := Result + ',' + Win[i]^.GetTitle(80);
   end;
 end;
 
-// applies a LAYOUT_EV broadcast by the daemon (another client moved,
-// minimized or renamed windows): tree, titles and geometry. Focus is local
-// to each interactive client; an explicit CLI `focus` arrives separately as
-// sekFocusEv and is still authoritative.
-procedure TSuperApp.ApplyRemoteLayoutEv(const AData: TByteArray);
+// Host membership and physical sizes are transport safety metadata, not
+// canonical desktop geometry. Apply them even while this client owns a pane
+// lease; never Locate a window or resize a mirror from this event.
+procedure TSuperApp.ApplyRemoteHostSummaryEv(const AData: TByteArray);
+var
+  Clients, MinHostW, MinHostH, OldClientCount, I: Longint;
+  HostSizesMatch, AnyFull: boolean;
+begin
+  if not DecodeHostSummaryBlob(AData, Clients, MinHostW, MinHostH,
+    HostSizesMatch) then
+    Exit;
+  OldClientCount := RemoteClientCount;
+  RemoteClientCount := Clients;
+  RemoteMinHostW := MinHostW;
+  RemoteMinHostH := MinHostH;
+  RemoteHostSizesMatch := HostSizesMatch;
+  RemoteHostSummaryValid := True;
+  if DebugFull then
+    DebugLog(Format('host-summary-event: clients=%d min=%dx%d match=%d',
+      [Clients, MinHostW, MinHostH, Ord(HostSizesMatch)]));
+
+  AnyFull := False;
+  if Lay <> nil then
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) and Win[I]^.FullScreen then
+      begin
+        AnyFull := True;
+        Break;
+      end;
+  if not AnyFull then
+    SharedFullScreenRendered := False
+  else if (not HostSizesMatch) or (Clients <> OldClientCount) then
+    // Once membership changes, keep the currently visible fullscreen mode
+    // rendered until an explicit F5-out/F5-in hand-off. This avoids an
+    // attach/detach silently clearing a viewer and switching it back to raw.
+    SharedFullScreenRendered := True;
+
+  // UpdatePassthrough reclaims raw output immediately when the summary is
+  // incompatible, invalid for this surface, or the membership latch above
+  // was set. ExitPassthrough performs one settled renderer redraw and, in
+  // remote mode, does not change any canonical/mirror geometry.
+  UpdatePassthrough;
+end;
+
+// Apply the daemon's one canonical desktop. Geometry, fullscreen, focus and
+// lock flags are shared; the physical host may only clip the result.
+procedure TSuperApp.ApplyRemoteLayoutEv(const AData: TByteArray;
+  APeer: boolean; ALocalPreservePane: integer);
 var
   Nodes: string;
-  Focused, DeskW, DeskH: Longint;
+  Focused, DeskW, DeskH, WireClients, WireMinHostW,
+    WireMinHostH: Longint;
+  Revision: QWord;
+  Changes, LockedPanes, OldLockedPanes, PreservePanes,
+    AllowedPanes: LongWord;
   Titles: TStrArray;
-  Geom: TPaneGeomArray;
+  Geom, CanonicalGeom: TPaneGeomArray;
   NewLay: TLayout;
-  I, LocalFocused: integer;
+  I: integer;
   GR: Objects.TRect;
-begin
-  LocalFocused := Lay.Focused;
-  if not DecodeLayoutBlob(AData, Nodes, Focused, Titles, Geom, DeskW,
-    DeskH) then
-    Exit;
-  if Length(Titles) <> Lay.PaneCount then
-    Exit;   // out of sync: another event will arrive after convergence
-  NewLay := nil;
-  if LoadLayoutString(Nodes, NewLay) and (NewLay <> nil) then
+  AnyFull, WireHostSizesMatch, ZoomAck, ZoomReply: boolean;
+  SavedSuppress: boolean;
+  FullDeskW, FullDeskH, FullCols, FullRows: integer;
+
+  procedure PreserveLocalPane(APane: integer);
+  var
+    R: Objects.TRect;
   begin
-    if NewLay.PaneCount = Lay.PaneCount then
-    begin
-      NewLay.Focused := LocalFocused;
-      Lay.Free;
-      Lay := NewLay;
-    end
+    if (APane < 0) or (APane >= Length(Geom)) or
+       (APane >= MAX_PANES) or (Win[APane] = nil) then
+      Exit;
+    R := Default(Objects.TRect);
+    if Win[APane]^.Zoomed then
+      R := Win[APane]^.ZoomRect
+    else if Win[APane]^.Minimized then
+      R := Win[APane]^.SavedRect
     else
-      NewLay.Free;
-  end;
-  for I := 0 to Lay.PaneCount - 1 do
-    if (I < MAX_PANES) and (Win[I] <> nil) and (Trim(Titles[I]) <> '') then
-      Win[I]^.SetTitle(' ' + Trim(Titles[I]));
-  if Desktop <> nil then
-  begin
-    GR := Default(Objects.TRect);
-    Desktop^.GetExtent(GR);
-    // geometry only if both desktops have the same size
-    if (DeskW = GR.B.X - GR.A.X) and (DeskH = GR.B.Y - GR.A.Y) then
+      Win[APane]^.GetBounds(R);
+    Geom[APane].BX := R.A.X;
+    Geom[APane].BY := R.A.Y;
+    Geom[APane].BW := R.B.X - R.A.X;
+    Geom[APane].BH := R.B.Y - R.A.Y;
+    Geom[APane].Zoomed := Win[APane]^.Zoomed;
+    Geom[APane].Minimized := Win[APane]^.Minimized;
+    Geom[APane].FullScreen := Win[APane]^.FullScreen;
+    // A live drag changes only presentation until its reliable commit. Keep
+    // parsing/drawing this actor pane at the mirror size which was actually
+    // in force when the peer event arrived.
+    if Scr[APane] <> nil then
     begin
-      for I := 0 to Lay.PaneCount - 1 do
-        if (I < MAX_PANES) and (Win[I] <> nil) then
-        begin
-          if Win[I]^.Minimized and (not Geom[I].Minimized) then
-            RestoreWindow(I);
-          if (Geom[I].BW > 0) and (Geom[I].BH > 0) and
-             (not Geom[I].Minimized) then
-          begin
-            GR.Assign(Geom[I].BX, Geom[I].BY, Geom[I].BX + Geom[I].BW,
-              Geom[I].BY + Geom[I].BH);
-            Win[I]^.Locate(GR);
-          end;
-          if Geom[I].Zoomed <> Win[I]^.Zoomed then
-            Win[I]^.Zoom;
-        end;
-      for I := 0 to Lay.PaneCount - 1 do
-        if (I < MAX_PANES) and (Win[I] <> nil) and Geom[I].Minimized and
-           (not Win[I]^.Minimized) then
-          MinimizeWindow(I);
+      Geom[APane].Cols := Scr[APane].Width;
+      Geom[APane].Rows := Scr[APane].Height;
     end;
   end;
-  // Never let another attached UI undo a click in this one. This was the
-  // visible one-second bounce: client A clicked Codex, then the debounced
-  // layout from client B arrived with Claude in its Focused field and stole
-  // A's focus. Use the sender's focus only as a fallback when our pane has
-  // disappeared or was minimized by the shared geometry change.
-  if (LocalFocused >= 0) and (LocalFocused < Lay.PaneCount) and
-     (Win[LocalFocused] <> nil) and (not Win[LocalFocused]^.Minimized) then
-    Lay.Focused := LocalFocused
-  else if (Focused >= 0) and (Focused < Lay.PaneCount) and
-          (Win[Focused] <> nil) and (not Win[Focused]^.Minimized) then
+begin
+  if not DecodeLayoutBlob(AData, Nodes, Focused, Titles, Geom, DeskW,
+    DeskH, Revision, WireClients, Changes, LockedPanes, WireMinHostW,
+    WireMinHostH, WireHostSizesMatch) then
+    Exit;
+  if (Revision = 0) or
+     (Length(Titles) <> Lay.PaneCount) or
+     (Length(Geom) <> Lay.PaneCount) or
+     (WireClients < 0) or (WireClients > MAX_CLIENTS) or
+     (WireMinHostW < 0) or (WireMinHostH < 0) then
+    Exit;   // out of sync: another event will arrive after convergence
+  AllowedPanes := (LongWord(1) shl Lay.PaneCount) - 1;
+  if APeer then
+  begin
+    if (Changes and not AllowedPanes) <> 0 then
+      Exit;
+    PreservePanes := Changes;
+    // LockLayout may already have queued a same-revision ordinary layout just
+    // before this pane's grant. It reclassifies that frame as peer state and
+    // names the newly leased pane here, avoiding both a stale relocation and
+    // a dropped first gesture under simultaneous acquisition.
+    if (ALocalPreservePane >= 0) and
+       (ALocalPreservePane < Lay.PaneCount) then
+      PreservePanes := PreservePanes or
+        (LongWord(1) shl ALocalPreservePane);
+  end
+  else
+  begin
+    if Changes <> 0 then
+      Exit;
+    PreservePanes := 0;
+  end;
+  CanonicalGeom := Copy(Geom, 0, Length(Geom));
+  for I := 0 to Lay.PaneCount - 1 do
+    if (PreservePanes and (LongWord(1) shl I)) <> 0 then
+      PreserveLocalPane(I);
+  ZoomAck := (not APeer) and RemoteZoomPending and (RemoteZoomPane >= 0) and
+    (RemoteZoomPane < Length(Geom)) and
+    (Geom[RemoteZoomPane].BX = RemoteZoomTarget.BX) and
+    (Geom[RemoteZoomPane].BY = RemoteZoomTarget.BY) and
+    (Geom[RemoteZoomPane].BW = RemoteZoomTarget.BW) and
+    (Geom[RemoteZoomPane].BH = RemoteZoomTarget.BH) and
+    (Geom[RemoteZoomPane].Cols = RemoteZoomTarget.Cols) and
+    (Geom[RemoteZoomPane].Rows = RemoteZoomTarget.Rows) and
+    (Geom[RemoteZoomPane].Zoomed = RemoteZoomTarget.Zoomed) and
+    (Geom[RemoteZoomPane].Minimized = RemoteZoomTarget.Minimized) and
+    (Geom[RemoteZoomPane].FullScreen = RemoteZoomTarget.FullScreen);
+  // A successful geometry mutation always advances the canonical revision.
+  // If another pane committed while this proposal was in flight, the daemon
+  // rejects our stale base and returns that newer state after releasing the
+  // lease. Treat that state as a negative ACK instead of leaving every later
+  // F5/double-click blocked behind a proposal which can no longer complete.
+  ZoomReply := (not APeer) and RemoteZoomPending and
+    (Revision > RemoteZoomBaseRevision);
+  NewLay := nil;
+  if (not LoadLayoutString(Nodes, NewLay, True)) or (NewLay = nil) then
+    Exit;
+  if NewLay.PaneCount <> Lay.PaneCount then
+  begin
+    NewLay.Free;
+    Exit;
+  end;
+  NewLay.Focused := Focused;
+  if DebugFull then
+    DebugLog(Format('layout-event: revision=%d peer=%d preserve=%x ' +
+      'wire-clients=%d wire-host=%dx%d/%d locks=%x focus=%d',
+      [Revision, Ord(APeer), PreservePanes, WireClients, WireMinHostW,
+       WireMinHostH, Ord(WireHostSizesMatch), LockedPanes, Focused]));
+  // Set the transient flag before SetTitle: SetTitle redraws the frame.
+  // Updating it later painted one final stale shaded border on unlock.
+  OldLockedPanes := RemoteLockedPanes;
+  RemoteLockedPanes := LockedPanes;
+  // Every SizeLimits/Zoom/ArrangeIcons call below must see the incoming desk,
+  // never the one from the preceding revision.
+  RemoteDeskW := DeskW;
+  RemoteDeskH := DeskH;
+  // A canonical event is one visual transaction. Locate/Hide/Show/Select all
+  // redraw views internally; keep those intermediate buffers off the host and
+  // emit one settled diff after every pane and icon has reached its final slot.
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+  PrepareRemotePreviewsForLayout(LockedPanes);
+  Lay.Free;
+  Lay := NewLay;
+  for I := 0 to Lay.PaneCount - 1 do
+    if (I < MAX_PANES) and (Win[I] <> nil) and (Trim(Titles[I]) <> '') and
+       (Trim(Win[I]^.GetTitle(80)) <> Trim(Titles[I])) then
+      Win[I]^.SetTitle(' ' + Trim(Titles[I]));
+  RemoteAttachSettling := True;
+  try
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) then
+      begin
+        // A layout commit owns PTY dimensions as well as the window bounds.
+        // Apply the mirror resize under the same suppressed transaction; the
+        // daemon deliberately sends no earlier RESIZE_EV for this commit.
+        if (Scr[I] <> nil) and (Geom[I].Cols >= 4) and
+           (Geom[I].Rows >= 2) and
+           ((Scr[I].Width <> Geom[I].Cols) or
+            (Scr[I].Height <> Geom[I].Rows)) then
+          Scr[I].Resize(Geom[I].Cols, Geom[I].Rows);
+        if Win[I]^.Minimized and (not Geom[I].Minimized) then
+          RestoreWindow(I);
+        if (Geom[I].BW > 0) and (Geom[I].BH > 0) and
+           (not Geom[I].Minimized) then
+        begin
+          GR.Assign(Geom[I].BX, Geom[I].BY, Geom[I].BX + Geom[I].BW,
+            Geom[I].BY + Geom[I].BH);
+          if Geom[I].Zoomed and Win[I]^.Zoomed then
+            Win[I]^.ZoomRect := GR
+          else
+          begin
+            if Win[I]^.Zoomed then
+              Win[I]^.Zoom;
+            Win[I]^.Locate(GR);
+            if Geom[I].Zoomed then
+              Win[I]^.Zoom;
+          end;
+          if Geom[I].Zoomed then
+          begin
+            if Geom[I].FullScreen then
+            begin
+              SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+              GR.Assign(0, 0, FullDeskW, FullDeskH);
+            end
+            else
+              GR.Assign(0, 0, DeskW, DeskH);
+            Win[I]^.Locate(GR);
+          end;
+        end
+        else if Geom[I].Zoomed <> Win[I]^.Zoomed then
+          Win[I]^.Zoom;
+        Win[I]^.FullScreen := Geom[I].FullScreen;
+      end;
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) and Geom[I].Minimized and
+         (not Win[I]^.Minimized) then
+        MinimizeWindow(I);
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) and Geom[I].Minimized and
+         (Geom[I].BW > 0) and (Geom[I].BH > 0) then
+      begin
+        GR.Assign(Geom[I].BX, Geom[I].BY,
+          Geom[I].BX + Geom[I].BW, Geom[I].BY + Geom[I].BH);
+        Win[I]^.SavedRect := GR;
+      end;
+    // Always normalize the complete icon strip. If all incoming minimized
+    // flags already matched locally, no MinimizeWindow call above would have
+    // arranged it, which previously allowed two stale icons to overlap.
+    ArrangeIcons;
+    // A commit on another pane may arrive while this viewer is watching a
+    // still-locked live gesture. Reapply that cosmetic position/ring over the
+    // newer canonical base; never let an unrelated revision make it jump
+    // backwards until its own owner commits.
+    ReapplyRemotePreviewsAfterLayout(LockedPanes);
+  finally
+    RemoteAttachSettling := False;
+  end;
+  // Geom may contain the actor's live visual rectangle for panes named by a
+  // peer event. RemoteGeom remains the daemon's canonical base so the actor's
+  // later stale-by-design per-pane proposal merges only its owned pane.
+  RemoteGeom := Copy(CanonicalGeom, 0, Length(CanonicalGeom));
+  if ZoomAck then
+  begin
+    if DebugActive then
+      DebugLog(Format('remote-zoom: acknowledged pane=%d revision=%d',
+        [RemoteZoomPane, Revision]));
+    RemoteZoomPending := False;
+    RemoteZoomPane := -1;
+    RemoteZoomTarget := Default(TPaneGeom);
+    RemoteZoomBaseRevision := 0;
+    RemoteZoomSentTick := 0;
+    RemoteZoomContractPending := RemoteZoomContractPane >= 0;
+    if not RemoteZoomContractPending then
+    begin
+      RemoteZoomContractPane := -1;
+      RemoteZoomPreviewId := 0;
+      RemoteZoomPreviewSeq := 0;
+    end;
+  end
+  else if ZoomReply then
+  begin
+    if DebugActive then
+      DebugLog(Format('remote-zoom: rejected base=%d revision=%d',
+        [RemoteZoomBaseRevision, Revision]));
+    ResetRemoteZoomState;
+  end;
+  RemoteSharedFocus := Focused;
+  if not APeer then
+  begin
+    RemoteGeometryDirty := False;
+    RemoteTreeDirty := False;
+    for I := 0 to MAX_PANES - 1 do
+      RemoteGeomDirtyPanes[I] := False;
+  end
+  else
+  begin
+    // A peer event settles every pane except the locally leased ones. Preserve
+    // any dirty bit already produced by that in-flight gesture; clearing it
+    // here could turn its final FRAME_LAYOUT into a zero-change proposal.
+    RemoteGeometryDirty := False;
+    for I := 0 to MAX_PANES - 1 do
+    begin
+      if (PreservePanes and (LongWord(1) shl I)) = 0 then
+        RemoteGeomDirtyPanes[I] := False;
+      if RemoteGeomDirtyPanes[I] then
+        RemoteGeometryDirty := True;
+    end;
+  end;
+  AnyFull := False;
+  for I := 0 to Lay.PaneCount - 1 do
+    if (I < MAX_PANES) and (Win[I] <> nil) and Win[I]^.FullScreen then
+      AnyFull := True;
+  if not AnyFull then
+    SharedFullScreenRendered := False
+  else if not RemoteHostSizesMatch then
+    // The dedicated host-summary event owns membership metadata. A layout
+    // event may enter fullscreen while the latest summary is incompatible.
+    SharedFullScreenRendered := True;
+  if (Focused >= 0) and (Focused < Lay.PaneCount) and
+     (Win[Focused] <> nil) and (not Win[Focused]^.Minimized) then
     Lay.Focused := Focused
   else
     Lay.Focused := FirstVisiblePane;
-  FocusPane(Lay.Focused);
-  RepaintChanges;
-  // what was applied is the common state: do not re-push (no bounces)
+  RemoteAttachSettling := True;
+  try
+    FocusPane(Lay.Focused);
+  finally
+    RemoteAttachSettling := False;
+  end;
+  if OldLockedPanes <> RemoteLockedPanes then
+    for I := 0 to Lay.PaneCount - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) and (Win[I]^.Frame <> nil) and
+         (((OldLockedPanes xor RemoteLockedPanes) and
+           (LongWord(1) shl I)) <> 0) then
+        Win[I]^.Frame^.DrawView;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  UpdatePassthrough;
+  if (not APeer) and HostResizeInFlight and
+     (DeskW = InFlightHostDeskW) and
+     (DeskH = InFlightHostDeskH) then
+  begin
+    HostResizeInFlight := False;
+    if HostResizePending and (DeskW = PendingHostDeskW) and
+       (DeskH = PendingHostDeskH) then
+      HostResizePending := False
+    else
+      HostResizeTick := GetTickCount64;
+  end
+  else if (not APeer) and (not HostResizeInFlight) and HostResizePending and
+          (DeskW = PendingHostDeskW) and (DeskH = PendingHostDeskH) then
+    HostResizePending := False;
+  if (not APeer) and (Remote <> nil) then
+    Remote.AcceptLayoutState(Revision, LockedPanes);
+  // The remote loop batches all canonical events and repaints once after the
+  // queue has drained.  Painting here as well exposed intermediate icon and
+  // zoom states and doubled the physical terminal update.
+  // what was applied is the canonical state: do not re-push (no bounces)
   RemoteLayoutHash := ComputeLayoutHash;
 end;
 
@@ -5132,9 +7335,19 @@ end;
 procedure TSuperApp.ApplyRemoteKillPane(APane: integer);
 var
   j, OldFocused: integer;
+  SavedSuppress: boolean;
 begin
   if (APane < 0) or (APane >= MAX_PANES) or (Win[APane] = nil) then
     Exit;
+  // Structural events are serialized against pane leases by the daemon.
+  // Clear cosmetic arrays before local indexes are compacted.
+  ResetRemotePreviewState;
+  // TGroup.Delete hides and redraws the uncovered area immediately. Keep
+  // that internal FreeVision work off the physical terminal; Idle (or the
+  // local Close-all caller) publishes the one settled frame afterwards.
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
   OldFocused := Lay.Focused;
   Lay.ClosePane(APane);
   KillPane(APane);
@@ -5164,9 +7377,11 @@ begin
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
      (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
     Lay.Focused := FirstVisiblePane;
-  RepaintChanges;
-  FocusPane(Lay.Focused);
-  RemoteLayoutHash := ComputeLayoutHash;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  // The adjacent canonical layout event applies definitive focus/geometry;
+  // Idle performs the one physical repaint after both events are drained.
 end;
 
 // the daemon created a pane (requested by this client, another one
@@ -5176,8 +7391,10 @@ var
   At, NewIdx, PC, Cols, Rows: Longint;
   Dir: byte;
   TitleS, TermS: string;
-  OldCount, j: integer;
+  OldCount, j, OuterW, OuterH: integer;
   SDir: TSplitDir;
+  FinalRect: Objects.TRect;
+  Slot: st_layout.TRect;
 begin
   if CopyMode then
     EndCopyMode(False);
@@ -5187,6 +7404,7 @@ begin
   if (Lay.PaneCount + 1 <> PC) or (PC > MAX_PANES) or
      ((Lay.PaneCount > 0) and ((At < 0) or (At >= Lay.PaneCount))) then
     Exit;   // out of sync: better not to touch anything
+  ResetRemotePreviewState;
   OldCount := Lay.PaneCount;
   if Dir = 1 then
     SDir := sdH
@@ -5235,9 +7453,24 @@ begin
   Scr[NewIdx] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
   if Trim(TitleS) = '' then
     TitleS := UiText('session pane', 'panel de sesion');
-  // same rule, applied by every client to its own window: centred, and
-  // nothing already open is moved
-  CreateWindowForPane(NewIdx, Trim(TitleS), NewWindowRect(PaneTerm[NewIdx]));
+  // Cols/Rows are already the daemon-resolved class/global properties.  Build
+  // the exact canonical rectangle before the detached TWindow is inserted;
+  // consulting this client's class cache here used to show one centred size
+  // and then jump to the daemon's size on the adjacent LAYOUT event.
+  if (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+  begin
+    OuterW := Cols + 2;
+    OuterH := Rows + 2;
+    if OuterW > RemoteDeskW then OuterW := RemoteDeskW;
+    if OuterH > RemoteDeskH then OuterH := RemoteDeskH;
+    Slot := CentredRect(OuterW, OuterH, RemoteDeskW, RemoteDeskH);
+    FinalRect.Assign(Slot.X, Slot.Y, Slot.X + Slot.W, Slot.Y + Slot.H);
+  end
+  else
+    FinalRect := NewWindowRect(PaneTerm[NewIdx]);
+  CreateWindowForPane(NewIdx, Trim(TitleS), FinalRect);
+  if (PaneTerm[NewIdx] >= 0) and (Win[NewIdx] <> nil) then
+    Win[NewIdx]^.TitleFixed := True;
   SyncPaneToWindow(NewIdx);
   if Win[NewIdx] = nil then
   begin
@@ -5264,12 +7497,18 @@ begin
   end;
   // same rule as the local path: a new pane does not disturb the others
   Lay.Focused := NewIdx;
-  FocusPane(NewIdx);
-  RemoteLayoutHash := ComputeLayoutHash;
+  // FRAME_NEWPANE_EV and its adjacent canonical layout are one ordered
+  // daemon transaction.  Desktop.Insert has already selected this window;
+  // record the same authoritative focus now so TSuperApp.HandleEvent cannot
+  // mistake that selection for an unsent user action while the following
+  // layout frame is still queued behind the bounded socket drain.
+  RemoteSharedFocus := NewIdx;
+  // The adjacent canonical layout event applies definitive focus/geometry;
+  // Idle performs the one physical repaint after both events are drained.
 end;
 
-// Authoritative daemon size (explicit under session policy, negotiated under
-// smallest policy): adjust TScreen without resending it (echo suppression).
+// Authoritative daemon PTY size. It is identical in every client and is never
+// negotiated from a host terminal's physical dimensions.
 procedure TSuperApp.ApplyRemoteResize(APane: integer;
   const AData: TByteArray);
 var
@@ -5287,54 +7526,13 @@ begin
       [APane, C, R, Scr[APane].Width, Scr[APane].Height]));
   if (C < 4) or (R < 2) then
     Exit;
-  // Raw bytes can only be drawn directly when the PTY and the host terminal
-  // have the same grid. A second, smaller client changes the daemon's common
-  // PTY size. Continuing raw in that state makes wrapping and cursor moves
-  // use different widths, leaving prompts and the real cursor many rows
-  // apart. Fall back to the normal mirror, but KEEP the full-size request:
-  // when the constraining client disconnects, the daemon grows the PTY and
-  // its resize event below lets raw passthrough resume automatically.
-  if PassthroughActive and (APane = PassPane) then
-  begin
-    if (C = PassReqW) and (R = PassReqH) then
-      Exit; // acknowledgement of EnterPassthrough's own full-size request
-    PassBlockedPane := APane;
-    PassBlockedW := PassReqW;
-    PassBlockedH := PassReqH;
-    if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
-      Scr[APane].Resize(C, R);
-    if DebugActive then
-      DebugLog(Format('pass: constrained pane=%d requested=%dx%d got=%dx%d',
-        [APane, PassBlockedW, PassBlockedH, C, R]));
-    ExitPassthrough(True);
-    Exit;
-  end;
-  if APane = PassBlockedPane then
-  begin
-    if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
-    begin
-      Scr[APane].Resize(C, R);
-      if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
-        RepaintPane(APane);
-    end;
-    if (C = PassBlockedW) and (R = PassBlockedH) then
-    begin
-      if DebugActive then
-        DebugLog(Format('pass: constraint released pane=%d size=%dx%d',
-          [APane, C, R]));
-      PassBlockedPane := -1;
-      PassBlockedW := 0;
-      PassBlockedH := 0;
-      UpdatePassthrough;
-    end;
-    Exit;
-  end;
   if (C <> Scr[APane].Width) or (R <> Scr[APane].Height) then
   begin
     Scr[APane].Resize(C, R);
     if (Win[APane] <> nil) and (Win[APane]^.Term <> nil) then
       RepaintPane(APane);
   end;
+  UpdatePassthrough;
 end;
 
 procedure TSuperApp.ApplyRemoteTitle(APane: integer;
@@ -5364,14 +7562,59 @@ end;
 procedure TSuperApp.DoTilePanes;
 var
   i: integer;
+  LayoutLocked, SavedSuppress, SavedSettling: boolean;
 begin
-  for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and Win[i]^.Minimized then
-      RestoreWindow(i);
-  RelayoutAll;
-  RepaintChanges;
-  FocusPane(Lay.Focused);
-  SyncRemoteLayout;
+  LayoutLocked := False;
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+  begin
+    if not LockRemoteLayout(-1) then
+      Exit;
+    LayoutLocked := True;
+  end;
+  if RemoteMode then
+  begin
+    RemoteGeometryDirty := True;
+    for i := 0 to MAX_PANES - 1 do
+      RemoteGeomDirtyPanes[i] := True;
+  end;
+  SavedSuppress := SuppressFlush;
+  SavedSettling := RemoteAttachSettling;
+  SuppressFlush := True;
+  RemoteAttachSettling := True;
+  try
+    for i := 0 to MAX_PANES - 1 do
+      if Win[i] <> nil then
+      begin
+        if Win[i]^.Minimized then
+          RestoreWindow(i);
+        // Organize means leave every transient one-window view first. Without
+        // this, RelayoutAll deliberately preserved Zoomed and three "tiled"
+        // panes remained full-desktop windows on top of one another.
+        Win[i]^.FullScreen := False;
+        if Win[i]^.Zoomed then
+          Win[i]^.Zoom;
+      end;
+    SharedFullScreenRendered := False;
+    UpdatePassthrough;
+    RelayoutAll;
+    RemoteAttachSettling := SavedSettling;
+    FocusPane(Lay.Focused);
+    if LayoutLocked then
+    begin
+      SyncRemoteLayout(-1);
+      LayoutLocked := False;
+    end
+    else
+      SyncRemoteLayout;
+  finally
+    RemoteAttachSettling := SavedSettling;
+    if LayoutLocked and (Remote <> nil) and Remote.Connected then
+      Remote.UnlockLayout(-1);
+    SuppressFlush := SavedSuppress;
+  end;
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 // classic Window|Cascade: staggered windows at 2/3 of the desktop
@@ -5380,28 +7623,75 @@ var
   RD, R: Objects.TRect;
   i, k, w, h: integer;
   Slot: st_layout.TRect;
+  LayoutLocked, SavedSuppress, SavedSettling: boolean;
 begin
+  LayoutLocked := False;
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+  begin
+    if not LockRemoteLayout(-1) then
+      Exit;
+    LayoutLocked := True;
+  end;
+  if RemoteMode then
+  begin
+    RemoteGeometryDirty := True;
+    for i := 0 to MAX_PANES - 1 do
+      RemoteGeomDirtyPanes[i] := True;
+  end;
   if Desktop = nil then
+  begin
+    if LayoutLocked then
+      Remote.UnlockLayout(-1);
     Exit;
+  end;
   RD := Default(Objects.TRect);
   Desktop^.GetExtent(RD);
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+    RD.Assign(0, 0, RemoteDeskW, RemoteDeskH);
   w := (RD.B.X - RD.A.X) * 2 div 3;
   h := (RD.B.Y - RD.A.Y) * 2 div 3;
   if w < 20 then w := 20;
   if h < 6 then h := 6;
-  k := 0;
-  for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and (not Win[i]^.Minimized) then
+  SavedSuppress := SuppressFlush;
+  SavedSettling := RemoteAttachSettling;
+  SuppressFlush := True;
+  RemoteAttachSettling := True;
+  try
+    k := 0;
+    for i := 0 to MAX_PANES - 1 do
+      if Win[i] <> nil then
+      begin
+        if Win[i]^.Minimized then
+          RestoreWindow(i);
+        Win[i]^.FullScreen := False;
+        if Win[i]^.Zoomed then
+          Win[i]^.Zoom;
+        Slot := CascadeRect(k, w, h, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
+        R.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
+          RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
+        Win[i]^.Locate(R);
+        Inc(k);
+      end;
+    SharedFullScreenRendered := False;
+    UpdatePassthrough;
+    RemoteAttachSettling := SavedSettling;
+    FocusPane(Lay.Focused);
+    if LayoutLocked then
     begin
-      Slot := CascadeRect(k, w, h, RD.B.X - RD.A.X, RD.B.Y - RD.A.Y);
-      R.Assign(RD.A.X + Slot.X, RD.A.Y + Slot.Y,
-        RD.A.X + Slot.X + Slot.W, RD.A.Y + Slot.Y + Slot.H);
-      Win[i]^.Locate(R);
-      Inc(k);
-    end;
-  RepaintChanges;
-  FocusPane(Lay.Focused);
-  SyncRemoteLayout;
+      SyncRemoteLayout(-1);
+      LayoutLocked := False;
+    end
+    else
+      SyncRemoteLayout;
+  finally
+    RemoteAttachSettling := SavedSettling;
+    if LayoutLocked and (Remote <> nil) and Remote.Connected then
+      Remote.UnlockLayout(-1);
+    SuppressFlush := SavedSuppress;
+  end;
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 // vendor grid: spreads all visible windows into rows and columns
@@ -5410,22 +7700,66 @@ procedure TSuperApp.DoOrganizePanes;
 var
   R: Objects.TRect;
   i: integer;
-  HasIcons: boolean;
+  LayoutLocked, SavedSuppress, SavedSettling: boolean;
 begin
+  LayoutLocked := False;
+  if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
+     Remote.Connected then
+  begin
+    if not LockRemoteLayout(-1) then
+      Exit;
+    LayoutLocked := True;
+  end;
+  if RemoteMode then
+  begin
+    RemoteGeometryDirty := True;
+    for i := 0 to MAX_PANES - 1 do
+      RemoteGeomDirtyPanes[i] := True;
+  end;
   if Desktop = nil then
+  begin
+    if LayoutLocked then
+      Remote.UnlockLayout(-1);
     Exit;
+  end;
   R := Default(Objects.TRect);
   Desktop^.GetExtent(R);
-  HasIcons := False;
-  for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and Win[i]^.Minimized then
-      HasIcons := True;
-  if HasIcons then
-    Dec(R.B.Y, 2); // respect the icon strip
-  Desktop^.Tile(R);
-  RepaintChanges;
-  FocusPane(Lay.Focused);
-  SyncRemoteLayout;
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+    R.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+  SavedSuppress := SuppressFlush;
+  SavedSettling := RemoteAttachSettling;
+  SuppressFlush := True;
+  RemoteAttachSettling := True;
+  try
+    for i := 0 to MAX_PANES - 1 do
+      if Win[i] <> nil then
+      begin
+        if Win[i]^.Minimized then
+          RestoreWindow(i);
+        Win[i]^.FullScreen := False;
+        if Win[i]^.Zoomed then
+          Win[i]^.Zoom;
+      end;
+    SharedFullScreenRendered := False;
+    UpdatePassthrough;
+    Desktop^.Tile(R);
+    RemoteAttachSettling := SavedSettling;
+    FocusPane(Lay.Focused);
+    if LayoutLocked then
+    begin
+      SyncRemoteLayout(-1);
+      LayoutLocked := False;
+    end
+    else
+      SyncRemoteLayout;
+  finally
+    RemoteAttachSettling := SavedSettling;
+    if LayoutLocked and (Remote <> nil) and Remote.Connected then
+      Remote.UnlockLayout(-1);
+    SuppressFlush := SavedSuppress;
+  end;
+  if (not SavedSuppress) and (not PassthroughActive) then
+    RepaintChanges;
 end;
 
 // classic Window|List (Alt+0): pick a pane, restoring if minimized
@@ -5465,6 +7799,8 @@ end;
 
 // live palette switch + persistence in superterm.ini
 procedure TSuperApp.ApplyPalette(AKind: integer);
+var
+  SavedSuppress: boolean;
 begin
   if (AKind < apColor) or (AKind > apMonochrome) then
     Exit;
@@ -5476,9 +7812,21 @@ begin
     Cfg.Palette := 'color';
   end;
   SaveConfig(Cfg);
-  RebuildMenu;
-  RebuildStatusLine;
-  RepaintChanges;
+  // Rebuilding the two bars can draw them immediately. Hold physical output
+  // until both exist under the new palette, then invalidate the renderer's
+  // effective-cell cache and publish one complete frame. RepaintChanges alone
+  // left much of the old palette on screen until the next focus click.
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    RebuildMenu;
+    RebuildStatusLine;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  InvalidateFrame;
+  RichInvalidate;
+  ReDraw;
 end;
 
 procedure TSuperApp.SaveSessionNow;
@@ -5534,6 +7882,7 @@ begin
       Pin[i].BH := WR.B.Y - WR.A.Y;
       Pin[i].Minimized := Win[i]^.Minimized;
       Pin[i].Zoomed := Win[i]^.Zoomed;
+      Pin[i].FullScreen := Win[i]^.FullScreen;
     end;
   end;
   RD := Default(Objects.TRect);
@@ -5543,19 +7892,18 @@ end;
 
 procedure TSuperApp.HandleEvent(var Event: TEvent);
 var
-  SaveReply: string;
-  SavePayload: TByteArray;
   i: integer;
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
   PrefixSeq: RawByteString;
   ZoomSaveFlush: boolean;
-  ZoomAnimOn, ZoomWasZoomed: boolean;
+  ZoomAnimOn, ZoomWasZoomed, ZoomLocked: boolean;
   ZoomF: integer;
   ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2: integer;
   ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2: integer;
-  DeskCol: integer;
+  SharedR: Objects.TRect;
+  DeskCol, FullDeskW, FullDeskH, FullCols, FullRows: integer;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -5580,12 +7928,33 @@ begin
   if (Event.What = evCommand) and
      ((Event.Command = cmZoom) or (Event.Command = cmFullScreen)) then
   begin
+    if RemoteMode then
+    begin
+      BeginRemoteZoom(Event.Command, Event.InfoPtr);
+      ClearEvent(Event);
+      Exit;
+    end;
     // optional transition: expand the outline out to full screen before
     // zooming in, and contract it back after restoring
     ZoomF := Lay.Focused;
+    ZoomLocked := False;
     ZoomAnimOn := Cfg.ZoomAnim and (Desktop <> nil) and
       (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
       (not Win[ZoomF]^.Minimized);
+    // Acquire before the first animation frame (or before the instant
+    // mutation when animation is disabled).  Other viewers can paint the
+    // busy frame while the actor completes the whole visual gesture.
+    if RemoteMode and (Remote <> nil) and Remote.Connected and
+       (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
+       (not Win[ZoomF]^.Minimized) then
+    begin
+      if not LockRemoteLayout(ZoomF) then
+      begin
+        ClearEvent(Event);
+        Exit;
+      end;
+      ZoomLocked := True;
+    end;
     if ZoomAnimOn then
     begin
       ZoomWasZoomed := Win[ZoomF]^.Zoomed;
@@ -5595,11 +7964,28 @@ begin
       ZoomWY2 := ZoomWY1 + Win[ZoomF]^.Size.Y - 1;
       ZoomDX1 := Desktop^.Origin.X;
       ZoomDY1 := Desktop^.Origin.Y;
-      ZoomDX2 := ZoomDX1 + Desktop^.Size.X - 1;
-      ZoomDY2 := ZoomDY1 + Desktop^.Size.Y - 1;
+      if RemoteMode then
+      begin
+        if Event.Command = cmFullScreen then
+        begin
+          SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+          ZoomDX2 := ZoomDX1 + FullDeskW - 1;
+          ZoomDY2 := ZoomDY1 + FullDeskH - 1;
+        end
+        else
+        begin
+          ZoomDX2 := ZoomDX1 + RemoteDeskW - 1;
+          ZoomDY2 := ZoomDY1 + RemoteDeskH - 1;
+        end;
+      end
+      else
+      begin
+        ZoomDX2 := ZoomDX1 + Desktop^.Size.X - 1;
+        ZoomDY2 := ZoomDY1 + Desktop^.Size.Y - 1;
+      end;
       // growing: animate BEFORE the zoom, while the IDE is still on screen
       if not ZoomWasZoomed then
-        ZoomAnimate(ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2,
+        ZoomAnimate(Win[ZoomF], ZoomWX1, ZoomWY1, ZoomWX2, ZoomWY2,
                     ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2);
     end;
     ZoomSaveFlush := SuppressFlush;
@@ -5616,14 +8002,28 @@ begin
           if Win[ZoomF]^.FullScreen then
           begin
             Win[ZoomF]^.FullScreen := False;
+            SharedFullScreenRendered := False;
             if Win[ZoomF]^.Zoomed then
+            begin
+              // In unequal-host fallback the visible fullscreen rectangle is
+              // the smallest common viewport, not SizeLimits.Max. Put the
+              // hidden logical window at Max first so FV's TWindow.Zoom takes
+              // its restore branch and keeps the original ZoomRect.
+              if RemoteMode then
+              begin
+                SharedR.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+                Win[ZoomF]^.Locate(SharedR);
+              end;
               Win[ZoomF]^.Zoom;
+            end;
           end
           else
           begin
             if not Win[ZoomF]^.Zoomed then
               Win[ZoomF]^.Zoom;
             Win[ZoomF]^.FullScreen := True;
+            SharedFullScreenRendered := RemoteMode and
+              (not RemoteHostSizesMatch);
           end;
         end;
         ClearEvent(Event);
@@ -5632,7 +8032,57 @@ begin
         inherited HandleEvent(Event);   // plain maximise, inside the IDE
       for i := 0 to MAX_PANES - 1 do
         if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
-          Lay.Focused := i;
+          FocusPane(i);
+      if RemoteMode and (ZoomF >= 0) and (ZoomF < Length(RemoteGeom)) and
+         (Win[ZoomF] <> nil) then
+      begin
+        RemoteGeomDirtyPanes[ZoomF] := True;
+        RemoteGeom[ZoomF].Zoomed := Win[ZoomF]^.Zoomed;
+        RemoteGeom[ZoomF].FullScreen := Win[ZoomF]^.FullScreen;
+        RemoteGeom[ZoomF].Minimized := Win[ZoomF]^.Minimized;
+        if Win[ZoomF]^.FullScreen then
+        begin
+          SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+          RemoteGeom[ZoomF].Cols := FullCols;
+          RemoteGeom[ZoomF].Rows := FullRows;
+        end
+        else if Win[ZoomF]^.Zoomed then
+        begin
+          RemoteGeom[ZoomF].Cols := RemoteDeskW - 2;
+          RemoteGeom[ZoomF].Rows := RemoteDeskH - 2;
+        end
+        else
+        begin
+          RemoteGeom[ZoomF].Cols := RemoteGeom[ZoomF].BW - 2;
+          RemoteGeom[ZoomF].Rows := RemoteGeom[ZoomF].BH - 2;
+        end;
+        if Win[ZoomF]^.Zoomed then
+        begin
+          Win[ZoomF]^.ZoomRect.Assign(RemoteGeom[ZoomF].BX,
+            RemoteGeom[ZoomF].BY,
+            RemoteGeom[ZoomF].BX + RemoteGeom[ZoomF].BW,
+            RemoteGeom[ZoomF].BY + RemoteGeom[ZoomF].BH);
+          if Win[ZoomF]^.FullScreen then
+          begin
+            SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
+            SharedR.Assign(0, 0, FullDeskW, FullDeskH);
+          end
+          else
+            SharedR.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+          Win[ZoomF]^.Locate(SharedR);
+        end;
+        // Resize the actor's screen mirror inside this same suppressed
+        // transaction. The daemon/PTY is resized by the layout commit below;
+        // without this local mirror step, restore first painted a fullscreen
+        // grid in the old rectangle and the canonical echo reflowed/repainted
+        // it a second time -- the final visible flash.
+        if (Scr[ZoomF] <> nil) and (RemoteGeom[ZoomF].Cols >= 4) and
+           (RemoteGeom[ZoomF].Rows >= 2) and
+           ((Scr[ZoomF].Width <> RemoteGeom[ZoomF].Cols) or
+            (Scr[ZoomF].Height <> RemoteGeom[ZoomF].Rows)) then
+          Scr[ZoomF].Resize(RemoteGeom[ZoomF].Cols,
+            RemoteGeom[ZoomF].Rows);
+      end;
       UpdatePassthrough;
     finally
       SuppressFlush := ZoomSaveFlush;
@@ -5643,11 +8093,15 @@ begin
     // the real screen instead of the application's leftovers
     if ZoomAnimOn and ZoomWasZoomed and (not PassthroughActive) and
        (Win[ZoomF] <> nil) then
-      ZoomAnimate(ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2,
+      ZoomAnimate(Win[ZoomF], ZoomDX1, ZoomDY1, ZoomDX2, ZoomDY2,
                   Desktop^.Origin.X + Win[ZoomF]^.Origin.X,
                   Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y,
                   Desktop^.Origin.X + Win[ZoomF]^.Origin.X + Win[ZoomF]^.Size.X - 1,
                   Desktop^.Origin.Y + Win[ZoomF]^.Origin.Y + Win[ZoomF]^.Size.Y - 1);
+    // Commit only after the optional contraction too: the pane remains owned
+    // for the complete gesture, not merely for its state mutation.
+    if RemoteMode and ZoomLocked then
+      SyncRemoteLayout(ZoomF);
     Exit;
   end;
   if Event.What = evKeyDown then
@@ -5801,9 +8255,18 @@ begin
   // which selects pane N (cmSelectWindowNum); open class = Classes menu
   // sync the layout focus with the selected window
   for i := 0 to MAX_PANES - 1 do
-    if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) then
-      Lay.Focused := i;
+    if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) and
+       ((i <> Lay.Focused) or
+        (RemoteMode and (i <> RemoteSharedFocus))) then
+      FocusPane(i);
   inherited HandleEvent(Event);
+  // TGroup/TWindow selects a mouse/Alt-N target inside the inherited call.
+  // Publish that result now too; otherwise it stayed private until another
+  // event happened to pass through this handler.
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) and
+       (i <> Lay.Focused) then
+      FocusPane(i);
   if ResizeEvent then
   begin
     if (ResizeWidth > 0) and (ResizeHeight > 0) then
@@ -5821,7 +8284,8 @@ begin
       cmPaneClose: DoClosePane(Lay.Focused);
       cmPaneNext: CyclePane(1);
       cmPanePrev: CyclePane(-1);
-      cmWindowMinimize: MinimizeWindow(Lay.Focused);
+      cmWindowMinimize:
+        MinimizeWindow(Lay.Focused);
       cmAbout: ShowAbout;
       cmRenameWindow: RenameFocusedWindow;
       cmFitSessionSize: FitSessionToWindow;
@@ -5909,8 +8373,15 @@ begin
           SaveConfig(Cfg);
           RebuildMenu;
         end;
-      cmWindowMinimizeAll: MinimizeAllWindows;
-      cmWindowRestoreAll: RestoreAllWindows;
+      cmWindowMinimizeAll:
+        MinimizeAllWindows;
+      cmWindowRestoreAll:
+        RestoreAllWindows;
+      cmWindowCloseAll:
+        DoCloseAllPanes;
+      cmShowMaxPanes:
+        MessageBox(UiText('Maximum 16 panes', 'Maximo 16 paneles'), nil,
+          mfInformation or mfOKButton);
       cmSaveSess:
         begin
           // contextual toast: each mode states exactly what was saved
@@ -5923,23 +8394,9 @@ begin
               mfInformation or mfOKButton);
           end
           else if RemoteMode then
-          begin
-            SyncRemoteLayout;
-            SaveReply := '';
-            SavePayload := nil;
-            SetLength(SavePayload, 1);
-            SavePayload[0] := WINOP_SAVE;
-            if (CurrentSessionSocket <> '') and
-               CtlSimple(CurrentSessionSocket, FRAME_CTL_WINOP, -1,
-                 SavePayload, SaveReply) then
-              MessageBox(UiText('Session saved by the server.',
-                'Sesion guardada por el servidor.'), nil,
-                mfInformation or mfOKButton)
-            else
-              MessageBox(UiText('Layout synced to the detached session.',
-                'Layout sincronizado con la sesion separada.'), nil,
-                mfInformation or mfOKButton);
-          end
+            // A live session is already its own continuously updated state.
+            // Ctrl-S is intentionally a no-op here and is absent from the UI.
+            ClearEvent(Event)
           else
           begin
             SaveSessionNow;
@@ -5967,16 +8424,54 @@ begin
             RebuildMenu;
         end;
       cmHelp: ShowHelp;
-      cmQuitNoSave:
-        begin
-          SkipSave := True;
-          Cfg.AutoSave := False;
-          Message(@Self, evCommand, cmQuit, nil);
-        end;
-      cmGrowV: begin Lay.ResizeFocused(sdV, +1); RelayoutAll; end;
-      cmShrinkV: begin Lay.ResizeFocused(sdV, -1); RelayoutAll; end;
-      cmGrowH: begin Lay.ResizeFocused(sdH, +1); RelayoutAll; end;
-      cmShrinkH: begin Lay.ResizeFocused(sdH, -1); RelayoutAll; end;
+      cmGrowV: begin
+        if RemoteMode and (Remote <> nil) and Remote.Connected then
+          if not LockRemoteLayout(-1) then
+          begin
+            ClearEvent(Event);
+            Exit;
+          end;
+        RemoteGeometryDirty := RemoteMode;
+        RemoteTreeDirty := RemoteMode;
+        if RemoteMode then for i := 0 to MAX_PANES - 1 do
+          RemoteGeomDirtyPanes[i] := True;
+        Lay.ResizeFocused(sdV, +1); RelayoutAll; SyncRemoteLayout(-1); end;
+      cmShrinkV: begin
+        if RemoteMode and (Remote <> nil) and Remote.Connected then
+          if not LockRemoteLayout(-1) then
+          begin
+            ClearEvent(Event);
+            Exit;
+          end;
+        RemoteGeometryDirty := RemoteMode;
+        RemoteTreeDirty := RemoteMode;
+        if RemoteMode then for i := 0 to MAX_PANES - 1 do
+          RemoteGeomDirtyPanes[i] := True;
+        Lay.ResizeFocused(sdV, -1); RelayoutAll; SyncRemoteLayout(-1); end;
+      cmGrowH: begin
+        if RemoteMode and (Remote <> nil) and Remote.Connected then
+          if not LockRemoteLayout(-1) then
+          begin
+            ClearEvent(Event);
+            Exit;
+          end;
+        RemoteGeometryDirty := RemoteMode;
+        RemoteTreeDirty := RemoteMode;
+        if RemoteMode then for i := 0 to MAX_PANES - 1 do
+          RemoteGeomDirtyPanes[i] := True;
+        Lay.ResizeFocused(sdH, +1); RelayoutAll; SyncRemoteLayout(-1); end;
+      cmShrinkH: begin
+        if RemoteMode and (Remote <> nil) and Remote.Connected then
+          if not LockRemoteLayout(-1) then
+          begin
+            ClearEvent(Event);
+            Exit;
+          end;
+        RemoteGeometryDirty := RemoteMode;
+        RemoteTreeDirty := RemoteMode;
+        if RemoteMode then for i := 0 to MAX_PANES - 1 do
+          RemoteGeomDirtyPanes[i] := True;
+        Lay.ResizeFocused(sdH, -1); RelayoutAll; SyncRemoteLayout(-1); end;
     else
       if (Event.Command >= cmLanguageBase) and
          (Event.Command < cmLanguageBase + 2) then
@@ -6042,12 +8537,14 @@ var
   p: TPid;
   Tick: cardinal;
   RemoteEvent: TSessionEvent;
+  PendingEvent: TEvent;
+  SavedSuppress, SavedSettling: boolean;
   // bounded drain of the session socket, so a flooding pane cannot starve
   // the keyboard, plus the marks for the single repaint that follows it
   Drained: integer;
   Deadline: QWord;
   Touched: TTouchedPanes;
-  FullRedraw: boolean;
+  FullRedraw, LocalGestureActive: boolean;
   HostPaste: RawByteString;
   const
     LastTitle: cardinal = 0;
@@ -6139,7 +8636,34 @@ begin
               Win[RemoteEvent.Pane]^.SetTitle(UiText(' EXITED', ' TERMINO'));
           end;
         sekError:
-          DebugLog('remote session error: ' + RemoteEvent.Text);
+          begin
+            DebugLog('remote session error: ' + RemoteEvent.Text);
+            // The local 16-pane preflight gives immediate feedback in the
+            // usual case.  The daemon remains authoritative: two clients can
+            // both observe 15 and enqueue creation together, so the loser
+            // must also surface the serialized server rejection instead of
+            // dropping it into the debug log.
+            if SameText(Trim(RemoteEvent.Text), 'max panes') then
+            begin
+              // MessageBox is modal and cannot safely run inside Idle's
+              // socket-drain loop. FreeVision's PutEvent stores one pending
+              // event which the next ordinary HandleEvent dispatches after
+              // Idle returns; duplicate max errors in this batch coalesce.
+              PendingEvent := Default(TEvent);
+              PendingEvent.What := evCommand;
+              PendingEvent.Command := cmShowMaxPanes;
+              PutEvent(PendingEvent);
+            end;
+          end;
+        sekHostSummaryEv:
+          ApplyRemoteHostSummaryEv(RemoteEvent.Data);
+        sekLayoutPreviewEv:
+          begin
+            ApplyRemoteLayoutPreviewEv(RemoteEvent.Pane, RemoteEvent.Data);
+            // Visual steps flush themselves. CLEAR holds the last visual
+            // unchanged until its canonical event, even if the drain budget
+            // splits the adjacent wire frames across two Idle iterations.
+          end;
         sekLayoutEv:
           begin
             ApplyRemoteLayoutEv(RemoteEvent.Data);
@@ -6147,9 +8671,32 @@ begin
             Touched := Default(TTouchedPanes);
             FullRedraw := True;
           end;
+        sekLayoutPeerEv:
+          begin
+            // Apply canonical changes made by other pane owners without
+            // advancing this client's older lease base or relocating its
+            // in-flight local gesture.
+            ApplyRemoteLayoutEv(RemoteEvent.Data, True, RemoteEvent.Pane);
+            Touched := Default(TTouchedPanes);
+            FullRedraw := True;
+          end;
         sekKillPaneEv:
           begin
-            ApplyRemoteKillPane(RemoteEvent.Pane);
+            if RemoteEvent.Pane = -1 then
+            begin
+              // Close all is one wire event and one visual transaction. Work
+              // backwards so array compaction never renumbers a survivor.
+              SavedSuppress := SuppressFlush;
+              SuppressFlush := True;
+              try
+                while PaneCount > 0 do
+                  ApplyRemoteKillPane(PaneCount - 1);
+              finally
+                SuppressFlush := SavedSuppress;
+              end;
+            end
+            else
+              ApplyRemoteKillPane(RemoteEvent.Pane);
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
             ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
@@ -6157,7 +8704,21 @@ begin
           end;
         sekNewPaneEv:
           begin
-            ApplyRemoteNewPane(RemoteEvent.Data);
+            // A NEWPANE event is authoritative server state.  Constructing
+            // its FreeVision window selects it internally; without this guard
+            // that incidental selection was sent back as a fresh shared-focus
+            // command and could overtake a later explicit CLI/client focus.
+            // Layout events already use the same settling guard.
+            SavedSettling := RemoteAttachSettling;
+            SavedSuppress := SuppressFlush;
+            RemoteAttachSettling := True;
+            SuppressFlush := True;
+            try
+              ApplyRemoteNewPane(RemoteEvent.Data);
+            finally
+              SuppressFlush := SavedSuppress;
+              RemoteAttachSettling := SavedSettling;
+            end;
             // panes were renumbered: a stale mark would repaint the wrong one
             Touched := Default(TTouchedPanes);
             ResetSizeRequests;   // panes were renumbered: the requests name the wrong ones
@@ -6169,15 +8730,34 @@ begin
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
              (Win[RemoteEvent.Pane] <> nil) then
           begin
-            Lay.Focused := RemoteEvent.Pane;
-            FocusPane(RemoteEvent.Pane);
+            RemoteSharedFocus := RemoteEvent.Pane;
+            RemoteAttachSettling := True;
+            try
+              FocusPane(RemoteEvent.Pane);
+            finally
+              RemoteAttachSettling := False;
+            end;
             RemoteLayoutHash := ComputeLayoutHash;
+            // SetCurrent changes the FreeVision selection immediately, but
+            // a focus-only server frame has no pane output/layout event to
+            // make the batched remote loop flush the changed frames.  With
+            // three windows this left the visible active border one focus
+            // operation behind the daemon.  Paint once at the end of this
+            // batch, just like a layout event; never paint from inside the
+            // socket parser.
+            FullRedraw := True;
           end;
         sekIgnore: ;
         sekShutdown:
           begin
             RemoteLost := True;
             RemoteMode := False;
+            RemoteHostSizeArmed := False;
+            RemoteHostSummaryValid := False;
+            ResetRemotePreviewState;
+            ResetRemoteZoomState;
+            HostResizePending := False;
+            HostResizeInFlight := False;
             SkipSave := True;
             MessageBox(UiText('The session was closed.',
               'La sesion se cerro.'), nil, mfInformation or mfOKButton);
@@ -6187,6 +8767,12 @@ begin
           begin
             RemoteLost := True;
             RemoteMode := False;
+            RemoteHostSizeArmed := False;
+            RemoteHostSummaryValid := False;
+            ResetRemotePreviewState;
+            ResetRemoteZoomState;
+            HostResizePending := False;
+            HostResizeInFlight := False;
             // flag before the MessageBox: nothing from this instance must
             // be saved (the layout belongs to the lost remote session)
             SkipSave := True;
@@ -6211,12 +8797,35 @@ begin
           for i := 0 to MAX_PANES - 1 do
             if Touched[i] and (Win[i] <> nil) and (Win[i]^.Term <> nil) then
               RepaintPane(i);
+        // Restore animations start only after the ACK's settled IDE frame is
+        // physically visible. Drawing them earlier would overlay rings on a
+        // stale raw surface or expose an intermediate geometry.
+        if RemoteZoomContractPending and (not PassthroughActive) then
+          FinishRemoteZoomAnimation;
       end;
     end;
-    // Debounced layout push: the daemon retains this client's latest state as
-    // the save/next-attach seed. In smallest policy it is also mirrored live;
-    // session policy deliberately leaves existing clients' geometry alone.
+    if RemoteMode and RemoteZoomPending and
+       (Tick - RemoteZoomSentTick >= 2500) then
+    begin
+      if DebugActive then
+        DebugLog('remote-zoom: acknowledgement timeout; proposal cancelled');
+      ResetRemoteZoomState;
+    end;
+    LocalGestureActive := False;
+    for i := 0 to MAX_PANES - 1 do
+      if (Win[i] <> nil) and Win[i]^.GetState(sfDragging) then
+      begin
+        LocalGestureActive := True;
+        Break;
+      end;
     if RemoteMode and (Current = PView(Desktop)) and
+       (not LocalGestureActive) then
+      TryCommitHostResize;
+    // Debounced shared-layout push. The daemon orders and echoes one
+    // authoritative state to every client. Never turn a modal pane lease into
+    // a zero-change global commit while its mouse button is still held.
+    if RemoteMode and (Current = PView(Desktop)) and
+       (not LocalGestureActive) and
        (Tick - LastLayoutSync >= 400) then
     begin
       LastLayoutSync := Tick;
@@ -6704,6 +9313,9 @@ begin
   WindowItems := NewItem(UiText('Minimize ~a~ll windows',
     'Minimizar to~d~as las ventanas'), '', kbNoKey, cmWindowMinimizeAll,
     hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~C~lose all windows',
+    '~C~errar todas las ventanas'), '', kbNoKey, cmWindowCloseAll,
+    hcNoContext, WindowItems);
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
     '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
@@ -6793,16 +9405,12 @@ begin
 
   // ---- Sessions: detach and application life cycle ----
   SessItems := nil;
-  SessItems := NewItem(UiText('~Q~uit without saving', 'Salir si~n~ guardar'),
-    'Alt-Q', kbAltQ, cmQuitNoSave, hcNoContext, SessItems);
-  SessItems := NewItem(UiText('Save and e~x~it', 'Guardar y sa~l~ir'),
+  SessItems := NewItem(UiText('E~x~it', 'Sa~l~ir'),
     'Alt-X', kbAltX, cmQuit, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('Quick session ~w~izard...',
     '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,
     hcNoContext, SessItems);
-  SessItems := NewItem(UiText('Sa~v~e now', '~G~uardar ahora'), 'Ctrl-S',
-    kbCtrlS, cmSaveSess, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('~A~ttach / manage sessions...',
     '~C~onectar / gestionar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
@@ -6910,8 +9518,6 @@ begin
   R.A.Y := R.B.Y - 1;
   Items := nil;
   // invisible keys: dispatch without taking room in the status line
-  Items := NewStatusKey('', kbAltQ, cmQuitNoSave, Items);
-  Items := NewStatusKey('', kbCtrlS, cmSaveSess, Items);
   Items := NewStatusKey('', kbCtrlF5, cmResize, Items);
   Items := NewStatusKey('', kbAltF9, cmWindowMinimize, Items);
   Items := NewStatusKey('', kbAltF4, cmClose, Items);

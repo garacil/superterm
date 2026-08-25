@@ -48,7 +48,7 @@ check('interactive shell remains', 'SHELL_AFTER_PROFILE_APP' in c.text())
 
 c.send(b'echo SECOND_COMMAND_OK\r', 0.8)
 check('shell accepts later commands', 'SECOND_COMMAND_OK' in c.text())
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 c.close()
 stlib.close_all_daemons(HOME)
 stlib.report()

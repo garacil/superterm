@@ -52,8 +52,13 @@ for _ in range(2):
 check('three panes to start with',
       len(run_cli(['list', SES], HOME).stdout.strip().splitlines()) - 1 == 3)
 
-run_cli(['focus', '%s:1' % SES], HOME)
+focus_result = run_cli(['focus', '%s:1' % SES], HOME)
+check('focus first pane accepted', focus_result.returncode == 0)
 c.drain(0.8)
+focused_rows = run_cli(['list', SES], HOME, env={'LANG': 'C'}).stdout.splitlines()
+first_row = [line for line in focused_rows if line.startswith('1 ')]
+check('first pane focused before insert',
+      bool(first_row) and '*' in first_row[0])
 r = run_cli(['new', SES, '-c', 'extra'], HOME)
 check('new pane accepted', r.returncode == 0)
 c.drain(2.0)

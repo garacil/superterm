@@ -4,6 +4,7 @@ import fcntl
 import os
 import pty
 import select
+import signal
 import struct
 import sys
 import termios
@@ -11,12 +12,22 @@ import time
 
 import pyte
 
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-ROOT = '/tmp/opencode/stmouse'
-HOME = ROOT + '/home'
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
+HOME = stlib.fresh_home('mouse')
 WIDTH, HEIGHT = 381, 104
-os.makedirs(HOME + '/.superterm', exist_ok=True)
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 
 
 class Session:
@@ -29,7 +40,7 @@ class Session:
                 'TERM': os.environ.get('SUPERTERM_TEST_TERM', 'xterm'),
                 'SHELL': '/bin/bash',
                 'HOME': HOME,
-                'SUPERTERM_INI': ROOT + '/none.ini',
+                'SUPERTERM_INI': HOME + '/no-sys.ini',
             })
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
@@ -54,13 +65,46 @@ class Session:
         os.write(self.fd, f'\x1b[<{code};{x};{y}{suffix}'.encode())
 
     def close(self):
+        end = time.time() + 3.0
+        while time.time() < end:
+            try:
+                pid, _status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                pid = self.pid
+            if pid:
+                break
+            time.sleep(0.05)
+        else:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            end = time.time() + 1.0
+            while time.time() < end:
+                try:
+                    pid, _status = os.waitpid(self.pid, os.WNOHANG)
+                except ChildProcessError:
+                    pid = self.pid
+                if pid:
+                    break
+                time.sleep(0.05)
+            else:
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                end = time.time() + 1.0
+                while time.time() < end:
+                    try:
+                        pid, _status = os.waitpid(self.pid, os.WNOHANG)
+                    except ChildProcessError:
+                        break
+                    if pid:
+                        break
+                    time.sleep(0.05)
         try:
             os.close(self.fd)
         except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
             pass
 
 
@@ -100,10 +144,11 @@ try:
     check('mouse resize keeps statusline', 'F2 Split' in ''.join(s.screen.display[-1]))
 finally:
     try:
-        os.write(s.fd, b'\x1bq')
+        os.write(s.fd, b'\x1bx')
         s.drain(0.5)
     except OSError:
         pass
+    stlib.close_all_daemons(HOME)
     s.close()
 
 

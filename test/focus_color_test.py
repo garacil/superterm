@@ -131,7 +131,7 @@ check('second right focus sends chrome only',
       b'38;2;20;220;80' not in focus_delta and
       b'38;2;250;40;20' not in focus_delta)
 
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

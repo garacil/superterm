@@ -42,7 +42,7 @@ c.send(b'\x13', 1.5)                      # Ctrl-S: save
 check('the client survived saving', c.alive())
 
 if c.alive():
-    c.send(b'\x1bq', 1.0)
+    c.send(b'\x1bx', 1.0)
     c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

@@ -119,7 +119,7 @@ c.send(b't', 1.5)
 tiled = corners(c)
 check('prefix + t tiles them', len(tiled) == 4 and tiled != stacked)
 
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """superterm console cursor test: every way of leaving the client must put
 the cursor back where the command was launched, not on the console's
-first line. Covers plain exit (Alt-Q), live detach (Ctrl-Q d), and
-permanent close from a reattached client (Alt-X).
+first line. Covers local Exit (Alt-X), live detach (Ctrl-Q d), and final
+Exit from a reattached client (Alt-X).
 
 Emulates a REAL xterm-family terminal (Konsole): answers the DSR query
 ESC[6n with the launch position. On genuine xterm terminals the RTL video
@@ -15,7 +15,10 @@ emitted on exit is an explicit repositioning to the DSR-reported spot.
 """
 import os, pty, re, time, select, sys, fcntl, termios, struct
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+from stlib import wait_pid
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/sthome-cursor'
 SOCK = HOME + '/.superterm/sessions/session.sock'
 
@@ -37,7 +40,11 @@ def _purge_sessions():
     time.sleep(0.5)
     _shutil.rmtree(d, ignore_errors=True)
 _purge_sessions()
-os.makedirs(HOME, exist_ok=True)
+os.makedirs(HOME + '/.superterm', exist_ok=True)
+with open(HOME + '/.superterm/superterm.ini', 'w') as f:
+    # Keep the first path genuinely local. The second path explicitly creates
+    # the daemon by detaching, and the third closes that daemon after attach.
+    f.write('[session]\nserver=detach\nautosave=0\nautorestore=0\n')
 
 W, H = 100, 30
 
@@ -88,10 +95,7 @@ def run_session(args, row, col, quit_bytes, settle=3.0):
         os.close(fd)
     except OSError:
         pass
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
+    wait_pid(pid)
     return answered, out
 
 def final_position_ok(name, out, row, col):
@@ -103,10 +107,10 @@ def final_position_ok(name, out, row, col):
         ok = b'\x1b[H' not in tail[1:]
     check(name, ok)
 
-# 1. normal exit without saving: Alt-Q
-answered, out = run_session([], 23, 7, b'\x1bq')
-check("DSR consultado (Alt-Q)", answered)
-final_position_ok("cursor tras salir con Alt-Q", out, 23, 7)
+# 1. normal local Exit: Alt-X
+answered, out = run_session([], 23, 7, b'\x1bx')
+check("DSR consultado (Alt-X local)", answered)
+final_position_ok("cursor tras Alt-X local", out, 23, 7)
 
 # 2. detach leaving everything running: Ctrl-Q d (+\r accepts the name)
 answered, out = run_session([], 11, 5, b'\x11d\r')

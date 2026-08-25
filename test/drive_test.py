@@ -3,10 +3,20 @@
 import os, pty, time, select, sys, fcntl, termios, struct
 import pyte
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+sys.path.insert(0, os.path.dirname(__file__))
+from stlib import close_all_daemons, wait_pid
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/st-drive'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
+close_all_daemons(HOME)
+os.makedirs(HOME + '/.superterm', exist_ok=True)
+with open(HOME + '/.superterm/superterm.ini', 'w') as f:
+    # This assertion is specifically for the fallback local session. A live
+    # daemon keeps state in memory and has no save variant of Exit.
+    f.write('[session]\nserver=detach\nautosave=1\nautorestore=0\n')
 
 W, H = 110, 35
 
@@ -60,10 +70,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        wait_pid(self.pid)
 
 fails = []
 def check(name, cond):
@@ -108,7 +115,7 @@ s.wait_until(lambda t: "ST_SPLIT_OK" not in t)
 scr = s.text()
 check("pane closed", "ST_SPLIT_OK" not in scr)
 
-# quit saving
+# the single Exit path autosaves this local fallback session
 s.send(b'\x1bx', 0.8)
 s.drain(0.5)
 s.close()

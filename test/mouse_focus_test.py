@@ -1,130 +1,136 @@
 #!/usr/bin/env python3
-"""superterm test: mouse menu activation and pane focus under tmux TERM."""
-import fcntl
+"""Mouse menu activation and exclusive pane focus under tmux TERM."""
 import os
-import pty
-import pyte
-import select
-import struct
 import sys
-import termios
 import time
 
+sys.path.insert(0, os.path.dirname(__file__))
+import stlib
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
-ROOT = '/tmp/opencode/stmouse-focus'
-HOME = ROOT + '/home'
+
+HOME = stlib.fresh_home('mouse-focus')
 W, H = 110, 35
-os.makedirs(HOME, exist_ok=True)
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 
 
-class Session:
-    def __init__(self):
-        self.screen = pyte.Screen(W, H)
-        self.stream = pyte.ByteStream(self.screen)
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            os.environ.update({
-                'TERM': 'tmux-256color',
-                'SHELL': '/bin/bash',
-                'HOME': HOME,
-                'SUPERTERM_INI': ROOT + '/none.ini',
-            })
-            os.execv(BIN, [BIN])
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                    struct.pack('HHHH', H, W, 0, 0))
-
-    def drain(self, seconds):
-        end = time.time() + seconds
-        while time.time() < end:
-            readable, _, _ = select.select([self.fd], [], [], 0.05)
-            if readable:
-                try:
-                    self.stream.feed(os.read(self.fd, 65536))
-                except OSError:
-                    return
-                except Exception:
-                    pass
-
-    def send(self, data, seconds=0.8):
-        os.write(self.fd, data)
-        self.drain(seconds)
-
-    def mouse(self, x, y):
-        os.write(self.fd, f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m'.encode())
-        self.drain(0.5)
-
-    # active wait: polls until pred holds (or timeout), so nothing is
-    # checked before the UI has reacted. Robustness under load.
-    def wait_until(self, pred, timeout=12.0):
-        end = time.time() + timeout
-        while time.time() < end:
-            self.drain(0.2)
-            if pred():
-                return True
-        return pred()
-
-    def close(self):
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+def mouse(client, x, y):
+    os.write(client.fd, f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m'.encode())
+    client.drain(0.5)
 
 
-fails = []
+def pane_rows(session):
+    result = stlib.run_cli(['list', session], HOME, env={'LANG': 'C'})
+    rows = [line for line in result.stdout.splitlines()
+            if line and line[0].isdigit()]
+    return result, rows
 
 
-def check(name, condition):
-    print(f'{name:36}: ' + ('OK' if condition else 'FAIL'))
-    if not condition:
-        fails.append(name)
+def focused_pane(rows):
+    for row in rows:
+        if '*' in row:
+            try:
+                return int(row.split()[0])
+            except (IndexError, ValueError):
+                return None
+    return None
 
 
-s = Session()
+def frame_count(client):
+    """Count visible normal-window top-left corners, excluding icons."""
+    rows = client.screen.display
+    count = 0
+    for y, row in enumerate(rows[:-1]):
+        for x, char in enumerate(row):
+            if char not in ('╔', '┌'):
+                continue
+            if y + 1 < len(rows) and rows[y + 1][x] in ('╚', '└'):
+                continue
+            count += 1
+    return count
+
+
+def capture(session, pane):
+    return stlib.run_cli(['capture', f'{session}:{pane}'], HOME).stdout
+
+
+client = stlib.Client(HOME, w=W, h=H,
+                      env={'TERM': 'tmux-256color'})
 try:
-    # wait for startup to draw the menu bar before clicking
-    s.wait_until(lambda: any('Panes' in ''.join(row) for row in s.screen.display))
-    s.mouse(5, 1)
-    s.wait_until(lambda: any('Split vertical' in ''.join(row)
-                             for row in s.screen.display))
-    check('mouse opens Panels menu',
-          any('Split vertical' in ''.join(row) for row in s.screen.display))
+    stlib.check('menu bar becomes visible',
+                client.wait_until(lambda text: 'Panes' in text, 8.0))
+    sockets = stlib.session_sockets(HOME)
+    stlib.check('one isolated session exists', len(sockets) == 1)
+    session = os.path.basename(sockets[0])[:-5] if len(sockets) == 1 else ''
+
+    mouse(client, 5, 1)
+    stlib.check('mouse opens Panels menu',
+                client.wait_until(lambda text: 'Split vertical' in text, 5.0))
 
     # Panes > Vertical, using global 1-based SGR coordinates.
-    s.mouse(5, 3)
-    s.wait_until(lambda: any('│' in ''.join(row) for row in s.screen.display))
-    check('menu click creates split',
-          any('│' in ''.join(row) for row in s.screen.display))
+    mouse(client, 5, 3)
+    result, rows = pane_rows(session)
+    deadline = time.time() + 6.0
+    while time.time() < deadline and len(rows) != 2:
+        client.drain(0.2)
+        result, rows = pane_rows(session)
+    stlib.check('split command succeeds', result.returncode == 0)
+    stlib.check('split creates exactly two panes', len(rows) == 2)
+    stlib.check('split draws exactly two frames',
+                client.wait_until(lambda _text: frame_count(client) == 2,
+                                  5.0))
 
-    # a new window is centred on top of the others, so "the right half" is
-    # no longer where it lands: what matters is that the focused (new) pane
-    # got the token and the old one did not
-    s.send(b'echo RIGHT_TOKEN\r')
-    s.wait_until(lambda: any('RIGHT_TOKEN' in ''.join(row)
-                             for row in s.screen.display))
-    check('new pane receives input',
-          any('RIGHT_TOKEN' in ''.join(row) for row in s.screen.display))
+    # Route a unique token to the newly focused pane, then prove it is absent
+    # from the other pane's daemon capture.  Merely seeing text in the merged
+    # client surface cannot establish its destination.
+    right_target = focused_pane(rows)
+    stlib.check('new pane is focused in list', right_target in (1, 2))
+    other = 3 - right_target if right_target in (1, 2) else 1
+    right_token = 'RIGHT_TOKEN_MOUSE_7719'
+    client.send(f'echo {right_token}\r'.encode(), 0.8)
+    client.wait_until(lambda _text: right_token in capture(session,
+                                                           right_target), 5.0)
+    stlib.check('new pane receives input exclusively',
+                right_token in capture(session, right_target) and
+                right_token not in capture(session, other))
 
-    # The new window is focused; click the one underneath, on a column the
-    # centred window does not cover.
-    s.mouse(3, 5)
-    s.send(b'echo LEFT_TOKEN\r')
-    s.wait_until(lambda: any('LEFT_TOKEN' in ''.join(row)
-                             for row in s.screen.display))
-    check('pane click focuses the pane underneath',
-          any('LEFT_TOKEN' in ''.join(row) for row in s.screen.display))
-    check('each token went to one pane only',
-          sum('LEFT_TOKEN' in ''.join(row) for row in s.screen.display) <= 2)
+    # The centred focused window leaves this part of the underlying window
+    # visible.  Clicking it must move the authoritative focus flag and route
+    # the next token only to that pane.
+    mouse(client, 3, 5)
+    _result, clicked_rows = pane_rows(session)
+    clicked_target = focused_pane(clicked_rows)
+    deadline = time.time() + 5.0
+    while (time.time() < deadline and
+           (clicked_target not in (1, 2) or clicked_target == right_target)):
+        client.drain(0.2)
+        _result, clicked_rows = pane_rows(session)
+        clicked_target = focused_pane(clicked_rows)
+    stlib.check('pane click changes focused flag',
+                clicked_target in (1, 2) and clicked_target != right_target)
+    clicked_other = 3 - clicked_target if clicked_target in (1, 2) else 1
+    left_token = 'LEFT_TOKEN_MOUSE_8823'
+    client.send(f'echo {left_token}\r'.encode(), 0.8)
+    client.wait_until(lambda _text: left_token in capture(session,
+                                                          clicked_target),
+                      5.0)
+    stlib.check('clicked pane receives input exclusively',
+                left_token in capture(session, clicked_target) and
+                left_token not in capture(session, clicked_other))
 finally:
     try:
-        s.send(b'\x1bq', 0.5)
+        client.send(b'\x1bx', 0.5)
+        client.wait_exit(4.0)
     except OSError:
         pass
-    s.close()
+    stlib.close_all_daemons(HOME)
+    client.wait_exit(2.0)
+    client.close()
 
-
-sys.exit(1 if fails else 0)
+stlib.report()

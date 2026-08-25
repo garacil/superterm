@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""superterm test: /etc-style terminal definitions, scrollback, quit-no-save."""
+"""System terminal definitions, scrollback and local fallback autosave."""
 import os, pty, time, select, sys, fcntl, termios, struct, subprocess, re
 import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons
+from stlib import close_all_daemons, wait_pid
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/st-sysconfig'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
@@ -17,6 +18,13 @@ W, H = 110, 35
 # interrupted earlier run, or the previous phase's daemon still completing
 # shutdown, must not turn the next launch into the live-session picker.
 close_all_daemons(HOME)
+os.makedirs(HOME + '/.superterm', exist_ok=True)
+
+def write_user_config(autosave):
+    """Keep this a local-mode test; daemon persistence is covered elsewhere."""
+    with open(HOME + '/.superterm/superterm.ini', 'w') as f:
+        f.write('[session]\nserver=detach\nautosave=%d\nautorestore=%d\n' %
+                (1 if autosave else 0, 1 if autosave else 0))
 
 class Session:
     def __init__(self, sysini=SYSINI):
@@ -51,8 +59,7 @@ class Session:
     def close(self):
         try: os.close(self.fd)
         except OSError: pass
-        try: os.waitpid(self.pid, 0)
-        except ChildProcessError: pass
+        wait_pid(self.pid)
 
 fails = []
 def check(name, cond):
@@ -64,6 +71,7 @@ def pgrep(pat):
     return subprocess.run(['pgrep', '-f', pat], capture_output=True, text=True).stdout.strip()
 
 # ---- part 1: terminals defined in sysini ----
+write_user_config(False)
 with open(SYSINI, 'w') as f:
     f.write("""[t1]
 name=uno
@@ -98,11 +106,11 @@ check("t2 arrancado", pgrep('sleep 555') != '')
 time.sleep(0.3)
 check("t3 disabled no arranca", pgrep('sleep 777') == '')
 
-# exit WITHOUT saving: Alt-Q
-s.send(b'\x1bq', 1.0)
+# The only Exit command obeys the explicit local autosave setting.
+s.send(b'\x1bx', 1.0)
 s.close()
 time.sleep(0.4)
-check("Alt-Q no guarda sesion", not os.path.exists(SESS))
+check("autosave=0 no guarda sesion", not os.path.exists(SESS))
 close_all_daemons(HOME)
 
 # ---- part 2: scrollback with a single terminal ----
@@ -142,13 +150,14 @@ s.send(b'\x1b\x1b[4~', 0.8)
 scr = s.text()
 check("alt-end: bottom", re.search(r'\b19[0-9]\b', scr) is not None)
 
-s.send(b'\x1bq', 0.8)   # without saving
+s.send(b'\x1bx', 0.8)
 s.close()
 time.sleep(0.3)
-check("sin sesion tras Alt-Q", not os.path.exists(SESS))
+check("autosave=0 sigue sin sesion", not os.path.exists(SESS))
 close_all_daemons(HOME)
 
-# ---- part 3: saving with Alt-X restores the defined terminal ----
+# ---- part 3: local autosave with Alt-X restores the defined terminal ----
+write_user_config(True)
 s = Session()
 s.drain(2.0)
 s.send(b'\x1bx', 1.0)   # exit saving
@@ -166,7 +175,7 @@ s = Session()
 s.drain(2.5)
 scr = s.text()
 check("restaura terminal por nombre", "solo" in scr)
-s.send(b'\x1bq', 0.8)
+s.send(b'\x1bx', 0.8)
 s.close()
 close_all_daemons(HOME)
 

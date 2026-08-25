@@ -3,7 +3,10 @@
 import os, pty, time, select, sys, fcntl, termios, struct, shutil
 import pyte
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+from stlib import wait_pid
+
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/sthome-wclass'
 USERINI = HOME + '/.superterm/superterm.ini'
 SYSINI = HOME + '/system.ini'
@@ -16,6 +19,8 @@ TOKENS = ('CLASS_USER_TOKEN', 'LEGACY_TOKEN', 'SHADOW_USER_TOKEN',
 # isolated environment: own HOME and own system INI, clean at start
 shutil.rmtree(HOME, ignore_errors=True)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
+with open(USERINI, 'w') as f:
+    f.write('[session]\nserver=detach\nautosave=1\nautorestore=1\n')
 
 class Session:
     def __init__(self, sysini=SYSINI):
@@ -50,8 +55,7 @@ class Session:
     def close(self):
         try: os.close(self.fd)
         except OSError: pass
-        try: os.waitpid(self.pid, 0)
-        except ChildProcessError: pass
+        wait_pid(self.pid)
 
 fails = []
 def check(name, cond):
@@ -62,14 +66,19 @@ def check(name, cond):
 # ---- phase 0: 1-pane session so the classes do not autostart ----
 s = Session()
 s.drain(2.0)
-s.send(b'\x1bx', 1.0)          # Alt-X: save and exit
+s.send(b'\x1bx', 1.0)          # Alt-X: local Exit autosaves the fallback
 s.close()
 time.sleep(0.4)
 check("bootstrap session saved", os.path.exists(SESS))
 
 # ---- classes: [class.*] in the user INI, [t-*] and a collision in the system one ----
 with open(USERINI, 'w') as f:
-    f.write("""[class.local-echo]
+    f.write("""[session]
+server=detach
+autosave=1
+autorestore=1
+
+[class.local-echo]
 name=local-echo
 enabled=1
 cmd=echo CLASS_USER_TOKEN; exec /bin/bash -i
@@ -163,7 +172,7 @@ s.send(b'echo STILL_$((41+1))_ALIVE\r', 1.2)
 scr = s.text()
 check("postonly shell alive", "STILL_42_ALIVE" in scr)
 
-s.send(b'\x1bq', 1.0)          # Alt-Q: exit without saving
+s.send(b'\x1bx', 1.0)          # Alt-X: the single Exit path
 s.close()
 
 sys.exit(1 if fails else 0)

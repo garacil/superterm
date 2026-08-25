@@ -71,11 +71,28 @@ focus_line = [l for l in r.stdout.splitlines() if l.startswith('2 ')]
 check('focused flag moved', bool(focus_line) and '*' in focus_line[0])
 
 # ---- '.' points at the focused pane after focus ----
-r = run_cli(['send', '.', 'echo FOCUSED_HERE'], HOME)
+# Pane 2 is deliberately running ``sleep 600`` and cannot execute a shell
+# marker.  Focus the ordinary shell in pane 4, then require the marker to
+# appear there and nowhere in pane 2.  The former unconditional escape hatch
+# made this whole routing check vacuous.
+r = run_cli(['focus', SES + ':4'], HOME)
+check('focus shell pane exit 0', r.returncode == 0)
+r = run_cli(['list', SES], HOME, env={'LANG': 'C'})
+focus_line = [l for l in r.stdout.splitlines() if l.startswith('4 ')]
+check('shell pane has focused flag', bool(focus_line) and '*' in focus_line[0])
+marker = 'FOCUSED_HERE_CTLWM_9421'
+r = run_cli(['send', '.', 'echo ' + marker], HOME)
 check('send to focused pane', r.returncode == 0)
-time.sleep(0.8)
-r = run_cli(['capture', SES + ':2'], HOME)
-check('dot followed the focus', 'FOCUSED_HERE' in r.stdout or True)
+focused_capture = ''
+deadline = time.time() + 4.0
+while time.time() < deadline:
+    focused_capture = run_cli(['capture', SES + ':4'], HOME).stdout
+    if marker in focused_capture:
+        break
+    time.sleep(0.1)
+check('dot followed the focus', marker in focused_capture)
+sleep_capture = run_cli(['capture', SES + ':2'], HOME).stdout
+check('dot did not reach old focus', marker not in sleep_capture)
 
 # ---- minimize / restore / zoom ----
 r = run_cli(['minimize', SES + ':3'], HOME)
@@ -116,6 +133,10 @@ r = run_cli(['capture', SES + ':1'], HOME)
 check('indices still aligned after close', 'STILL_OK' in r.stdout)
 
 # ---- the rename survives a reattach ----
+# Leave a non-overlapping layout so visibility tests persistence of the title,
+# not whether cascade happened to cover that background top border.
+r = run_cli(['organize', SES, 'grid'], HOME)
+check('grid before reattach exit 0', r.returncode == 0)
 c2 = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 c2.drain(2.5)
 check('reattach shows renamed title', 'Background Job' in c2.text())

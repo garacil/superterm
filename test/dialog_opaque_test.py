@@ -108,7 +108,7 @@ for palette in ('color', 'mono'):
     check('%s: the wizard is opaque' % palette, n == 0)
     c.send(b'\x1b', 0.6)
 
-    c.send(b'\x1bq', 0.8)
+    c.send(b'\x1bx', 0.8)
     try:
         c.wait_exit(timeout=6)
     except Exception:
