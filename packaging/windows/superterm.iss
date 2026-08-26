@@ -38,6 +38,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\..\bin\superterm.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "superterm-launch.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\docs\*.md"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -45,9 +46,9 @@ Source: "..\..\backgrounds\*.art"; DestDir: "{app}\backgrounds"; Flags: ignoreve
 Source: "..\..\examples\superterm.ini.example"; DestDir: "{app}\examples"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\SuperTerm"; Filename: "{app}\superterm.exe"; WorkingDir: "{app}"
+Name: "{group}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\superterm.exe"
 Name: "{group}\SuperTerm documentation"; Filename: "{app}\README.md"
-Name: "{autodesktop}\SuperTerm"; Filename: "{app}\superterm.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\superterm.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\superterm.exe"; Description: "Launch SuperTerm"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\superterm-launch.cmd"; Description: "Launch SuperTerm"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent

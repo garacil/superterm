@@ -170,6 +170,11 @@ The result is `dist\SuperTerm-4.2.1-windows-x64-setup.exe`; it installs under
 `%LOCALAPPDATA%\Programs\SuperTerm` and includes the executable, documentation,
 configuration example, and desktop backgrounds.
 
+The Start-menu and desktop shortcuts use `superterm-launch.cmd`: it opens a new
+Windows Terminal tab when `wt.exe` is available and otherwise runs the console
+executable inside the standard `cmd.exe` host. Launching `superterm.exe` from an
+already-open terminal remains supported directly.
+
 ## Implementation approach
 
 - `st_os.pas` isolates small platform services such as PID lookup, config
