@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """superterm test: [profile.*] profiles, flattened legacy templates and saving."""
 import configparser
-import os, pty, time, select, sys, fcntl, termios, struct, shutil
+import os, pty, time, select, sys, fcntl, termios, struct, shutil, re, shlex
 import pyte
 
 from stlib import wait_pid
@@ -41,6 +41,8 @@ windows=web
 enabled=1
 layout=V:500;L;L
 focused_pane=0
+deskw=92
+deskh=28
 panes=a,b
 
 [profile.dev.window.web.pane.a]
@@ -173,6 +175,10 @@ check("workspace switched", "PROF_PANE_A" not in scr)
 # capturable markers: the pane's cwd and a single-word foreground
 # command (python3), which survives the INI write/re-read cycle
 s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
+# Profile persistence needs one portable, unambiguous foreground oracle.
+# Linux's optional procfs wait-state fallback is exercised independently;
+# this cross-platform suite keeps Python in its own terminal process group.
+s.send(b'set -m\r', 0.3)
 s.send(b'python3\r', 0.2)
 # The pane process scanner is deliberately periodic.  Synchronize with its
 # visible title instead of assuming a one-second CI runner deadline.  The
@@ -202,17 +208,48 @@ captured_titles = [
     for section in saved_ini.sections()
     if section.startswith('profile.captured.window.') and '.pane.' in section
 ]
+captured_cmds = [
+    saved_ini.get(section, 'cmd', fallback='').strip()
+    for section in saved_ini.sections()
+    if section.startswith('profile.captured.window.') and '.pane.' in section
+]
+captured_windows = [
+    section for section in saved_ini.sections()
+    if section.startswith('profile.captured.window.') and '.pane.' not in section
+]
+
+
+def captured_python(value):
+    """Recognise the actual executable recorded from argv, not one OS path."""
+    try:
+        argv = shlex.split(value)
+    except ValueError:
+        return False
+    if len(argv) != 1:
+        return False
+    executable = argv[0]
+    basename = os.path.basename(executable).lower()
+    return re.fullmatch(r'python(?:3(?:\.\d+)?)?', basename) is not None
+
+
 check("ini has profile.captured", "[profile.captured]" in txt)
 check("ini has layout key", "layout=" in txt)
-# macOS: /usr/bin/python3 is a stub that re-execs the framework Python, so the
-# captured foreground command is the resolved Python.framework path, not "python3".
-check("ini captured marker cmd", ("cmd=python3" in txt) or ("cmd='python3'" in txt)
-      or ("Python3.framework" in txt))
+# macOS /usr/bin/python3 may re-exec Python.framework/Python; parse the saved
+# argv and validate its executable instead of grepping one framework spelling.
+check("ini captured marker cmd",
+      len(captured_cmds) == 1 and captured_python(captured_cmds[0]))
 check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
 check("ini captured visible basename title",
       len(captured_titles) == 1 and
       captured_titles[0] in {'python3', 'python'})
 check("ini captured scrollback", "scrollback=10000" in txt)
+check("ini keeps source DeskW/H",
+      saved_ini.getint('profile.dev.window.web', 'deskw') == 92 and
+      saved_ini.getint('profile.dev.window.web', 'deskh') == 28)
+check("ini captures current DeskW/H",
+      len(captured_windows) == 1 and
+      saved_ini.getint(captured_windows[0], 'deskw') == W and
+      saved_ini.getint(captured_windows[0], 'deskh') == H - 2)
 check("ini keeps default_profile", "default_profile=dev" in txt)
 check("ini keeps class section", "[class.keepme]" in txt)
 

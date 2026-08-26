@@ -165,22 +165,28 @@ state = wait_state(HOME, lambda s: s['panes'] == 1)
 check('workers shrink with pane count', bool(state) and
       state['threads'] == expected_one)
 # The control CLI deliberately refuses to close a session's last pane; the
-# attached window manager can create the supported empty-desktop state. Open
-# the menu by keyboard and synchronize with its caption before selecting the
-# command, rather than racing a raw click against a pending repaint.
-client.send(b'\x1bp', 0.1)
-menu_open = client.wait_until(lambda text: 'Close pane' in text, 4.0)
-check('pane menu opens before last close', menu_open)
-if menu_open:
-    client.send(b'c', 1.5)
-state = wait_state(HOME, lambda s: s['panes'] == 0)
+# attached window manager can create the supported empty-desktop state.  The
+# three CLI closes above enqueue asynchronous KILL events for this UI. Rename
+# the survivor and wait until that later event is visible before exercising
+# the physical binding; otherwise a slow client can still address pane 4.
+barrier = run_cli(['rename', session + ':1', 'LAST_PANE_READY'], HOME)
+check('client catches up before last close',
+      barrier.returncode == 0 and
+      client.wait_until(lambda text: 'LAST_PANE_READY' in text, 5.0))
+client.send(b'\x1b[13;3~', 0.2)
+state = wait_state(HOME, lambda s: s['panes'] == 0 and s['threads'] == 1)
 check('zero panes leaves network reactor', bool(state) and
       state['threads'] == 1)
+if not state or state['panes'] != 0 or state['threads'] != 1:
+    print('  final empty-desktop sidecar: ' + repr(state))
 result = run_cli(['new', session], HOME)
 check('pane recreated from empty session', result.returncode == 0)
-state = wait_state(HOME, lambda s: s['panes'] == 1)
+state = wait_state(HOME, lambda s: s['panes'] == 1 and
+                   s['threads'] == expected_one)
 check('worker recreated after empty session', bool(state) and
       state['threads'] == expected_one)
+if not state or state['panes'] != 1 or state['threads'] != expected_one:
+    print('  final recreated-pane sidecar: ' + repr(state))
 
 client.send(b'\x1bx', 1.0)
 client.close()

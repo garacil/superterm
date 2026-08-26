@@ -28,6 +28,15 @@ CAPTURE_ALL = 1
 CAPTURE_LAST_N = 2
 
 HOME = stlib.fresh_home('control')
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'palette=color\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 
 
 def ctl(sock_path, kind, pane=-1, payload=b''):

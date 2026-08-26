@@ -164,20 +164,38 @@ superterm list prod
 Up to 8 clients can attach to one session (`superterm attach` from several
 terminals). The daemon owns one desktop: window positions and sizes, minimize,
 zoom, fullscreen and focus are the same for every client. Input from all
-viewers remains enabled and the daemon processes it in arrival order. Attaching a
-different-sized terminal never adapts that desktop or sends `TIOCSWINSZ`;
-a smaller terminal clips it and a larger one has unused margin. A later
-physical resize of an attached host is different: it is a shared desktop
-operation and atomically updates every window and PTY. A new normal maximize
-uses the smallest currently attached framed IDE area; with unequal host sizes,
-fullscreen (`prefix f`) uses the smallest common IDE-rendered area, while
-equal hosts can all use raw passthrough. A later attach does not retroactively
-rewrite an existing maximum. Moves, incremental resizes and optional
-maximize/fullscreen outlines are relayed while they happen, not only as a final
-result. Per-pane leases allow different viewers to manipulate different panes
+viewers remains enabled and the daemon processes it in arrival order. The
+desktop has one canonical character size retained by its profile/session.
+Attach and physical `SIGWINCH` reports are client metadata only: they never
+adapt the desktop or send `TIOCSWINSZ` to a pane. A smaller terminal receives
+horizontal and vertical scrollbars for a viewport initially anchored at
+canonical `(0,0)`; a larger terminal has unused margin.
+
+Only an explicit IDE action changes the desktop. `Desktop -> Adjust to this
+terminal size` adopts that client's usable character area, `Desktop -> Modify
+dimensions...` accepts `20x25` through `8192x4094`, and `Desktop -> Show
+current dimensions...` reports logical, complete-IDE, terminal and viewport
+sizes. Shrinking does not scale windows or resize normal/minimized PTYs. Bounds
+stay exact unless no safe draggable title cell would remain visible, in which
+case the daemon translates that window by the minimum amount. Maximize and
+fullscreen always derive from the canonical desktop, never from the smallest
+or newest client. Raw fullscreen passes the geometry gate only when every
+attached terminal has the same physical grid and it exactly matches canonical
+fullscreen; otherwise viewers use the synchronized renderer and their
+scrollable viewport.
+
+Moves, incremental resizes and optional maximize/fullscreen outlines are
+relayed while they happen, not only as a final result. During move/resize the
+themed status line shows `Window X,Y  WxH` in canonical character coordinates
+for the active window—not the desktop. Its size is available from `Desktop ->
+Show current dimensions...`.
+Per-pane leases allow different viewers to manipulate different panes
 concurrently; a maximize hand-off also acquires the previous maximized pane
 because both states change atomically. A peer commit cannot rewind the gesture
-still held by another viewer. Minimize and restore are delivered as one atomic
+still held by another viewer. Minimized icons have stable holes: restore frees
+one and the next minimize reuses the first free slot without moving the others.
+Minimizing the focused pane preserves shared focus until an explicit focus
+action selects another pane. Minimize and restore are delivered as one atomic
 shared transition.
 A stalled client pauses output briefly and is disconnected after a grace
 period so it can never block the session. Legacy (pre-3.0) clients still
@@ -347,23 +365,41 @@ Hasta 8 clientes pueden conectarse a una misma sesión (`superterm
 conectar` desde varios terminales). El daemon posee un único escritorio:
 posiciones y tamaños, minimizar, zoom y pantalla completa son iguales para
 todos, incluido el panel enfocado. La entrada de todos los clientes sigue
-habilitada y el daemon la procesa por orden de llegada. Conectar un terminal
-de otro tamaño nunca adapta el escritorio ni
-envía `TIOCSWINSZ`; uno pequeño lo recorta y uno grande deja margen. Cambiar
-después el tamaño físico de un host conectado sí es una operación compartida:
-actualiza atómicamente todas las ventanas y PTY. Cada nuevo maximizado normal
-usa el área del IDE enmarcada del host conectado más pequeño; con hosts de
-tamaños distintos, fullscreen (`prefijo f`) usa su área común de pantalla
-completa, y si son iguales todos pueden usar el passthrough crudo. Un attach posterior no
-reescribe retroactivamente un maximizado existente. Los movimientos, cambios
-de tamaño graduales y contornos opcionales de maximizar/fullscreen se retransmiten
-mientras ocurren, no
-solo como resultado final. Los leases por panel permiten que distintos
-clientes manipulen paneles diferentes a la vez; el relevo de maximizado también
-adquiere el panel maximizado anterior porque ambos estados cambian de forma
-atómica. El commit de uno no puede hacer retroceder el gesto que otro aún
-mantiene. Minimizar y restaurar se presentan como una única transición
-compartida y atómica. Un cliente atascado pausa la salida brevemente y se
+habilitada y el daemon la procesa por orden de llegada. El perfil/sesión
+conserva un único tamaño canónico en caracteres. Un attach o un `SIGWINCH`
+físico solo actualiza metadatos del cliente: jamás adapta el escritorio ni
+envía `TIOCSWINSZ` a un panel. Un terminal pequeño obtiene barras horizontal y
+vertical para un área visible inicialmente anclada en `(0,0)`; uno grande deja
+margen.
+
+El escritorio solo cambia por una acción explícita del IDE. `Escritorio ->
+Ajustar al tamaño de este terminal` adopta el área útil de ese cliente,
+`Escritorio -> Modificar dimensiones...` acepta desde `20x25` hasta
+`8192x4094`, y `Escritorio -> Mostrar dimensiones actuales...` muestra los
+tamaños lógico, IDE completo, terminal y área visible. Al reducir no se escalan
+las ventanas ni cambian los PTY normales/minimizados. Sus dimensiones y
+posiciones se conservan, salvo que no quede visible ningún punto seguro para
+arrastrar el título; entonces el daemon traslada solo lo mínimo. Maximizar y
+fullscreen siempre derivan del escritorio canónico, nunca del cliente menor o
+del último en conectar. El passthrough crudo supera la condición geométrica
+solo cuando todos los terminales conectados tienen el mismo tamaño físico y
+este coincide exactamente con el fullscreen canónico; en otro caso conservan
+el renderer sincronizado y su área desplazable.
+
+Los movimientos, cambios de tamaño graduales y contornos opcionales de
+maximizar/fullscreen se retransmiten mientras ocurren, no solo como resultado
+final. Durante mover/redimensionar, la barra de estado muestra `Ventana X,Y  WxH`
+en coordenadas canónicas y con el tema activo. Es la geometría de esa ventana,
+no la del escritorio; esta última se consulta en `Escritorio -> Mostrar
+dimensiones actuales...`. Los leases por panel permiten que
+distintos clientes manipulen paneles diferentes a la vez; el relevo de
+maximizado también adquiere el panel maximizado anterior porque ambos estados
+cambian de forma atómica. El commit de uno no puede hacer retroceder el gesto
+que otro aún mantiene. Los iconos minimizados conservan sus huecos: restaurar
+libera uno y el siguiente minimizado reutiliza el primero libre sin mover los
+demás. Minimizar el panel enfocado conserva el foco compartido hasta una acción
+explícita de foco. Minimizar y restaurar son transiciones compartidas y
+atómicas. Un cliente atascado pausa la salida brevemente y se
 desconecta pasado un periodo de
 gracia, de modo que nunca bloquea la sesión. Los clientes antiguos (anteriores
 a 3.0) siguen conectando en exclusiva, igual que siempre.

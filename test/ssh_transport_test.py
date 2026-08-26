@@ -13,7 +13,10 @@ that path would be a false positive.  CI sets ``SUPERTERM_TEST_SSH_USER`` to
 its original ordinary runner account; that makes every listener prerequisite
 and the observed real UID descent mandatory.  No system service, /etc/ssh
 file, user SSH configuration, tmux session, or unrelated process is changed
-or signalled.
+or signalled.  On Debian/Ubuntu the fixture may create the distribution's
+standard root-owned ``/run/sshd`` runtime directory when direct ``sshd -t``
+reports it missing; it is intentionally retained because another OpenSSH
+process may begin using that shared chroot immediately.
 """
 
 import configparser
@@ -77,6 +80,10 @@ OTHER_KEY = os.path.join(HOME, 'id_other')
 SSHD_LOG = os.path.join(HOME, 'sshd.log')
 DEBUG_LOG = os.path.join(HOME, 'superterm-ssh-transport.log')
 SESSION = 'ssh-e2e'
+LINUX_PRIVSEP_PATH = '/run/sshd'
+LINUX_PRIVSEP_ERROR = (
+    'superterm ssh-server: sshd rejected generated configuration (-t): '
+    'Missing privilege separation directory: /run/sshd')
 
 
 def executable(candidates):
@@ -119,6 +126,59 @@ def admin(*args):
                           text=True, capture_output=True, timeout=45)
 
 
+def trusted_root_directory(path, exact_mode=None):
+    """Return lstat data only for a real, root-owned protected directory."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or
+            (stat.S_IMODE(info.st_mode) & 0o022) != 0):
+        return None
+    if exact_mode is not None and stat.S_IMODE(info.st_mode) != exact_mode:
+        return None
+    return info
+
+
+def retry_setup_with_linux_privsep(setup):
+    """Supply Ubuntu's sshd runtime prerequisite to this isolated fixture.
+
+    Debian/Ubuntu compile sshd with ``--with-privsep-path=/run/sshd``. Their
+    systemd unit normally creates that path, but this test intentionally
+    starts neither the host unit nor the host listener. Mirror the distro's
+    own test fixture only after the exact diagnostic. The standard runtime
+    directory is not removed: an external sshd may begin using the empty
+    chroot at any point, which cannot be proven from directory contents.
+    """
+    if (setup.returncode == 0 or not sys.platform.startswith('linux') or
+            os.geteuid() != 0 or
+            setup.stderr.strip() != LINUX_PRIVSEP_ERROR):
+        return setup
+    if trusted_root_directory('/run') is None:
+        return setup
+
+    try:
+        old_umask = os.umask(0o022)
+        try:
+            os.mkdir(LINUX_PRIVSEP_PATH, 0o755)
+        finally:
+            os.umask(old_umask)
+    except FileExistsError:
+        # A service may have created the normal path after sshd -t failed.
+        pass
+    except OSError as exc:
+        print('cannot create isolated sshd privilege-separation path: ' +
+              str(exc))
+        return setup
+
+    info = trusted_root_directory(LINUX_PRIVSEP_PATH, exact_mode=0o755)
+    if info is None:
+        print('refusing unsafe sshd privilege-separation path: ' +
+              LINUX_PRIVSEP_PATH)
+        return setup
+    return admin('setup')
+
+
 def session_path(suffix):
     return os.path.join(HOME, '.superterm', 'sessions', SESSION + suffix)
 
@@ -146,7 +206,7 @@ def session_daemon_claim():
 
 
 def prepare_application_home():
-    """Give only the selected login account the complete isolated HOME."""
+    """Give the selected login UID the complete private isolated HOME."""
     target_uid = ACCOUNT.pw_uid
     target_gid = ACCOUNT.pw_gid
     paths = []
@@ -163,8 +223,22 @@ def prepare_application_home():
             os.chown(path, target_uid, target_gid)
     os.chmod(HOME, 0o700)
     os.chmod(os.path.join(HOME, '.superterm'), 0o700)
-    return all((info.st_uid, info.st_gid) == (target_uid, target_gid)
-               for info in map(os.lstat, paths))
+    ownership = [(path, os.lstat(path)) for path in paths]
+    wrong_uid = [(path, info.st_uid) for path, info in ownership
+                 if info.st_uid != target_uid]
+    wrong_gid = [(path, info.st_gid) for path, info in ownership
+                 if info.st_gid != target_gid]
+    if wrong_uid:
+        print('isolated HOME UID mismatches: ' + repr(wrong_uid))
+    if wrong_gid:
+        # A hosted Darwin runner may start the ordinary account with an
+        # effective group different from pwd.pw_gid.  OpenSSH 10.5p1
+        # misc.c:safe_path validates owner UID plus mode 022, not the group
+        # number; HOME/.superterm are 0700, so a different group gains no
+        # access and is not an authentication failure.
+        print('isolated HOME non-primary groups (safe under mode 0700): ' +
+              repr(wrong_gid))
+    return not wrong_uid
 
 
 def process_table():
@@ -729,7 +803,7 @@ def main():
         if not keys_ok:
             return
 
-        setup = admin('setup')
+        setup = retry_setup_with_linux_privsep(admin('setup'))
         setup_ok = setup.returncode == 0
         check('isolated production config generated', setup_ok)
         if not setup_ok:
@@ -947,13 +1021,13 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         before_resize = pane_size()
         second.resize(124, 37, 0.4)
         resize_applied = wait_for(
-            lambda: (pane_size() is not None and
-                     pane_size() != before_resize),
+            lambda: (pane_size() == before_resize and
+                     'F2 Split' in second.screen.display[second.height - 1]),
             (second,), timeout=12.0)
         resized_size = pane_size()
-        check('SIGWINCH updates canonical geometry',
+        check('SIGWINCH updates only the SSH client viewport',
               before_resize is not None and resize_applied and
-              resized_size is not None and resized_size != before_resize)
+              resized_size == before_resize)
 
         # No PTY means no SSH_TTY, independently of the original-command
         # guard used by the next request.
@@ -1027,7 +1101,7 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         check('third viewer restores shared output',
               'AFTER_FIRST_NETWORK_LOSS' in third.text())
         third_size = pane_size()
-        check('reattach preserves resized canonical geometry',
+        check('reattach preserves canonical geometry after SIGWINCH',
               resized_size is not None and third_size is not None and
               third_size == resized_size)
         remember_listener_descendants(

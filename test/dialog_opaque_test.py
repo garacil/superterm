@@ -64,6 +64,21 @@ def truecolor_inside(c, title, height=16):
     return n
 
 
+def open_menu_item(c, menu_label, item_key):
+    """Open a top-level menu by its rendered label, never a stale column."""
+    x = c.screen.display[0].find(menu_label)
+    if x < 0:
+        return False
+    # SGR mouse coordinates are one-based. Click inside the label, then use
+    # the item's mnemonic; adding/reordering another top-level menu must not
+    # silently redirect this regression to a different command.
+    column = x + max(0, len(menu_label) // 2) + 1
+    c.send(f'\x1b[<0;{column};1M'.encode(), 0.2)
+    c.send(f'\x1b[<0;{column};1m'.encode(), 0.8)
+    c.send(item_key, 2.0)
+    return True
+
+
 for palette in ('color', 'mono'):
     HOME = stlib.fresh_home('dlgopaque' + palette)
     os.makedirs(HOME + '/.superterm', exist_ok=True)
@@ -88,25 +103,22 @@ for palette in ('color', 'mono'):
           len(painted) > 500 and all(glyph == ' ' for glyph, _ in painted))
 
     # the class manager
-    c.send(b'\x1b[<0;20;1M', 0.2)
-    c.send(b'\x1b[<0;20;1m', 0.8)
-    c.send(b'm', 2.0)
+    check('%s: Classes menu is addressable by label' % palette,
+          open_menu_item(c, 'Classes', b'm'))
     n = truecolor_inside(c, 'Window classes')
     check('%s: the class manager is opaque' % palette, n == 0)
     c.send(b'\x1b', 0.6)
 
     # the profile manager
-    c.send(b'\x1b[<0;29;1M', 0.2)
-    c.send(b'\x1b[<0;29;1m', 0.8)
-    c.send(b'm', 2.0)
+    check('%s: Profiles menu is addressable by label' % palette,
+          open_menu_item(c, 'Profiles', b'm'))
     n = truecolor_inside(c, 'Profiles')
     check('%s: the profile manager is opaque' % palette, n == 0)
     c.send(b'\x1b', 0.6)
 
     # the session wizard
-    c.send(b'\x1b[<0;38;1M', 0.2)
-    c.send(b'\x1b[<0;38;1m', 0.8)
-    c.send(b'w', 2.0)
+    check('%s: Sessions menu is addressable by label' % palette,
+          open_menu_item(c, 'Sessions', b'w'))
     n = truecolor_inside(c, 'Session wizard', 8)
     check('%s: the wizard is opaque' % palette, n == 0)
     c.send(b'\x1b', 0.6)

@@ -41,6 +41,12 @@ name = os.path.basename(socks()[0])[:-5]
 check('auto name is session', name == 'session')
 r = run_cli(['list'], HOME, env={'LANG': 'C'})
 check('list works from launch', r.returncode == 0 and 'session' in r.stdout)
+# A configuration-free installation deliberately starts with its one 80x25
+# shell minimized. Restore it before testing visible interactive output; the
+# installation-default state itself has a dedicated end-to-end regression.
+r = run_cli(['restore', name + ':1'], HOME)
+check('initial icon restores for visible CLI test', r.returncode == 0)
+a.drain(0.5)
 r = run_cli(['send', '.', 'echo LIVE_FROM_CLI'], HOME)
 check('send works from launch', r.returncode == 0)
 a.wait_until(lambda t: 'LIVE_FROM_CLI' in t)
@@ -87,6 +93,9 @@ d.close()
 check('daemon survives killed client', any('Trabajo' in s for s in socks()))
 e = stlib.Client(HOME, args=['--attach'], w=100, h=28)
 e.drain(2.0)
+r = run_cli(['restore', os.path.basename(socks()[0])[:-5] + ':1'], HOME)
+check('reattached initial icon restores', r.returncode == 0)
+e.drain(0.5)
 e.send(b'echo BACK_AGAIN\r', 1.0)
 check('reattach after kill works', 'BACK_AGAIN' in e.text())
 
@@ -102,6 +111,9 @@ check('attached Exit creates no fallback save', not os.path.exists(SESS_INI))
 # ---- 6: self-cleanup: dead panes and no clients -> shuts itself down ----
 f = stlib.Client(HOME, env={'SUPERTERM_REAP_MS': '2500'}, w=100, h=28)
 f.drain(2.0)
+r = run_cli(['restore', os.path.basename(socks()[0])[:-5] + ':1'], HOME)
+check('self-reap shell restored before exit', r.returncode == 0)
+f.drain(0.5)
 f.send(b'exit\r', 1.2)           # the only shell dies
 f.send(b'\x11', 0.4)             # detach leaving the dead pane behind
 f.send(b'd', 1.0)

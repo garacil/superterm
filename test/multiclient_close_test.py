@@ -6,6 +6,7 @@ administrative kill path. There is no save/no-save exit variant. This is a
 real multi-client UI test: it exercises the final layout sent during
 TSuperApp teardown before FRAME_CLOSE, not only a synthetic protocol frame.
 """
+import configparser
 import os
 import sys
 import time
@@ -34,6 +35,27 @@ def wait_for(pred, timeout=8.0):
 
 def sockets():
     return stlib.session_sockets(HOME)
+
+
+def wait_daemon_claim(session, timeout=8.0):
+    """Return only a complete sidecar claim matching its live generation."""
+    path = os.path.join(
+        HOME, '.superterm', 'sessions', session + '.ini')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            meta = configparser.ConfigParser()
+            meta.read(path)
+            pid = meta.getint('session', 'pid', fallback=0)
+            identity = meta.get(
+                'session', 'pid_identity', fallback='').strip()
+            if (pid > 1 and identity and
+                    stlib.process_identity(pid) == identity):
+                return pid, identity
+        except (OSError, ValueError, configparser.Error):
+            pass
+        time.sleep(0.02)
+    return 0, ''
 
 
 # Reproduce the reported failure literally: A creates the session and remains
@@ -90,6 +112,10 @@ d = stlib.Client(HOME, args=['--session', 'admin-kill'], w=100, h=28,
 d.drain(2.0)
 check('admin session exists', wait_for(lambda: len(sockets()) == 1))
 admin_name = os.path.basename(sockets()[0])[:-5] if sockets() else ''
+admin_pid, admin_identity = wait_daemon_claim(admin_name)
+check('admin daemon publishes an exact process identity',
+      admin_pid > 1 and bool(admin_identity) and
+      stlib.process_identity(admin_pid) == admin_identity)
 e = stlib.Client(HOME, args=['--attach', admin_name], w=90, h=26,
                  lang='en')
 e.drain(2.0)
@@ -97,6 +123,14 @@ check('admin second client attaches', e.alive())
 result = run_cli(['kill', admin_name], HOME)
 check('administrative kill succeeds', result.returncode == 0)
 check('administrative kill closes session', wait_for(lambda: sockets() == []))
+# Keep both client processes alive below while requiring the daemon generation
+# itself to disappear.  A direct child left as Z under the creator retains the
+# same birth identity and fails this oracle; socket removal or kill(pid, 0)
+# alone cannot distinguish that historical Darwin regression.
+check('administrative kill fully reaps daemon', wait_for(
+    lambda: (admin_pid > 1 and bool(admin_identity) and
+             stlib.process_identity(admin_pid) != admin_identity),
+    timeout=8.0))
 # Both UIs receive the existing "session was closed" notice. Confirming it is
 # what terminates their client processes; this matches multiclient_test.py.
 time.sleep(1.5)

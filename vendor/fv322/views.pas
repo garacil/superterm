@@ -4238,11 +4238,7 @@ begin
   Dest:=Source;
   repeat
     dec(Dest.X,cur^.Origin.X);
-    if dest.x<0 then
-     break;
     dec(Dest.Y,cur^.Origin.Y);
-    if dest.y<0 then
-     break;
     cur:=cur^.Owner;
   until cur=nil;
 end;

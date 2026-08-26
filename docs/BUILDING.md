@@ -253,6 +253,14 @@ The installation contains:
 - `SYSCONFDIR/superterm/superterm.ini.example`, only when no example exists.
 
 An existing configuration is never overwritten by `make install`.
+
+On a genuinely configuration-free first start, the compiled workspace default
+is a `120x50` logical desktop with the Alien hacker background, monochrome UI,
+and one minimized local shell whose terminal area is `80x25`. The launching
+terminal is only a viewport; it is not resized and does not redefine that
+desktop. Existing profiles, sessions, system classes, and user configuration
+continue to take precedence.
+
 Copying the binary does not silently enable the optional root SSH service;
 `sudo superterm ssh-server setup` prepares or refreshes it explicitly.
 

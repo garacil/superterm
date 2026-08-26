@@ -37,6 +37,15 @@ FRAME_SCREEN = 21
 FRAME_READY = 22
 
 HOME = stlib.fresh_home('multiclient')
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'palette=color\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 
 
 def clients_column(home):

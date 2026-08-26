@@ -15,8 +15,11 @@ prefix=ctrl-q
 [ui]
 ; en is the default; use es for the Spanish interface.
 language=en
-; Interface palette: color (classic Turbo Pascal, default), bw, or mono.
-palette=color
+; Interface palette: mono (the installation default), color, or bw.
+palette=mono
+; The alien artwork keeps the historical compatibility name "goody".
+background=goody
+background_mode=center
 
 [session]
 autosave=1

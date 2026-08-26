@@ -437,7 +437,9 @@ begin
   Cfg.AutoRestore := True;
   Cfg.DragContent := True;
   Cfg.ZoomAnim := False;
-  Cfg.Background := 'phoenix';
+  // The original alien artwork keeps its historical on-disk identifier
+  // "goody" so existing installations and profiles remain compatible.
+  Cfg.Background := 'goody';
   Cfg.BackgroundMode := 'center';
   Cfg.DefaultProfile := '';
   Cfg.DefaultTemplate := '';
@@ -446,7 +448,8 @@ begin
   Cfg.SshLastSession := '';
   Cfg.DefaultWindow := '';
   Cfg.Language := ulEnglish;
-  Cfg.Palette := 'color';
+  // Keep the upstream first-install presentation on every platform.
+  Cfg.Palette := 'mono';
   {$IFDEF WINDOWS}
   Cfg.ServerMode := 'detach'; // native detach/multi-client is Phase 2
   {$ELSE}

@@ -2,6 +2,18 @@
 
 ## 4.2.1 - 2026-08
 
+### A useful first workspace needs no setup
+
+A configuration-free first start now opens a fixed `120x50` shared desktop
+with the Alien hacker background and monochrome interface already selected.
+Its one local shell starts in the first stable minimized slot and restores to
+an exact `80x25` terminal centred on that desktop. The launching terminal is
+only a viewport and is never resized or allowed to redefine this canonical
+workspace. Existing user configuration, saved sessions, profiles and enabled
+system classes retain their established precedence. Minimized-window chrome
+also follows the selected FreeVision palette instead of retaining a literal
+blue VGA attribute in monochrome mode.
+
 ### Original copyleft alien-hacker desktop artwork
 
 The legacy `goody.art` compatibility slot now contains an original alien
@@ -130,6 +142,15 @@ PTY spawn failure, pane reaping and stalled-client backpressure. CI builds and
 tests the shared implementation on GNU/Linux and both macOS architectures,
 then exercises a real isolated OpenSSH listener in a privileged disposable
 fixture.
+
+Fragmented session handshakes now consume one hard total deadline instead of
+mistaking each successful readiness event for another timeout interval. The
+test-only runtime records the receiver's actual readiness count and exact
+deadline cause, so coalesced stream writes cannot manufacture a false PASS.
+On Debian/Ubuntu, the privileged OpenSSH fixture also recognizes the distro's
+compiled `/run/sshd` prerequisite, validates or creates its standard protected
+runtime directory, and never removes a shared chroot that another `sshd` may
+have begun using.
 
 ## 3.5.2 - 2026-08
 

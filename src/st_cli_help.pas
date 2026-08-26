@@ -798,8 +798,11 @@ begin
     '  fullscreen.',
     '  de forma predeterminada.');
   H(ALanguage,
-    '  The committed rectangle fits the smallest host currently attached.',
-    '  El rectangulo final cabe en el host conectado de menor tamano.');
+    '  The committed rectangle uses the canonical desktop. A smaller viewer',
+    '  El rectangulo final usa el escritorio canonico. Un visor menor');
+  H(ALanguage,
+    '  scrolls or clips its local viewport; it never changes the zoomed PTY.',
+    '  desplaza o recorta su area local; nunca cambia el PTY maximizado.');
   Blank;
   H(ALanguage, 'EXAMPLES', 'EJEMPLOS');
   H(ALanguage, '  superterm zoom prod:Editor',

@@ -854,7 +854,8 @@ class Client:
     """A pyte-rendered interactive superterm on a PTY."""
 
     def __init__(self, home, args=None, w=110, h=32, env=None, lang=None,
-                 dsr_row=5, dsr_col=1, start_gate_fd=None):
+                 dsr_row=5, dsr_col=1, start_gate_fd=None,
+                 poison_sigchld=False):
         self.w, self.h = w, h
         self.home = home
         self.screen = pyte.Screen(w, h)
@@ -888,6 +889,13 @@ class Client:
             if env:
                 e.update(env)
             os.environ.update(e)
+            if poison_sigchld:
+                # Exercise a hostile-but-valid exec environment.  Ignoring
+                # SIGCHLD may imply SA_NOCLDWAIT, while a blocked mask is
+                # inherited independently; the daemon must undo both before
+                # it becomes the sole waitpid owner of its initial panes.
+                signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+                signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD})
             os.execv(BIN, [BIN] + (args or []))
         if start_gate_fd is None:
             os.close(start_read)

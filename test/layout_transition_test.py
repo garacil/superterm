@@ -20,11 +20,7 @@ from stlib import check, run_cli
 
 HOME = stlib.fresh_home('layout-transition')
 INI = os.path.join(HOME, '.superterm', 'superterm.ini')
-LOG = '/tmp/superterm-layout-transition.log'
-try:
-    os.unlink(LOG)
-except FileNotFoundError:
-    pass
+LOG = os.path.join(HOME, 'layout-transition.log')
 with open(INI, 'w') as fh:
     fh.write('[ui]\n'
              'language=en\n'
@@ -248,15 +244,18 @@ def click(c, x, y):
 
 
 def double_click(c, x, y):
-    """Two physical clicks, letting the first complete before the second.
+    """Exactly two physical clicks inside FreeVision's double-click window.
 
     Queuing both press/release pairs back-to-back made FreeVision consume them
     as one synthetic burst and hid the real Konsole regression where the
     title's first click finishes its focus/move path before click two arrives.
     """
     click(c, x, y)
-    drain_all(0.25)
-    time.sleep(0.25)
+    # Upstream FreeVision uses eight clock ticks (about 440 ms on Darwin).
+    # 120 ms lets the first click complete while remaining unambiguously one
+    # double-click; the previous 250 ms drain + 250 ms sleep was three-click
+    # timing in disguise on macOS.
+    drain_all(0.12)
     click(c, x, y)
 
 
@@ -267,6 +266,37 @@ def begin_capture():
 
 def end_capture():
     return tuple(client.end_transition_capture() for client in clients)
+
+
+def wait_presented(predicate, timeout=2.0):
+    """Wait for an exact physical state instead of sleeping past its event."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        drain_all(0.025)
+    drain_all(0.05)
+    return predicate()
+
+
+def wait_capture_quiet(predicate, timeout=6.0, quiet=1.80):
+    """Require convergence plus a real material-presentation quiet tail."""
+    deadline = time.monotonic() + timeout
+    counts = tuple(len(client.transitions()) for client in clients)
+    changed_at = time.monotonic()
+    while time.monotonic() < deadline:
+        drain_all(0.05)
+        records = tuple(client.transitions() for client in clients)
+        material = any(
+            not stlib.cursor_only_transition(record)
+            for client_records, old_count in zip(records, counts)
+            for record in client_records[old_count:])
+        counts = tuple(len(client_records) for client_records in records)
+        if material:
+            changed_at = time.monotonic()
+        if predicate() and time.monotonic() - changed_at >= quiet:
+            return True
+    return False
 
 
 def print_path(label, path):
@@ -288,7 +318,10 @@ begin_capture()
 if baseline_a is not None:
     left, top, right, _bottom = baseline_a
     click(a, right - 8, top)   # local Size.X-9: centre of [-]
-drain_all(1.2)
+min_settled = wait_capture_quiet(
+    lambda: (icon_rect(a) is not None and
+             icon_rect(a) == icon_rect(b) and
+             not has_lock(a) and not has_lock(b)))
 min_a, min_b = end_capture()
 min_path_a = state_path(min_a, 'window')
 min_path_b = state_path(min_b, 'window')
@@ -303,7 +336,8 @@ check('minimize observer has one transition',
 check('minimize never shades its actor',
       not any(has_lock(record) for record in min_a))
 check('minimized icon shared',
-      icon_rect(a) is not None and icon_rect(a) == icon_rect(b))
+      min_settled and icon_rect(a) is not None and
+      icon_rect(a) == icon_rect(b))
 
 # ---------------------------------------------------------------- restore
 
@@ -312,7 +346,10 @@ begin_capture()
 if icon is not None:
     left, top, right, _bottom = icon
     click(a, (left + right) // 2, top)
-drain_all(1.2)
+restore_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) == baseline_a and
+             frame_rect(b) == baseline_a and
+             not has_lock(a) and not has_lock(b)))
 restore_a, restore_b = end_capture()
 restore_path_a = state_path(restore_a, 'icon')
 restore_path_b = state_path(restore_b, 'icon')
@@ -327,6 +364,7 @@ check('restore observer has one transition',
 check('restore never shades its actor',
       not any(has_lock(record) for record in restore_a))
 check('restore returns exact shared rectangle',
+      restore_settled and
       frame_rect(a) == baseline_a and frame_rect(b) == baseline_a)
 restored_focus_ok = (
     frame_is_active(a) and frame_is_active(b) and
@@ -365,7 +403,10 @@ if before_zoom is not None:
     _left, top, right, _bottom = before_zoom
     zoom_x = right - 3          # centre of vendor Size.X-5..Size.X-3
     click(a, zoom_x, top)
-drain_all(1.5)
+zoom_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) is not None and frame_rect(a) != before_zoom and
+             frame_rect(b) == frame_rect(a) and
+             not has_lock(a) and not has_lock(b)))
 zoom_a, zoom_b = end_capture()
 observer_locked_zoom = any(has_lock(record) for record in zoom_b)
 actor_locked_zoom = any(has_lock(record) for record in zoom_a)
@@ -380,7 +421,7 @@ check('maximize observer sees held lock', observer_locked_zoom)
 check('maximize actor never sees own lock', not actor_locked_zoom and
       not any(has_lock(record) for record in zoom_a))
 check('maximize changes shared rectangle once',
-      before_zoom is not None and after_zoom is not None and
+      zoom_settled and before_zoom is not None and after_zoom is not None and
       before_zoom != after_zoom and
       zoom_path_a == [before_zoom, after_zoom] and
       zoom_path_b == [before_zoom, after_zoom] and
@@ -394,13 +435,17 @@ if after_zoom is not None:
     _left, top, right, _bottom = after_zoom
     zoom_x = right - 3
     click(a, zoom_x, top)
-drain_all(1.4)
+unzoom_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) == before_zoom and
+             frame_rect(b) == before_zoom and
+             not has_lock(a) and not has_lock(b)))
 unzoom_a, unzoom_b = end_capture()
 after_unzoom = frame_rect(a)
 unzoom_path_a = rect_path(unzoom_a, after_zoom)
 unzoom_path_b = rect_path(unzoom_b, after_zoom)
 check('maximize restore has no rollback',
-      after_unzoom == before_zoom and frame_rect(b) == before_zoom and
+      unzoom_settled and after_unzoom == before_zoom and
+      frame_rect(b) == before_zoom and
       unzoom_path_a == [after_zoom, before_zoom] and
       unzoom_path_b == [after_zoom, before_zoom])
 
@@ -426,13 +471,16 @@ if before_title_zoom is not None:
 begin_capture()
 if title_x >= 0:
     double_click(a, title_x, title_y)
-drain_all(1.4)
+title_zoom_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) == after_zoom and
+             frame_rect(b) == after_zoom and
+             not has_lock(a) and not has_lock(b)))
 title_zoom_a, title_zoom_b = end_capture()
 after_title_zoom = frame_rect(a)
 title_zoom_path_a = rect_path(title_zoom_a, before_title_zoom)
 title_zoom_path_b = rect_path(title_zoom_b, before_title_zoom)
 check('title double-click maximizes exactly once in actor',
-      before_title_zoom is not None and
+      title_zoom_settled and before_title_zoom is not None and
       after_title_zoom == after_zoom and
       title_zoom_path_a == [before_title_zoom, after_title_zoom])
 check('title double-click maximizes exactly once in observer',
@@ -458,13 +506,16 @@ if max_title is not None:
 begin_capture()
 if max_title_x >= 0:
     double_click(a, max_title_x, max_title_y)
-drain_all(1.4)
+title_restore_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) == before_title_zoom and
+             frame_rect(b) == before_title_zoom and
+             not has_lock(a) and not has_lock(b)))
 title_restore_a, title_restore_b = end_capture()
 after_title_restore = frame_rect(a)
 title_restore_path_a = rect_path(title_restore_a, max_title)
 title_restore_path_b = rect_path(title_restore_b, max_title)
 check('maximized title double-click restores exact rectangle in actor',
-      max_title == after_title_zoom and
+      title_restore_settled and max_title == after_title_zoom and
       after_title_restore == before_title_zoom and
       title_restore_path_a == [max_title, before_title_zoom])
 check('maximized title double-click restores exact rectangle in observer',
@@ -513,6 +564,7 @@ if before_move is not None:
         for step in range(7)
     ]
 begin_capture()
+move_steps_presented = True
 if move_title_x >= 0:
     mouse_down(a, move_title_x, move_top)
     drain_all(0.35)
@@ -520,12 +572,22 @@ if move_title_x >= 0:
     actor_locked_move = has_lock(a)
     for step in range(1, 7):
         mouse_drag(a, move_title_x + step, move_top)
-        drain_all(0.07)
+        target = expected_move_rects[step]
+        step_presented = wait_presented(
+            lambda target=target:
+                frame_rect(a) == target and frame_rect(b) == target and
+                not has_lock(a) and has_lock(b), timeout=1.5)
+        move_steps_presented = step_presented and move_steps_presented
     mouse_up(a, move_title_x + 6, move_top)
 else:
     observer_locked_move = False
     actor_locked_move = False
-drain_all(1.3)
+    move_steps_presented = False
+move_commit_settled = wait_capture_quiet(
+    lambda: (bool(expected_move_rects) and
+             frame_rect(a) == expected_move_rects[-1] and
+             frame_rect(b) == expected_move_rects[-1] and
+             not has_lock(a) and not has_lock(b)))
 move_a, move_b = end_capture()
 after_move = frame_rect(a)
 move_path_a = rect_path(move_a, before_move)
@@ -538,7 +600,8 @@ check('move observer sees held lock', observer_locked_move)
 check('move actor never sees own lock', not actor_locked_move and
       not any(has_lock(record) for record in move_a))
 check('move renders every exact one-cell step in both clients',
-      len(expected_move_rects) == 7 and
+      len(expected_move_rects) == 7 and move_steps_presented and
+      move_commit_settled and
       move_path_a == expected_move_rects and
       move_path_b == expected_move_rects and
       after_move == expected_move_rects[-1] and
@@ -562,6 +625,7 @@ check('move keeps shared focus', move_focus_ok)
 before_resize = frame_rect(a)
 resize_log_offset = os.path.getsize(LOG)
 begin_capture()
+resize_steps_presented = True
 if before_resize is not None:
     left, top, right, bottom = before_resize
     mouse_down(a, right, bottom)
@@ -570,12 +634,23 @@ if before_resize is not None:
     actor_locked_resize = has_lock(a)
     for step in range(1, 7):
         mouse_drag(a, right + step, bottom)
-        drain_all(0.07)
+        target = (left, top, right + step, bottom)
+        step_presented = wait_presented(
+            lambda target=target:
+                frame_rect(a) == target and frame_rect(b) == target and
+                not has_lock(a) and has_lock(b), timeout=1.5)
+        resize_steps_presented = step_presented and resize_steps_presented
     mouse_up(a, right + 6, bottom)
 else:
     observer_locked_resize = False
     actor_locked_resize = False
-drain_all(1.3)
+    resize_steps_presented = False
+resize_commit_settled = wait_capture_quiet(
+    lambda: (before_resize is not None and
+             frame_rect(a) == (before_resize[0], before_resize[1],
+                               before_resize[2] + 6, before_resize[3]) and
+             frame_rect(b) == frame_rect(a) and
+             not has_lock(a) and not has_lock(b)))
 resize_a, resize_b = end_capture()
 with open(LOG, 'r', errors='replace') as log_fh:
     log_fh.seek(resize_log_offset)
@@ -605,6 +680,7 @@ check('resize observer sees held lock', observer_locked_resize)
 check('resize actor never sees own lock', not actor_locked_resize and
       not any(has_lock(record) for record in resize_a))
 check('resize actor renders every exact one-cell step',
+      resize_steps_presented and resize_commit_settled and
       actor_widths == expected_actor_widths and
       len(expected_actor_widths) == 7)
 check('resize observer renders every exact one-cell step',
@@ -680,6 +756,16 @@ def changed_positions(record):
     }
 
 
+def exact_lock_transition(record, rect):
+    """Recognize only an unlocked-to-locked paint at unchanged geometry."""
+    if record['kind'] != 'sync' or rect is None:
+        return False
+    before = cells_value(record['before_cells'])
+    return (frame_rect(before) == rect and frame_rect(record) == rect and
+            not has_lock(before) and has_lock(record) and
+            changed_positions(record) <= set(perimeter(rect)))
+
+
 def cells_difference(before_cells, after_cells):
     return {
         (x, y)
@@ -740,12 +826,17 @@ f5_in_frame_attr_a = frame_attr(a, before_f5)
 f5_in_frame_attr_b = frame_attr(b, before_f5)
 begin_capture()
 stlib.write_all(a.fd, stlib.FULLSCREEN_CHORD)
-drain_all(1.8)
+fullscreen_in_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) is not None and
+             frame_rect(a) != before_f5 and
+             frame_rect(b) == frame_rect(a) and
+             not has_lock(a) and not has_lock(b)))
 f5_in_a, f5_in_b = end_capture()
 after_f5 = frame_rect(a)
 f5_path_a = rect_path(f5_in_a, before_f5)
 f5_path_b = rect_path(f5_in_b, before_f5)
 check('fullscreen geometry has no stale rollback',
+      fullscreen_in_settled and
       after_f5 is not None and after_f5 != before_f5 and
       f5_path_a == [before_f5, after_f5] and
       f5_path_b == [before_f5, after_f5] and
@@ -758,12 +849,16 @@ f5_out_frame_attr_a = frame_attr(a, after_f5)
 f5_out_frame_attr_b = frame_attr(b, after_f5)
 begin_capture()
 stlib.write_all(a.fd, stlib.FULLSCREEN_CHORD)
-drain_all(1.8)
+fullscreen_out_settled = wait_capture_quiet(
+    lambda: (frame_rect(a) == before_f5 and
+             frame_rect(b) == before_f5 and
+             not has_lock(a) and not has_lock(b)))
 f5_out_a, f5_out_b = end_capture()
 after_f5_out = frame_rect(a)
 f5_out_path_a = rect_path(f5_out_a, after_f5)
 f5_out_path_b = rect_path(f5_out_b, after_f5)
 check('fullscreen return has no stale rollback',
+      fullscreen_out_settled and
       after_f5_out == before_f5 and frame_rect(b) == before_f5 and
       f5_out_path_a == [after_f5, before_f5] and
       f5_out_path_b == [after_f5, before_f5])
@@ -827,8 +922,10 @@ def animation_tokens(records, old_rect, new_rect, rects, ring_base,
             tokens.append('sync-ambiguous-ring')
         elif record['kind'] != 'sync':
             tokens.append(record['kind'] + '-visual')
-        elif has_lock(record):
+        elif exact_lock_transition(record, old_rect):
             tokens.append('sync-lock')
+        elif has_lock(record):
+            tokens.append('sync-invalid-lock')
         elif frame_rect(record) == old_rect:
             tokens.append('sync-old')
         elif frame_rect(record) == new_rect:
@@ -1074,14 +1171,27 @@ for name in ('maximize', 'fullscreen in'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',
                    actor_result[0], expanding)
+    # The observer's lease paint can be presented separately before the first
+    # ring or coalesced into that ring. Permit exactly that one optional lock,
+    # just as contraction does below; every ring and final commit remain exact.
+    observer_expanding = observer_result[0]
+    observer_expected = (expanding if observer_expanding == expanding
+                         else ['sync-lock'] + expanding)
     sequence_check(name + ' observer exact physical sequence',
-                   observer_result[0], expanding)
+                   observer_expanding, observer_expected)
 for name in ('unzoom', 'fullscreen out'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',
                    actor_result[0], contracting)
+    # The observer's lease paint may be its own completed transaction or may
+    # be coalesced into the immediately following canonical contraction. Both
+    # are exact, valid presentations; permit precisely one optional leading
+    # lock and no other insertion, rollback or duplicate frame.
+    observer_contracting = observer_result[0]
+    observer_expected = (contracting if observer_contracting == contracting
+                         else ['sync-lock'] + contracting)
     sequence_check(name + ' observer exact physical sequence',
-                   observer_result[0], contracting)
+                   observer_contracting, observer_expected)
 
 
 def gesture_layout_events(records):

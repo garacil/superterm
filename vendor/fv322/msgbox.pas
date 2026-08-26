@@ -325,8 +325,8 @@ begin
   MessageBoxSpanish := ASpanish;
   if MessageBoxSpanish then
   begin
-    ButtonName[0] := 'Aviso';
-    ButtonName[1] := 'No';
+    ButtonName[0] := '~S~i';
+    ButtonName[1] := '~N~o';
     ButtonName[2] := 'Aceptar';
     ButtonName[3] := 'Cancelar';
     MsgBoxTitles[0] := 'Aviso';

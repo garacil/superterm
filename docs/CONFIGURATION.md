@@ -42,8 +42,8 @@ prefix=ctrl-q
 
 [ui]
 language=en
-palette=color
-background=phoenix
+palette=mono
+background=goody
 background_mode=center
 
 [session]
@@ -92,8 +92,8 @@ same setting is available at runtime from `Options -> Language`
 (`Opciones -> Idioma`); changing it updates the menus, status line, wizard,
 help, and dialogs immediately and saves the selection.
 
-`palette` selects the interface palette: `color` (the classic Turbo Pascal
-palette, the default), `bw` (black and white), or `mono` (monochrome). Any
+`palette` selects the interface palette: `mono` (the installation default),
+`color` (the classic Turbo Pascal palette), or `bw` (black and white). Any
 other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed. Selecting it repaints the whole interface immediately;
@@ -104,8 +104,25 @@ selected palette while rebuilding the screen surface.
 
 - `newwincols`, `newwinrows` — size, in cells, of a window opened from a class
   that does not set its own `cols`/`rows`. `0` (the default) means two thirds
-  of the desktop. The first window of a session always takes the whole
-  desktop.
+  of the desktop. Outside the installation seed described below, the first
+  window of an ordinary session continues to take the whole desktop. These
+  settings do not redefine the seed.
+
+### First-run workspace
+
+With no user configuration, saved session, enabled system class, or selected
+profile, SuperTerm creates one canonical `120x50` desktop. It contains one
+minimized local shell whose terminal area is exactly `80x25`; restoring its
+icon returns an `82x27` framed window centred at `(19,11)`. The interface
+starts in monochrome and the `goody.art` compatibility slot displays the
+Alien hacker background. These dimensions belong to the shared logical
+desktop and pane, never to the host terminal.
+
+This seed is used only for a configuration-free installation. An explicit
+user configuration (including one with `autorestore=0`), a valid saved
+session, a profile, or enabled system classes remains authoritative. New
+panes created later still follow their class size, `newwincols`/`newwinrows`,
+or the usual automatic placement rules.
 
 ### [ui] desktop background
 
@@ -118,6 +135,9 @@ selected palette while rebuilding the screen surface.
   checkout. The first match wins, so your own file shadows an installed one of
   the same name, and a new file appears in the `Options` menu without
   rebuilding.
+- The installation default is `goody`, the stable on-disk identifier for the
+  Alien hacker artwork. The compatibility name is intentional so existing
+  configurations continue to resolve the same asset.
 - `background_mode` is the layout: `center` (default), `tile`, `stretch` or
   `fit`. A picture may name the layout it was designed for -- the seamless
   patterns ask for `tile` -- and choosing it from the menu adopts that layout.
@@ -175,17 +195,30 @@ their intentional half-block/quadrant foreground-background pairs.
   pane. Positions, sizes, minimize, zoom and fullscreen are shared by every
   viewer, as is the focused pane. Input from every viewer remains enabled and
   is processed in arrival order. Attaching a client never changes that state:
-  a small terminal clips it and a large one leaves margin. A later physical
-  resize of any attached host is an explicit shared operation; it atomically
-  replaces the canonical desktop, proportionally scales its windows and
-  updates the PTYs for every viewer. Explicit window operations and CLI
-  `resize` likewise change the common geometry.
-  A new normal IDE maximize is a shared exception to clipping: its complete
-  frame and PTY fit the smallest host connected when the action commits while
-  the larger canonical desktop remains intact for restore. A later attach does
-  not recalculate that committed geometry. Fullscreen (`prefix f`) uses the
-  smallest host's complete terminal instead because it removes the IDE chrome.
-  Detach performs no save/reload; the daemon keeps the live object untouched.
+  a small terminal shows a scrollable viewport and a large one leaves margin.
+  The viewport is local to that viewer, uses coordinates relative to the
+  canonical upper-left corner, and starts at `(0,0)` on attach or host resize.
+  A physical terminal resize (`SIGWINCH`) changes only that viewport and its
+  horizontal/vertical scrollbars; it never changes the desktop, a window or a
+  PTY.
+- The canonical desktop changes only through the `Desktop` menu
+  (`Escritorio`): `Adjust to this terminal size` adopts that viewer's usable
+  character area, `Modify dimensions...` accepts a logical width/height from
+  `20x25` through `8192x4094`, and `Show current dimensions...` reports the
+  logical desktop, complete IDE, physical terminal and current viewport. The
+  operation is serialized as one shared revision, so every viewer receives
+  the same result.
+- Reducing the canonical desktop does not scale or crop saved window
+  rectangles. Width and height remain exact, and normal or minimized PTYs are
+  not resized. A window is translated by the minimum amount only when no safe,
+  draggable part of its title would otherwise remain visible. Zoom and
+  fullscreen sizes are derived from the new canonical desktop. Detach performs
+  no save/reload; the daemon keeps the live object untouched.
+- Minimized icons occupy stable slots, left to right and in rows from the
+  bottom. Restoring leaves its hole; the next minimization takes the first free
+  slot and never compacts existing icons. Minimizing the focused pane does not
+  select another pane: shared focus changes only through an explicit focus
+  action.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
   when no profile takes priority. Set it to `0` when every startup must
@@ -215,6 +248,12 @@ their intentional half-block/quadrant foreground-background pairs.
 - Pane focus is deliberately not a content effect: focused and unfocused
   terminal interiors keep identical colors and attributes. Only the window
   border/title and cursor change, so unchanged pane cells are not sent again.
+- During an interactive move or resize, the status line displays the current
+  canonical window rectangle as `Window X,Y  WxH` (`Ventana X,Y  WxH`) in
+  character cells. It is the active window's geometry, not the desktop size;
+  use `Desktop -> Show current dimensions...` for the latter. The indicator
+  uses the active palette rather than fixed colors and disappears when the
+  gesture finishes.
 - `default_profile` names the profile activated at startup.
 - `default_session` is also the canonical session name used by the dedicated
   OpenSSH TCP entry when its route needs a default. If it is empty, that entry
@@ -267,16 +306,17 @@ commands and network exposure procedure; do not edit the generated
 
 ## Full-screen passthrough
 
-Fullscreen (`prefix f`, `Ctrl-Q f` by default) makes a pane own the whole
-terminal and streams its raw
-output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
-at full fidelity instead of being approximated to the CP437 grid. This raw
-path is also valid with several clients when all physical host geometries are
-equal. If they differ, fullscreen stays in the synchronized IDE renderer and
-uses one shared area sized to the smallest host. Press the same prefix chord
-again to restore the normal canonical desktop and the window's previous
-bounds. During normal pane input, physical `F5` is passed to the focused pane
-and is not a SuperTerm window-management shortcut.
+Fullscreen (`prefix f`, `Ctrl-Q f` by default) is sized from the canonical
+desktop, exactly like normal maximize; attaching or resizing a physical host
+cannot change that shared grid. Raw geometry is safe only when every attached
+terminal has the same physical size and that size exactly matches canonical
+fullscreen (with the remaining transport/fidelity checks also satisfied), so
+a truecolor/emoji TUI such as Claude Code can render at full fidelity.
+Otherwise viewers remain in the synchronized IDE renderer and use their local
+scrollable viewports. Press the
+same prefix chord again to restore the canonical desktop and the window's
+previous bounds. During normal pane input, physical `F5` is passed to the
+focused pane and is not a SuperTerm window-management shortcut.
 
 ## Clipboard and SSH
 
@@ -429,8 +469,9 @@ The model has three section levels:
 1. `[profile.NAME]` — the profile header: `name`, `enabled`,
    `focused_window` (0-based index), and `windows` (comma-separated list of
    window names).
-2. `[profile.NAME.window.W]` — one section per window: `enabled`, `layout`,
-   `focused_pane` (0-based index), and `panes` (comma-separated list of
+2. `[profile.NAME.window.W]` — one section per workspace window: `enabled`,
+   `layout`, `focused_pane` (0-based index), `deskw`/`deskh` (the canonical
+   logical desktop in character cells), and `panes` (comma-separated list of
    pane names).
 3. `[profile.NAME.window.W.pane.P]` — one section per pane: `enabled`,
    `class` (window class reference; empty means an ad-hoc pane), and the
@@ -450,6 +491,8 @@ windows=servers,logs
 enabled=1
 layout=V:500;L;L
 focused_pane=0
+deskw=120
+deskh=40
 panes=prod,mon
 
 [profile.daily.window.servers.pane.prod]
@@ -479,6 +522,18 @@ list of nodes where `L` is one pane and `V:ratio` / `H:ratio` are splits.
 ratio ranges from `0` to `1000` (`500` = half) and is clamped to
 `150..850`. `V:500;L;L` is two panes side by side; plain `layout=L` is a
 single pane.
+
+`deskw` and `deskh` are captured together when a profile is saved. They are
+the permanent logical desktop, not a preferred client-terminal size. Missing
+legacy values use the initial terminal only while constructing that profile;
+afterwards attach and `SIGWINCH` cannot rewrite them. Use the `Desktop` /
+`Escritorio` menu to make an intentional shared change and save the profile if
+that new size should also be its next-start size.
+
+Profiles saved by the UI also retain exact pane bounds (`bx`, `by`, `bw`,
+`bh`) and state (`min`, `zoom`). A minimized pane may have an `icon_slot` from
+`0` through `15`; this is manager-owned state which preserves holes between
+icons instead of packing them again. Restored panes omit it.
 
 At runtime, use the `Profiles` menu to activate a profile, `Save current as
 profile...` to capture the current workspace, and `Manage profiles...` to

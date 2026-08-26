@@ -25,6 +25,53 @@ uses
 // calls from Halt; FpExit below is the raw Unix syscall on Linux and macOS.
 {$IFDEF UNIX}
 procedure FinalizePascalUnits; external name 'FPC_FINALIZEUNITS';
+
+function NormalizeChildReaping: boolean;
+var
+  ChildAction: SigActionRec;
+  ChildMask: TSigSet;
+begin
+  // Signal dispositions and masks survive exec independently.  SuperTerm is
+  // the waitpid owner of local panes, daemon startup children and daemon-owned
+  // panes, so it cannot inherit SIGCHLD=SIG_IGN, SA_NOCLDWAIT or a blocked
+  // SIGCHLD from an arbitrary launcher. FPC maps these calls to the native
+  // sigaction/sigprocmask ABI on both GNU/Linux and Darwin.
+  ChildAction := Default(SigActionRec);
+  ChildAction.sa_handler := SigActionHandler(SIG_DFL);
+  FpSigEmptySet(ChildAction.sa_mask);
+  ChildAction.sa_flags := 0;
+  Result := FpSigAction(SIGCHLD, @ChildAction, nil) = 0;
+  if not Result then
+    Exit;
+  ChildMask := Default(TSigSet);
+  FpSigEmptySet(ChildMask);
+  FpSigAddSet(ChildMask, SIGCHLD);
+  Result := FpSigProcMask(SIG_UNBLOCK, @ChildMask, nil) = 0;
+end;
+
+{$IFDEF SUPERTERM_TEST_BUILD}
+function QueryChildReapingPolicy(out ADefault, ABlocked,
+  ANoChildWait: boolean): boolean;
+var
+  ChildAction: SigActionRec;
+  ChildMask: TSigSet;
+begin
+  ADefault := False;
+  ABlocked := False;
+  ANoChildWait := False;
+  ChildAction := Default(SigActionRec);
+  ChildMask := Default(TSigSet);
+  if FpSigAction(SIGCHLD, nil, @ChildAction) <> 0 then
+    Exit(False);
+  if FpSigProcMask(SIG_BLOCK, nil, @ChildMask) <> 0 then
+    Exit(False);
+  ADefault := not Assigned(ChildAction.sa_handler);
+  ABlocked := FpSigIsMember(ChildMask, SIGCHLD) <> 0;
+  ANoChildWait := (ChildAction.sa_flags and SA_NOCLDWAIT) <> 0;
+  Result := True;
+end;
+{$ENDIF}
+
 {$ENDIF}
 
 procedure Main;
@@ -37,9 +84,43 @@ var
   BootLanguage: TUiLanguage;
   {$IFDEF UNIX}
   SshEntryError: string;
+  {$IFDEF SUPERTERM_TEST_BUILD}
+  ChildDefault, ChildBlocked, ChildNoWait: boolean;
+  {$ENDIF}
   {$ENDIF}
 
 begin
+  {$IFDEF UNIX}
+  if not NormalizeChildReaping then
+  begin
+    WriteLn(StdErr, 'superterm: could not establish child-reaping policy');
+    System.ExitCode := 1;
+    Exit;
+  end;
+  {$IFDEF SUPERTERM_TEST_BUILD}
+  // A test-only, side-effect-free probe lets Darwin inspect the calling
+  // thread's real signal mask; neither sysctl nor libproc publishes it.
+  // Production binaries do not contain this environment-controlled path.
+  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     (GetEnvironmentVariable('SUPERTERM_TEST_SIGCHLD_POLICY') = '1') then
+  begin
+    if not QueryChildReapingPolicy(ChildDefault, ChildBlocked,
+      ChildNoWait) then
+    begin
+      WriteLn('SIGCHLD_POLICY query=failed');
+      System.ExitCode := 1;
+      Exit;
+    end;
+    WriteLn('SIGCHLD_POLICY default=', Ord(ChildDefault),
+      ' blocked=', Ord(ChildBlocked), ' nocldwait=', Ord(ChildNoWait));
+    if ChildDefault and (not ChildBlocked) and (not ChildNoWait) then
+      System.ExitCode := 0
+    else
+      System.ExitCode := 1;
+    Exit;
+  end;
+  {$ENDIF}
+  {$ENDIF}
   // In a HeapTrc build this also gives even short-lived CLI commands their
   // own PID-tagged memory report. The daemon calls it again after fork.
   DebugSetRole('client');

@@ -34,8 +34,14 @@ class Session:
     def __init__(self):
         self.screen = pyte.Screen(WIDTH, HEIGHT)
         self.stream = pyte.ByteStream(self.screen)
+        start_read, start_write = os.pipe()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            os.close(start_write)
+            try:
+                os.read(start_read, 1)
+            finally:
+                os.close(start_read)
             os.environ.update({
                 'TERM': os.environ.get('SUPERTERM_TEST_TERM', 'xterm'),
                 'SHELL': '/bin/bash',
@@ -43,8 +49,13 @@ class Session:
                 'SUPERTERM_INI': HOME + '/no-sys.ini',
             })
             os.execv(BIN, [BIN])
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                    struct.pack('HHHH', HEIGHT, WIDTH, 0, 0))
+        os.close(start_read)
+        try:
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                        struct.pack('HHHH', HEIGHT, WIDTH, 0, 0))
+            os.write(start_write, b'1')
+        finally:
+            os.close(start_write)
 
     def drain(self, seconds):
         end = time.time() + seconds
@@ -117,30 +128,40 @@ def check(name, condition):
         fails.append(name)
 
 
-def frame_right():
-    for row in s.screen.display:
-        if '╔' in row and '╗' in row:
-            return row.index('╗')
-    return -1
+def frame_rect():
+    for top, row in enumerate(s.screen.display):
+        if '╔' not in row or '╗' not in row:
+            continue
+        left, right = row.index('╔'), row.index('╗')
+        for bottom in range(top + 2, s.screen.lines):
+            if (s.screen.display[bottom][left] in ('╚', '└') and
+                    s.screen.display[bottom][right] in ('╝', '┘')):
+                return left, top, right, bottom
+    return None
 
 
 s = Session()
 try:
     s.drain(1.5)
-    before = frame_right()
-    check('mouse frame starts full width', before == WIDTH - 3)
+    before = frame_rect()
+    # FPC's Unix Video layer exposes a 240-column logical startup desktop;
+    # the wider physical terminal is only this client's viewport/margin.
+    check('mouse frame starts on fixed desktop',
+          before == (0, 1, 237, 101))
 
     # The frame grow handle is the bottom-right cell. Coordinates are 1-based
     # in the xterm SGR mouse protocol and global in the terminal screen.
-    start_x, start_y = WIDTH - 2, HEIGHT - 2
-    end_x, end_y = WIDTH - 22, HEIGHT - 7
-    s.mouse(0, start_x, start_y)
-    s.mouse(0, end_x, end_y, motion=True)
-    s.mouse(0, end_x, end_y, release=True)
+    if before is not None:
+        _left, _top, right, bottom = before
+        end_right, end_bottom = right - 20, bottom - 5
+        s.mouse(0, right + 1, bottom + 1)
+        s.mouse(0, end_right + 1, end_bottom + 1, motion=True)
+        s.mouse(0, end_right + 1, end_bottom + 1, release=True)
     s.drain(1.0)
 
-    after = frame_right()
-    check('mouse resize changes frame width', 0 < after < before)
+    after = frame_rect()
+    check('mouse resize changes exact fixed-desktop frame',
+          after == (0, 1, 217, 96))
     check('mouse resize keeps statusline', 'F2 Split' in ''.join(s.screen.display[-1]))
 finally:
     try:

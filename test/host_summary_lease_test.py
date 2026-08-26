@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Host compatibility and zoom normalization use current daemon metadata.
+"""Host compatibility metadata never changes canonical zoom geometry.
 
 One real UI enters equal-host raw fullscreen. A protocol peer then owns pane 0's
 layout lease while a third, smaller host attaches and resizes.  The lease owner
 must receive each dedicated host summary before it commits, while the real UI
 must reclaim the renderer immediately and the canonical PTY size must never
-roll back.  This specifically catches reusing LAYOUT_EV for host metadata:
+change.  This specifically catches reusing LAYOUT_EV for host metadata:
 that broadcast deliberately skips its current lease owner.
 
-The lease was granted while only the two large hosts existed.  After the small
-peer reports its still smaller physical size, the owner submits a deliberately
-stale, large normal-maximize proposal at the still-valid layout revision.  The
-daemon must replace those proposed PTY dimensions with its current minimum and
-publish that final grid only in the atomic LAYOUT_EV, never in an intermediate
+The lease was granted while only the two large hosts existed. After the small
+peer reports its still smaller physical size, the owner submits the canonical
+large normal-maximize proposal at the still-valid layout revision. The daemon
+must keep that canonical grid and publish it only in the atomic LAYOUT_EV,
+never normalize it to physical host metadata or emit an intermediate
 RESIZE_EV.
 """
 import os
@@ -313,25 +313,24 @@ try:
     check('resize metadata leaves canonical geometry unchanged',
           pane_size(home, session) == before)
 
-    # The lease still carries the valid revision from equal-host fullscreen, but
-    # its geometry proposal intentionally uses that large 100x30-era view.
-    # The just-processed 60x20 host report must win at commit time.  A normal
-    # maximized frame preserves the IDE's two host rows and its own 2x2 frame,
-    # so this host minimum yields one 58x16 PTY inside a 60x18 desktop area.
-    normalized_layout = None
+    # The lease still carries the valid revision from equal-host fullscreen.
+    # Its normal-maximize proposal uses the canonical desktop minus the 2x2
+    # frame. The just-processed 60x20 report is metadata only and must not
+    # replace that canonical grid with a host-derived 58x16 PTY.
+    committed_layout = None
     commit_events = []
-    expected_safe_size = None
-    stale_large_size = None
+    canonical_zoom_size = None
+    host_derived_size = None
     if (lease_peer is not None and small_peer is not None and granted and
             canonical is not None and resize_summary):
         proposed_geometry = list(canonical['geometry'])
         bx, by, bw, bh, _cols, _rows, _zoomed, minimized, _full = \
             proposed_geometry[0]
-        stale_large_size = (canonical['desk'][0] - 2,
-                            canonical['desk'][1] - 2)
+        canonical_zoom_size = (canonical['desk'][0] - 2,
+                               canonical['desk'][1] - 2)
         proposed_geometry[0] = (
-            bx, by, bw, bh, *stale_large_size, 1, minimized, 0)
-        expected_safe_size = (
+            bx, by, bw, bh, *canonical_zoom_size, 1, minimized, 0)
+        host_derived_size = (
             min(canonical['desk'][0], 60) - 2,
             min(canonical['desk'][1], 20 - 2) - 2)
         lease_peer.sendall(raw_frame(
@@ -350,24 +349,24 @@ try:
                      for frame in commit_events]
         committed = [layout for layout in committed if layout is not None]
         if committed:
-            normalized_layout = committed[-1]
+            committed_layout = committed[-1]
 
-    check('TOCTOU fixture proposes obsolete large maximize',
-          stale_large_size == (98, 26) and
-          expected_safe_size == (58, 16))
+    check('fixture distinguishes canonical zoom from host metadata',
+          canonical_zoom_size == (98, 26) and
+          host_derived_size == (58, 16))
     check('zoom commit emits no intermediate RESIZE_EV',
-          normalized_layout is not None and
+          committed_layout is not None and
           all(frame[0] != FRAME_RESIZE_EV for frame in commit_events) and
           sum(layout_with_revision(frame, revision + 1) is not None
               for frame in commit_events) == 1)
-    check('daemon normalizes stale zoom to current host minimum',
-          normalized_layout is not None and
-          normalized_layout['host'] == (60, 20, 0) and
-          normalized_layout['geometry'][0][4:6] == expected_safe_size and
-          normalized_layout['geometry'][0][6:9] == (1, 0, 0))
-    check('canonical PTY matches normalized LAYOUT_EV',
-          expected_safe_size is not None and
-          pane_size(home, session) == expected_safe_size)
+    check('daemon keeps zoom on canonical desktop after host resize',
+          committed_layout is not None and
+          committed_layout['host'] == (60, 20, 0) and
+          committed_layout['geometry'][0][4:6] == canonical_zoom_size and
+          committed_layout['geometry'][0][6:9] == (1, 0, 0))
+    check('canonical PTY matches committed LAYOUT_EV',
+          canonical_zoom_size is not None and
+          pane_size(home, session) == canonical_zoom_size)
 
     # A zoomed pane must retain a valid restore rectangle.  A local protocol
     # peer may be malformed even though normal UI paths never emit zero BW/BH;
@@ -375,8 +374,8 @@ try:
     malformed_granted = False
     malformed_layout = None
     malformed_events = []
-    if lease_peer is not None and normalized_layout is not None:
-        malformed_revision = normalized_layout['revision']
+    if lease_peer is not None and committed_layout is not None:
+        malformed_revision = committed_layout['revision']
         malformed_request = 0x48535432
         lease_peer.sendall(raw_frame(
             FRAME_LAYOUT_LOCK, 0,
@@ -391,14 +390,14 @@ try:
             malformed_granted = (reply_id == malformed_request and
                                  frame[2][8] == 1)
         if malformed_granted:
-            malformed_geometry = list(normalized_layout['geometry'])
+            malformed_geometry = list(committed_layout['geometry'])
             bx, by, _bw, _bh, cols, rows, zoomed, minimized, full = \
                 malformed_geometry[0]
             malformed_geometry[0] = (
                 bx, by, 0, 0, cols, rows, zoomed, minimized, full)
             lease_peer.sendall(raw_frame(
                 FRAME_LAYOUT, -1,
-                layout_payload(normalized_layout, malformed_geometry,
+                layout_payload(committed_layout, malformed_geometry,
                                malformed_revision, 1)))
             malformed_events = collect_until(
                 lease_peer,
@@ -417,13 +416,13 @@ try:
           malformed_granted)
     check('zero restore rectangle is rejected atomically',
           malformed_layout is not None and
-          malformed_layout['revision'] == normalized_layout['revision'] and
+          malformed_layout['revision'] == committed_layout['revision'] and
           malformed_layout['geometry'][0] ==
-          normalized_layout['geometry'][0] and
+          committed_layout['geometry'][0] and
           all(frame[0] != FRAME_RESIZE_EV for frame in malformed_events))
     check('malformed zoom leaves canonical PTY unchanged',
-          expected_safe_size is not None and
-          pane_size(home, session) == expected_safe_size)
+          canonical_zoom_size is not None and
+          pane_size(home, session) == canonical_zoom_size)
 
     if small_peer is not None:
         small_peer.sendall(raw_frame(FRAME_DETACH, -1))
@@ -441,8 +440,8 @@ try:
     check('membership change does not bounce renderer back to raw',
           'Detach' in ui.text())
     check('detach metadata leaves canonical geometry unchanged',
-          expected_safe_size is not None and
-          pane_size(home, session) == expected_safe_size)
+          canonical_zoom_size is not None and
+          pane_size(home, session) == canonical_zoom_size)
 
 finally:
     if small_peer is not None:
