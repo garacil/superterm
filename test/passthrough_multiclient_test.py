@@ -89,6 +89,44 @@ def frame_right(client):
     return found
 
 
+def probe_private_terminal_reply(actor, observer):
+    """A host DA reply must never become shared pane keyboard input."""
+    clients = (actor, observer)
+    query = b'\x1b[c'
+    response = b'\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c'
+    leaked_tail = response[3:]
+    offsets = {client: len(client.raw()) for client in clients}
+    os.write(actor.fd, b"printf '\\033[c'\r")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        drain_all(clients, 0.08)
+        if all(query in client.raw()[offsets[client]:]
+               for client in clients):
+            break
+    check('DA query reaches both equal-size raw viewers',
+          all(query in client.raw()[offsets[client]:]
+              for client in clients))
+
+    offsets = {client: len(client.raw()) for client in clients}
+    os.write(actor.fd, response)
+    os.write(observer.fd, response)
+    drain_all(clients, 0.7)
+    chunks = {client: client.raw()[offsets[client]:] for client in clients}
+    check('private DA replies never leak into the shared pane',
+          all(leaked_tail not in chunks[client] for client in clients))
+
+    actor.send(b"printf 'AFTER_HOST_DA_%s\\n' 'SAFE'\r", 0.2)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        drain_all(clients, 0.08)
+        if all(b'AFTER_HOST_DA_SAFE' in client.raw()
+               for client in clients):
+            break
+    check('input remains aligned after simultaneous DA replies',
+          all(b'AFTER_HOST_DA_SAFE' in client.raw()
+              for client in clients))
+
+
 # ---------------------------------------------------------------- equal hosts
 
 same_home = stlib.fresh_home('passthrough-multiclient-same')
@@ -116,6 +154,7 @@ try:
           all(same_osc in same_chunks[client] for client in same_clients))
     check('equal-size raw fullscreen hides the IDE in both',
           all('Detach' not in client.text() for client in same_clients))
+    probe_private_terminal_reply(same_a, same_b)
 
     os.write(same_b.fd, stlib.FULLSCREEN_CHORD)
     drain_all(same_clients, 1.3)
