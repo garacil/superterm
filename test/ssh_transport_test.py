@@ -13,7 +13,10 @@ that path would be a false positive.  CI sets ``SUPERTERM_TEST_SSH_USER`` to
 its original ordinary runner account; that makes every listener prerequisite
 and the observed real UID descent mandatory.  No system service, /etc/ssh
 file, user SSH configuration, tmux session, or unrelated process is changed
-or signalled.
+or signalled.  On Debian/Ubuntu the fixture may create the distribution's
+standard root-owned ``/run/sshd`` runtime directory when direct ``sshd -t``
+reports it missing; it is intentionally retained because another OpenSSH
+process may begin using that shared chroot immediately.
 """
 
 import configparser
@@ -77,6 +80,10 @@ OTHER_KEY = os.path.join(HOME, 'id_other')
 SSHD_LOG = os.path.join(HOME, 'sshd.log')
 DEBUG_LOG = os.path.join(HOME, 'superterm-ssh-transport.log')
 SESSION = 'ssh-e2e'
+LINUX_PRIVSEP_PATH = '/run/sshd'
+LINUX_PRIVSEP_ERROR = (
+    'superterm ssh-server: sshd rejected generated configuration (-t): '
+    'Missing privilege separation directory: /run/sshd')
 
 
 def executable(candidates):
@@ -117,6 +124,59 @@ def admin(*args):
                SUPERTERM_SSHD_ROOT=SSHD_ROOT)
     return subprocess.run([stlib.BIN, 'ssh-server', *args], env=env,
                           text=True, capture_output=True, timeout=45)
+
+
+def trusted_root_directory(path, exact_mode=None):
+    """Return lstat data only for a real, root-owned protected directory."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or
+            (stat.S_IMODE(info.st_mode) & 0o022) != 0):
+        return None
+    if exact_mode is not None and stat.S_IMODE(info.st_mode) != exact_mode:
+        return None
+    return info
+
+
+def retry_setup_with_linux_privsep(setup):
+    """Supply Ubuntu's sshd runtime prerequisite to this isolated fixture.
+
+    Debian/Ubuntu compile sshd with ``--with-privsep-path=/run/sshd``. Their
+    systemd unit normally creates that path, but this test intentionally
+    starts neither the host unit nor the host listener. Mirror the distro's
+    own test fixture only after the exact diagnostic. The standard runtime
+    directory is not removed: an external sshd may begin using the empty
+    chroot at any point, which cannot be proven from directory contents.
+    """
+    if (setup.returncode == 0 or not sys.platform.startswith('linux') or
+            os.geteuid() != 0 or
+            setup.stderr.strip() != LINUX_PRIVSEP_ERROR):
+        return setup
+    if trusted_root_directory('/run') is None:
+        return setup
+
+    try:
+        old_umask = os.umask(0o022)
+        try:
+            os.mkdir(LINUX_PRIVSEP_PATH, 0o755)
+        finally:
+            os.umask(old_umask)
+    except FileExistsError:
+        # A service may have created the normal path after sshd -t failed.
+        pass
+    except OSError as exc:
+        print('cannot create isolated sshd privilege-separation path: ' +
+              str(exc))
+        return setup
+
+    info = trusted_root_directory(LINUX_PRIVSEP_PATH, exact_mode=0o755)
+    if info is None:
+        print('refusing unsafe sshd privilege-separation path: ' +
+              LINUX_PRIVSEP_PATH)
+        return setup
+    return admin('setup')
 
 
 def session_path(suffix):
@@ -743,7 +803,7 @@ def main():
         if not keys_ok:
             return
 
-        setup = admin('setup')
+        setup = retry_setup_with_linux_privsep(admin('setup'))
         setup_ok = setup.returncode == 0
         check('isolated production config generated', setup_ok)
         if not setup_ok:

@@ -543,6 +543,11 @@ type
   TWaitDeadline = record
     ExpiresAt: QWord;
     LastTick: QWord;
+    PollMs: integer;
+    {$ifdef SUPERTERM_TEST_BUILD}
+    ReadyCount: integer;
+    Reached: boolean;
+    {$endif}
   end;
 
   TFrameHeader = packed record
@@ -858,6 +863,26 @@ begin
     Result := V;
 end;
 
+function AttachIoPollMs: integer;
+{$ifdef SUPERTERM_TEST_BUILD}
+var
+  S: string;
+  V: integer;
+{$endif}
+begin
+  Result := ATTACH_IO_POLL_MS;
+  {$ifdef SUPERTERM_TEST_BUILD}
+  // A wider test quantum makes the progress/deadline integration independent
+  // of virtualized-host scheduling resolution. Release binaries do not
+  // contain this override; the runtime guard is an additional test boundary.
+  if GetEnvironmentVariable('SUPERTERM_TESTING') <> '1' then
+    Exit;
+  S := GetEnvironmentVariable('SUPERTERM_TEST_ATTACH_POLL_MS');
+  if TryStrToInt(S, V) and (V >= 1) and (V <= 1000) then
+    Result := V;
+  {$endif}
+end;
+
 function NewWaitDeadline(APolls, APollMs: integer): TWaitDeadline;
 var
   NowTick, Span: QWord;
@@ -867,6 +892,7 @@ begin
     Exit;
   NowTick := GetTickCount64;
   Span := QWord(APolls) * QWord(APollMs);
+  Result.PollMs := APollMs;
   Result.LastTick := NowTick;
   if Span > High(QWord) - NowTick then
     Result.ExpiresAt := High(QWord)
@@ -874,27 +900,33 @@ begin
     Result.ExpiresAt := NowTick + Span;
 end;
 
-function DeadlinePollMs(var ADeadline: TWaitDeadline;
-  AMaximumMs: integer): integer;
+function DeadlinePollMs(var ADeadline: TWaitDeadline): integer;
 var
   NowTick, Remaining: QWord;
 begin
   Result := 0;
-  if (ADeadline.ExpiresAt = 0) or (AMaximumMs <= 0) then
+  if (ADeadline.ExpiresAt = 0) or (ADeadline.PollMs <= 0) then
     Exit;
   NowTick := GetTickCount64;
   // A backwards wall-clock jump on Darwin must never extend a security
   // boundary. A forward jump naturally reaches the deadline early.
-  if (NowTick < ADeadline.LastTick) or
-     (NowTick >= ADeadline.ExpiresAt) then
+  if NowTick < ADeadline.LastTick then
   begin
+    ADeadline.ExpiresAt := 0;
+    Exit;
+  end;
+  if NowTick >= ADeadline.ExpiresAt then
+  begin
+    {$ifdef SUPERTERM_TEST_BUILD}
+    ADeadline.Reached := True;
+    {$endif}
     ADeadline.ExpiresAt := 0;
     Exit;
   end;
   ADeadline.LastTick := NowTick;
   Remaining := ADeadline.ExpiresAt - NowTick;
-  if Remaining > QWord(AMaximumMs) then
-    Result := AMaximumMs
+  if Remaining > QWord(ADeadline.PollMs) then
+    Result := ADeadline.PollMs
   else
     Result := integer(Remaining);
 end;
@@ -908,7 +940,7 @@ begin
   Result := False;
   while True do
   begin
-    PollMs := DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS);
+    PollMs := DeadlinePollMs(ADeadline);
     if PollMs <= 0 then
       Exit;
     P := Default(TPollFD);
@@ -924,10 +956,13 @@ begin
     // The deadline is total, not an inactivity timer. This accepts hundreds
     // of immediate Darwin readiness cycles for a large snapshot, yet a peer
     // dripping one byte per poll can never keep the caller here indefinitely.
-    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+    if DeadlinePollMs(ADeadline) <= 0 then
       Exit;
     if N > 0 then
     begin
+      {$ifdef SUPERTERM_TEST_BUILD}
+      Inc(ADeadline.ReadyCount);
+      {$endif}
       if (P.revents and POLLNVAL) <> 0 then
         Exit;
       // POLLHUP/POLLERR are returned as ready deliberately: the following
@@ -957,7 +992,7 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
-    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+    if DeadlinePollMs(ADeadline) <= 0 then
       Exit;
     N := fpSend(AFd, P, Left, ST_MSG_DONTWAIT);
     if N > 0 then
@@ -994,7 +1029,7 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
-    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+    if DeadlinePollMs(ADeadline) <= 0 then
       Exit;
     N := fpRecv(AFd, P, Left, ST_MSG_DONTWAIT);
     if N > 0 then
@@ -1415,7 +1450,7 @@ begin
       Result := -1;
       Exit;
     end;
-    Deadline := NewWaitDeadline(CONNECT_WAIT_POLLS, ATTACH_IO_POLL_MS);
+    Deadline := NewWaitDeadline(CONNECT_WAIT_POLLS, AttachIoPollMs);
     if not WaitSocketReady(Result, POLLOUT, Deadline) then
     begin
       FpClose(Result);
@@ -1806,7 +1841,7 @@ begin
   if Fd < 0 then
     Exit;
   Data := nil;
-  Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
+  Deadline := NewWaitDeadline(AttachIoWaitPolls, AttachIoPollMs);
   if not WriteFrameToTimed(Fd, FRAME_CLOSE, -1, Data, Deadline) then
   begin
     FpClose(Fd);
@@ -1841,7 +1876,7 @@ begin
   if Fd < 0 then
     Exit;
   try
-    Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
+    Deadline := NewWaitDeadline(AttachIoWaitPolls, AttachIoPollMs);
     if not WriteFrameToTimed(Fd, AKind, APane, APayload,
        Deadline) then
       Exit;
@@ -1871,7 +1906,7 @@ begin
   if Fd < 0 then
     Exit;
   try
-    Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
+    Deadline := NewWaitDeadline(AttachIoWaitPolls, AttachIoPollMs);
     if not WriteFrameToTimed(Fd, AKind, APane, APayload,
        Deadline) then
       Exit;
@@ -2442,7 +2477,10 @@ begin
   // blocking mode restored by the shared ConnectSocket helper.
   SetNonBlocking(FSocket);
   {$ENDIF}
-  Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
+  Deadline := NewWaitDeadline(AttachIoWaitPolls, AttachIoPollMs);
+  {$ifdef SUPERTERM_TEST_BUILD}
+  try
+  {$endif}
   // tolerant tail of the ATTACH: version, desktop and capabilities; an
   // old daemon ignores the payload and serves the usual v1 protocol
   Data := nil;
@@ -2612,6 +2650,15 @@ begin
   // panes.  In that state LayoutNodes is deliberately empty and no SCREEN
   // frames precede READY.
   Result := True;
+  {$ifdef SUPERTERM_TEST_BUILD}
+  finally
+    if DebugActive and
+       (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') then
+      DebugLog(Format(
+        'test-attach-deadline: ready=%d reached=%d success=%d',
+        [Deadline.ReadyCount, Ord(Deadline.Reached), Ord(Result)]));
+  end;
+  {$endif}
 end;
 
 function TSessionClient.Poll(out Event: TSessionEvent): boolean;

@@ -131,6 +131,15 @@ tests the shared implementation on GNU/Linux and both macOS architectures,
 then exercises a real isolated OpenSSH listener in a privileged disposable
 fixture.
 
+Fragmented session handshakes now consume one hard total deadline instead of
+mistaking each successful readiness event for another timeout interval. The
+test-only runtime records the receiver's actual readiness count and exact
+deadline cause, so coalesced stream writes cannot manufacture a false PASS.
+On Debian/Ubuntu, the privileged OpenSSH fixture also recognizes the distro's
+compiled `/run/sshd` prerequisite, validates or creates its standard protected
+runtime directory, and never removes a shared chroot that another `sshd` may
+have begun using.
+
 ## 3.5.2 - 2026-08
 
 One live session is now exactly one shared desktop.  The daemon owns the
