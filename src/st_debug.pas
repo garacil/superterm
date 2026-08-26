@@ -220,12 +220,20 @@ end;
 
 procedure DebugLog(const S: string);
 var
-  Line: string;
+  Line, ThreadId: string;
 begin
   if System.InterlockedCompareExchange(ResolveState, 1, 1) = 0 then
     DebugActive;
+  {$IFDEF DARWIN}
+  // The BSD RTL models pthread_t as a pointer.  Formatting that native type
+  // directly avoids the non-portable pointer-to-ordinal cast diagnosed by
+  // FPC on Apple Silicon.
+  ThreadId := Format('%p', [GetThreadID]);
+  {$ELSE}
+  ThreadId := UIntToStr(QWord(GetThreadID));
+  {$ENDIF}
   Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' [' + IntToStr(FpGetPid) +
-    ' ' + Role + ' tid=' + UIntToStr(QWord(GetThreadID)) + '] ' + S;
+    ' ' + Role + ' tid=' + ThreadId + '] ' + S;
   EnterCriticalsection(Lock);
   try
     RingAdd(Line);

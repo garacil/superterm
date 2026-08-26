@@ -27,7 +27,7 @@ function RunSshServerAdmin(out AExitCode: integer): boolean;
 implementation
 
 uses
-  Classes, SysUtils, BaseUnix, Unix, Users, st_config, st_cli_help;
+  Classes, SysUtils, BaseUnix, Unix, st_config, st_cli_help;
 
 const
   DEFAULT_SSHD_ROOT = '/etc/superterm/sshd';
@@ -72,6 +72,17 @@ const
 type
   ESshAdmin = class(Exception);
 
+  // getpwnam(3) is provided by libc on every supported host.  FPC's optional
+  // Users package is not built by the aarch64-darwin distribution, although
+  // its implementation is only a wrapper around this same function.  We need
+  // just the first POSIX passwd member (pw_name), which is at offset zero on
+  // GNU/Linux and Darwin; keeping the local view to that prefix avoids an
+  // unnecessary package dependency and any target-specific trailing fields.
+  PSystemPasswordPrefix = ^TSystemPasswordPrefix;
+  TSystemPasswordPrefix = record
+    pw_name: PAnsiChar;
+  end;
+
   TSshServerConfig = record
     Listen: array of string;
     AllowRoot: boolean;
@@ -96,6 +107,9 @@ type
 
 var
   TempSerial: QWord = 0;
+
+function SystemGetPwNam(Name: PAnsiChar): PSystemPasswordPrefix; cdecl;
+  external 'c' name 'getpwnam';
 
 function NormToken(const S: string): string;
 var
@@ -2258,11 +2272,11 @@ end;
 
 function CanonicalUserName(const UserName: string): string;
 var
-  Rec: Users.PPasswordRecord;
+  Rec: PSystemPasswordPrefix;
 begin
   if not ValidUserName(UserName) then
     raise ESshAdmin.CreateFmt('invalid system username: %s', [UserName]);
-  Rec := Users.GetPwNam(UserName);
+  Rec := SystemGetPwNam(PAnsiChar(UserName));
   if Rec = nil then
     raise ESshAdmin.CreateFmt('system user does not exist: %s', [UserName]);
   Result := StrPas(Rec^.pw_name);
