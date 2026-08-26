@@ -6,6 +6,10 @@
 
 program superterm;
 
+{$IFDEF WINDOWS}
+{$R superterm.res}
+{$ENDIF}
+
 {$mode objfpc}{$H+}
 
 uses

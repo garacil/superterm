@@ -1,6 +1,7 @@
 /bin/*
 !/bin/.gitkeep
 /build/
+/dist/
 /Makefile
 /config.status
 __pycache__/

@@ -147,6 +147,29 @@ if ($LASTEXITCODE -ne 0) { throw "FPC failed with exit code $LASTEXITCODE" }
 `-B` is intentional: it verifies the entire dependency graph instead of
 accepting stale `.ppu` files.
 
+### Windows icon and installer
+
+The checked-in `packaging/windows/alien-hacker.ico` is the application icon. If
+it is regenerated from `assets/alien-hacker.png`, rebuild the Windows resource
+before compiling the executable:
+
+```powershell
+$Windres = 'D:\lazarus\fpc\3.2.2\bin\x86_64-win64\windres.exe'
+& $Windres --target=pe-x86-64 -i src\superterm.rc -o src\superterm.res
+```
+
+With Inno Setup 6 installed, compile the per-user x64 installer from the
+repository root:
+
+```powershell
+New-Item -ItemType Directory -Force dist | Out-Null
+& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' packaging\windows\superterm.iss
+```
+
+The result is `dist\SuperTerm-4.2.1-windows-x64-setup.exe`; it installs under
+`%LOCALAPPDATA%\Programs\SuperTerm` and includes the executable, documentation,
+configuration example, and desktop backgrounds.
+
 ## Implementation approach
 
 - `st_os.pas` isolates small platform services such as PID lookup, config
