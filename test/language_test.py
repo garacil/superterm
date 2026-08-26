@@ -23,7 +23,8 @@ W, H = 110, 35
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(CONFIG, 'w') as config:
     config.write('[ui]\nlanguage=es\n[session]\nserver=detach\n'
-                 'autosave=0\nautorestore=0\n')
+                 'autosave=0\nautorestore=0\n'
+                 '[profile.alpha]\nname=alpha\nenabled=1\nwindows=\n')
 
 
 class Session:
@@ -81,6 +82,18 @@ def check(name, condition):
         fails.append(name)
 
 
+def click_text(session, label):
+    """Click the middle of the first visible occurrence of label."""
+    for y, row in enumerate(session.screen.display):
+        x = row.find(label)
+        if x >= 0:
+            px = x + max(1, len(label) // 2) + 1
+            py = y + 1
+            session.send(f'\x1b[<0;{px};{py}M\x1b[<0;{px};{py}m'.encode())
+            return True
+    return False
+
+
 s = Session()
 try:
     s.drain(1.2)
@@ -96,6 +109,18 @@ try:
           'Minimizar todas las ventanas' in s.text() and
           'Restaurar todas las ventanas' in s.text())
     s.send(b'\x1b', 0.3)
+
+    s.send(b'\x1br', 0.5)  # "Perfiles" menu
+    s.send(b's', 0.7)  # -> "Gestionar perfiles..."
+    check('Spanish profile manager opens',
+          'Guardar actual' in s.text() and 'alpha' in s.text())
+    check('Profile overwrite action clicked', click_text(s, 'Guardar actual'))
+    check('Spanish confirmation uses Si/No',
+          'Sobrescribir el perfil' in s.text() and
+          'Si' in s.text() and 'No' in s.text() and
+          'Aviso' not in s.text())
+    s.send(b'n', 0.4)  # decline without changing the profile
+    s.send(b'\x1b', 0.3)  # close the profile manager
 
     s.send(b'\x1bs', 0.5)  # "Sesiones" menu
     s.send(b'a')  # -> "Asistente de sesion rapida" (quick session wizard)

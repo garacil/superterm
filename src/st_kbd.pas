@@ -461,6 +461,24 @@ begin
     MouseX10;
     Exit;
   end;
+  // Private CSI replies are terminal protocol traffic, never keyboard text.
+  // In raw fullscreen a pane query such as DA1 (CSI c) reaches every host;
+  // Windows Terminal answers with CSI ? 61;...c.  Treating '?' as the final
+  // byte used to leave the numeric tail in stdin, where it was forwarded to
+  // the shared PTY and visibly typed once per attached client.  Consume the
+  // complete bounded CSI response, including arbitrary parameters/intermediates.
+  if c in [Ord('?'), Ord('>'), Ord('=')] then
+  begin
+    for i := 1 to 256 do
+    begin
+      c := NextByte(SEQ_TIMEOUT_MS);
+      if c < 0 then
+        Exit;
+      if (c >= $40) and (c <= $7E) then
+        Exit;
+    end;
+    Exit;
+  end;
   while (c >= Ord('0')) and (c <= Ord('9')) or (c = Ord(';')) do
   begin
     if c = Ord(';') then
