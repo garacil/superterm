@@ -313,6 +313,9 @@ either client can create the first pane again. The per-window entries stay in
 into `~/.superterm/backgrounds/` without rebuilding. The colours are real RGB,
 not the 16-colour grid. Every generated picture uses completely filled RGB
 cells, painted by the terminal itself so no font seam appears between them.
+On a configuration-free first run, this Alien hacker is already selected over
+a monochrome `120x50` shared desktop, with one `80x25` shell waiting in its
+minimized icon.
 
 ![Alien hacker on the desktop, with a minimized pane](screenshots/desktop-goody.png)
 
@@ -770,7 +773,9 @@ prefix=ctrl-q               ; ctrl-a..ctrl-z, a letter, or 1..26
 
 [ui]
 language=en                 ; en (default) or es
-palette=color               ; color (default), bw, or mono
+palette=mono                ; mono (installation default), color, or bw
+background=goody            ; Alien hacker (stable compatibility identifier)
+background_mode=center
 
 [session]
 autosave=1

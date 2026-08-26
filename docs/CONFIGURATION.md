@@ -42,8 +42,8 @@ prefix=ctrl-q
 
 [ui]
 language=en
-palette=color
-background=phoenix
+palette=mono
+background=goody
 background_mode=center
 
 [session]
@@ -92,8 +92,8 @@ same setting is available at runtime from `Options -> Language`
 (`Opciones -> Idioma`); changing it updates the menus, status line, wizard,
 help, and dialogs immediately and saves the selection.
 
-`palette` selects the interface palette: `color` (the classic Turbo Pascal
-palette, the default), `bw` (black and white), or `mono` (monochrome). Any
+`palette` selects the interface palette: `mono` (the installation default),
+`color` (the classic Turbo Pascal palette), or `bw` (black and white). Any
 other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed. Selecting it repaints the whole interface immediately;
@@ -104,8 +104,25 @@ selected palette while rebuilding the screen surface.
 
 - `newwincols`, `newwinrows` — size, in cells, of a window opened from a class
   that does not set its own `cols`/`rows`. `0` (the default) means two thirds
-  of the desktop. The first window of a session always takes the whole
-  desktop.
+  of the desktop. Outside the installation seed described below, the first
+  window of an ordinary session continues to take the whole desktop. These
+  settings do not redefine the seed.
+
+### First-run workspace
+
+With no user configuration, saved session, enabled system class, or selected
+profile, SuperTerm creates one canonical `120x50` desktop. It contains one
+minimized local shell whose terminal area is exactly `80x25`; restoring its
+icon returns an `82x27` framed window centred at `(19,11)`. The interface
+starts in monochrome and the `goody.art` compatibility slot displays the
+Alien hacker background. These dimensions belong to the shared logical
+desktop and pane, never to the host terminal.
+
+This seed is used only for a configuration-free installation. An explicit
+user configuration (including one with `autorestore=0`), a valid saved
+session, a profile, or enabled system classes remains authoritative. New
+panes created later still follow their class size, `newwincols`/`newwinrows`,
+or the usual automatic placement rules.
 
 ### [ui] desktop background
 
@@ -118,6 +135,9 @@ selected palette while rebuilding the screen surface.
   checkout. The first match wins, so your own file shadows an installed one of
   the same name, and a new file appears in the `Options` menu without
   rebuilding.
+- The installation default is `goody`, the stable on-disk identifier for the
+  Alien hacker artwork. The compatibility name is intentional so existing
+  configurations continue to resolve the same asset.
 - `background_mode` is the layout: `center` (default), `tile`, `stretch` or
   `fit`. A picture may name the layout it was designed for -- the seamless
   patterns ask for `tile` -- and choosing it from the menu adopts that layout.

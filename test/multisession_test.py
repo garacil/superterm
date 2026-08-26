@@ -13,6 +13,17 @@ SYSINI = HOME + '/no.ini'
 SESSDIR = HOME + '/.superterm/sessions'
 W, H = 110, 35
 
+# This exercises named-session behaviour, not configuration-free startup.
+with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'palette=color\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
+
 def spath(name):
     return os.path.join(SESSDIR, name + '.sock')
 

@@ -22,6 +22,12 @@ const
   DESKTOP_MIN_H = 25;
   DESKTOP_MAX_W = 8192;
   DESKTOP_MAX_H = 4094;
+  // First-run workspace.  These are canonical character dimensions, not a
+  // request to resize the terminal which happens to launch SuperTerm.
+  DEFAULT_DESKTOP_W = 120;
+  DEFAULT_DESKTOP_H = 50;
+  DEFAULT_INITIAL_PANE_COLS = 80;
+  DEFAULT_INITIAL_PANE_ROWS = 25;
   // FreeVision's MinWinSize (vendor/fv322/views.pas). A window smaller than
   // this cannot be dragged or resized by hand, so nothing should place one.
   MIN_WIN_W = 16;

@@ -2,6 +2,18 @@
 
 ## 4.2.1 - 2026-08
 
+### A useful first workspace needs no setup
+
+A configuration-free first start now opens a fixed `120x50` shared desktop
+with the Alien hacker background and monochrome interface already selected.
+Its one local shell starts in the first stable minimized slot and restores to
+an exact `80x25` terminal centred on that desktop. The launching terminal is
+only a viewport and is never resized or allowed to redefine this canonical
+workspace. Existing user configuration, saved sessions, profiles and enabled
+system classes retain their established precedence. Minimized-window chrome
+also follows the selected FreeVision palette instead of retaining a literal
+blue VGA attribute in monochrome mode.
+
 ### Original copyleft alien-hacker desktop artwork
 
 The legacy `goody.art` compatibility slot now contains an original alien

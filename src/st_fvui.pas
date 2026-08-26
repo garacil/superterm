@@ -1497,8 +1497,9 @@ begin
     (PTermWindow(Owner)^.PaneIdx >= 0) and
     ((App^.RemoteLockedPanes and
       (LongWord(1) shl PTermWindow(Owner)^.PaneIdx)) <> 0);
-  // minimized icon: frame and title in black (the passive gray is
-  // unreadable on light blue); custom drawing of the two rows
+  // Minimized icon: resolve its frame and title through the same palette
+  // chain as a normal window. A literal VGA attribute here would keep the
+  // icon blue even when the application palette is monochrome.
   if (Owner <> nil) and PTermWindow(Owner)^.Minimized then
   begin
     W := Size.X;
@@ -1514,10 +1515,14 @@ begin
     if Length(T) > W - 6 then
       T := Copy(T, 1, W - 6);
     T := ' ' + T + ' ';
-    if Locked then
-      MoveChar(B, #176, $10, W)
+    if State and sfActive = 0 then
+      Color := byte(GetColor($0101))
     else
-      MoveChar(B, #196, $10, W);
+      Color := byte(GetColor($0503));
+    if Locked then
+      MoveChar(B, #176, Color, W)
+    else
+      MoveChar(B, #196, Color, W);
     if Locked then
     begin
       B[0] := (B[0] and $FF00) or word(byte(#177));
@@ -1533,9 +1538,9 @@ begin
       B[xo + i - 1] := (B[xo + i - 1] and $FF00) or word(byte(T[i]));
     WriteLine(0, 0, W, 1, B);
     if Locked then
-      MoveChar(B, #176, $10, W)
+      MoveChar(B, #176, Color, W)
     else
-      MoveChar(B, #196, $10, W);
+      MoveChar(B, #196, Color, W);
     if Locked then
     begin
       B[0] := (B[0] and $FF00) or word(byte(#177));
@@ -2726,8 +2731,11 @@ var
   i, n, k, SysIdx: integer;
   SavedX, SavedY: Longint;
   Ok: boolean;
+  FreshInstall, FreshDefaultWorkspace: boolean;
   Dir: TSplitDir;
   DeskW, DeskH: integer;
+  DefaultOuterW, DefaultOuterH: integer;
+  DefaultSlot: st_layout.TRect;
   WR: Objects.TRect;
   SysClassesTmp: TWindowClassArray;
 begin
@@ -2747,6 +2755,11 @@ begin
   CopySelecting := False;
   CopyMouseSelecting := False;
   CopyPane := -1;
+  // A first-run workspace is seeded only when the user has no configuration
+  // yet.  An explicit configuration with autorestore=0 keeps its established
+  // blank-workspace behaviour instead of being mistaken for a new install.
+  FreshInstall := not FileExists(ConfigFile);
+  FreshDefaultWorkspace := False;
   LoadConfig(Cfg);
   // The restricted OpenSSH entry is always a client of a persistent daemon;
   // the on-disk preference remains untouched.
@@ -2977,6 +2990,27 @@ begin
       Exit;
     end;
     SetLength(Pin, 1);
+    if FreshInstall then
+    begin
+      // Installation default: one 80x25 PTY, centred before it becomes the
+      // stable first icon, on a 120x50 logical desktop.  The frame consumes
+      // two cells on each axis; saving SavedRect before Minimize preserves
+      // the exact 80x25 terminal when the user restores it.
+      FreshDefaultWorkspace := True;
+      DeskW := DEFAULT_DESKTOP_W;
+      DeskH := DEFAULT_DESKTOP_H;
+      SetCanonicalDesktop(DeskW, DeskH, True, False);
+      WantedWindowSize(DEFAULT_INITIAL_PANE_COLS,
+        DEFAULT_INITIAL_PANE_ROWS, DeskW, DeskH,
+        DefaultOuterW, DefaultOuterH);
+      DefaultSlot := CentredRect(DefaultOuterW, DefaultOuterH, DeskW, DeskH);
+      Pin[0].BX := DefaultSlot.X;
+      Pin[0].BY := DefaultSlot.Y;
+      Pin[0].BW := DefaultSlot.W;
+      Pin[0].BH := DefaultSlot.H;
+      Pin[0].Minimized := True;
+      Pin[0].IconSlot := 0;
+    end;
   end;
   n := Lay.PaneCount;
   if (n < 1) or (n > MAX_PANES) then
@@ -3014,7 +3048,7 @@ begin
   RelayoutAll;
   // Reapply absolute bounds after restoring the saved canonical desktop.
   // A client's physical size is only a viewport and never gates restoration.
-  if Ok then
+  if Ok or FreshDefaultWorkspace then
   begin
     for i := 0 to n - 1 do
       if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) then

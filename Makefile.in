@@ -81,6 +81,7 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   remote_newpane_test.py fullscreen_test.py empty_desktop_test.py \
   max_panes_test.py close_all_panes_test.py \
   mousemode_test.py dialog_opaque_test.py background_assets_test.py \
+  fresh_install_defaults_test.py \
   badclass_test.py passthrough_modes_test.py resize_keep_test.py \
   config_concurrency_test.py \
   pane_reaper_test.py pty_spawn_safety_test.py session_startup_atomic_test.py \

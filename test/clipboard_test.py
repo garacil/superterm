@@ -60,7 +60,20 @@ def has_pane_line(client, expected):
     return False
 
 
+def write_config(home, language='en'):
+    with open(home + '/.superterm/superterm.ini', 'w') as config:
+        config.write('[ui]\n'
+                     f'language={language}\n'
+                     'palette=color\n'
+                     'background=none\n'
+                     '[session]\n'
+                     'server=always\n'
+                     'autosave=0\n'
+                     'autorestore=0\n')
+
+
 home = fresh_home('clipboard')
+write_config(home)
 c = Client(home, w=110, h=32, env={'SHELL': bracketed_paste_shell()})
 c.drain(2.5)
 
@@ -186,6 +199,7 @@ close_all_daemons(home)
 # The longer Spanish top-level label must still fit the supported 80-column
 # layout, and must use the translated menu/dialog names.
 home_es = fresh_home('clipboard-es')
+write_config(home_es, 'es')
 es = Client(home_es, w=80, h=25, lang='es')
 es.drain(2.0)
 menu_row = es.screen.display[0]
@@ -226,6 +240,7 @@ close_all_daemons(home_es)
 # English consumes exactly 80 cells with the full names; the threshold is
 # deliberately strict (<80), so no unnecessary abbreviation occurs here.
 home_en80 = fresh_home('clipboard-en80')
+write_config(home_en80)
 en80 = Client(home_en80, w=80, h=25, lang='en')
 en80.drain(2.0)
 menu_row = en80.screen.display[0]

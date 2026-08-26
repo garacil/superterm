@@ -284,10 +284,22 @@ try:
             break
     check('mixed-size fallback preserves common content',
           all('SAFE_OVERLAP' in client.text() for client in mixed_clients))
+    # Row zero is each viewer's physical menu bar.  A narrow client uses the
+    # deliberately compact labels there, so it is not part of the shared
+    # canonical desktop whose cells this oracle compares.
+    overlap_mismatches = [
+        (y, large.screen.display[y][:small.w - 1],
+         small.screen.display[y][:small.w - 1])
+        for y in range(1, small.h - 2)
+        if large.screen.display[y][:small.w - 1] !=
+        small.screen.display[y][:small.w - 1]
+    ]
+    if overlap_mismatches:
+        y, large_row, small_row = overlap_mismatches[0]
+        print('  first overlap mismatch row=%d large=%r small=%r' %
+              (y, large_row, small_row))
     check('mixed-size canonical overlap is cell-identical',
-          all(large.screen.display[y][:small.w - 1] ==
-              small.screen.display[y][:small.w - 1]
-              for y in range(small.h - 2)))
+          not overlap_mismatches)
     check('mixed-size fallback remains live',
           all(client.alive() for client in mixed_clients) and
           pane_size(mixed_home, mixed_session) == (120, 36))

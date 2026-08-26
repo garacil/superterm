@@ -61,6 +61,20 @@ check('LANG=es fallback', 'Uso:' in r.stdout)
 r = run_cli(['--help'], HOME, env={'LANG': 'C'})
 check('LANG=C stays English', 'Usage:' in r.stdout)
 
+def write_config(language):
+    with open(HOME + '/.superterm/superterm.ini', 'w') as config:
+        config.write('[ui]\n'
+                     f'language={language}\n'
+                     'palette=color\n'
+                     'background=none\n'
+                     '[session]\n'
+                     'server=always\n'
+                     'autosave=0\n'
+                     'autorestore=0\n')
+
+
+write_config('en')
+
 # ---- set up a genuinely detached session ----
 c = stlib.Client(HOME, w=100, h=28)
 c.drain(2.0)
@@ -84,8 +98,10 @@ r = run_cli(['list', SES], HOME)
 check('list panes exit 0', r.returncode == 0)
 check('list panes has TYPE local', 'local' in r.stdout)
 check('list panes has size', 'x' in r.stdout)
-r = run_cli(['listar', SES], HOME, env={'LANG': 'es_ES.UTF-8'})
+write_config('es')
+r = run_cli(['listar', SES], HOME)
 check('listar panes in Spanish', 'TITULO' in r.stdout or 'PANEL' in r.stdout)
+write_config('en')
 
 # ---- send + capture (full round trip via CLI) ----
 r = run_cli(['send', '.', 'echo', 'CLI_TOKEN_7'], HOME)

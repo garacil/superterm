@@ -346,7 +346,9 @@ begin
   Cfg.AutoRestore := True;
   Cfg.DragContent := True;
   Cfg.ZoomAnim := False;
-  Cfg.Background := 'phoenix';
+  // The original alien artwork keeps its historical on-disk identifier
+  // "goody" so existing installations and profiles remain compatible.
+  Cfg.Background := 'goody';
   Cfg.BackgroundMode := 'center';
   Cfg.DefaultProfile := '';
   Cfg.DefaultTemplate := '';
@@ -355,7 +357,7 @@ begin
   Cfg.SshLastSession := '';
   Cfg.DefaultWindow := '';
   Cfg.Language := ulEnglish;
-  Cfg.Palette := 'color';
+  Cfg.Palette := 'mono';
   Cfg.ServerMode := 'always';
   Cfg.MultiThread := 1;
   Cfg.NewWinCols := 0;
