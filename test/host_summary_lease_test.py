@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host compatibility and zoom normalization use current daemon metadata.
 
-One real UI enters equal-host raw F5.  A protocol peer then owns pane 0's
+One real UI enters equal-host raw fullscreen. A protocol peer then owns pane 0's
 layout lease while a third, smaller host attaches and resizes.  The lease owner
 must receive each dedicated host summary before it commits, while the real UI
 must reclaim the renderer immediately and the canonical PTY size must never
@@ -233,28 +233,28 @@ try:
         revision = 0
         check('equal-host summary reaches protocol peer', False)
 
-    # This is an explicit F5 after both equal hosts are present, so raw is
+    # This is explicit fullscreen after both equal hosts are present, so raw is
     # permitted.  The protocol peer observes the resulting layout revision.
     canonical = None
     if lease_peer is not None:
-        os.write(ui.fd, b'\x1b[15~')
+        os.write(ui.fd, stlib.FULLSCREEN_CHORD)
         f5_frames = collect_until(
             lease_peer, lambda _frame: False, ui, timeout=2.0)
         layouts = [frame for frame in f5_frames
                    if frame[0] == FRAME_LAYOUT_EV]
         if layouts:
-            # F5 first broadcasts its visible lock at the old revision, then
+            # Fullscreen first broadcasts its visible lock at the old revision, then
             # the atomic fullscreen commit at the next one. Waiting for only
             # the first LAYOUT_EV would intentionally submit a stale lease.
             canonical = max((parse_layout(frame[2]) for frame in layouts),
                             key=lambda layout: layout['revision'])
             revision = canonical['revision']
         ui.drain(0.8)
-        check('equal hosts enter raw F5',
+        check('equal hosts enter raw fullscreen',
               canonical is not None and 'Detach' not in ui.text() and
               pane_size(home, session) == (100, 30))
     else:
-        check('equal hosts enter raw F5', False)
+        check('equal hosts enter raw fullscreen', False)
 
     # The wire peer now owns pane 0. BroadcastLayoutEv intentionally excludes
     # it until unlock; host summaries must not share that exclusion.
@@ -313,7 +313,7 @@ try:
     check('resize metadata leaves canonical geometry unchanged',
           pane_size(home, session) == before)
 
-    # The lease still carries the valid revision from the equal-host F5, but
+    # The lease still carries the valid revision from equal-host fullscreen, but
     # its geometry proposal intentionally uses that large 100x30-era view.
     # The just-processed 60x20 host report must win at commit time.  A normal
     # maximized frame preserves the IDE's two host rows and its own 2x2 frame,

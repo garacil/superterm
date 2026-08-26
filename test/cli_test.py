@@ -9,6 +9,22 @@ import stlib
 from stlib import check, run_cli
 
 HOME = stlib.fresh_home('cli')
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(ROOT, 'VERSION'), encoding='ascii') as version_file:
+    EXPECTED_VERSION = version_file.read().strip()
+
+# ---- release identity: every public spelling comes from VERSION ----
+for version_args in (['version'], ['--version'], ['-V']):
+    r = run_cli(version_args, HOME, env={'LANG': 'C'})
+    check(' '.join(version_args) + ' reports VERSION exactly',
+          r.returncode == 0 and
+          r.stdout == 'superterm ' + EXPECTED_VERSION + '\n' and
+          r.stderr == '')
+r = run_cli(['--help'], HOME, env={'LANG': 'C'})
+check('--help reports VERSION in its first line',
+      r.returncode == 0 and
+      r.stdout.splitlines()[0] == 'superterm ' + EXPECTED_VERSION +
+      ' - detachable terminal sessions for GNU/Linux and macOS')
 
 # ---- help and usage errors (no sessions) ----
 r = run_cli(['--help'], HOME, env={'LANG': 'C'})

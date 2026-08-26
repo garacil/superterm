@@ -20,7 +20,7 @@ unit st_cli;
 interface
 
 uses
-  Classes, SysUtils, st_config, st_server;
+  Classes, SysUtils, st_config, st_server, st_cli_help;
 
 type
   // pane row of the control LIST (live data only the daemon has)
@@ -51,11 +51,6 @@ function FetchList(const ASocket: string; WithPanes: boolean;
   out L: TListInfo): boolean;
 
 implementation
-
-type
-  THelpLine = record
-    En, Es: string;
-  end;
 
 var
   CliArgs: array of string;
@@ -128,19 +123,65 @@ begin
   Result := EnumerateSessions(Infos);
 end;
 
-// splits 'session:pane' / 'session.pane' / '.' / '.pane' / ':pane'
+// True when the whole token resolves as a live session.  This disambiguates
+// legacy SESSION.PANE from a real dotted session name without changing the
+// canonical and unambiguous SESSION:PANE grammar.
+function WholeSessionSpecExists(const Spec: string): boolean;
+var
+  Infos: TSessionInfoArray;
+  I, Matches: integer;
+begin
+  Result := False;
+  if (Spec = '') or (not ListLive(Infos)) then
+    Exit;
+  for I := 0 to High(Infos) do
+    if (Infos[I].Name = Spec) or
+       (Infos[I].Name = SanitizeSessionName(Spec)) then
+      Exit(True);
+  Matches := 0;
+  for I := 0 to High(Infos) do
+    if SameText(Infos[I].Name, Spec) then
+      Inc(Matches);
+  if Matches = 1 then
+    Exit(True);
+  Matches := 0;
+  for I := 0 to High(Infos) do
+    if (Length(Spec) <= Length(Infos[I].Name)) and
+       SameText(Copy(Infos[I].Name, 1, Length(Spec)), Spec) then
+      Inc(Matches);
+  Result := Matches = 1;
+end;
+
+// Splits canonical SESSION:PANE first.  The old SESSION.PANE, .PANE and
+// :PANE spellings remain compatible, but an existing whole dotted session
+// wins the only ambiguous case.  In particular, '.:PANE' must split on ':'.
 procedure SplitTargetSpec(const Spec: string; out Ses, Pane: string);
 var
-  i: integer;
+  I: integer;
 begin
   Ses := Spec;
   Pane := '';
-  for i := 1 to Length(Spec) do
-    if Spec[i] in [':', '.'] then
+  I := Pos(':', Spec);
+  if I > 0 then
+  begin
+    Ses := Copy(Spec, 1, I - 1);
+    Pane := Copy(Spec, I + 1, MaxInt);
+    Exit;
+  end;
+  if (Length(Spec) > 1) and (Spec[1] = '.') then
+  begin
+    Ses := '';
+    Pane := Copy(Spec, 2, MaxInt);
+    Exit;
+  end;
+  if WholeSessionSpecExists(Spec) then
+    Exit;
+  for I := Length(Spec) downto 1 do
+    if Spec[I] = '.' then
     begin
-      Ses := Copy(Spec, 1, i - 1);
-      Pane := Copy(Spec, i + 1, MaxInt);
-      Break;
+      Ses := Copy(Spec, 1, I - 1);
+      Pane := Copy(Spec, I + 1, MaxInt);
+      Exit;
     end;
 end;
 
@@ -442,246 +483,6 @@ begin
       [ASpec, ASession]));
 end;
 
-// ---------------------------------------------------------------- help
-
-procedure PrintLines(const L: array of THelpLine);
-var
-  i: integer;
-begin
-  for i := 0 to High(L) do
-    WriteLn(T(L[i].En, L[i].Es));
-end;
-
-procedure HelpGlobal;
-const
-  L: array[0..42] of THelpLine = (
-    (En: 'superterm %V - detachable terminal sessions for GNU/Linux and macOS';
-     Es: 'superterm %V - sesiones de terminal separables para GNU/Linux y macOS'),
-    (En: ''; Es: ''),
-    (En: 'Usage:'; Es: 'Uso:'),
-    (En: '  superterm                              start the interactive terminal';
-     Es: '  superterm                              abre el terminal interactivo'),
-    (En: '  superterm <command> [TARGET] [options]';
-     Es: '  superterm <orden> [DESTINO] [opciones]'),
-    (En: '  superterm help <command>               detailed help with examples';
-     Es: '  superterm ayuda <orden>                ayuda detallada con ejemplos'),
-    (En: ''; Es: ''),
-    (En: 'Targets:  SESSION | SESSION:PANE | .    (pane = number shown in the';
-     Es: 'Destinos: SESION | SESION:PANEL | .     (panel = numero del titulo de'),
-    (En: '          window title, or part of its title; ''.'' = the only session)';
-     Es: '          la ventana, o parte de su titulo; ''.'' = la unica sesion)'),
-    (En: ''; Es: ''),
-    (En: 'Sessions:'; Es: 'Sesiones:'),
-    (En: '  list      [SESSION]        list sessions, or the panes of one';
-     Es: '  listar    [SESION]         lista sesiones, o los paneles de una'),
-    (En: '  attach    [SESSION]        attach the terminal UI';
-     Es: '  conectar  [SESION]         conecta el terminal interactivo'),
-    (En: '  kill      SESSION          terminate a session and its programs';
-     Es: '  matar     SESION           termina una sesion y sus programas'),
-    (En: ''; Es: ''),
-    (En: 'Panes:'; Es: 'Paneles:'),
-    (En: '  send      TARGET TEXT...   type into a pane (adds Enter; -n raw)';
-     Es: '  enviar    DESTINO TEXTO... escribe en un panel (anade Intro; -n no)'),
-    (En: '  capture   TARGET           print a pane (screen, -H history, -l N)';
-     Es: '  capturar  DESTINO          vuelca un panel (pantalla, -H todo, -l N)'),
-    (En: ''; Es: ''),
-    (En: 'Windows:'; Es: 'Ventanas:'),
-    (En: '  new       SESSION          open a pane (-c CLASS, --cmd, --cwd, -t)';
-     Es: '  nueva     SESION           abre un panel (-c CLASE, --cmd, --cwd, -t)'),
-    (En: '  close     TARGET           close a pane';
-     Es: '  cerrar    DESTINO          cierra un panel'),
-    (En: '  focus     TARGET           give a pane the focus (''.'' points here)';
-     Es: '  foco      DESTINO          enfoca un panel (''.'' apunta a el)'),
-    (En: '  rename    TARGET NAME      change a pane title';
-     Es: '  renombrar DESTINO NOMBRE   cambia el titulo de un panel'),
-    (En: '  resize    TARGET WxH       resize a pane terminal (e.g. 100x30)';
-     Es: '  tamano    DESTINO WxH      redimensiona un panel (ej. 100x30)'),
-    (En: '  minimize / restore / zoom  TARGET';
-     Es: '  minimizar / restaurar / ampliar  DESTINO'),
-    (En: '  organize  SESSION [grid|tile|cascade]';
-     Es: '  organizar SESION [rejilla|mosaico|cascada]'),
-    (En: ''; Es: ''),
-    (En: 'General:'; Es: 'General:'),
-    (En: '  help [command]   version   (also --help/--ayuda, --version)';
-     Es: '  ayuda [orden]    version   (tambien --help/--ayuda, --version)'),
-    (En: ''; Es: ''),
-    (En: 'Every command and option is also accepted in Spanish (enviar,';
-     Es: 'Todas las ordenes y opciones se aceptan tambien en ingles (send,'),
-    (En: 'listar, capturar, --ayuda, ...). Messages follow [ui] language.';
-     Es: 'list, capture, --help, ...). Los mensajes siguen [ui] language.'),
-    (En: 'Legacy --attach and --list-sessions still work.';
-     Es: 'Los antiguos --attach y --list-sessions siguen funcionando.'),
-    (En: ''; Es: ''),
-    (En: 'Examples:'; Es: 'Ejemplos:'),
-    (En: '  superterm send prod:2 tail -f /var/log/syslog';
-     Es: '  superterm enviar prod:2 tail -f /var/log/syslog'),
-    (En: '  superterm capture prod:2 --lines 200 -o log.txt';
-     Es: '  superterm capturar prod:2 --lineas 200 -o log.txt'),
-    (En: '  superterm capture . --history | grep ERROR';
-     Es: '  superterm capturar . --historico | grep ERROR'),
-    (En: '  superterm list prod'; Es: '  superterm listar prod'),
-    (En: '  superterm send . make'; Es: '  superterm enviar . make'),
-    (En: '  cat script.sh | superterm send prod:1 -';
-     Es: '  cat script.sh | superterm enviar prod:1 -'),
-    (En: ''; Es: ''));
-var
-  i: integer;
-  S: string;
-begin
-  for i := 0 to High(L) do
-  begin
-    S := T(L[i].En, L[i].Es);
-    S := StringReplace(S, '%V', SUPERTERM_VERSION, []);
-    WriteLn(S);
-  end;
-end;
-
-procedure HelpSend;
-const
-  L: array[0..14] of THelpLine = (
-    (En: 'superterm send - type text into a pane of a session';
-     Es: 'superterm enviar - escribe texto en un panel de una sesion'),
-    (En: ''; Es: ''),
-    (En: 'Usage:  superterm send [options] TARGET TEXT...';
-     Es: 'Uso:    superterm enviar [opciones] DESTINO TEXTO...'),
-    (En: '        superterm send TARGET -          (raw stdin, no Enter added)';
-     Es: '        superterm enviar DESTINO -       (stdin crudo, sin Intro)'),
-    (En: ''; Es: ''),
-    (En: 'TARGET is required; use ''.'' for the only session. Everything after';
-     Es: 'El DESTINO es obligatorio; ''.'' = la unica sesion. Todo lo que sigue'),
-    (En: 'TARGET is sent literally, then Enter (unless -n).';
-     Es: 'al DESTINO se envia literal, y despues Intro (salvo con -n).'),
-    (En: ''; Es: ''),
-    (En: 'Options:'; Es: 'Opciones:'),
-    (En: '  -n, --no-enter   (es: --sin-intro)   do not append Enter';
-     Es: '  -n, --sin-intro  (en: --no-enter)    no anadir Intro'),
-    (En: '  -k, --key NAME   (es: --tecla)       send a named key (repeatable):';
-     Es: '  -k, --tecla NOMBRE (en: --key)       envia una tecla (repetible):'),
-    (En: '       Enter Esc Tab Space Up Down Left Right Home End PgUp PgDn';
-     Es: '       Intro Esc Tab Espacio Arriba Abajo Izquierda Derecha ...'),
-    (En: '       F1..F12  C-a..C-z (^C)  M-x (Alt)';
-     Es: '       F1..F12  C-a..C-z (^C)  M-x (Alt)'),
-    (En: ''; Es: ''),
-    (En: 'Examples:  superterm send prod:2 ls -la  |  superterm send . -k C-c';
-     Es: 'Ejemplos:  superterm enviar prod:2 ls -la | superterm enviar . -k C-c'));
-begin
-  PrintLines(L);
-end;
-
-procedure HelpCapture;
-const
-  L: array[0..12] of THelpLine = (
-    (En: 'superterm capture - print a pane as plain UTF-8 text';
-     Es: 'superterm capturar - vuelca un panel como texto plano UTF-8'),
-    (En: ''; Es: ''),
-    (En: 'Usage:  superterm capture TARGET [options]';
-     Es: 'Uso:    superterm capturar DESTINO [opciones]'),
-    (En: ''; Es: ''),
-    (En: 'TARGET is required; ''.'' = the only session (its focused pane).';
-     Es: 'El DESTINO es obligatorio; ''.'' = la unica sesion (panel enfocado).'),
-    (En: ''; Es: ''),
-    (En: 'Options:'; Es: 'Opciones:'),
-    (En: '  -H, --history    (es: --historico)   the whole scrollback + screen';
-     Es: '  -H, --historico  (en: --history)     todo el historial + pantalla'),
-    (En: '  -l, --lines N    (es: --lineas)      only the last N lines';
-     Es: '  -l, --lineas N   (en: --lines)       solo las ultimas N lineas'),
-    (En: '  -o, --output F   (es: --salida)      write to a file, not stdout';
-     Es: '  -o, --salida F   (en: --output)      escribe a fichero, no stdout'),
-    (En: ''; Es: ''),
-    (En: 'Examples:  superterm capture prod:2 -H | grep ERROR';
-     Es: 'Ejemplos:  superterm capturar prod:2 -H | grep ERROR'),
-    (En: '           superterm capture . --lines 100 -o out.txt';
-     Es: '           superterm capturar . --lineas 100 -o out.txt'));
-begin
-  PrintLines(L);
-end;
-
-procedure HelpList;
-const
-  L: array[0..9] of THelpLine = (
-    (En: 'superterm list - list sessions, or the panes of one session';
-     Es: 'superterm listar - lista sesiones, o los paneles de una sesion'),
-    (En: ''; Es: ''),
-    (En: 'Usage:  superterm list            (sessions table)';
-     Es: 'Uso:    superterm listar          (tabla de sesiones)'),
-    (En: '        superterm list SESSION    (pane details of one session)';
-     Es: '        superterm listar SESION   (detalle de paneles de una)'),
-    (En: ''; Es: ''),
-    (En: 'Pane columns: index, title, type (local/ssh/command), target';
-     Es: 'Columnas: indice, titulo, tipo (local/ssh/command), destino'),
-    (En: '(user@host), running command, size, history lines, flags';
-     Es: '(usuario@host), comando en curso, tamano, lineas de historial'),
-    (En: '(* focused, M minimized, Z zoomed, ! dead).';
-     Es: 'y estado (* foco, M minimizada, Z zoom, ! muerto).'),
-    (En: ''; Es: ''),
-    (En: 'Example:  superterm list prod'; Es: 'Ejemplo:  superterm listar prod'));
-begin
-  PrintLines(L);
-end;
-
-procedure HelpKill;
-const
-  L: array[0..5] of THelpLine = (
-    (En: 'superterm kill - terminate a session and every program inside it';
-     Es: 'superterm matar - termina una sesion y todos sus programas'),
-    (En: ''; Es: ''),
-    (En: 'Usage:  superterm kill SESSION     (the name is always required)';
-     Es: 'Uso:    superterm matar SESION     (el nombre es siempre obligatorio)'),
-    (En: ''; Es: ''),
-    (En: 'Example:  superterm kill prod'; Es: 'Ejemplo:  superterm matar prod'),
-    (En: ''; Es: ''));
-begin
-  PrintLines(L);
-end;
-
-procedure HelpWindows;
-const
-  L: array[0..22] of THelpLine = (
-    (En: 'superterm windows - manage the panes of a session';
-     Es: 'superterm ventanas - gestiona los paneles de una sesion'),
-    (En: ''; Es: ''),
-    (En: 'They work with or without attached clients: everyone attached';
-     Es: 'Funcionan con o sin clientes conectados: los conectados ven'),
-    (En: 'sees the changes live.';
-     Es: 'los cambios en vivo.'),
-    (En: ''; Es: ''),
-    (En: 'Usage:'; Es: 'Uso:'),
-    (En: '  superterm new SESSION[:PANE] [options]     open/split a pane';
-     Es: '  superterm nueva SESION[:PANEL] [opciones]  abre/divide un panel'),
-    (En: '     -c, --class NAME   (es: --clase)  window class from your config';
-     Es: '     -c, --clase NOMBRE (en: --class)  clase de ventana de tu config'),
-    (En: '     --cmd COMMAND      (es: --comando)  run this command';
-     Es: '     --comando ORDEN    (en: --cmd)   ejecuta esta orden'),
-    (En: '     --cwd DIR          starting directory';
-     Es: '     --cwd DIR          directorio inicial'),
-    (En: '     -t, --title NAME   (es: --titulo)  pane title';
-     Es: '     -t, --titulo NOMBRE (en: --title)  titulo del panel'),
-    (En: '     -d, --down | -r, --right          split direction';
-     Es: '     -d, --abajo | -r, --derecha       direccion de la division'),
-    (En: '  superterm close TARGET                     close a pane';
-     Es: '  superterm cerrar DESTINO                   cierra un panel'),
-    (En: '  superterm focus TARGET                     set the focused pane';
-     Es: '  superterm foco DESTINO                     fija el panel enfocado'),
-    (En: '  superterm rename TARGET NEW_NAME           set a pane title';
-     Es: '  superterm renombrar DESTINO NOMBRE         fija el titulo'),
-    (En: '  superterm resize TARGET COLSxROWS          e.g. 100x30';
-     Es: '  superterm tamano DESTINO COLSxFILAS        ej. 100x30'),
-    (En: '  superterm minimize|restore|zoom TARGET';
-     Es: '  superterm minimizar|restaurar|ampliar DESTINO'),
-    (En: '  superterm organize SESSION [grid|tile|cascade]';
-     Es: '  superterm organizar SESION [rejilla|mosaico|cascada]'),
-    (En: ''; Es: ''),
-    (En: 'Examples:'; Es: 'Ejemplos:'),
-    (En: '  superterm new prod --cmd "tail -f /var/log/syslog" -t Logs';
-     Es: '  superterm nueva prod --comando "tail -f /var/log/syslog" -t Logs'),
-    (En: '  superterm focus prod:Logs   &&   superterm send . clear';
-     Es: '  superterm foco prod:Logs   &&   superterm enviar . clear'),
-    (En: '  superterm organize prod grid';
-     Es: '  superterm organizar prod rejilla'));
-begin
-  PrintLines(L);
-end;
-
 // ---------------------------------------------------------------- keys
 
 function KeyBytes(const AName: string): RawByteString;
@@ -755,14 +556,17 @@ var
   Ses, TypeS, Target, Flags, Att: string;
 begin
   L := Default(TListInfo);
-  // no argument: sessions table
   Ses := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
-    begin
-      Ses := AArgs[i];
-      Break;
-    end;
+  if (Length(AArgs) > 1) or
+     ((Length(AArgs) = 1) and IsFlag(AArgs[0])) then
+  begin
+    ErrLn(T('superterm: usage: list [SESSION]',
+      'superterm: uso: listar [SESION]'));
+    Exit(2);
+  end;
+  if Length(AArgs) = 1 then
+    Ses := AArgs[0];
+  // no argument: sessions table
   if Ses = '' then
   begin
     if not ListLive(Infos) then
@@ -776,7 +580,7 @@ begin
     end;
     WriteLn(Format('%-24s %-16s %5s %8s  %s',
       [T('NAME', 'NOMBRE'), T('PROFILE', 'PERFIL'),
-       T('PANES', 'PANEL'), T('CLIENTS', 'CLIENTES'),
+       T('PANES', 'PANELES'), T('CLIENTS', 'CLIENTES'),
        T('CREATED', 'CREADA')]));
     for i := 0 to High(Infos) do
     begin
@@ -867,7 +671,7 @@ begin
         continue;
       end;
       case NormToken(AArgs[i]) of
-        'n', 'noenter', 'sinintro':
+        'n', 'noenter', 'no-enter', 'sinintro', 'sin-intro':
           begin
             NoEnter := True;
             Inc(i);
@@ -1028,7 +832,13 @@ begin
         Exit(2);
       end;
       if TargetSpec = '' then
-        TargetSpec := AArgs[i];
+        TargetSpec := AArgs[i]
+      else
+      begin
+        ErrLn(T('superterm: usage: capture TARGET [OPTIONS]',
+          'superterm: uso: capturar DESTINO [OPCIONES]'));
+        Exit(2);
+      end;
     end;
     Inc(i);
   end;
@@ -1077,17 +887,17 @@ end;
 
 function CmdKill(const AArgs: array of string): integer;
 var
-  i, rc: integer;
+  rc: integer;
   Ses: string;
   Info: TSessionInfo;
 begin
-  Ses := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
-    begin
-      Ses := AArgs[i];
-      Break;
-    end;
+  if (Length(AArgs) <> 1) or IsFlag(AArgs[0]) then
+  begin
+    ErrLn(T('superterm: usage: kill SESSION',
+      'superterm: uso: matar SESION'));
+    Exit(2);
+  end;
+  Ses := AArgs[0];
   if (Ses = '') or (Ses = '.') then
   begin
     ErrLn(T('superterm: ''kill'' always needs the session name',
@@ -1161,24 +971,40 @@ begin
   Exit(3);
 end;
 
-// resolves TARGET (first non-flag) from a list of args
+// Resolves the one exact TARGET accepted by simple window operations.
 function GrabTarget(const AArgs: array of string; ARequired: boolean;
   out AInfo: TSessionInfo; out APane: integer): integer;
 var
-  i, rc: integer;
+  rc: integer;
   Spec, Ses, PaneSpec: string;
 begin
   Spec := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
+  if Length(AArgs) = 0 then
+  begin
+    if ARequired then
     begin
-      Spec := AArgs[i];
-      Break;
+      ErrLn(T('superterm: a target is required. Try ''--help''.',
+        'superterm: falta el destino. Prueba ''--ayuda''.'));
+      Exit(2);
     end;
+  end;
+  if Length(AArgs) <> 1 then
+  begin
+    ErrLn(T('superterm: this window command accepts exactly one TARGET',
+      'superterm: esta orden de ventana acepta exactamente un DESTINO'));
+    Exit(2);
+  end;
+  Spec := AArgs[0];
   if (Spec = '') and ARequired then
   begin
     ErrLn(T('superterm: a target is required. Try ''--help''.',
       'superterm: falta el destino. Prueba ''--ayuda''.'));
+    Exit(2);
+  end;
+  if IsFlag(Spec) then
+  begin
+    ErrLn(T('superterm: this window command accepts exactly one TARGET',
+      'superterm: esta orden de ventana acepta exactamente un DESTINO'));
     Exit(2);
   end;
   SplitTargetSpec(Spec, Ses, PaneSpec);
@@ -1253,7 +1079,13 @@ begin
         Exit(2);
       end;
       if Spec = '' then
-        Spec := AArgs[i];
+        Spec := AArgs[i]
+      else
+      begin
+        ErrLn(T('superterm: new accepts exactly one SESSION[:PANE] target',
+          'superterm: nueva acepta un solo destino SESION[:PANEL]'));
+        Exit(2);
+      end;
     end;
     Inc(i);
   end;
@@ -1293,21 +1125,22 @@ var
   Pane, rc, i: integer;
   Reply, Spec, Ses, PaneSpec, NewName: string;
 begin
-  Spec := '';
+  if (Length(AArgs) < 2) or IsFlag(AArgs[0]) then
+  begin
+    ErrLn(T('superterm: usage: rename TARGET NEW_NAME',
+      'superterm: uso: renombrar DESTINO NUEVO_NOMBRE'));
+    Exit(2);
+  end;
+  Spec := AArgs[0];
   NewName := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
-    begin
-      if Spec = '' then
-        Spec := AArgs[i]
-      else
-      begin
-        if NewName <> '' then
-          NewName := NewName + ' ';
-        NewName := NewName + AArgs[i];
-      end;
-    end;
-  if (Spec = '') or (NewName = '') then
+  for i := 1 to High(AArgs) do
+  begin
+    if NewName <> '' then
+      NewName := NewName + ' ';
+    NewName := NewName + AArgs[i];
+  end;
+  NewName := Trim(NewName);
+  if NewName = '' then
   begin
     ErrLn(T('superterm: usage: rename TARGET NEW_NAME',
       'superterm: uso: renombrar DESTINO NUEVO_NOMBRE'));
@@ -1329,22 +1162,20 @@ end;
 function CmdResize(const AArgs: array of string): integer;
 var
   Info: TSessionInfo;
-  Pane, rc, i, XPos: integer;
+  Pane, rc, XPos: integer;
   Reply, Spec, Size: string;
   Ses, PaneSpec: string;
   Cols, Rows: Longint;
   Extra: TByteArray;
 begin
-  Spec := '';
-  Size := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
-    begin
-      if Spec = '' then
-        Spec := AArgs[i]
-      else if Size = '' then
-        Size := AArgs[i];
-    end;
+  if (Length(AArgs) <> 2) or IsFlag(AArgs[0]) then
+  begin
+    ErrLn(T('superterm: usage: resize TARGET COLSxROWS  (e.g. 100x30)',
+      'superterm: uso: tamano DESTINO COLSxFILAS  (ej. 100x30)'));
+    Exit(2);
+  end;
+  Spec := AArgs[0];
+  Size := AArgs[1];
   XPos := Pos('x', LowerCase(Size));
   if (Spec = '') or (XPos = 0) then
   begin
@@ -1371,30 +1202,32 @@ end;
 function CmdOrganize(const AArgs: array of string): integer;
 var
   Info: TSessionInfo;
-  rc, i: integer;
+  rc: integer;
   Reply, Ses, HowS: string;
   HowB: byte;
   Extra: TByteArray;
 begin
-  Ses := '';
-  HowS := '';
-  for i := 0 to High(AArgs) do
-    if not IsFlag(AArgs[i]) then
-    begin
-      case NormToken(AArgs[i]) of
-        'tile', 'mosaico': HowS := 'tile';
-        'cascade', 'cascada': HowS := 'cascade';
-        'grid', 'rejilla': HowS := 'grid';
-      else
-        if Ses = '' then
-          Ses := AArgs[i];
-      end;
-    end;
-  if Ses = '' then
+  if (Length(AArgs) < 1) or (Length(AArgs) > 2) or IsFlag(AArgs[0]) then
   begin
-    ErrLn(T('superterm: a session is required (or ''.'' for the only one).',
-      'superterm: falta la sesion (o ''.'' para la unica).'));
+    ErrLn(T('superterm: usage: organize SESSION [grid|tile|cascade]',
+      'superterm: uso: organizar SESION [rejilla|mosaico|cascada]'));
     Exit(2);
+  end;
+  Ses := AArgs[0];
+  HowS := '';
+  if Length(AArgs) = 2 then
+  begin
+    case NormToken(AArgs[1]) of
+      'tile', 'mosaico': HowS := 'tile';
+      'cascade', 'cascada': HowS := 'cascade';
+      'grid', 'rejilla': HowS := 'grid';
+    else
+    begin
+      ErrLn(Format(T('superterm: unknown organize mode ''%s''',
+        'superterm: modo de organizacion desconocido ''%s'''), [AArgs[1]]));
+      Exit(2);
+    end;
+    end;
   end;
   rc := ResolveSession(Ses, True, Info);
   if rc <> 0 then
@@ -1413,12 +1246,76 @@ end;
 
 // ---------------------------------------------------------------- dispatch
 
-function IsHelpToken(const S: string): boolean;
+const
+  CLI_NONE = 0;
+  CLI_LIST = 1;
+  CLI_SEND = 2;
+  CLI_CAPTURE = 3;
+  CLI_KILL = 4;
+  CLI_NEW = 5;
+  CLI_CLOSE = 6;
+  CLI_FOCUS = 7;
+  CLI_MINIMIZE = 8;
+  CLI_RESTORE = 9;
+  CLI_ZOOM = 10;
+  CLI_ORGANIZE = 11;
+  CLI_RENAME = 12;
+  CLI_RESIZE = 13;
+  CLI_ATTACH = 14;
+  CLI_VERSION = 15;
+
+// One alias table drives both execution and command-specific help.  Topic
+// aliases which are not executable commands remain in st_cli_help.
+function CommandIdFromToken(const S: string): integer;
+begin
+  case NormToken(S) of
+    'list', 'listar', 'ls': Result := CLI_LIST;
+    'send', 'enviar': Result := CLI_SEND;
+    'capture', 'capturar': Result := CLI_CAPTURE;
+    'kill', 'matar': Result := CLI_KILL;
+    'new', 'nueva', 'nuevo': Result := CLI_NEW;
+    'close', 'cerrar': Result := CLI_CLOSE;
+    'focus', 'foco', 'select', 'seleccionar': Result := CLI_FOCUS;
+    'minimize', 'minimizar': Result := CLI_MINIMIZE;
+    'restore', 'restaurar': Result := CLI_RESTORE;
+    'zoom', 'ampliar': Result := CLI_ZOOM;
+    'organize', 'organizar': Result := CLI_ORGANIZE;
+    'rename', 'renombrar': Result := CLI_RENAME;
+    'resize', 'tamano', 'redimensionar': Result := CLI_RESIZE;
+    'attach', 'conectar': Result := CLI_ATTACH;
+    'version': Result := CLI_VERSION;
+  else
+    Result := CLI_NONE;
+  end;
+end;
+
+// Help is an option only in option position.  Never scan arbitrary payload:
+// `send . help`, `send . -- --help` and `rename . help` are legitimate data.
+function IsHelpOption(const S: string): boolean;
+begin
+  // Long control options follow the CLI's case/accent-insensitive contract.
+  // Keep short -H distinct because capture uses it for history.
+  Result := (S = '-h') or (S = '-?') or
+    ((Copy(S, 1, 2) = '--') and
+     ((NormToken(S) = 'help') or (NormToken(S) = 'ayuda')));
+end;
+
+function ShowHelpTopic(const ATopic: string; out AExitCode: integer): boolean;
 var
   N: string;
 begin
-  N := NormToken(S);
-  Result := (N = 'help') or (N = 'ayuda') or (S = '-?') or (S = '-h');
+  N := NormToken(ATopic);
+  Result := PrintCliHelpTopic(N, CurrentLanguage);
+  if Result then
+    AExitCode := 0
+  else
+  begin
+    ErrLn(Format(T('superterm: unknown help topic ''%s''.',
+      'superterm: tema de ayuda desconocido ''%s''.'), [ATopic]));
+    ErrLn(T('Try ''superterm --help'' to list every topic.',
+      'Prueba ''superterm --ayuda'' para listar todos los temas.'));
+    AExitCode := 2;
+  end;
 end;
 
 function RunCli(out AExitCode: integer): boolean;
@@ -1426,7 +1323,6 @@ var
   i, rc, CmdIdx: integer;
   Cmd, N: string;
   Rest: array of string;
-  WantHelp: boolean;
   AttInfo: TSessionInfo;
 begin
   Result := False;
@@ -1440,104 +1336,166 @@ begin
   Cmd := CliArgs[0];
   N := NormToken(Cmd);
 
-  // legacy: --attach and --list-sessions keep their usual path
-  if Cmd = '--attach' then
-    Exit;   // superterm.lpr processes it as before
+  // Top-level help is an index or exactly one contextual topic.  A typo is a
+  // usage error rather than a successful but unrelated global page.
+  if (N = 'help') or (N = 'ayuda') or IsHelpOption(Cmd) then
+  begin
+    if Length(CliArgs) > 2 then
+    begin
+      ErrLn(T('superterm: help accepts at most one topic.',
+        'superterm: ayuda acepta como maximo un tema.'));
+      AExitCode := 2;
+      Exit(True);
+    end;
+    if Length(CliArgs) = 1 then
+      PrintCliHelpIndex(CurrentLanguage)
+    else
+      ShowHelpTopic(CliArgs[1], AExitCode);
+    Exit(True);
+  end;
+
+  // The classic startup flags are parsed later by superterm.lpr.  Recognize
+  // their option-position help here so no help request can open the TUI.
+  if ((Cmd = '--attach') or (Cmd = '--session') or (Cmd = '--sesion')) and
+     (Length(CliArgs) > 1) and
+     (IsHelpOption(CliArgs[1]) or IsHelpOption(CliArgs[High(CliArgs)])) then
+  begin
+    if not (((Length(CliArgs) = 2) and IsHelpOption(CliArgs[1])) or
+            ((Length(CliArgs) = 3) and (not IsFlag(CliArgs[1])) and
+             IsHelpOption(CliArgs[2]))) then
+    begin
+      ErrLn(T('superterm: command help accepts no additional arguments.',
+        'superterm: la ayuda de una orden no acepta argumentos adicionales.'));
+      AExitCode := 2;
+      Exit(True);
+    end;
+    if Cmd = '--attach' then
+      PrintCliHelpTopic('attach', CurrentLanguage)
+    else
+      PrintCliHelpTopic('startup', CurrentLanguage);
+    Exit(True);
+  end;
+
+  // --session/--sesion is the only remaining classic startup form. Validate
+  // it here, then let superterm.lpr perform the actual interactive startup.
+  if (Cmd = '--session') or (Cmd = '--sesion') then
+  begin
+    if (Length(CliArgs) <> 2) or IsFlag(CliArgs[1]) then
+    begin
+      ErrLn(T('superterm: usage: --session NAME',
+        'superterm: uso: --sesion NOMBRE'));
+      AExitCode := 2;
+      Exit(True);
+    end;
+    Exit(False);
+  end;
+
+  // legacy --list-sessions keeps its historical exit status and table
   if Cmd = '--list-sessions' then
   begin
+    if (Length(CliArgs) > 1) and
+       (IsHelpOption(CliArgs[1]) or IsHelpOption(CliArgs[High(CliArgs)])) then
+    begin
+      if Length(CliArgs) <> 2 then
+      begin
+        ErrLn(T('superterm: command help accepts no additional arguments.',
+          'superterm: la ayuda de una orden no acepta argumentos adicionales.'));
+        AExitCode := 2;
+        Exit(True);
+      end;
+      PrintCliHelpTopic('list', CurrentLanguage);
+      Exit(True);
+    end;
+    if Length(CliArgs) <> 1 then
+    begin
+      ErrLn(T('superterm: --list-sessions accepts no arguments',
+        'superterm: --list-sessions no acepta argumentos'));
+      AExitCode := 2;
+      Exit(True);
+    end;
     AExitCode := CmdList([], True);
     Exit(True);
   end;
 
-  if (N = 'version') or (Cmd = '-V') then
+  CmdIdx := CommandIdFromToken(Cmd);
+  if (CmdIdx = CLI_VERSION) or (Cmd = '-V') then
   begin
-    WriteLn('superterm ', SUPERTERM_VERSION);
+    if (Length(CliArgs) > 1) and
+       (IsHelpOption(CliArgs[1]) or IsHelpOption(CliArgs[High(CliArgs)])) then
+    begin
+      if Length(CliArgs) <> 2 then
+      begin
+        ErrLn(T('superterm: command help accepts no additional arguments.',
+          'superterm: la ayuda de una orden no acepta argumentos adicionales.'));
+        AExitCode := 2;
+        Exit(True);
+      end;
+      PrintCliHelpTopic('version', CurrentLanguage);
+    end
+    else if Length(CliArgs) <> 1 then
+    begin
+      ErrLn(T('superterm: version accepts no arguments',
+        'superterm: version no acepta argumentos'));
+      AExitCode := 2;
+    end
+    else
+      WriteLn('superterm ', SUPERTERM_VERSION);
     Exit(True);
   end;
 
-  WantHelp := False;
-  CmdIdx := -1;
-  case N of
-    'list', 'listar', 'ls': CmdIdx := 1;
-    'send', 'enviar': CmdIdx := 2;
-    'capture', 'capturar': CmdIdx := 3;
-    'kill', 'matar': CmdIdx := 4;
-    'new', 'nueva', 'nuevo': CmdIdx := 5;
-    'close', 'cerrar': CmdIdx := 6;
-    'focus', 'foco', 'select', 'seleccionar': CmdIdx := 7;
-    'minimize', 'minimizar': CmdIdx := 8;
-    'restore', 'restaurar': CmdIdx := 9;
-    'zoom', 'ampliar': CmdIdx := 10;
-    'organize', 'organizar': CmdIdx := 11;
-    'rename', 'renombrar': CmdIdx := 12;
-    'resize', 'tamano', 'redimensionar': CmdIdx := 13;
-    'attach', 'conectar':
-      begin
-        // resolves the name here (better matching) and delegates the
-        // interactive attach to the normal TUI startup
-        AttachRequested := True;
-        if (Length(CliArgs) > 1) and (not IsFlag(CliArgs[1])) then
-        begin
-          rc := ResolveSession(CliArgs[1], True, AttInfo);
-          if rc <> 0 then
-          begin
-            AExitCode := rc;
-            Exit(True);
-          end;
-          AttachSocket := AttInfo.SocketPath;
-        end;
-        Exit(False);
-      end;
-    'help', 'ayuda':
-      begin
-        if Length(CliArgs) > 1 then
-        begin
-          case NormToken(CliArgs[1]) of
-            'list', 'listar', 'ls': begin HelpList; Exit(True); end;
-            'send', 'enviar': begin HelpSend; Exit(True); end;
-            'capture', 'capturar': begin HelpCapture; Exit(True); end;
-            'kill', 'matar': begin HelpKill; Exit(True); end;
-            'new', 'nueva', 'nuevo', 'close', 'cerrar', 'focus', 'foco',
-            'select', 'seleccionar', 'minimize', 'minimizar', 'restore',
-            'restaurar', 'zoom', 'ampliar', 'organize', 'organizar',
-            'rename', 'renombrar', 'resize', 'tamano', 'redimensionar',
-            'windows', 'ventanas': begin HelpWindows; Exit(True); end;
-          end;
-        end;
-        HelpGlobal;
-        Exit(True);
-      end;
-  else
-    if IsHelpToken(Cmd) or (Cmd = '--help') or (Cmd = '--ayuda') then
-    begin
-      HelpGlobal;
-      Exit(True);
-    end;
-    // not a CLI command: normal startup (no extra arguments)
+  if CmdIdx = CLI_NONE then
+  begin
     if IsFlag(Cmd) then
-      Exit;   // unknown flags: let the classic startup see them
-    ErrLn(Format(T('superterm: unknown command ''%s''. Try ''superterm --help''.',
-      'superterm: orden desconocida ''%s''. Prueba ''superterm --ayuda''.'),
-      [Cmd]));
+      ErrLn(Format(T('superterm: unknown option ''%s''. Try ''superterm --help''.',
+        'superterm: opcion desconocida ''%s''. Prueba ''superterm --ayuda''.'),
+        [Cmd]))
+    else
+      ErrLn(Format(T('superterm: unknown command ''%s''. Try ''superterm --help''.',
+        'superterm: orden desconocida ''%s''. Prueba ''superterm --ayuda''.'),
+        [Cmd]));
     AExitCode := 2;
     Exit(True);
   end;
 
-  // per-command help: superterm send --help
-  for i := 1 to High(CliArgs) do
-    if IsHelpToken(CliArgs[i]) or (CliArgs[i] = '--help') or
-       (CliArgs[i] = '--ayuda') then
-      WantHelp := True;
-  if WantHelp then
+  // Context help is accepted in the unambiguous option position immediately
+  // after the command.  The remainder belongs to that command's grammar.
+  if (Length(CliArgs) > 1) and IsHelpOption(CliArgs[1]) then
   begin
-    case CmdIdx of
-      1: HelpList;
-      2: HelpSend;
-      3: HelpCapture;
-      4: HelpKill;
-      5..13: HelpWindows;
+    if Length(CliArgs) > 2 then
+    begin
+      ErrLn(T('superterm: command help accepts no additional arguments.',
+        'superterm: la ayuda de una orden no acepta argumentos adicionales.'));
+      AExitCode := 2;
+      Exit(True);
     end;
+    ShowHelpTopic(N, AExitCode);
     Exit(True);
+  end;
+
+  if CmdIdx = CLI_ATTACH then
+  begin
+    if (Length(CliArgs) > 2) or
+       ((Length(CliArgs) = 2) and IsFlag(CliArgs[1])) then
+    begin
+      ErrLn(T('superterm: usage: attach [SESSION]',
+        'superterm: uso: conectar [SESION]'));
+      AExitCode := 2;
+      Exit(True);
+    end;
+    // Resolve the name here for exact/sanitized/prefix matching and delegate
+    // the interactive attach to the ordinary TUI startup.
+    AttachRequested := True;
+    if (Length(CliArgs) > 1) and (not IsFlag(CliArgs[1])) then
+    begin
+      rc := ResolveSession(CliArgs[1], True, AttInfo);
+      if rc <> 0 then
+      begin
+        AExitCode := rc;
+        Exit(True);
+      end;
+      AttachSocket := AttInfo.SocketPath;
+    end;
+    Exit(False);
   end;
 
   Rest := nil;
@@ -1547,19 +1505,19 @@ begin
 
   rc := 2;
   case CmdIdx of
-    1: rc := CmdList(Rest);
-    2: rc := CmdSend(Rest);
-    3: rc := CmdCapture(Rest);
-    4: rc := CmdKill(Rest);
-    5: rc := CmdNew(Rest);
-    6: rc := CmdSimpleOp(Rest, WINOP_KILL, True);
-    7: rc := CmdSimpleOp(Rest, WINOP_FOCUS, True);
-    8: rc := CmdSimpleOp(Rest, WINOP_MINIMIZE, True);
-    9: rc := CmdSimpleOp(Rest, WINOP_RESTORE, True);
-    10: rc := CmdSimpleOp(Rest, WINOP_ZOOM, True);
-    11: rc := CmdOrganize(Rest);
-    12: rc := CmdRename(Rest);
-    13: rc := CmdResize(Rest);
+    CLI_LIST: rc := CmdList(Rest);
+    CLI_SEND: rc := CmdSend(Rest);
+    CLI_CAPTURE: rc := CmdCapture(Rest);
+    CLI_KILL: rc := CmdKill(Rest);
+    CLI_NEW: rc := CmdNew(Rest);
+    CLI_CLOSE: rc := CmdSimpleOp(Rest, WINOP_KILL, True);
+    CLI_FOCUS: rc := CmdSimpleOp(Rest, WINOP_FOCUS, True);
+    CLI_MINIMIZE: rc := CmdSimpleOp(Rest, WINOP_MINIMIZE, True);
+    CLI_RESTORE: rc := CmdSimpleOp(Rest, WINOP_RESTORE, True);
+    CLI_ZOOM: rc := CmdSimpleOp(Rest, WINOP_ZOOM, True);
+    CLI_ORGANIZE: rc := CmdOrganize(Rest);
+    CLI_RENAME: rc := CmdRename(Rest);
+    CLI_RESIZE: rc := CmdResize(Rest);
   end;
   AExitCode := rc;
   Result := True;

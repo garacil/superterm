@@ -89,7 +89,7 @@ def strict_metadata(path, expected):
         return type(exc).__name__ + ': ' + str(exc)
 
     required = {
-        'name', 'profile', 'panes', 'attached', 'pid', 'cpus',
+        'name', 'profile', 'panes', 'attached', 'pid', 'pid_identity', 'cpus',
         'thread_limit', 'threads', 'multithread', 'created', 'id',
         'client_chains',
     }
@@ -109,6 +109,8 @@ def strict_metadata(path, expected):
         return 'name=' + repr(fields.get('name'))
     if numeric['pid'] != expected['pid']:
         return 'pid=%d expected=%d' % (numeric['pid'], expected['pid'])
+    if fields.get('pid_identity') != expected['pid_identity']:
+        return 'pid_identity changed=' + repr(fields.get('pid_identity'))
     if numeric['panes'] != expected['panes']:
         return 'panes=%d expected=%d' % (
             numeric['panes'], expected['panes'])
@@ -133,6 +135,7 @@ def read_baseline(path):
     section = parser['session']
     return {
         'pid': section.getint('pid'),
+        'pid_identity': section.get('pid_identity', ''),
         'panes': section.getint('panes'),
         'profile': section.get('profile', ''),
         'id': section.get('id', ''),
@@ -251,10 +254,13 @@ try:
     sidecar_ready = os.path.isfile(sidecar_path)
     check('initial sidecar exists', sidecar_ready)
     baseline = read_baseline(sidecar_path) if sidecar_ready else {
-        'pid': -1, 'panes': -1, 'profile': '', 'id': ''}
+        'pid': -1, 'pid_identity': '', 'panes': -1,
+        'profile': '', 'id': ''}
     check('baseline metadata is independently meaningful',
           baseline['pid'] > 0 and baseline['panes'] == 1 and
-          bool(baseline['id']))
+          bool(baseline['id']) and
+          baseline['pid_identity'] ==
+          stlib.process_identity(baseline['pid']))
     check('baseline sidecar is complete',
           sidecar_ready and strict_metadata(sidecar_path, baseline) is None)
 

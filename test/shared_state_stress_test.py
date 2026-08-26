@@ -219,16 +219,16 @@ check('second focus is rendered by both clients',
 # stream; client count alone must not downgrade them to the cell renderer.
 # After both detach, the next sole viewer receives that live flag unchanged.
 before_fullscreen = frame_rect(a, TITLE2)
-b.send(b'\x1b[15~', 2.0)
+b.send(stlib.FULLSCREEN_CHORD, 2.0)
 drain_all(clients, 0.8)
 after_fullscreen_a = frame_rect(a, TITLE2)
 after_fullscreen_b = frame_rect(b, TITLE2)
-check('shared F5 hands both equal hosts to the pane',
+check('shared fullscreen hands both equal hosts to the pane',
       before_fullscreen is not None and
       after_fullscreen_a is None and after_fullscreen_b is None and
       'Detach' not in a.text() and 'Detach' not in b.text())
-check('shared raw F5 keeps both clients live', a.alive() and b.alive())
-check('F5 preserves focused pane and ordinary flags',
+check('shared raw fullscreen keeps both clients live', a.alive() and b.alive())
+check('fullscreen preserves focused pane and ordinary flags',
       wait_state(clients, session, focused=2, zoomed={2}))
 detach(a, 'creator')
 detach(b, 'second viewer')
@@ -240,7 +240,7 @@ check('sole reattach receives live fullscreen passthrough',
       c.alive() and 'Detach' not in c.text())
 check('fullscreen reattach retains daemon focus',
       wait_state((c,), session, focused=2, zoomed={2}))
-c.send(b'\x1b[15~', 1.5)          # leave F5, keep session alive
+c.send(stlib.FULLSCREEN_CHORD, 1.5)  # leave fullscreen, keep session alive
 check('fullscreen exit restores exact saved rectangle',
       'Detach' in c.text() and frame_rect(c, TITLE2) == before_fullscreen)
 check('fullscreen exit retains explicit state',

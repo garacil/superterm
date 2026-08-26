@@ -28,8 +28,10 @@ import os
 import sys
 
 W, H = 128, 46          # cells
-# artwork that is not drawn here but converted from an image
-GOODY_SRC = os.environ.get('GOODY_SRC', '/home/german/Imagenes/goody.png')
+# Raster artwork converted into the legacy `goody.art` slot. Keep GOODY_SRC as
+# a developer override so old regeneration commands still work, but make the
+# checked-in original the reproducible default.
+GOODY_SRC = os.environ.get('GOODY_SRC', 'assets/alien-hacker.png')
 PHOENIX_SVG = os.environ.get('PHOENIX_SVG', 'assets/7kas-bird.svg')
 PH = H * 2              # pixel rows
 
@@ -175,7 +177,7 @@ class Picture:
     ASCII_CHAR = '6'
 
     def __init__(self, canvas, name_en, name_es, mode=None, dither=False,
-                 ascii_art=True):
+                 ascii_art=True, logical_width=0):
         self.c = canvas
         self.name_en, self.name_es, self.mode = name_en, name_es, mode
         # ascii_art: a cell is a CHARACTER in one colour instead of a solid
@@ -183,6 +185,10 @@ class Picture:
         # the picture keeps its shape through the ink as well as the colour.
         # 'ascii' picks from RAMP, 'shade' from SHADES
         self.ascii = ascii_art
+        # Optional logical width for artwork whose transparent right edge is
+        # significant. Text rows cannot retain that edge without trailing
+        # spaces, so the file format carries it explicitly.
+        self.logical_width = logical_width
         # dither: 62 colours cannot hold a long gradient, and snapping each
         # pixel to the nearest one leaves visible bands across a sky. With
         # this on, a colour that falls between two palette entries alternates
@@ -197,12 +203,12 @@ class Picture:
     def grid(self):
         """Collapse the drawing canvas onto the character grid.
 
-        Only two glyphs are ever used: the full block and the space. Half
-        blocks, shades and line-drawing characters come apart the moment the
-        terminal font is stretched, which is what a maximised window does to
-        them, so a cell is either painted whole or left alone. Everything a
-        cell covers is averaged into its one colour, which is also what makes
-        the edges of a drawn scene come out soft rather than stepped.
+        Only two states are ever used: the one configured shade glyph and the
+        space. Half blocks and line-drawing combinations come apart when the
+        terminal font is stretched, so a cell is either painted or left
+        alone. Everything a cell covers is averaged into its one colour,
+        which is also what makes the edges of a drawn scene come out soft
+        rather than stepped.
         """
         if self._grid is not None:
             return self._grid
@@ -346,9 +352,9 @@ class Picture:
             rows.append((''.join(g).rstrip(), ''.join(f).rstrip()))
 
         out = ['# superterm background picture.',
-               '#   >  glyph row   \' \'=empty  3=full block',
-               '#      Nothing else is used: a half block or a shade character',
-               '#      falls apart when the terminal font is stretched.',
+               '#   >  glyph row   \' \'=empty  6=dark shade',
+               '#      Generated pictures use that one stable glyph; half-block',
+               '#      combinations fall apart when the terminal font stretches.',
                '#   :  foreground palette index per cell (\'0\'-\'9\',\'a\'-\'z\',\'A\'-\'Z\')',
                '# Drawn by tools/mkbackgrounds.py for a 128x46 desktop',
                '# (1024x768 with an 8x16 console cell, less the menu and status rows).',
@@ -356,12 +362,15 @@ class Picture:
                'name.es: ' + self.name_es]
         if self.mode:
             out.append('mode: ' + self.mode)
+        if self.logical_width:
+            out.append('width: ' + str(self.logical_width))
         out.append('palette: ' + ' '.join('%06X' % c for c in pal))
         for g, f in rows:
-            # the space after the marker is part of the format: the reader
-            # takes the row from the third character (st_artbg.pas:188)
-            out.append('> ' + g)
-            out.append(': ' + f)
+            # A populated row starts after the marker and one separator
+            # (st_artbg.pas:188). An empty row needs only its marker: Copy()
+            # still returns an empty string and the file stays whitespace-clean.
+            out.append(('> ' + g) if g else '>')
+            out.append((': ' + f) if f else ':')
         return '\n'.join(out) + '\n'
 
 
@@ -775,8 +784,9 @@ def phoenix(src='backgrounds/phoenix.art'):
     return Picture(c, '7kas phoenix', 'Ave fenix de 7kas')
 
 
-def from_image(path, name_en, name_es, drop_black=True, fill=True):
-    """Convert a real picture into the half-block format.
+def from_image(path, name_en, name_es, drop_black=True, fill=True,
+               dither_alpha=False, logical_width=0):
+    """Convert a raster picture into the single-glyph cell format.
 
     Pixel art needs care on the way down. A smooth filter (Lanczos, bicubic)
     rings and blurs hard edges, which is exactly what this kind of artwork is
@@ -816,7 +826,7 @@ def from_image(path, name_en, name_es, drop_black=True, fill=True):
     q = im.quantize(colors=48, method=Image.MEDIANCUT, dither=Image.NONE)
     im = q.convert('RGB')
 
-    # the picture is drawn with one full block per character cell, so the
+    # The picture uses one shade glyph per occupied character cell, so the
     # destination grid IS the desktop: 128 x 46. Reducing straight onto it
     # keeps the conversion as sharp as it can be -- every cell is decided by
     # the source pixels that actually fall in it, with nothing resampled twice.
@@ -843,22 +853,30 @@ def from_image(path, name_en, name_es, drop_black=True, fill=True):
     ox, oy = (W - dw) // 2, (H - dh) // 2
     for y in range(dh):
         for x in range(dw):
-            # an edge cell is either in or out: keeping the half-covered
-            # ones is what draws an outline in a colour that belongs to
-            # neither the picture nor the desktop
-            if ap is not None and ap[x, y] < 160:
-                continue
+            # Most source logos want a hard in/out edge, because keeping a
+            # half-covered antialiased cell draws a foreign fringe. Artwork
+            # explicitly designed to fade into the desktop instead uses an
+            # ordered alpha dither: terminal cells cannot carry alpha, so
+            # progressively sparser real cells are the faithful equivalent.
+            if ap is not None:
+                if dither_alpha:
+                    coverage = ap[x, y] / 255.0
+                    if coverage <= BAYER[y & 3][x & 3]:
+                        continue
+                elif ap[x, y] < 160:
+                    continue
             r, g, b = px[x, y]
             if drop_black and ap is None \
                     and (r * 0.3 + g * 0.6 + b * 0.1) < 22:
                 continue
             c.put(ox + x, oy + y, (r << 16) | (g << 8) | b)
-    return Picture(c, name_en, name_es)
+    return Picture(c, name_en, name_es, logical_width=logical_width)
 
 
 def goody():
-    """The Goody loading screen (Opera Soft), as a desktop picture."""
-    return from_image(GOODY_SRC, 'Goody', 'Goody')
+    """Original alien hacker in the legacy `goody` compatibility slot."""
+    return from_image(GOODY_SRC, 'Alien hacker', 'Hacker alienigena',
+                      dither_alpha=True, logical_width=W)
 
 
 def phoenix():
@@ -872,10 +890,14 @@ def phoenix():
     kept -- it is a logo, not a landscape.
     """
     import subprocess
-    png = '/tmp/superterm-7kas-bird.png'
-    subprocess.run(['rsvg-convert', '-w', '1536', '-b', 'none',
-                    PHOENIX_SVG, '-o', png], check=True)
-    return from_image(png, '7kas phoenix', 'Ave fenix de 7kas', fill=False)
+    import tempfile
+    # A unique directory makes parallel regeneration safe; a fixed /tmp name
+    # let two checkouts overwrite one another between conversion and loading.
+    with tempfile.TemporaryDirectory(prefix='superterm-phoenix-') as temp:
+        png = os.path.join(temp, 'phoenix.png')
+        subprocess.run(['rsvg-convert', '-w', '1536', '-b', 'none',
+                        PHOENIX_SVG, '-o', png], check=True)
+        return from_image(png, '7kas phoenix', 'Ave fenix de 7kas', fill=False)
 
 
 # The three seamless patterns -- wall, weave, circuit -- are deliberately not

@@ -1,7 +1,7 @@
 # superterm background picture.
-#   >  glyph row   ' '=empty  3=full block
-#      Nothing else is used: a half block or a shade character
-#      falls apart when the terminal font is stretched.
+#   >  glyph row   ' '=empty  6=dark shade
+#      Generated pictures use that one stable glyph; half-block
+#      combinations fall apart when the terminal font stretches.
 #   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
 # Drawn by tools/mkbackgrounds.py for a 128x46 desktop
 # (1024x768 with an 8x16 console cell, less the menu and status rows).

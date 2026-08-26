@@ -664,9 +664,9 @@ def visual_map_matches_flags(visual, flags, active,
                          for tops, frames, locks, icons in visual)
     if (allow_passthrough and visually_empty and active == 0 and
             any('Z' in flag for flag in flags)):
-        # Only the explicitly mixed F5 burst may legitimately finish with raw
+        # Only the explicitly mixed fullscreen burst may legitimately finish with raw
         # passthrough owning the host terminal. CLI list represents both IDE
-        # zoom and F5 with Z, so callers must opt into this visual alternative.
+        # zoom and fullscreen with Z, so callers opt into this visual alternative.
         zoomed_panes = [pane for pane, flag in enumerate(flags, 1)
                         if 'Z' in flag]
         focused_panes = [pane for pane, flag in enumerate(flags, 1)
@@ -1051,41 +1051,41 @@ def slow_visual_circle(clients, session, cycle):
 
 
 def held_fullscreen(clients, session, cycle):
-    """Leave the F5 result on screen long enough for a human to inspect."""
+    """Leave fullscreen on screen long enough for a human to inspect."""
     pane = cycle % 3 + 1
     restored = cli_retry(['restore', f'{session}:{pane}'], attempts=8)
     focused = cli_retry(['focus', f'{session}:{pane}'], attempts=8)
-    check(f'F5 {cycle} restore accepted',
+    check(f'fullscreen {cycle} restore accepted',
           restored is not None and restored.returncode == 0)
-    check(f'F5 {cycle} focus accepted',
+    check(f'fullscreen {cycle} focus accepted',
           focused is not None and focused.returncode == 0)
-    check(f'F5 {cycle} focus reaches every client',
+    check(f'fullscreen {cycle} focus reaches every client',
           focused is not None and focused.returncode == 0 and
           wait_shared_focus(clients, pane))
-    require_clean(f'F5 {cycle} focus')
+    require_clean(f'fullscreen {cycle} focus')
     drain_all(clients, 0.45)
     actor = clients[(cycle + 2) % len(clients)]
     before = layout_rects(clients[0])
     trace_action(f'VISUAL_BEGIN label=F5_{cycle} actor={actor.pid} '
                  f'pane={pane} hold=0.8')
-    os.write(actor.fd, b'\x1b[15~')
+    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.8)
     during = [layout_rects(client) for client in clients]
     # All stress viewers use CLIENT_W x CLIENT_H. Client count must not force
-    # an equal-size set through the cell renderer: raw F5 has no IDE frame in
+    # an equal-size set through the cell renderer: raw fullscreen has no IDE frame in
     # any client. The focal passthrough test checks the exact OSC byte path;
     # here the stress oracle checks simultaneous shared state and liveness.
-    check(f'F5 {cycle} enters raw fullscreen in every client',
+    check(f'fullscreen {cycle} enters raw mode in every client',
           before[pane - 1] is not None and
           all(all(rect is None for rect in rects) for rects in during) and
           all('Detach' not in client.text() for client in clients))
-    check(f'F5 {cycle} clients remain alive', all(c.alive() for c in clients))
-    os.write(actor.fd, b'\x1b[15~')
+    check(f'fullscreen {cycle} clients remain alive', all(c.alive() for c in clients))
+    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.6)
-    check(f'F5 {cycle} restores exact shared geometry',
+    check(f'fullscreen {cycle} restores exact shared geometry',
           all(layout_rects(client) == before for client in clients))
     trace_action(f'VISUAL_END label=F5_{cycle}')
-    require_clean(f'F5 {cycle}')
+    require_clean(f'fullscreen {cycle}')
 
 
 def circle_window(clients, session, cycles=1, step_pause=0.20):
@@ -1215,7 +1215,7 @@ def exact_round(clients, session, number, extra=None):
         check(f'round {number} exact focus sync {pane}',
               wait_shared_focus(viewers, pane))
         require_clean(f'round {number} exact pane {pane} focus')
-        # A preceding mixed F5/menu burst may legally enter passthrough before
+        # A preceding mixed fullscreen/menu burst may enter passthrough before
         # another client's ``Esc w r`` reaches the FIFO. In that ordering the
         # final ``r`` is pane input and remains on bash's unfinished command
         # line. Clear such deliberately generated typeahead before using an
@@ -1591,7 +1591,7 @@ def live_stress(clients, session, seconds):
             daemon_pid = session_daemon_pid(session)
             fifo_before = (-1 if not fifo_log else
                            client_fifo_dequeue_count(fifo_log, daemon_pid))
-            sequences = [b'\x1b[15~', b'\x1bwr', b'\x11t']
+            sequences = [stlib.FULLSCREEN_CHORD, b'\x1bwr', b'\x11t']
             RNG.shuffle(sequences)
             writes = []
             for client, sequence in zip(clients, sequences):
@@ -1651,7 +1651,7 @@ def live_stress(clients, session, seconds):
               all(client.alive() for client in clients))
         assert_converged(label, allow_passthrough=(op == 'burst'))
         if op == 'burst':
-            # A legal FIFO winner may be raw F5. Normalize only after proving
+            # A legal FIFO winner may be raw fullscreen. Normalize only after proving
             # that shared result, so the next randomized operation starts in
             # the IDE and cannot inherit a hidden passthrough state.
             restore_and_tile(clients, session)
@@ -1677,7 +1677,7 @@ def live_stress(clients, session, seconds):
         perform(op, index % 3 + 1)
 
     # Deliberate visible gestures prove shaded lock ownership, one-cell motion
-    # and F5 transition/restoration before the high-rate randomized phase.
+    # and fullscreen transition/restoration before the high-rate randomized phase.
     slow_visual_resize(clients, session, 0)
     slow_visual_circle(clients, session, 0)
     held_fullscreen(clients, session, 0)
@@ -1763,7 +1763,7 @@ if EXTERNAL_MODE and LIVE_SECONDS > 0:
 # lost modal unlocks, stale frame origins and clients that paint an old layout.
 circle_window(clients, SESSION)
 restore_and_tile(clients, SESSION)
-# Keep raw multi-view F5 in the ordinary automated suite too. Previously this
+# Keep raw multi-view fullscreen in the ordinary automated suite too. Previously this
 # gesture ran only in the optional human-watch phase, so `make test` could
 # silently lose the equal-geometry passthrough path.
 held_fullscreen(clients, SESSION, 0)

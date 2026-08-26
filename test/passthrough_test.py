@@ -55,8 +55,8 @@ check('windowed keeps truecolor bg', b'48;2;0;80;200' in win)
 check('windowed keeps the U+276F arrow', b'\xe2\x9d\xaf' in win)
 check('windowed keeps the wide glyph', b'\xe6\xbc\xa2' in win)
 
-# ---- maximize (F5): the pane owns the terminal -> passthrough ----
-c.send(b'\x1b[15~', 1.4)
+# ---- fullscreen: the pane owns the terminal -> passthrough ----
+c.send(stlib.FULLSCREEN_CHORD, 1.4)
 check('maximize hides the menu', 'Detach' not in c.text())
 base = len(c.raw())
 c.send(RICH, 0.5)
@@ -67,8 +67,8 @@ check('passthrough keeps truecolor bg', b'48;2;0;80;200' in mx)
 check('passthrough keeps the U+276F arrow', b'\xe2\x9d\xaf' in mx)
 check('passthrough keeps the wide glyph', b'\xe6\xbc\xa2' in mx)
 
-# ---- restore (F5): the window manager reclaims the screen ----
-c.send(b'\x1b[15~', 1.4)
+# ---- restore: the window manager reclaims the screen ----
+c.send(stlib.FULLSCREEN_CHORD, 1.4)
 check('restore brings the menu back', 'Detach' in c.text())
 check('restore redraws a window frame',
       ('┌' in '\n'.join(c.screen.display)) or

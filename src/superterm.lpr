@@ -16,7 +16,7 @@ uses
   // st_mouse BEFORE Drivers: it must register its mouse driver before the
   // Drivers unit initialises and asks the RTL whether a mouse exists
   SysUtils, BaseUnix, Objects, st_mouse, Drivers, App, st_fvui, st_server,
-  st_video, st_kbd, st_config, st_cli, st_debug;
+  st_video, st_kbd, st_config, st_cli, st_debug, st_ssh_server, st_ssh_entry;
 
 // The daemon child must run Pascal unit finalizers (notably HeapTrc) after
 // its inherited TApplication has unwound, but must not enter the platform's
@@ -31,7 +31,8 @@ var
   AttachName: string;
   ListOnly: boolean;
   Infos: TSessionInfoArray;
-  BootCfg: TConfig;
+  BootLanguage: TUiLanguage;
+  SshEntryError: string;
 
 begin
   // In a HeapTrc build this also gives even short-lived CLI commands their
@@ -39,19 +40,46 @@ begin
   DebugSetRole('client');
   AttachRequested := False;
   AttachSocket := '';
+  // The privileged SSH service wrapper and administration namespace are
+  // self-contained. Dispatch them before reading the invoking account's TUI
+  // configuration so a malformed/untrusted HOME file cannot affect service
+  // validation or startup.
+  if RunSshServerAdmin(CliExitCode) then
+  begin
+    System.ExitCode := CliExitCode;
+    Exit;
+  end;
+  // Reserve the ForceCommand spelling as an exact one-argument protocol.
+  // A malformed invocation must not fall through to the ordinary CLI/TUI and
+  // keep an sshd child attached indefinitely.
+  if (ParamCount >= 1) and (ParamStr(1) = '--ssh-entry') and
+     (not IsSshEntryRequest) then
+  begin
+    WriteLn(StdErr, 'superterm: --ssh-entry accepts no additional arguments');
+    System.ExitCode := 2;
+    Exit;
+  end;
   // language resolved BEFORE printing anything: the CLI speaks the IDE
   // language (or the LANG one if there is no configuration yet)
-  BootCfg := Default(TConfig);
-  if FileExists(ConfigFile) then
-  begin
-    LoadConfig(BootCfg);
-    CurrentLanguage := BootCfg.Language;
-  end
+  if TryReadUserUiLanguage(BootLanguage) then
+    CurrentLanguage := BootLanguage
   else if Copy(LowerCase(GetEnvironmentVariable('LANG')), 1, 2) = 'es' then
     CurrentLanguage := ulSpanish;
+  // OpenSSH's ForceCommand reaches the exact same client/session path as a
+  // local terminal.  Its small adapter validates the forced environment and
+  // serialises only the first creation of the configured default session.
+  if IsSshEntryRequest then
+  begin
+    if not PrepareSshEntry(SshEntryError) then
+    begin
+      WriteLn(StdErr, 'superterm: ', SshEntryError);
+      System.ExitCode := 2;
+      Exit;
+    end;
+  end
   // CLI commands (list/send/capture/... in English or Spanish): they run
   // and exit; the TUI startup and --attach continue through here
-  if RunCli(CliExitCode) then
+  else if RunCli(CliExitCode) then
   begin
     System.ExitCode := CliExitCode;
     Exit;
@@ -199,6 +227,9 @@ begin
     // server-always: the freshly built workspace moves to a daemon
     // and this instance becomes a client (config [session] server=always)
     STApp^.PromoteToServer;
+    // The daemon has published its Unix socket (or promotion failed).  Either
+    // way the next simultaneous SSH login may now recheck and proceed.
+    ReleaseSshEntryCreationLock;
     if not STApp^.AbortRun then
     begin
       if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
@@ -207,6 +238,8 @@ begin
         STApp^.Run;
     end;
   end;
+  // Covers constructor cancellation and existing-session attach; idempotent.
+  ReleaseSshEntryCreationLock;
   Dispose(STApp, Done);
   // stop the terminal reporting to whatever runs next, and drop anything it
   // already reported, before putting the cursor back

@@ -24,10 +24,12 @@ const
   // inside a dynamic range. Before, cmOpenClass=2111 collided with
   // cmSessionWizard=2112 and cmDetach=2113: pressing the 2nd terminal
   // in the menu launched the wizard and the 3rd one detached.
-  // Ranges: 2100-2199 panes/app - 2200-2259 templates - 2300-2349
-  // terminals (cmOpenClass+i) - 2400-2439 windows - 2500-2539 minimized
+  // Ranges: 2100-2199 panes/app - 2200-2259 profiles (40 menu slots) -
+  // 2320-2349 classes (20 menu slots) - 2400-2439 windows - 2500-2539 minimized
   // - 2550-2569 session (detach/wizard) - 2600 help - 2700 language.
   WHEEL_LINES = 3;   // history lines per wheel notch
+  MAX_PROFILE_MENU_ITEMS = 40;
+  MAX_CLASS_MENU_ITEMS = 20;
   cmSplitV     = 2100;
   cmSplitH     = 2101;
   cmPaneClose  = 2102;
@@ -50,10 +52,11 @@ const
   cmClipboardHistory = 2119;
   cmClipboardClear = 2120;
   cmInfoRow    = 2199;     // informational menu rows, always disabled
-  cmProfileBase = 2200;   // + profile index (0..39)
+  cmProfileBase = 2200;   // + stable menu slot (0..39)
   cmProfileSaveAs = 2250;  // save the workspace as a profile
   cmProfileManage = 2251;  // profile manager
-  cmOpenClass   = 2320;     // + index into WClasses (0..29)
+  cmProfileNewEmpty = 2252; // persist a profile with zero windows
+  cmOpenClass   = 2320;     // + stable menu slot (0..19)
   cmWindowNext   = 2400;
   cmWindowPrev   = 2401;
   cmWindowBase   = 2410;   // + window index (0..15)
@@ -66,6 +69,7 @@ const
   cmWindowRestoreBase = 2520;  // + pane index (0..15)
   cmDetach        = 2550;
   cmSessionPick   = 2551;   // picker/manager of detached sessions
+  cmSessionNew    = 2552;   // create another named session from a profile
   cmSessionWizard = 2560;
   cmShowMaxPanes  = 2561;   // deferred daemon rejection dialog
   cmHelp        = 2600;
@@ -80,8 +84,15 @@ const
   cmBackgroundModeBase = 2830;  // + Ord(TArtMode)
   cmDesktopColor      = 2764;   // visual picker for the desktop colour
   cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
-  cmFullScreen        = 2766;   // F5: hand the terminal to the pane
+  cmFullScreen        = 2766;   // prefix+f: hand the terminal to the pane
   cmFitSessionSize    = 2767;   // explicit PTY resize from this client's pane
+
+{$if cmProfileBase + MAX_PROFILE_MENU_ITEMS > cmProfileSaveAs}
+  {$fatal Profile command range overlaps a direct command}
+{$endif}
+{$if cmOpenClass + MAX_CLASS_MENU_ITEMS > cmClassPick}
+  {$fatal Window-class command range overlaps a direct command}
+{$endif}
 
 type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
@@ -126,7 +137,7 @@ type
     // Zoomed means "filling the desktop, frame and all"; FullScreen means
     // "owning the terminal", which is what passthrough is for. They used to
     // be the same thing, so maximising a window with its own icon threw the
-    // IDE away. Only F5 sets this one.
+    // IDE away. Only the fullscreen command sets this one.
     FullScreen: boolean;
     TitleFixed: boolean;       // custom title: cwd refresh must not touch it
     SavedRect: Objects.TRect;  // bounds before the minimized icon
@@ -190,8 +201,19 @@ type
     Win: array[0..MAX_PANES - 1] of PTermWindow;
     PaneTerm: array[0..MAX_PANES - 1] of integer;  // index in WClasses or -1
     PaneConnect: array[0..MAX_PANES - 1] of string; // ad-hoc free connection
+    // New persistent workspaces are launched by their daemon, not by this UI.
+    // The TPty objects hold resolved launch data until the grandchild owns
+    // them, making it the real parent and only reaper of every initial pane.
+    DeferPaneSpawn: boolean;
     WClasses: TWindowClassArray;
     Profiles: TProfileArray;
+    // Dynamic menu commands address one reserved slot, never an unbounded
+    // catalogue index. Names remain stable if another client rewrites the
+    // shared catalogue while this client's menu is open.
+    ProfileMenuNames: array[0..MAX_PROFILE_MENU_ITEMS - 1] of string;
+    ProfileMenuCount: integer;
+    ClassMenuNames: array[0..MAX_CLASS_MENU_ITEMS - 1] of string;
+    ClassMenuCount: integer;
     ActiveProfile: integer;
     ActiveWindow: integer;
     ProfileMode: boolean;
@@ -210,7 +232,7 @@ type
     RemoteMinHostW, RemoteMinHostH: integer;
     RemoteHostSizesMatch: boolean;
     RemoteHostSummaryValid: boolean;
-    // Remote zoom/F5 is proposed first and becomes visible only when the
+    // Remote zoom/fullscreen is proposed first and becomes visible only when the
     // daemon echoes its authoritative LAYOUT_EV. Output already queued before
     // that event must still be parsed using the old TScreen width.
     RemoteZoomPending: boolean;
@@ -231,7 +253,7 @@ type
     RemotePreviewOverlayGesture: array[0..MAX_PANES - 1] of QWord;
     RemotePreviewOverlayRect: array[0..MAX_PANES - 1] of Objects.TRect;
     RemotePreviewOverlayAttr: array[0..MAX_PANES - 1] of byte;
-    // A restore/F5 contraction tail starts before its canonical commit and
+    // A restore/fullscreen contraction tail starts before its canonical commit and
     // draws only after it. Keep that ordering barrier across Idle batches so
     // an observer physically publishes the settled IDE before its first ring.
     RemotePreviewTailGesture: array[0..MAX_PANES - 1] of QWord;
@@ -256,6 +278,9 @@ type
     RemoteTreeDirty: boolean;
     RemoteGeomDirtyPanes: array[0..MAX_PANES - 1] of boolean;
     CurrentSessionSocket: string;  // socket of the attached session
+    // True once a successful fork transferred this process's PTYs, even if
+    // adopting the newborn transport subsequently failed.
+    PromotionConsumedWorkspace: boolean;
     // attach under construction: windows pass through intermediate
     // bounds (tile -> final geometry) and must NOT request transient
     // sizes from the daemon nor resize the snapshot screen every step
@@ -381,10 +406,12 @@ type
     procedure ApplyRemoteTitle(APane: integer; const AData: TByteArray);
     function FindWindowClass(const AName: string): integer;
     function FindProfile(const AName: string): integer;
+    procedure ReloadWindowClassCatalog;
+    procedure ReloadProfileCatalog;
     function ActivateProfile(AProfile, AWindow: integer): boolean;
     procedure ApplyWindowGeometry(const WS: TProfileWindowSpec);
     function CaptureCurrentAsWindow(const AName: string): TProfileWindowSpec;
-    procedure SaveWorkspaceAsProfile(const AName: string);
+    function SaveWorkspaceAsProfile(const AName: string): boolean;
     procedure RunProfileSaveAs;
     procedure DoProfileManage;
     procedure StopRuntime;
@@ -437,11 +464,18 @@ type
     // server-always: converts the freshly built local workspace into a
     // daemon session and attaches to it as a client
     procedure PromoteToServer;
+    function PromoteWorkspace(const ARequestedName: string;
+      AForce: boolean; AFailClosed: boolean = False): boolean;
     // drops the current remote session by killing its daemon (profile swap)
     procedure LeaveRemoteSession;
     function PickSessionSocketUI(AForAttach: boolean): string;
     function PromptAttachOnStart: boolean;
     procedure DoSessionPick;
+    function DoNewSession(APreserveCurrent: boolean = True): boolean;
+    function DetachRemoteForSwitch: boolean;
+    procedure BuildEmptyWorkspace(AProfile: integer);
+    function ProfileStartWindow(AProfile: integer;
+      AUseConfiguredWindow: boolean): integer;
     procedure RequestDetach;
     procedure DoSwitchProfile(AIndex: integer);
     procedure DoSwitchWindow(AIndex: integer);
@@ -450,7 +484,7 @@ type
     procedure ShowHelp;
     procedure RebuildMenu;
     procedure RebuildStatusLine;
-    procedure RememberProfileSelection;
+    function RememberProfileSelection: boolean;
     procedure ApplyTerminalSize(ACols, ARows: integer);
     procedure SyncTerminalSize;
   end;
@@ -458,7 +492,7 @@ type
 implementation
 
 uses
-  st_keys, st_kbd;
+  st_keys, st_kbd, st_ssh_entry;
 
 var
   CursorPhase: boolean = False;
@@ -582,7 +616,7 @@ begin
   RichInvalidate;
   // ClearScreen belongs to FPC's console driver, not our renderer. On Unix it
   // writes ESC[H ESC[J immediately, bypassing SuppressFlush and DECSET 2026.
-  // During the atomic F5 return that exposed a physically blank terminal
+  // During the atomic fullscreen return that exposed a physically blank terminal
   // between the restored IDE and its final repaint. The poisoned old frame is
   // already sufficient to overwrite every cell once flushing resumes.
   if not SuppressFlush then
@@ -2243,6 +2277,11 @@ begin
   CopyMouseSelecting := False;
   CopyPane := -1;
   LoadConfig(Cfg);
+  // The restricted OpenSSH entry is always a client of a persistent daemon;
+  // the on-disk preference remains untouched.
+  if SshEntryMode then
+    Cfg.ServerMode := 'always';
+  DeferPaneSpawn := SshEntryMode or SameText(Cfg.ServerMode, 'always');
   if Cfg.Palette = 'bw' then
     AppPalette := apBlackWhite
   else if Cfg.Palette = 'mono' then
@@ -2325,6 +2364,7 @@ begin
   RemoteGeometryDirty := False;
   RemoteTreeDirty := False;
   CurrentSessionSocket := '';
+  PromotionConsumedWorkspace := False;
   RemoteAttachSettling := False;
   DeferWindowInsert := False;
   PassPane := -1;
@@ -2357,20 +2397,23 @@ begin
     AbortRun := True;
     Exit;
   end
-  else if PromptAttachOnStart then
+  else if (not SshEntryMode) and PromptAttachOnStart then
     Exit;
 
   if ProfileMode then
   begin
-    // default profile resolution: new default_profile, with backwards
-    // compatibility for default_template [+ /default_session]
+    // The SSH entry consumes only the explicit default_profile.  Ordinary
+    // interactive startup retains compatibility with the old template keys
+    // and the first-enabled fallback.
     ActiveProfile := FindProfile(Cfg.DefaultProfile);
-    if ActiveProfile < 0 then
+    if (not SshEntryMode) and (ActiveProfile < 0) then
       ActiveProfile := FindProfile(Cfg.DefaultTemplate);
-    if (ActiveProfile < 0) and (Cfg.DefaultSession <> '') then
+    if (not SshEntryMode) and (ActiveProfile < 0) and
+       (Cfg.DefaultSession <> '') then
       ActiveProfile := FindProfile(Cfg.DefaultTemplate + '/' +
         Cfg.DefaultSession);
-    if (ActiveProfile < 0) or (not Profiles[ActiveProfile].Enabled) then
+    if (not SshEntryMode) and
+       ((ActiveProfile < 0) or (not Profiles[ActiveProfile].Enabled)) then
       for i := 0 to Length(Profiles) - 1 do
         if Profiles[i].Enabled then
         begin
@@ -2381,35 +2424,21 @@ begin
       ProfileMode := False
     else
     begin
-      ActiveWindow := -1;
-      for i := 0 to Length(Profiles[ActiveProfile].Windows) - 1 do
-        if Profiles[ActiveProfile].Windows[i].Enabled and
-           SameText(Profiles[ActiveProfile].Windows[i].Name,
-             Cfg.DefaultWindow) then
-        begin
-          ActiveWindow := i;
-          Break;
-        end;
-      if (ActiveWindow < 0) and
-         (Profiles[ActiveProfile].FocusedWindow >= 0) and
-         (Profiles[ActiveProfile].FocusedWindow <
-          Length(Profiles[ActiveProfile].Windows)) and
-         Profiles[ActiveProfile].Windows[
-           Profiles[ActiveProfile].FocusedWindow].Enabled then
-        ActiveWindow := Profiles[ActiveProfile].FocusedWindow;
-      if ActiveWindow < 0 then
-        for i := 0 to Length(Profiles[ActiveProfile].Windows) - 1 do
-          if Profiles[ActiveProfile].Windows[i].Enabled then
-          begin
-            ActiveWindow := i;
-            Break;
-          end;
-      if (ActiveWindow < 0) or
+      ActiveWindow := ProfileStartWindow(ActiveProfile, not SshEntryMode);
+      if ((Length(Profiles[ActiveProfile].Windows) > 0) and
+          (ActiveWindow < 0)) or
          (not ActivateProfile(ActiveProfile, ActiveWindow)) then
         ProfileMode := False;
     end;
     if ProfileMode then
       Exit;
+  end;
+  // No configured/default profile is not an error for SSH: the first client
+  // establishes an intentionally empty canonical desktop at its PTY size.
+  if SshEntryMode then
+  begin
+    BuildEmptyWorkspace(-1);
+    Exit;
   end;
   Pin := nil;
   Ok := False;
@@ -2557,10 +2586,13 @@ begin
   else if ProfileMode then
   begin
     if not SkipSave then
-    begin
-      RememberProfileSelection;
-      SaveConfig(Cfg);
-    end;
+      try
+        RememberProfileSelection;
+      except
+        on E: Exception do
+          if DebugActive then
+            DebugLog('done: default window not saved: ' + E.Message);
+      end;
   end
   // SkipSave also guards this branch: after an aborted attach or a
   // lost remote connection, Lay may be the remote layout (Panes=nil)
@@ -2884,8 +2916,9 @@ var
   TitleS, CmdS, CwdS, ShellS, ExtraS: string;
   ExecProgram, ExecSecret: string;
   ExecArgs: TStringList;
-  FallbackCmd: string;
+  FallbackCmd, FallbackShell, FallbackCwd: string;
   SpawnOK: boolean;
+  UsedFallback: boolean;
 begin
   if Win[i] <> nil then
     Exit;
@@ -2950,6 +2983,19 @@ begin
   PaneConnect[i] := ''; // callers with a free connection set it afterwards
   Scr[i] := TScreen.Create(pw, ph, AMaxSB);
   Panes[i] := TPty.Create;
+  FallbackCmd := '';
+  FallbackShell := '';
+  FallbackCwd := '';
+  if ASysIdx >= 0 then
+  begin
+    FallbackShell := Cfg.Shell;
+    FallbackCwd := GetEnvironmentVariable('HOME');
+    FallbackCmd := 'printf ' +
+      ShellQuote(UiText('superterm: terminal unavailable: ',
+        'superterm: terminal no disponible: ') +
+        UiText('FAILED ', 'FALLO ') + TitleS + #10) +
+      '; exec ' + ShellQuote(Cfg.Shell);
+  end;
   ExecArgs := TStringList.Create;
   try
     ExecProgram := '';
@@ -2958,14 +3004,26 @@ begin
     begin
       BuildWindowClassExec(WClasses[ASysIdx], ExecProgram, ExecArgs,
         ExecSecret, ACommandOverride);
-      SpawnOK := Panes[i].SpawnArgv(ExecProgram, ExecArgs.ToStringArray,
-        CwdS, pw, ph, ExtraS, ExecSecret);
+      Panes[i].ConfigureArgv(ExecProgram, ExecArgs.ToStringArray,
+        CwdS, pw, ph, ExtraS, ExecSecret, FallbackShell,
+        FallbackCwd, FallbackCmd, Cfg.LoginShell);
     end
     else
-      SpawnOK := Panes[i].Spawn(ShellS, CwdS, CmdS, pw, ph, ExtraS,
-        Cfg.LoginShell);
+      Panes[i].ConfigureShell(ShellS, CwdS, CmdS, pw, ph, ExtraS,
+        Cfg.LoginShell, FallbackShell, FallbackCwd,
+        FallbackCmd, Cfg.LoginShell);
+    UsedFallback := False;
+    if DeferPaneSpawn then
+      SpawnOK := True
+    else
+      SpawnOK := Panes[i].SpawnConfigured(UsedFallback);
   finally
     ExecArgs.Free;
+  end;
+  if UsedFallback then
+  begin
+    TitleS := UiText('FAILED ', 'FALLO ') + TitleS;
+    PaneTerm[i] := -2;
   end;
   if not SpawnOK then
   begin
@@ -2974,26 +3032,9 @@ begin
     FreeAndNil(Panes[i]);
     FreeAndNil(Scr[i]);
     PaneTerm[i] := -1;
-    // Keep the pane usable when a remote endpoint or configured shell fails.
-    if ASysIdx >= 0 then
-    begin
-      TitleS := UiText('FAILED ', 'FALLO ') + TitleS;
-      PaneTerm[i] := -2;
-      FallbackCmd := 'printf ' +
-        ShellQuote(UiText('superterm: terminal unavailable: ',
-          'superterm: terminal no disponible: ') + TitleS + #10) +
-        '; exec ' + ShellQuote(Cfg.Shell);
-      Scr[i] := TScreen.Create(pw, ph, AMaxSB);
-      Panes[i] := TPty.Create;
-      SpawnOK := Panes[i].Spawn(Cfg.Shell, GetEnvironmentVariable('HOME'),
-        FallbackCmd, pw, ph, '', Cfg.LoginShell);
-    end;
-    if not SpawnOK then
-    begin
-      FreeAndNil(Panes[i]);
-      FreeAndNil(Scr[i]);
-      Exit;
-    end;
+    FreeAndNil(Panes[i]);
+    FreeAndNil(Scr[i]);
+    Exit;
   end;
   CreateWindowForPane(i, TitleS, R);
   // a class pane keeps its title (class name/title); the periodic
@@ -3917,6 +3958,73 @@ begin
       Exit(i);
 end;
 
+procedure TSuperApp.ReloadWindowClassCatalog;
+var
+  I: integer;
+  PaneClassNames: array[0..MAX_PANES - 1] of string;
+  Fresh, SystemClasses: TWindowClassArray;
+begin
+  // Configuration is shared by every attached client.  Preserve live pane
+  // references by stable class name while replacing a possibly stale local
+  // catalogue with an authoritative disk snapshot.
+  for I := 0 to MAX_PANES - 1 do
+  begin
+    PaneClassNames[I] := '';
+    if (PaneTerm[I] >= 0) and (PaneTerm[I] < Length(WClasses)) then
+      PaneClassNames[I] := WClasses[PaneTerm[I]].Name;
+  end;
+  LoadWindowClasses(ConfigFile, coUser, Fresh);
+  LoadWindowClasses(SystemConfigFile, coSystem, SystemClasses);
+  MergeWindowClasses(Fresh, SystemClasses);
+  WClasses := Fresh;
+  for I := 0 to MAX_PANES - 1 do
+    PaneTerm[I] := FindClassByName(WClasses, PaneClassNames[I]);
+end;
+
+procedure TSuperApp.ReloadProfileCatalog;
+var
+  ActiveName: string;
+  Fresh: TProfileArray;
+  FreshCfg: TConfig;
+begin
+  ActiveName := '';
+  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+    ActiveName := Profiles[ActiveProfile].Name;
+  LoadProfiles(ConfigFile, SystemConfigFile, Fresh);
+  Profiles := Fresh;
+  ActiveProfile := FindProfileByName(Profiles, ActiveName);
+  // Profiles and their configured default share one INI generation. Refresh
+  // the pair together so an older attached client cannot later write back
+  // the default it happened to load at startup.
+  LoadConfig(FreshCfg);
+  Cfg.DefaultProfile := FreshCfg.DefaultProfile;
+  Cfg.DefaultWindow := FreshCfg.DefaultWindow;
+end;
+
+function TSuperApp.ProfileStartWindow(AProfile: integer;
+  AUseConfiguredWindow: boolean): integer;
+var
+  I: integer;
+begin
+  Result := -1;
+  if (AProfile < 0) or (AProfile >= Length(Profiles)) or
+     (not Profiles[AProfile].Enabled) then
+    Exit;
+  if AUseConfiguredWindow and (Cfg.DefaultWindow <> '') then
+    for I := 0 to High(Profiles[AProfile].Windows) do
+      if Profiles[AProfile].Windows[I].Enabled and
+         SameText(Profiles[AProfile].Windows[I].Name,
+           Cfg.DefaultWindow) then
+        Exit(I);
+  I := Profiles[AProfile].FocusedWindow;
+  if (I >= 0) and (I < Length(Profiles[AProfile].Windows)) and
+     Profiles[AProfile].Windows[I].Enabled then
+    Exit(I);
+  for I := 0 to High(Profiles[AProfile].Windows) do
+    if Profiles[AProfile].Windows[I].Enabled then
+      Exit(I);
+end;
+
 procedure TSuperApp.StopRuntime;
 var
   i: integer;
@@ -3940,6 +4048,22 @@ begin
     PaneTerm[i] := -1;
     PaneConnect[i] := '';
   end;
+end;
+
+procedure TSuperApp.BuildEmptyWorkspace(AProfile: integer);
+begin
+  StopRuntime;
+  FreeAndNil(Lay);
+  Lay := TLayout.Create;
+  FreeAndNil(Lay.Root);
+  Lay.Focused := -1;
+  Lay.LastInsertedIndex := -1;
+  ActiveProfile := AProfile;
+  ActiveWindow := -1;
+  ProfileMode := (AProfile >= 0) and (AProfile < Length(Profiles));
+  ResetSizeRequests;
+  RepaintChanges;
+  RebuildMenu;
 end;
 
 procedure TSuperApp.ReleaseRuntime;
@@ -3985,6 +4109,10 @@ procedure TSuperApp.PrepareDetachedServerChild;
 var
   i: integer;
 begin
+  // A first-SSH-login lock belongs only to the interactive parent.  The
+  // forked long-lived daemon must not retain its descriptor and postpone the
+  // next creator indefinitely.
+  ReleaseSshEntryCreationLock;
   // This hook runs only in the forked child, after setsid and stdio
   // redirection.  Mark the inherited application for the detach-only Done
   // path before touching a view, so even an exceptional cleanup cannot run
@@ -4729,6 +4857,7 @@ begin
   CurrentSessionSocket := APath;
   RemoteLayoutHash := ComputeLayoutHash;
   RemoteHostSizeArmed := True;
+  RememberSshEntrySession(CurrentSessionName);
   Result := True;
 end;
 
@@ -4764,7 +4893,7 @@ begin
     end;
     N := Snapshot.PaneCount;
     if (Lay = nil) or (N <> Lay.PaneCount) or
-       (N < 1) or (N > MAX_PANES) or
+       (N < 0) or (N > MAX_PANES) or
        (Length(Snapshot.Geom) <> N) or
        (Snapshot.DeskW <= 0) or (Snapshot.DeskH <= 0) or
        (Snapshot.LayoutNodes <> SaveLayoutString(Lay)) then
@@ -4773,7 +4902,7 @@ begin
         DebugLog('promote-adopt: newborn snapshot does not match local workspace');
       Exit;
     end;
-    if not LoadLayoutString(Snapshot.LayoutNodes, CheckLay) or
+    if not LoadLayoutString(Snapshot.LayoutNodes, CheckLay, True) or
        (CheckLay.PaneCount <> N) then
       Exit;
 
@@ -4834,6 +4963,7 @@ begin
     ResetSizeRequests;
     RemoteLayoutHash := ComputeLayoutHash;
     RemoteHostSizeArmed := True;
+    RememberSshEntrySession(CurrentSessionName);
     if DebugActive then
       DebugLog(Format('promote-adopt: panes=%d desk=%dx%d focused=%d revision=%d',
         [N, Snapshot.DeskW, Snapshot.DeskH, Snapshot.Focused,
@@ -4845,10 +4975,11 @@ begin
   end;
 end;
 
-// server-always startup: the local workspace (panes already alive)
-// moves to a child daemon and this process becomes its first
-// interactive client; if fork or attach fails, stay local (degrade)
-procedure TSuperApp.PromoteToServer;
+// Move the complete local workspace to a child daemon and attach this UI to
+// it. Explicit new-session creation supplies an exact validated name and can
+// force promotion even when the ordinary startup preference is not "always".
+function TSuperApp.PromoteWorkspace(const ARequestedName: string;
+  AForce: boolean; AFailClosed: boolean): boolean;
 var
   N, I: integer;
   PtyRefs: TPtyArray;
@@ -4859,22 +4990,66 @@ var
   DW, DH: integer;
   SessName, ProfName, Sock: string;
   StartResult: TDetachedServerStartResult;
+  Closed: boolean;
+
+  function MaterializeDeferredPanes: boolean;
+  var
+    P: integer;
+    UsedFallback: boolean;
+    LocalTitle: string;
+  begin
+    Result := False;
+    for P := 0 to N - 1 do
+    begin
+      if (Panes[P] = nil) or (Scr[P] = nil) then
+        Exit;
+      if Panes[P].Alive then
+        Continue;
+      if (not Panes[P].LaunchPending) or
+         (not Panes[P].SpawnConfigured(UsedFallback)) then
+        Exit;
+      if UsedFallback and (Win[P] <> nil) then
+      begin
+        LocalTitle := Trim(Win[P]^.GetTitle(80));
+        Win[P]^.SetTitle(' ' + UiText('FAILED ', 'FALLO ') + LocalTitle);
+        Win[P]^.TitleFixed := True;
+        PaneTerm[P] := -2;
+      end;
+    end;
+    Result := True;
+  end;
 begin
+  Result := False;
+  PromotionConsumedWorkspace := False;
   if RemoteMode or AbortRun or DetachRequested then
     Exit;
   if DebugActive then DebugLog('promote: PromoteToServer begin (fork daemon, hand off PTYs, re-attach)');
-  if Cfg.ServerMode <> 'always' then
-    Exit;
   N := Lay.PaneCount;
-  if (N < 1) or (N > MAX_PANES) then
+  if (N < 0) or (N > MAX_PANES) then
     Exit;
+  if (not AForce) and (Cfg.ServerMode <> 'always') then
+  begin
+    // An attached session may have been opened by a configuration whose own
+    // policy is `detach`. Profile/wizard replacement still prepared launches
+    // daemon-first because the old UI was remote; if policy declines the new
+    // daemon, materialize those exact launches locally before returning.
+    MaterializeDeferredPanes;
+    Exit;
+  end;
   // automatic name, no dialogs: --session > active profile > session
   ProfName := '';
   if ProfileMode and (ActiveProfile >= 0) and
      (ActiveProfile < Length(Profiles)) then
     ProfName := Profiles[ActiveProfile].Name;
-  if CliSessionName <> '' then
-    SessName := SuggestSessionName(SanitizeSessionName(CliSessionName))
+  if ARequestedName <> '' then
+    SessName := SanitizeSessionName(ARequestedName)
+  else if CliSessionName <> '' then
+  begin
+    if SshEntryMode then
+      SessName := SanitizeSessionName(CliSessionName)
+    else
+      SessName := SuggestSessionName(SanitizeSessionName(CliSessionName));
+  end
   else if ProfName <> '' then
     SessName := SuggestSessionName(SanitizeSessionName(ProfName))
   else
@@ -4909,7 +5084,38 @@ begin
     @PrepareDetachedServerChild);
   case StartResult of
     dssFailed:
-      Exit;   // no daemon: classic local mode
+      begin
+        // A restricted SSH entry may never fall back to a private local TUI:
+        // every connection must resolve to the canonical daemon.
+        if AFailClosed then
+        begin
+          SkipSave := True;
+          AbortRun := True;
+          System.ExitCode := 1;
+        end;
+        // Ordinary server=always startup/profile replacement can still
+        // remain a usable local workspace when daemon publication failed
+        // before ownership crossed the fork boundary.
+        if (not AFailClosed) and (not AForce) then
+          MaterializeDeferredPanes;
+        Exit;
+      end;
+    dssOwnershipLost:
+      begin
+        // Listener creation succeeded and the child adopted the PTYs, but it
+        // failed before publication. Abandon the parent's duplicates; using
+        // them as a local workspace could signal or corrupt dead/transferred
+        // processes. Callers may now restore a previous independent daemon.
+        PromotionConsumedWorkspace := True;
+        ReleaseRuntime;
+        if AFailClosed then
+        begin
+          SkipSave := True;
+          AbortRun := True;
+          System.ExitCode := 1;
+        end;
+        Exit;
+      end;
     dssChildFinished:
       begin
         // PromoteToServer is also called from profile/window activation and
@@ -4921,21 +5127,33 @@ begin
         DetachRequested := True;
         AbortRun := True;
         Message(@Self, evCommand, cmQuit, nil);
+        Result := True;
         Exit;
       end;
   end;
+  PromotionConsumedWorkspace := True;
   Sock := SessionSocketPathFor(SessName);
   // This is our own fork: connect its transport and keep the final Win/Scr
   // objects that are already on Desktop. Releasing and calling the generic
   // attach path here used to destroy and reconstruct the same profile.
   if not AttachPromotedSession(Sock) then
   begin
-    // very rare (newborn daemon): do not orphan it nor pretend there
-    // is a workspace; shut down in an orderly fashion
-    CloseSessionAt(Sock);
-    SkipSave := True;
-    AbortRun := True;
-    Message(@Self, evCommand, cmQuit, nil);
+    // The fork already owns the live PTYs. Drop every duplicate descriptor
+    // before trying the generic snapshot builder; that slower path can still
+    // recover a valid newborn whose exact in-place adoption was rejected.
+    ReleaseRuntime;
+    BuildEmptyWorkspace(-1);
+    if AttachRemoteSession(Sock) then
+      Exit(True);
+    Closed := CloseSessionAt(Sock);
+    if DebugActive and not Closed then
+      DebugLog('promote-adopt: fallback attach and daemon close were not acknowledged');
+    if not AForce then
+    begin
+      SkipSave := True;
+      AbortRun := True;
+      Message(@Self, evCommand, cmQuit, nil);
+    end;
     Exit;
   end;
 
@@ -4950,6 +5168,17 @@ begin
     end;
   if ProfileMode then
     RebuildMenu;
+  Result := True;
+end;
+
+// Ordinary server-always entry point retained for the program block and all
+// existing profile/wizard call sites.
+procedure TSuperApp.PromoteToServer;
+begin
+  // Only the initial restricted SSH entry has no independent workspace to
+  // recover.  Later New-session transactions, even in an SSH UI, can restore
+  // their old daemon and must not poison the application with AbortRun.
+  PromoteWorkspace('', False, SshEntryMode);
 end;
 
 // leaves the current remote session closing its daemon: the profile
@@ -4975,6 +5204,40 @@ begin
   CurrentSessionSocket := '';
   CurrentSessionName := '';
   ReleaseRuntime;
+end;
+
+// Detach only this viewer while keeping the daemon and its exact workspace
+// alive. Unlike LeaveRemoteSession this is the transaction used before
+// creating another session and is therefore safe to roll back by attaching
+// OldSocket again.
+function TSuperApp.DetachRemoteForSwitch: boolean;
+var
+  Sent: boolean;
+begin
+  Result := False;
+  if (not RemoteMode) or (Remote = nil) or (not Remote.Connected) then
+    Exit;
+  SyncRemoteLayout;
+  // Detach closes the transport even if its final frame cannot be written.
+  // EOF has the same detach semantics in the daemon, so local state must be
+  // cleared in both cases instead of retaining a dead TSessionClient.
+  Sent := Remote.Detach;
+  if DebugActive and not Sent then
+    DebugLog('session-switch: detach frame failed; transport close detaches client');
+  Remote.Free;
+  Remote := nil;
+  RemoteHostSizeArmed := False;
+  RemoteHostSummaryValid := False;
+  ResetRemotePreviewState;
+  ResetRemoteZoomState;
+  HostResizePending := False;
+  HostResizeInFlight := False;
+  RemoteMode := False;
+  CurrentSessionSocket := '';
+  CurrentSessionName := '';
+  RemoteGeom := nil;
+  ReleaseRuntime;
+  Result := True;
 end;
 
 // session picker for --attach (or startup with live sessions)
@@ -5016,18 +5279,60 @@ begin
   Act := RunSessionPicker(True, Path);
   SuppressFlush := SavedSF;
   if (Act = spAttach) and (Path <> '') then
-    Result := AttachRemoteSession(Path);
+    Result := AttachRemoteSession(Path)
+  else if Act = spStartNew then
+    Result := DoNewSession(False);
 end;
 
-// session manager inside the app: list, purge and close; hot session
-// switching will come later (detach first)
+// Session manager inside the app. A remote viewer can switch directly: the
+// old daemon is detached, never closed, and is reattached if the target
+// cannot be loaded. This is also how a restricted SSH user reaches another
+// live session without needing a remote command or a shell.
 procedure TSuperApp.DoSessionPick;
 var
   Act: TSessionPickAction;
-  Path: string;
+  Path, OldPath: string;
+  SavedSuppress: boolean;
 begin
   Path := '';
   Act := RunSessionPicker(False, Path);
+  if (Act <> spAttach) or (Path = '') then
+    Exit;
+  if RemoteMode then
+  begin
+    if Path = CurrentSessionSocket then
+      Exit;
+    OldPath := CurrentSessionSocket;
+    SavedSuppress := SuppressFlush;
+    SuppressFlush := True;
+    try
+      if not DetachRemoteForSwitch then
+      begin
+        MessageBox(UiText('The current session could not be detached.',
+          'No se pudo separar la sesion actual.'), nil,
+          mfError or mfOKButton);
+        Exit;
+      end;
+      BuildEmptyWorkspace(-1);
+      if AttachRemoteSession(Path) then
+        Exit;
+      BuildEmptyWorkspace(-1);
+      if (OldPath <> '') and AttachRemoteSession(OldPath) then
+        MessageBox(UiText(
+          'The selected session could not be opened; the previous session was restored.',
+          'No se pudo abrir la sesion elegida; se restauro la sesion anterior.'),
+          nil, mfError or mfOKButton)
+      else
+        MessageBox(UiText(
+          'The selected session failed and the previous session could not be restored.',
+          'Fallo la sesion elegida y no se pudo restaurar la anterior.'),
+          nil, mfError or mfOKButton);
+    finally
+      SuppressFlush := SavedSuppress;
+      RepaintChanges;
+    end;
+    Exit;
+  end;
   if Act = spAttach then
     MessageBox(UiText(
       'Detach first (' + PrefixKeyLabel(Cfg.PrefixKey) +
@@ -5035,6 +5340,165 @@ begin
       'Separa primero (' + PrefixKeyLabel(Cfg.PrefixKey) +
       ' d) y usa superterm --attach para conectar.'),
       nil, mfInformation or mfOKButton);
+end;
+
+function TSuperApp.DoNewSession(APreserveCurrent: boolean): boolean;
+var
+  DefIdx, ProfileIdx, WindowIdx: integer;
+  SessionName, OldSocket, OldBase, OldName, SelectedProfileName: string;
+  HadOldRemote, Built, OldDefer: boolean;
+  SavedSF: boolean;
+begin
+  Result := False;
+  // Another viewer may have created the desired starting profile after this
+  // process opened.  The selector must always show the shared current set.
+  ReloadProfileCatalog;
+  DefIdx := FindProfile(Cfg.DefaultProfile);
+  SavedSF := SuppressFlush;
+  SuppressFlush := False;
+  try
+    if not RunNewSessionDialog(Profiles, DefIdx, SessionName,
+      ProfileIdx) then
+      Exit;
+  finally
+    SuppressFlush := SavedSF;
+  end;
+
+  SelectedProfileName := '';
+  if ProfileIdx >= 0 then
+  begin
+    if (ProfileIdx >= Length(Profiles)) or
+       (not Profiles[ProfileIdx].Enabled) then
+      Exit;
+    SelectedProfileName := Profiles[ProfileIdx].Name;
+  end;
+  // The dialog may remain open while another client edits the shared file.
+  // Its index is only presentation state: linearize the accepted choice by
+  // stable name against a new generation before touching the current session.
+  ReloadProfileCatalog;
+  if SelectedProfileName <> '' then
+  begin
+    ProfileIdx := FindProfileByName(Profiles, SelectedProfileName);
+    if (ProfileIdx < 0) or (not Profiles[ProfileIdx].Enabled) then
+    begin
+      MessageBox(UiText(
+        'The selected profile changed in another client; the current session was not changed.',
+        'El perfil seleccionado cambio en otro cliente; no se modifico la sesion actual.'),
+        nil, mfError or mfOKButton);
+      Exit;
+    end;
+  end
+  else
+    ProfileIdx := -1;
+
+  // A local workspace has no independent lifetime yet. Promote it first so
+  // "New session" never destroys it. If its natural name is exactly the new
+  // requested one, use an explicit previous suffix and reserve the requested
+  // name for the workspace the user just confirmed.
+  if APreserveCurrent and (not RemoteMode) then
+  begin
+    OldBase := 'session';
+    if ProfileMode and (ActiveProfile >= 0) and
+       (ActiveProfile < Length(Profiles)) then
+      OldBase := Profiles[ActiveProfile].Name;
+    OldName := SuggestSessionName(OldBase);
+    if SameText(OldName, SessionName) then
+      OldName := SuggestSessionName(OldBase + '-previous');
+    if not PromoteWorkspace(OldName, True) then
+    begin
+      if PromotionConsumedWorkspace then
+      begin
+        // Ownership crossed the fork boundary but publication failed.  The
+        // old local workspace cannot safely resume and there is no older
+        // daemon to reattach; leave the UI instead of continuing with dead
+        // pane references.
+        SkipSave := True;
+        AbortRun := True;
+        Message(@Self, evCommand, cmQuit, nil);
+        Exit(True);
+      end;
+      MessageBox(UiText(
+        'The current workspace could not be preserved as a session.',
+        'No se pudo conservar el area actual como sesion.'), nil,
+        mfError or mfOKButton);
+      Exit;
+    end;
+    // In the forked daemon this call returns only after the preserved
+    // session itself has finished.  Its inherited application is already on
+    // the one-way shutdown path; never continue by constructing the newly
+    // requested workspace inside that child.
+    if DetachedServerChildFinished or AbortRun then
+      Exit(True);
+  end;
+
+  HadOldRemote := APreserveCurrent and RemoteMode;
+  OldSocket := '';
+  if HadOldRemote then
+  begin
+    OldSocket := CurrentSessionSocket;
+    if not DetachRemoteForSwitch then
+    begin
+      MessageBox(UiText('The current session could not be detached.',
+        'No se pudo separar la sesion actual.'), nil,
+        mfError or mfOKButton);
+      Exit;
+    end;
+  end
+  else
+  begin
+    // Startup has no workspace to preserve. Clear the constructor's empty
+    // placeholder before building the selected source.
+    StopRuntime;
+  end;
+
+  OldDefer := DeferPaneSpawn;
+  DeferPaneSpawn := True;
+  try
+    Built := False;
+    if (ProfileIdx >= 0) and (ProfileIdx < Length(Profiles)) and
+       Profiles[ProfileIdx].Enabled then
+    begin
+      WindowIdx := ProfileStartWindow(ProfileIdx, False);
+      if (Length(Profiles[ProfileIdx].Windows) = 0) or (WindowIdx >= 0) then
+      begin
+        Built := ActivateProfile(ProfileIdx, WindowIdx);
+        if Built then
+          ProfileMode := True;
+      end;
+    end
+    else if ProfileIdx < 0 then
+    begin
+      BuildEmptyWorkspace(-1);
+      Built := True;
+    end;
+
+    if Built and PromoteWorkspace(SessionName, True) then
+      Exit(True);
+  finally
+    DeferPaneSpawn := OldDefer;
+  end;
+
+  // Only the incomplete new workspace is discarded. The previous daemon was
+  // detached, never closed, so attaching its socket restores the exact old
+  // state even when profile construction, fork or newborn attach failed.
+  BuildEmptyWorkspace(-1);
+  if HadOldRemote and (OldSocket <> '') then
+  begin
+    if AttachRemoteSession(OldSocket) then
+      MessageBox(UiText(
+        'The new session could not be created; the previous session was restored.',
+        'No se pudo crear la nueva sesion; se restauro la sesion anterior.'),
+        nil, mfError or mfOKButton)
+    else
+      MessageBox(UiText(
+        'The new session failed and the previous session could not be reattached.',
+        'Fallo la nueva sesion y no se pudo reconectar la anterior.'), nil,
+        mfError or mfOKButton);
+  end
+  else
+    MessageBox(UiText('The new session could not be created.',
+      'No se pudo crear la nueva sesion.'), nil,
+      mfError or mfOKButton);
 end;
 
 procedure TSuperApp.RequestDetach;
@@ -5069,7 +5533,7 @@ begin
     Exit;
   end;
   N := Lay.PaneCount;
-  if (N < 1) or (N > MAX_PANES) then
+  if (N < 0) or (N > MAX_PANES) then
     Exit;
   // session name: defaults to the active profile (or a free sesion-N);
   // collision with a live session -> suggest name-2 and ask again
@@ -5142,6 +5606,11 @@ begin
       mfError or mfOKButton);
     Exit;
   end;
+  if StartResult = dssOwnershipLost then
+    MessageBox(UiText(
+      'The session server failed after taking ownership; this client will close safely.',
+      'El servidor fallo tras tomar posesion; este cliente se cerrara de forma segura.'),
+      nil, mfError or mfOKButton);
   // Both processes leave this event loop through the same path.  In the
   // parent the daemon is now ready; in the child its Run has just finished.
   DetachRequested := True;
@@ -5156,31 +5625,53 @@ var
   PS: TProfilePaneSpec;
   AdHoc: TWindowClass;
   i, n, SysIdx: integer;
-  Started: boolean;
+  Started, OldDefer: boolean;
   CommandOverride, LocalCmd, ShellFor, TitleS: string;
 begin
   Result := False;
   if (AProfile < 0) or (AProfile >= Length(Profiles)) or
      (not Profiles[AProfile].Enabled) then
     Exit;
+  // A profile with no windows is an explicit empty starting point, not an
+  // invalid profile. It remains active so it can be selected as the source
+  // of a named session and later receive its first pane.
+  if Length(Profiles[AProfile].Windows) = 0 then
+  begin
+    OldDefer := DeferPaneSpawn;
+    WasRemote := RemoteMode;
+    if WasRemote then
+      DeferPaneSpawn := True;
+    if RemoteMode then
+      LeaveRemoteSession;
+    BuildEmptyWorkspace(AProfile);
+    Result := True;
+    if WasRemote then
+      PromoteToServer;
+    DeferPaneSpawn := OldDefer;
+    Exit;
+  end;
   if (AWindow < 0) or (AWindow >= Length(Profiles[AProfile].Windows)) or
      (not Profiles[AProfile].Windows[AWindow].Enabled) then
     Exit;
   // switching profiles while attached: the remote session is closed
   // and the new workspace is built locally (re-promoted at the end)
   WasRemote := RemoteMode;
+  OldDefer := DeferPaneSpawn;
+  if WasRemote then
+    DeferPaneSpawn := True;
   if RemoteMode then
     LeaveRemoteSession;
 
   WS := Profiles[AProfile].Windows[AWindow];
-  if not LoadLayoutString(WS.Layout, NewLay) then
+  if not LoadLayoutString(WS.Layout, NewLay, True) then
     NewLay := TLayout.Create;
   n := NewLay.PaneCount;
   DebugLog(Format('profile activate p=%d w=%d layout=%s leaves=%d specs=%d',
     [AProfile, AWindow, WS.Layout, n, Length(WS.Panes)]));
-  if (Length(WS.Panes) > n) or (n < 1) or (n > MAX_PANES) then
+  if (Length(WS.Panes) > n) or (n < 0) or (n > MAX_PANES) then
   begin
     NewLay.Free;
+    DeferPaneSpawn := OldDefer;
     Exit;
   end;
 
@@ -5257,10 +5748,14 @@ begin
   if not Started then
   begin
     StopRuntime;
+    DeferPaneSpawn := OldDefer;
     Exit;
   end;
   Lay.Focused := WS.FocusedPane;
-  if (Lay.Focused < 0) or (Lay.Focused >= n) or (Win[Lay.Focused] = nil) then
+  if n = 0 then
+    Lay.Focused := -1
+  else if (Lay.Focused < 0) or (Lay.Focused >= n) or
+          (Win[Lay.Focused] = nil) then
     Lay.Focused := 0;
   RelayoutAll;
   ApplyWindowGeometry(WS);
@@ -5283,6 +5778,7 @@ begin
   Result := True;
   if WasRemote then
     PromoteToServer;   // the new session is also born with a server
+  DeferPaneSpawn := OldDefer;
 end;
 
 // reapplies the EXACT geometry saved in the profile (manual
@@ -5433,11 +5929,17 @@ begin
   end;
 end;
 
-procedure TSuperApp.SaveWorkspaceAsProfile(const AName: string);
+function TSuperApp.SaveWorkspaceAsProfile(const AName: string): boolean;
 var
   P: TProfileSpec;
-  idx: integer;
+  ActiveName: string;
 begin
+  Result := False;
+  if not ValidProfileName(AName) then
+    Exit;
+  ActiveName := '';
+  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+    ActiveName := Profiles[ActiveProfile].Name;
   P := Default(TProfileSpec);
   P.Name := AName;
   P.Enabled := True;
@@ -5445,16 +5947,29 @@ begin
   P.FocusedWindow := 0;
   SetLength(P.Windows, 1);
   P.Windows[0] := CaptureCurrentAsWindow(UiText('main', 'principal'));
-  idx := FindProfileByName(Profiles, AName);
-  if idx >= 0 then
-    Profiles[idx] := P
-  else
-  begin
-    SetLength(Profiles, Length(Profiles) + 1);
-    Profiles[High(Profiles)] := P;
+  try
+    Result := UpsertUserProfileAtomic(ConfigFile, SystemConfigFile, P,
+      Profiles);
+    // The atomic operation refreshes Profiles on both success and conflict.
+    // Rebind the live selection by stable name before returning to the menu.
+    ActiveProfile := FindProfileByName(Profiles, ActiveName);
+    RebuildMenu;
+    if not Result then
+      MessageBox(UiText(
+        'That profile changed in another client; it was reloaded. Try again.',
+        'Ese perfil cambio en otro cliente; se ha recargado. Intentalo otra vez.'),
+        nil, mfError or mfOKButton);
+  except
+    on E: Exception do
+    begin
+      MessageBox(StringReplace(Format(UiText(
+        'The profile could not be saved: %s',
+        'No se pudo guardar el perfil: %s'), [E.Message]), '%', '%%',
+        [rfReplaceAll]), nil,
+        mfError or mfOKButton);
+      Result := False;
+    end;
   end;
-  SaveProfiles(ConfigFile, Profiles);
-  RebuildMenu;
 end;
 
 procedure TSuperApp.RunProfileSaveAs;
@@ -5462,6 +5977,7 @@ var
   NameS: string;
   Buf: ShortString;
 begin
+  ReloadProfileCatalog;
   Buf := '';
   if ProfileMode and (ActiveProfile >= 0) and
      (ActiveProfile < Length(Profiles)) then
@@ -5472,7 +5988,16 @@ begin
   NameS := Trim(Buf);
   if NameS = '' then
     Exit;
-  SaveWorkspaceAsProfile(NameS);
+  if not ValidProfileName(NameS) then
+  begin
+    MessageBox(UiText(
+      'The name cannot contain dots, brackets or control characters.',
+      'El nombre no puede contener puntos, corchetes ni caracteres de control.'),
+      nil, mfError or mfOKButton);
+    Exit;
+  end;
+  if not SaveWorkspaceAsProfile(NameS) then
+    Exit;
   // no FormatStr: the name could contain '%'
   MessageBox(UiText('Profile saved: ', 'Perfil guardado: ') + NameS, nil,
     mfInformation or mfOKButton);
@@ -5483,62 +6008,110 @@ var
   Act: TProfileAction;
   Tgt, DefIdx: integer;
   DefWin: integer;
+  P: TProfileSpec;
+  FreshCfg: TConfig;
+  ActiveName, TargetName, PreferredWindow, SelectedWindow: string;
 begin
+  ReloadProfileCatalog;
   DefIdx := FindProfileByName(Profiles, Cfg.DefaultProfile);
   if not RunProfileManager(Profiles, ActiveProfile, DefIdx, Act, Tgt) then
     Exit;
+  // Rename/delete already remapped a matching default inside the same atomic
+  // profile-file generation. A manager which merely edited another profile
+  // must never write its startup-era default back over a newer client's one.
+  LoadConfig(FreshCfg);
+  Cfg.DefaultProfile := FreshCfg.DefaultProfile;
+  Cfg.DefaultWindow := FreshCfg.DefaultWindow;
   case Act of
     paActivate:
       DoSwitchProfile(Tgt);
     paSaveCurrent:
       if (Tgt >= 0) and (Tgt < Length(Profiles)) then
       begin
+        ActiveName := '';
+        if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+          ActiveName := Profiles[ActiveProfile].Name;
+        P := Profiles[Tgt];
+        // Record assignment shares nested dynamic arrays. Copy the window
+        // vector before replacing one entry so a failed commit cannot mutate
+        // the live profile array in memory.
+        P.Windows := Copy(Profiles[Tgt].Windows, 0,
+          Length(Profiles[Tgt].Windows));
         if ProfileMode and (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
-           (ActiveWindow < Length(Profiles[Tgt].Windows)) then
+           (ActiveWindow < Length(P.Windows)) then
         begin
           // save the current workspace ONLY into the active window of the
           // profile, preserving its other windows
-          Profiles[Tgt].Windows[ActiveWindow] :=
-            CaptureCurrentAsWindow(Profiles[Tgt].Windows[ActiveWindow].Name);
-          Profiles[Tgt].FocusedWindow := ActiveWindow;
+          P.Windows[ActiveWindow] :=
+            CaptureCurrentAsWindow(P.Windows[ActiveWindow].Name);
+          P.FocusedWindow := ActiveWindow;
         end
         else
         begin
-          SetLength(Profiles[Tgt].Windows, 1);
-          Profiles[Tgt].Windows[0] :=
+          SetLength(P.Windows, 1);
+          P.Windows[0] :=
             CaptureCurrentAsWindow(UiText('main', 'principal'));
-          Profiles[Tgt].FocusedWindow := 0;
+          P.FocusedWindow := 0;
         end;
-        Profiles[Tgt].Origin := coUser;
-        SaveProfiles(ConfigFile, Profiles);
+        P.Origin := coUser;
+        try
+          if not UpsertUserProfileAtomic(ConfigFile, SystemConfigFile, P,
+            Profiles) then
+            MessageBox(UiText(
+              'The profile changed in another client; it was reloaded. Try again.',
+              'El perfil cambio en otro cliente; se ha recargado. ' +
+              'Intentalo otra vez.'), nil,
+              mfError or mfOKButton);
+          ActiveProfile := FindProfileByName(Profiles, ActiveName);
+        except
+          on E: Exception do
+            MessageBox(StringReplace(Format(UiText(
+              'The profile could not be saved: %s',
+              'No se pudo guardar el perfil: %s'), [E.Message]), '%', '%%',
+              [rfReplaceAll]), nil,
+              mfError or mfOKButton);
+        end;
       end;
     paSetDefault:
       if (Tgt >= 0) and (Tgt < Length(Profiles)) then
       begin
-        Cfg.DefaultProfile := Profiles[Tgt].Name;
-        // DefaultWindow belongs to the chosen profile. Do not retain a
-        // same-named (or unrelated) window from the previously default one.
-        Cfg.DefaultWindow := '';
+        TargetName := Profiles[Tgt].Name;
+        PreferredWindow := '';
         if (Tgt = ActiveProfile) and (ActiveWindow >= 0) and
            (ActiveWindow < Length(Profiles[Tgt].Windows)) then
-          DefWin := ActiveWindow
+          PreferredWindow := Profiles[Tgt].Windows[ActiveWindow].Name
         else
+        begin
           DefWin := Profiles[Tgt].FocusedWindow;
-        if (DefWin >= 0) and (DefWin < Length(Profiles[Tgt].Windows)) then
-          Cfg.DefaultWindow := Profiles[Tgt].Windows[DefWin].Name;
-        SaveConfig(Cfg);
+          if (DefWin >= 0) and (DefWin < Length(Profiles[Tgt].Windows)) then
+            PreferredWindow := Profiles[Tgt].Windows[DefWin].Name;
+        end;
+        ActiveName := '';
+        if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+          ActiveName := Profiles[ActiveProfile].Name;
+        try
+          if SetDefaultProfileAtomic(ConfigFile, SystemConfigFile,
+            TargetName, PreferredWindow, Profiles, SelectedWindow) then
+          begin
+            Cfg.DefaultProfile := TargetName;
+            Cfg.DefaultWindow := SelectedWindow;
+          end
+          else
+            MessageBox(UiText(
+              'The selected profile changed in another client; the default was not changed.',
+              'El perfil seleccionado cambio en otro cliente; no se cambio el predeterminado.'),
+              nil, mfError or mfOKButton);
+          ActiveProfile := FindProfileByName(Profiles, ActiveName);
+        except
+          on E: Exception do
+            MessageBox(StringReplace(Format(UiText(
+              'The default profile could not be saved: %s',
+              'No se pudo guardar el perfil predeterminado: %s'),
+              [E.Message]), '%', '%%', [rfReplaceAll]), nil,
+              mfError or mfOKButton);
+        end;
       end;
-    paNone:
-      begin
-        // Rename/delete happens inside the manager. ADefault is passed by
-        // reference so the configured name follows a renamed default and is
-        // cleared when that profile was deleted.
-        if (DefIdx >= 0) and (DefIdx < Length(Profiles)) then
-          Cfg.DefaultProfile := Profiles[DefIdx].Name
-        else
-          Cfg.DefaultProfile := '';
-        SaveConfig(Cfg);
-      end;
+    paNone: ;
   end;
   RebuildMenu;
 end;
@@ -5551,7 +6124,7 @@ var
   Choice: Word;
   NewLay: TLayout;
   Dir: TSplitDir;
-  Started: boolean;
+  Started, WasRemote, OldDefer: boolean;
 begin
   for I := 0 to 3 do
   begin
@@ -5606,6 +6179,8 @@ begin
   // everything confirmed: if we were attached to a session (server-
   // always mode), close it; the new workspace is born locally and
   // re-promoted at the end
+  WasRemote := RemoteMode;
+  OldDefer := DeferPaneSpawn;
   if RemoteMode then
     LeaveRemoteSession;
 
@@ -5626,6 +6201,8 @@ begin
     end;
   end;
 
+  if WasRemote then
+    DeferPaneSpawn := True;
   StopRuntime;
   if Lay <> nil then
     Lay.Free;
@@ -5664,6 +6241,7 @@ begin
     FocusPane(Lay.Focused);
     PromoteToServer;   // the wizard session is also born with a server
   end;
+  DeferPaneSpawn := OldDefer;
   RebuildMenu;
 end;
 
@@ -5680,8 +6258,10 @@ begin
     'F2/F3 split panes; F6/F7 next/prev pane; Alt-1..9 go to pane N',
     'F2/F3 dividen paneles; F6/F7 panel sig./ant.; Alt-1..9 ir al panel N');
   Lines[1] := UiText(
-    'F5 zoom; Alt-F9 minimize; Ctrl-F5 move/resize; Alt-F3 close pane',
-    'F5 zoom; Alt-F9 minimiza; Ctrl-F5 mover/tamano; Alt-F3 cierra panel');
+    PrefixKeyLabel(Cfg.PrefixKey) +
+    ' f fullscreen; Alt-F9 min; Ctrl-F5 move/resize; Alt-F3 close',
+    PrefixKeyLabel(Cfg.PrefixKey) +
+    ' f pantalla; Alt-F9 min.; Ctrl-F5 mover/tamano; Alt-F3 cierra');
   Lines[2] := UiText(
     'F8/F9 next/prev window; ' + PrefixKeyLabel(Cfg.PrefixKey) +
     ' 1..9 go to window N',
@@ -5824,43 +6404,41 @@ begin
     Insert(StatusLine);
 end;
 
-procedure TSuperApp.RememberProfileSelection;
+function TSuperApp.RememberProfileSelection: boolean;
+var
+  ProfileName, WindowName: string;
 begin
-  // "active" and "default" are different choices. Set default in the
-  // profile manager must survive Ctrl-S and shutdown even if the user keeps
-  // working in another profile. Only remember the window when the active
-  // profile is itself the configured default.
-  if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) and
-     SameText(Cfg.DefaultProfile, Profiles[ActiveProfile].Name) and
-     (ActiveWindow >= 0) and
-     (ActiveWindow < Length(Profiles[ActiveProfile].Windows)) then
-    Cfg.DefaultWindow := Profiles[ActiveProfile].Windows[ActiveWindow].Name;
+  Result := False;
+  if (ActiveProfile < 0) or (ActiveProfile >= Length(Profiles)) or
+     (ActiveWindow < 0) or
+     (ActiveWindow >= Length(Profiles[ActiveProfile].Windows)) then
+    Exit;
+  ProfileName := Profiles[ActiveProfile].Name;
+  WindowName := Profiles[ActiveProfile].Windows[ActiveWindow].Name;
+  // Compare and update under the shared INI lock. Cfg may be older than a
+  // default selected by another client and is never authority for this pair.
+  Result := SaveDefaultWindowIfProfile(ProfileName, WindowName);
+  if Result then
+  begin
+    Cfg.DefaultProfile := ProfileName;
+    Cfg.DefaultWindow := WindowName;
+  end;
 end;
 
 procedure TSuperApp.DoSwitchProfile(AIndex: integer);
 var
-  W, I, OldP, OldW: integer;
+  W, OldP, OldW: integer;
 begin
   if (AIndex < 0) or (AIndex >= Length(Profiles)) or
      (not Profiles[AIndex].Enabled) then
     Exit;
   OldP := ActiveProfile;
   OldW := ActiveWindow;
-  W := -1;
-  if (Profiles[AIndex].FocusedWindow >= 0) and
-     (Profiles[AIndex].FocusedWindow < Length(Profiles[AIndex].Windows)) and
-     Profiles[AIndex].Windows[Profiles[AIndex].FocusedWindow].Enabled then
-    W := Profiles[AIndex].FocusedWindow;
-  if W < 0 then
-    for I := 0 to Length(Profiles[AIndex].Windows) - 1 do
-      if Profiles[AIndex].Windows[I].Enabled then
-      begin
-        W := I;
-        Break;
-      end;
-  if (W < 0) or not ActivateProfile(AIndex, W) then
+  W := ProfileStartWindow(AIndex, False);
+  if ((Length(Profiles[AIndex].Windows) > 0) and (W < 0)) or
+     not ActivateProfile(AIndex, W) then
   begin
-    if (OldP >= 0) and (OldW >= 0) then
+    if OldP >= 0 then
       ActivateProfile(OldP, OldW);
     MessageBox(UiText('The profile could not be started.',
       'No se pudo iniciar el perfil.'), nil,
@@ -6019,7 +6597,7 @@ begin
   ADeskW := 0;
   ADeskH := 0;
   n := Lay.PaneCount;
-  if (n < 1) or (Desktop = nil) then
+  if Desktop = nil then
     Exit;
   CanonicalBase := RemoteMode and (Length(RemoteGeom) = n) and
     (RemoteDeskW > 0) and (RemoteDeskH > 0);
@@ -6043,6 +6621,11 @@ begin
     ADeskW := RD.B.X - RD.A.X;
     ADeskH := RD.B.Y - RD.A.Y;
   end;
+  // An empty session still owns one canonical desktop geometry.  Its first
+  // later pane uses these dimensions and every attaching client sees the
+  // same workspace rather than replacing it with its own terminal size.
+  if n < 1 then
+    Exit;
   if not CanonicalBase then
     SetLength(AGeom, n);
   for i := 0 to n - 1 do
@@ -6246,7 +6829,7 @@ end;
 // Cosmetic zoom transition: a handful of outline frames interpolating between
 // the window's rectangle and the full desktop. It reuses the wireframe-drag
 // primitives, so each frame costs only its ring. Opt-in (Options > zoom
-// transition); the default F5 stays instant.
+// transition); fullscreen stays instant by default.
 procedure TSuperApp.ZoomAnimate(AWindow: PTermWindow;
   AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
 const
@@ -6352,7 +6935,7 @@ begin
   // whatever the focused pane asks for, so let the one place that knows decide
   SyncHostMouse;
   // Resize ONLY the pane that owned the screen, to the bounds its window
-  // already has. Un-zooming (F5) restored those bounds itself, but the
+  // already has. Leaving fullscreen restored those bounds itself, but the
   // ChangeBounds guard suppressed the PTY resize while passthrough was active,
   // so the PTY is still full-screen and must be synced here. Do NOT call
   // RelayoutAll: that re-tiles every window and overwrites the size the user's
@@ -6407,7 +6990,7 @@ end;
 // A normal maximized window keeps the IDE menu/status and its own frame. The
 // canonical desktop may be larger than one connected terminal after another
 // client deliberately resizes it, but the one shared maximum must remain
-// completely visible on every viewer. This is distinct from F5: its PTY owns
+// completely visible on every viewer. This is distinct from fullscreen: its PTY owns
 // the full physical viewport, whereas a normal maximized PTY loses two cells
 // in each dimension to the window frame.
 procedure TSuperApp.SharedMaximizedSize(ACanonicalDeskW,
@@ -7214,7 +7797,7 @@ begin
     SharedFullScreenRendered := False
   else if (not HostSizesMatch) or (Clients <> OldClientCount) then
     // Once membership changes, keep the currently visible fullscreen mode
-    // rendered until an explicit F5-out/F5-in hand-off. This avoids an
+    // rendered until an explicit fullscreen-out/fullscreen-in hand-off. This avoids an
     // attach/detach silently clearing a viewer and switching it back to raw.
     SharedFullScreenRendered := True;
 
@@ -7312,7 +7895,7 @@ begin
   for I := 0 to Lay.PaneCount - 1 do
     if (PreservePanes and (LongWord(1) shl I)) <> 0 then
       PreserveLocalPane(I);
-  // Every zoom/F5 request changes Zoomed or FullScreen. Combined with the
+  // Every zoom/fullscreen request changes Zoomed or FullScreen. Combined with the
   // advanced revision and exact restore rectangle, those flags correlate the
   // ordinary reply without trusting the actor's proposed grid. Cols/Rows are
   // daemon authority: it may normalize them for an attach/resize just before
@@ -7332,7 +7915,7 @@ begin
   // If another pane committed while this proposal was in flight, the daemon
   // rejects our stale base and returns that newer state after releasing the
   // lease. Treat that state as a negative ACK instead of leaving every later
-  // F5/double-click blocked behind a proposal which can no longer complete.
+  // fullscreen/double-click blocked behind a proposal which can no longer complete.
   // While this client owns the pane, unrelated canonical commits arrive as
   // peer events. The first ordinary snapshot after FRAME_LAYOUT is therefore
   // its correlated success/rejection reply even when validation rejected the
@@ -8034,7 +8617,7 @@ begin
   else
     Cfg.Palette := 'color';
   end;
-  SaveConfig(Cfg);
+  SaveConfigFields(Cfg, [cfPalette]);
   // Rebuilding the two bars can draw them immediately. Hold physical output
   // until both exist under the new palette, then invalidate the renderer's
   // effective-cell cache and publish one complete frame. RepaintChanges alone
@@ -8128,6 +8711,8 @@ var
   SharedR: Objects.TRect;
   DeskCol, FullDeskW, FullDeskH, FullCols, FullRows: integer;
   MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
+  CreatedProfileName, ActiveProfileName, MenuTargetName: string;
+  PaneClassNames: array[0..MAX_PANES - 1] of string;
 begin
   ResizeEvent := (Event.What = evCommand) and (Event.Command = cmResizeApp);
   ResizeWidth := Event.Id;
@@ -8136,14 +8721,14 @@ begin
   // must NOT act on the mouse: a click on the hidden-but-still-logical menu
   // row would pop the menu and drop out of zoom. The mouse was released to the
   // app/terminal on EnterPassthrough (tracking off), so normal text selection
-  // works; only F5 (a key, handled below) leaves passthrough. Swallow every
+  // works; only prefix+f (handled below) leaves passthrough. Swallow every
   // mouse event here before the inherited handler can dispatch it.
   if PassthroughActive and ((Event.What and evMouse) <> 0) then
   begin
     ClearEvent(Event);
     Exit;
   end;
-  // F5 used to be visible in TWO steps: the window first maximized inside the
+  // Fullscreen used to be visible in TWO steps: the window first maximized inside the
   // IDE (one painted frame, menu and status still there) and only on the next
   // Idle tick did passthrough take the screen -- which reads as a little
   // zoom animation. Same on the way back. Do the whole transition with the
@@ -8219,7 +8804,7 @@ begin
     try
       if Event.Command = cmFullScreen then
       begin
-        // F5 is the only way to the whole terminal. It fills the desktop
+        // Fullscreen is the only way to the whole terminal. It fills the desktop
         // first if the window was not already filling it, so leaving full
         // screen puts the window back exactly where it was.
         if (ZoomF >= 0) and (ZoomF < MAX_PANES) and (Win[ZoomF] <> nil) and
@@ -8345,9 +8930,8 @@ begin
     begin
       PrefixPending := False;
       // prefix chords (tmux style): d=detach, c=class, s=session,
-      // n/p=window +-, t=tile, 1..9=window N, arrows=pane size,
-      // F5=bare F5 into the pane (for a superterm running inside one),
-      // double prefix=literal
+      // f=fullscreen, n/p=window +-, t=tile, 1..9=window N,
+      // arrows=pane size, double prefix=literal
       if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
       begin
         RequestDetach;
@@ -8363,6 +8947,12 @@ begin
       if (PrefixByte = Ord('s')) or (PrefixByte = Ord('S')) then
       begin
         Message(@Self, evCommand, cmSessionPick, nil);
+        ClearEvent(Event);
+        Exit;
+      end;
+      if (PrefixByte = Ord('f')) or (PrefixByte = Ord('F')) then
+      begin
+        Message(@Self, evCommand, cmFullScreen, nil);
         ClearEvent(Event);
         Exit;
       end;
@@ -8441,20 +9031,6 @@ begin
         ClearEvent(Event);
         Exit;
       end;
-      if Event.KeyCode = kbF5 then
-      begin
-        // prefix + F5: a BARE F5 into the pane. Plain F5 is kept by this
-        // superterm as the way out of a maximised pane, so a superterm
-        // running inside a pane could never be told to un-maximise: its own
-        // F5 never reached it and it stayed full-screen for ever. The
-        // generic chord below would send prefix+F5, which the inner one
-        // reads as its own prefix, so F5 needs its own rule. It composes:
-        // at two levels, prefix prefix F5 reaches the innermost.
-        WritePaneInput(Lay.Focused,
-          TranslateKey(kbF5, PaneWantsAppCursor(Lay.Focused)));
-        ClearEvent(Event);
-        Exit;
-      end;
       // Preserve the normal terminal meaning when the prefix is followed by
       // an unbound key.
       PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) +
@@ -8469,12 +9045,10 @@ begin
       ClearEvent(Event);
       Exit;
     end;
-    // passthrough: the maximized pane owns the screen, so every key goes to
-    // it -- bypass menu/status/Alt-1..9 which would otherwise steal F-keys,
-    // Alt-letters and Ctrl-S. Two escapes are kept for superterm: the prefix
-    // (handled above, detaches) and F5, which un-maximizes and is therefore
-    // the way OUT of passthrough -- so F5 falls through to the zoom handler.
-    if PassthroughActive and (Event.KeyCode <> kbF5) then
+    // passthrough: the fullscreen pane owns the screen, so every ordinary key
+    // goes to it -- including physical F5. The configurable prefix is handled
+    // above; prefix+f is the only chord retained for leaving fullscreen.
+    if PassthroughActive then
     begin
       PrefixSeq := TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
       if PrefixSeq <> '' then
@@ -8542,20 +9116,20 @@ begin
       cmToggleAutoSave:
         begin
           Cfg.AutoSave := not Cfg.AutoSave;
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfAutoSave]);
           RebuildMenu;
         end;
       cmToggleDragContent:
         begin
           Cfg.DragContent := not Cfg.DragContent;
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfDragContent]);
           RebuildMenu;
         end;
       cmToggleSolidBg:
         begin
           Cfg.SolidBg := not Cfg.SolidBg;
           st_video.SolidBackground := Cfg.SolidBg;
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfSolidBg]);
           RebuildMenu;
           ResetVideoSurface;   // every cell's colour changes
           ReDraw;
@@ -8566,7 +9140,7 @@ begin
           if RunDesktopColorPick(DeskCol) then
           begin
             Cfg.DesktopColor := DeskCol;
-            SaveConfig(Cfg);
+            SaveConfigFields(Cfg, [cfDesktopColor]);
             ResetVideoSurface;   // the whole desktop changes colour
             ReDraw;
           end;
@@ -8574,7 +9148,7 @@ begin
       cmToggleZoomAnim:
         begin
           Cfg.ZoomAnim := not Cfg.ZoomAnim;
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfZoomAnim]);
           RebuildMenu;
         end;
       cmBackgroundBase..cmBackgroundBase + 29:
@@ -8585,7 +9159,7 @@ begin
           if ArtSuggestedMode(Event.Command - cmBackgroundBase) <> '' then
             Cfg.BackgroundMode :=
               ArtSuggestedMode(Event.Command - cmBackgroundBase);
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfBackground, cfBackgroundMode]);
           RebuildMenu;
           ResetVideoSurface;   // the whole desktop changes
           ReDraw;
@@ -8594,7 +9168,7 @@ begin
         begin
           Cfg.BackgroundMode :=
             ArtModeName(TArtMode(Event.Command - cmBackgroundModeBase));
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfBackgroundMode]);
           RebuildMenu;
           ResetVideoSurface;
           ReDraw;
@@ -8602,7 +9176,7 @@ begin
       cmToggleAutoRestore:
         begin
           Cfg.AutoRestore := not Cfg.AutoRestore;
-          SaveConfig(Cfg);
+          SaveConfigFields(Cfg, [cfAutoRestore]);
           RebuildMenu;
         end;
       cmWindowMinimizeAll:
@@ -8619,11 +9193,15 @@ begin
           // contextual toast: each mode states exactly what was saved
           if ProfileMode then
           begin
-            RememberProfileSelection;
-            SaveConfig(Cfg);
-            MessageBox(UiText('Profile selection saved.',
-              'Seleccion del perfil guardada.'), nil,
-              mfInformation or mfOKButton);
+            if RememberProfileSelection then
+              MessageBox(UiText('Profile selection saved.',
+                'Seleccion del perfil guardada.'), nil,
+                mfInformation or mfOKButton)
+            else
+              MessageBox(UiText(
+                'The default profile changed in another client; this window selection was not saved.',
+                'El perfil por defecto cambio en otro cliente; no se guardo esta seleccion de ventana.'),
+                nil, mfInformation or mfOKButton);
           end
           else if RemoteMode then
             // A live session is already its own continuously updated state.
@@ -8638,10 +9216,12 @@ begin
           end;
         end;
       cmSessionWizard: RunSessionWizard;
+      cmSessionNew: DoNewSession;
       cmDetach: RequestDetach;
       cmSessionPick: DoSessionPick;
       cmClassPick:
         begin
+          ReloadWindowClassCatalog;
           if RunClassPicker(WClasses, i) then
           begin
             if i < 0 then
@@ -8652,8 +9232,29 @@ begin
         end;
       cmClassManage:
         begin
-          if RunClassManager(WClasses) then
-            RebuildMenu;
+          ReloadWindowClassCatalog;
+          for i := 0 to MAX_PANES - 1 do
+            if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
+              PaneClassNames[i] := WClasses[PaneTerm[i]].Name
+            else
+              PaneClassNames[i] := '';
+          RunClassManager(WClasses);
+          for i := 0 to MAX_PANES - 1 do
+            PaneTerm[i] := FindClassByName(WClasses, PaneClassNames[i]);
+          RebuildMenu;
+        end;
+      cmProfileNewEmpty:
+        begin
+          ReloadProfileCatalog;
+          ActiveProfileName := '';
+          if (ActiveProfile >= 0) and (ActiveProfile < Length(Profiles)) then
+            ActiveProfileName := Profiles[ActiveProfile].Name;
+          RunNewEmptyProfile(Profiles, CreatedProfileName);
+          // Even a duplicate followed by Cancel performs an authoritative
+          // reload. Rebind after every return, not only a successful create.
+          ActiveProfile := FindProfileByName(Profiles, ActiveProfileName);
+          ProfileMode := ProfileMode or (ActiveProfile >= 0);
+          RebuildMenu;
         end;
       cmHelp: ShowHelp;
       cmGrowV: begin
@@ -8711,13 +9312,19 @@ begin
         CurrentLanguage := TUiLanguage(Event.Command - cmLanguageBase);
         Cfg.Language := CurrentLanguage;
         SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
-        SaveConfig(Cfg);
+        SaveConfigFields(Cfg, [cfLanguage]);
         RebuildMenu;
         RebuildStatusLine;
       end
       else if (Event.Command >= cmProfileBase) and
-         (Event.Command < cmProfileBase + Length(Profiles)) then
-        DoSwitchProfile(Event.Command - cmProfileBase)
+         (Event.Command < cmProfileBase + ProfileMenuCount) then
+      begin
+        MenuTargetName := ProfileMenuNames[Event.Command - cmProfileBase];
+        ReloadProfileCatalog;
+        i := FindProfileByName(Profiles, MenuTargetName);
+        if i >= 0 then
+          DoSwitchProfile(i);
+      end
       else if Event.Command = cmProfileSaveAs then
         RunProfileSaveAs
       else if Event.Command = cmProfileManage then
@@ -8745,8 +9352,14 @@ begin
           (Event.Command <= cmPaletteBase + apMonochrome) then
          ApplyPalette(Event.Command - cmPaletteBase)
        else if (Event.Command >= cmOpenClass) and
-         (Event.Command < cmOpenClass + Length(WClasses)) then
-        DoOpenClassPane(Event.Command - cmOpenClass)
+         (Event.Command < cmOpenClass + ClassMenuCount) then
+       begin
+         MenuTargetName := ClassMenuNames[Event.Command - cmOpenClass];
+         ReloadWindowClassCatalog;
+         i := FindClassByName(WClasses, MenuTargetName);
+         if i >= 0 then
+           DoOpenClassPane(i);
+       end
       else
         Exit;
     end;
@@ -8810,6 +9423,9 @@ begin
   for i := 0 to MAX_PANES - 1 do
     if (Panes[i] <> nil) and Panes[i].Alive and Panes[i].InputPending then
       Panes[i].FlushInput;
+  // Never use waitpid(-1) here: this process can have created panes now owned
+  // by an older detached daemon. Only the daemon's reap-safe event retires
+  // that numeric group identity before its real parent collects the child.
   if RemoteMode then
   begin
     // with a modal open the socket is not drained: events (closing or
@@ -9129,23 +9745,27 @@ begin
   end
   else
     Sleep(8);
-  // dead children
-  st2 := Default(cint);
-  repeat
-    p := fpWaitPid(-1, st2, WNOHANG);
-    if p > 0 then
-      for i := 0 to MAX_PANES - 1 do
-        if (Panes[i] <> nil) and (Panes[i].Pid = p) then
-        begin
-          Panes[i].MarkExited;
-          if (PaneTerm[i] >= 0) and
-             (PaneTerm[i] < Length(WClasses)) and
-             (WClasses[PaneTerm[i]].Kind = wcSSH) then
-            FallbackPane(i)
-          else if Win[i] <> nil then
-            Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
-        end;
-  until p <= 0;
+  // Reap only leaders owned by the current local workspace. waitpid(-1)
+  // could collect a child whose PTY was transferred to an older daemon and
+  // make that daemon's still-stored PGID reusable before it observes EOF.
+  for i := 0 to MAX_PANES - 1 do
+    if (Panes[i] <> nil) and (Panes[i].Pid > 1) then
+    begin
+      st2 := Default(cint);
+      repeat
+        p := fpWaitPid(Panes[i].Pid, st2, WNOHANG);
+      until (p >= 0) or (FpGetErrNo <> ESysEINTR);
+      if p = Panes[i].Pid then
+      begin
+        Panes[i].MarkExited;
+        if (PaneTerm[i] >= 0) and
+           (PaneTerm[i] < Length(WClasses)) and
+           (WClasses[PaneTerm[i]].Kind = wcSSH) then
+          FallbackPane(i)
+        else if Win[i] <> nil then
+          Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+      end;
+    end;
   // blinking cursor of the focused pane
   if Tick - LastBlink >= 530 then
   begin
@@ -9444,7 +10064,7 @@ var
   Chain: PMenuItem;
   PaneItems, WindowItems, ClipboardItems, ClassItems, ProfileItems, SessItems,
     LanguageItems: PMenuItem;
-  i, Num: integer;
+  i, Num, Idx: integer;
   TitleS: string;
   HasProfiles: boolean;
   PaletteItems: PMenuItem;
@@ -9495,7 +10115,8 @@ begin
   PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
     kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~F~ull screen', '~P~antalla completa'),
-    'F5', kbF5, cmFullScreen, hcNoContext, PaneItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' f', kbNoKey, cmFullScreen,
+    hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('Ma~x~imize/restore', 'Ma~x~imizar/restaurar'),
     '', kbNoKey, cmZoom, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
@@ -9582,23 +10203,35 @@ begin
   // ---- Classes: opens a new pane of each configured class ----
   ClassItems := nil;
   Num := 0;
+  ClassMenuCount := 0;
   for i := 0 to Length(WClasses) - 1 do
     if WClasses[i].Enabled then
+    begin
       Inc(Num);
-  for i := Length(WClasses) - 1 downto 0 do
+      if ClassMenuCount < MAX_CLASS_MENU_ITEMS then
+      begin
+        ClassMenuNames[ClassMenuCount] := WClasses[i].Name;
+        Inc(ClassMenuCount);
+      end;
+    end;
+  for i := ClassMenuCount - 1 downto 0 do
   begin
-    if not WClasses[i].Enabled then
+    Idx := FindClassByName(WClasses, ClassMenuNames[i]);
+    if Idx < 0 then
       continue;
-    if Num <= 8 then
-      TitleS := Format('~%d~ %s', [Num + 1, Copy(WClasses[i].Name, 1, 20)])
+    if i < 8 then
+      TitleS := Format('~%d~ %s', [i + 2, Copy(WClasses[Idx].Name, 1, 20)])
     else
-      TitleS := '  ' + Copy(WClasses[i].Name, 1, 20);
-    Dec(Num);
+      TitleS := '  ' + Copy(WClasses[Idx].Name, 1, 20);
     Chain := NewItem(TitleS, '', kbNoKey, cmOpenClass + i, hcNoContext,
       ClassItems);
     if Chain <> nil then
       ClassItems := Chain;
   end;
+  if Num > ClassMenuCount then
+    ClassItems := NewInfoItem(UiText(
+      '(more classes in Open/Manage...)',
+      '(mas clases en Abrir/Gestionar...)'), '', ClassItems);
   ClassItems := NewItem(UiText('~1~ Local shell', '~1~ Shell local'), '',
     kbNoKey, cmSplitV, hcNoContext, ClassItems);
   // management at the end of the menu, separate from the open list
@@ -9619,19 +10252,38 @@ begin
     NewItem(UiText('~S~ave current as profile...',
       '~G~uardar actual como perfil...'), '', kbNoKey, cmProfileSaveAs,
       hcNoContext,
+    NewItem(UiText('~N~ew empty profile...', '~N~uevo perfil vacio...'), '',
+      kbNoKey, cmProfileNewEmpty, hcNoContext,
     NewItem(UiText('~M~anage profiles...', 'Ge~s~tionar perfiles...'), '',
-      kbNoKey, cmProfileManage, hcNoContext, nil)));
-  HasProfiles := False;
-  for i := Length(Profiles) - 1 downto 0 do
+      kbNoKey, cmProfileManage, hcNoContext, nil))));
+  ProfileMenuCount := 0;
+  Num := 0;
+  for i := 0 to High(Profiles) do
     if Profiles[i].Enabled then
     begin
-      HasProfiles := True;
-      Chain := NewItem(ActiveMark(ProfileMode and (i = ActiveProfile)) +
-        Copy(Profiles[i].Name, 1, 24), '', kbNoKey,
+      Inc(Num);
+      if ProfileMenuCount < MAX_PROFILE_MENU_ITEMS then
+      begin
+        ProfileMenuNames[ProfileMenuCount] := Profiles[i].Name;
+        Inc(ProfileMenuCount);
+      end;
+    end;
+  HasProfiles := ProfileMenuCount > 0;
+  if Num > ProfileMenuCount then
+    ProfileItems := NewInfoItem(UiText(
+      '(more profiles in Manage...)',
+      '(mas perfiles en Gestionar...)'), '', ProfileItems);
+  for i := ProfileMenuCount - 1 downto 0 do
+  begin
+      Idx := FindProfileByName(Profiles, ProfileMenuNames[i]);
+      if Idx < 0 then
+        continue;
+      Chain := NewItem(ActiveMark(ProfileMode and (Idx = ActiveProfile)) +
+        Copy(Profiles[Idx].Name, 1, 24), '', kbNoKey,
         cmProfileBase + i, hcNoContext, ProfileItems);
       if Chain <> nil then
         ProfileItems := Chain;
-    end;
+  end;
   if not HasProfiles then
     ProfileItems := NewInfoItem(UiText('(no profiles yet)',
       '(aun no hay perfiles)'), '', ProfileItems);
@@ -9645,6 +10297,8 @@ begin
   SessItems := NewItem(UiText('Quick session ~w~izard...',
     '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,
     hcNoContext, SessItems);
+  SessItems := NewItem(UiText('~N~ew session...', '~N~ueva sesion...'), '',
+    kbNoKey, cmSessionNew, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('~A~ttach / manage sessions...',
     '~C~onectar / gestionar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
@@ -9719,8 +10373,8 @@ begin
              'Contenido al ~a~rrastrar'), '',
       kbNoKey, cmToggleDragContent, hcNoContext,
     NewItem(ActiveMark(Cfg.ZoomAnim) +
-      UiText('Zoom ~t~ransition (F5)',
-             '~T~ransicion de zoom (F5)'), '',
+      UiText('Zoom/fullscreen ~t~ransition',
+             '~T~ransicion de zoom/pantalla'), '',
       kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))))));
 
   MHelp := NewMenu(
@@ -9759,15 +10413,18 @@ begin
   Items := NewStatusKey('', kbF9, cmWindowPrev, Items);
   Items := NewStatusKey('', kbF7, cmPanePrev, Items);
   Items := NewStatusKey('', kbF3, cmSplitH, Items);
+  // Exit remains an intentional keyboard command, but it is not advertised
+  // or clickable on the status line: the safe everyday action is Detach.
+  Items := NewStatusKey('', kbAltX, cmQuit, Items);
   // visible: what a novice needs most, fitting in 80 columns
-  Items := NewStatusKey(UiText('~Alt-X~ Exit', '~Alt-X~ Salir'), kbAltX,
-    cmQuit, Items);
   Items := NewStatusKey(UiText(
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Detach',
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Separar'),
     kbNoKey, cmDetach, Items);
-  Items := NewStatusKey(UiText('~F5~ Full screen', '~F5~ Pantalla'), kbF5,
-    cmFullScreen, Items);
+  Items := NewStatusKey(UiText(
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' f~ Full screen',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' f~ Pantalla'),
+    kbNoKey, cmFullScreen, Items);
   Items := NewStatusKey(UiText('~F8~ Window', '~F8~ Ventana'), kbF8,
     cmWindowNext, Items);
   Items := NewStatusKey(UiText('~F6~ Pane', '~F6~ Panel'), kbF6,

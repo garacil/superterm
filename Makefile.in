@@ -17,6 +17,7 @@ MODE ?= release
 TARGET ?= $(PROJECT_DIR)/bin/superterm
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
+TEST_TARGET := $(PROJECT_DIR)/bin/superterm-test
 
 # -vewnh: errors, warnings, notes and hints all on -- the project builds with
 # none of them. -vm11030,11031 silences the two FPC emits about reading its
@@ -67,8 +68,9 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   profile_default_test.py profile_shell_fallback_test.py \
   profile_switch_transition_test.py multisession_test.py \
   prefix_test.py title_test.py \
-  detach_test.py control_test.py cli_test.py control_wm_test.py \
+  detach_test.py control_test.py cli_test.py cli_help_test.py control_wm_test.py \
   nonblocking_server_test.py global_command_fifo_test.py sidecar_atomic_test.py \
+  client_egress_nonblocking_test.py \
   global_lock_queue_test.py \
   multiclient_input_burst_test.py \
   multithread_server_test.py \
@@ -86,10 +88,17 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   scrollback_test.py nesting_test.py mouseforward_test.py \
   remote_newpane_test.py fullscreen_test.py empty_desktop_test.py \
   max_panes_test.py close_all_panes_test.py \
-  mousemode_test.py dialog_opaque_test.py \
-  badclass_test.py passthrough_modes_test.py resize_keep_test.py
+  mousemode_test.py dialog_opaque_test.py background_assets_test.py \
+  badclass_test.py passthrough_modes_test.py resize_keep_test.py \
+  config_concurrency_test.py \
+  pane_reaper_test.py pty_spawn_safety_test.py session_startup_atomic_test.py \
+  stlib_crash_audit_test.py daemon_identity_safety_test.py \
+  new_session_profile_test.py ssh_server_config_test.py \
+  ssh_release_boundary_test.py \
+  ssh_service_uninstall_test.py ssh_entry_test.py \
+  ssh_transport_test.py
 
-.PHONY: all release debug debug-heap test install uninstall install-deps clean distclean info
+.PHONY: all release debug debug-heap test-runtime test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
@@ -118,13 +127,25 @@ debug-heap:
 		UNITDIR=$(PROJECT_DIR)/build/units/debug-heap \
 		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -gh -dSUPERTERM_HEAPTRACE' all
 
-test: release
+# Test-only path/executable overrides must never be present in the installed
+# root administration binary.  A separate target and unit directory prevent
+# FPC from reusing units compiled with a different conditional symbol.
+test-runtime:
+	$(MAKE) MODE=release TARGET=$(TEST_TARGET) \
+		UNITDIR=$(PROJECT_DIR)/build/units/test-runtime \
+		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -dSUPERTERM_TEST_BUILD' all
+
+test: release test-runtime
 	@if [ -z "$(PYTHON)" ]; then \
 		printf '%s\n' 'Python 3 is required for tests'; exit 1; \
 	fi
-	@$(PYTHON) -c 'import pyte' 2>/dev/null || \
-		(printf '%s\n' 'Python module pyte is required; install python3-pyte or run pip install pyte'; exit 1)
-	@SUPERTERM_TEST_BIN="$(PROJECT_DIR)/bin/superterm" \
+	@$(PYTHON) -c 'import pyte, PIL' 2>/dev/null || \
+		(printf '%s\n' 'Python modules pyte and Pillow are required; install python3-pyte python3-pil or run pip install pyte pillow'; exit 1)
+	@command -v rsvg-convert >/dev/null 2>&1 || \
+		(printf '%s\n' 'rsvg-convert is required for artwork tests; install librsvg2-bin (Debian/Ubuntu) or librsvg (Homebrew)'; exit 1)
+	@SUPERTERM_TEST_BIN="$(TEST_TARGET)" \
+		SUPERTERM_RELEASE_BIN="$(PROJECT_DIR)/bin/superterm" \
+		FPC="$(FPC)" \
 		$(PYTHON) "$(PROJECT_DIR)/test/run_tests.py" \
 		--project-dir "$(PROJECT_DIR)" $(TESTS)
 
@@ -156,9 +177,27 @@ install: release
 	fi
 
 uninstall:
+	@if [ -z "$(DESTDIR)" ]; then \
+		if [ "$$(id -u)" -ne 0 ] && \
+		   { [ "$${SUPERTERM_TESTING:-}" != 1 ] || \
+		     [ -z "$${SUPERTERM_SSHD_ROOT:-}" ]; }; then \
+			printf '%s\n' 'Unprivileged uninstall: host SSH service state was not touched.'; \
+		elif [ -x "$(BINDIR)/superterm" ]; then \
+			"$(BINDIR)/superterm" ssh-server uninstall-service || exit $$?; \
+		elif [ -e "$(BINDIR)/superterm" ]; then \
+			printf '%s\n' 'Refusing to remove a non-executable SuperTerm binary before its SSH service is uninstalled.' >&2; \
+			exit 1; \
+		else \
+			printf '%s\n' 'SuperTerm binary is already absent; no host service state was touched.'; \
+		fi; \
+	else \
+		printf '%s\n' 'DESTDIR staging uninstall: host SSH service state is not touched.'; \
+	fi
 	rm -f "$(DESTDIR)$(BINDIR)/superterm"
-	rm -f "$(DESTDIR)$(DOCDIR)/README.md" "$(DESTDIR)$(DOCDIR)/BUILDING.md" \
-		"$(DESTDIR)$(DOCDIR)/CONFIGURATION.md" "$(DESTDIR)$(DOCDIR)/WIZARD.md"
+	rm -f "$(DESTDIR)$(DOCDIR)/README.md"
+	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
+		rm -f "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \
+	done
 	rm -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"
 	rm -rf "$(DESTDIR)$(DATADIR)/backgrounds"
 
@@ -167,9 +206,11 @@ install-deps:
 		if ! command -v brew >/dev/null 2>&1; then \
 			printf '%s\n' 'Homebrew is required for automatic setup on macOS (https://brew.sh).'; exit 1; fi; \
 		command -v fpc >/dev/null 2>&1 || brew install fpc; \
+		command -v python3 >/dev/null 2>&1 || brew install python; \
 		printf '%s\n' 'libsqlite3 ships with macOS; no package needed.'; \
-		python3 -m pip install --user pyte >/dev/null 2>&1 || \
-			printf '%s\n' 'Optional: "pip3 install pyte" enables "make test".'; \
+		python3 -m pip install --user pyte pillow >/dev/null 2>&1 || \
+			printf '%s\n' 'Optional: "pip3 install pyte pillow" enables "make test".'; \
+		command -v rsvg-convert >/dev/null 2>&1 || brew install librsvg; \
 		printf '%s\n' 'Optional: "brew install sshpass" only for password-auth SSH panes.'; \
 	elif command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=; \
@@ -177,7 +218,8 @@ install-deps:
 		else printf '%s\n' 'sudo is required'; exit 1; fi; \
 		$$SUDO apt-get update && $$SUDO apt-get install -y \
 			fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
-			python3 python3-pyte openssh-client sshpass; \
+			python3 python3-pyte python3-pil librsvg2-bin \
+			openssh-client openssh-server sshpass; \
 	else \
 		printf '%s\n' 'Automatic dependency installation is only implemented for Debian/Ubuntu and macOS (Homebrew).'; \
 		exit 1; \

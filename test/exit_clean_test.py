@@ -15,7 +15,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from stlib import Client, fresh_home, check, report, close_all_daemons
+from stlib import (Client, FULLSCREEN_CHORD, fresh_home, check, report,
+                   close_all_daemons)
 
 # every mode that makes a terminal send bytes on its own
 MODES = (
@@ -40,13 +41,13 @@ def check_clean(raw, label):
 
 
 # --- quitting, after a maximise/restore round trip -----------------------
-# F5 in and out is what makes the client re-assert ?1000/?1002 by hand, so
+# Fullscreen in and out makes the client re-assert ?1000/?1002 by hand, so
 # it is the case that used to leak. Do it before leaving.
 home = fresh_home('exitclean-quit')
 c = Client(home, w=100, h=30)
 c.drain(3.0)
-c.send(b'\x1b[15~', 1.2)          # F5: maximise (passthrough takes the screen)
-c.send(b'\x1b[15~', 1.2)          # F5: restore (re-asserts the mouse modes)
+c.send(FULLSCREEN_CHORD, 1.2)      # enter passthrough
+c.send(FULLSCREEN_CHORD, 1.2)      # restore and re-assert the mouse modes
 c.send(b'\x1bx', 2.0)             # Alt-X: quit
 c.wait_exit(timeout=8.0)
 c.drain(0.6)
@@ -57,8 +58,8 @@ close_all_daemons(home)
 home = fresh_home('exitclean-detach')
 d = Client(home, w=100, h=30)
 d.drain(3.0)
-d.send(b'\x1b[15~', 1.2)
-d.send(b'\x1b[15~', 1.2)
+d.send(FULLSCREEN_CHORD, 1.2)
+d.send(FULLSCREEN_CHORD, 1.2)
 d.send(b'\x11', 0.4)              # prefix (Ctrl-Q)
 d.send(b'd', 2.0)                 # detach
 d.wait_exit(timeout=8.0)

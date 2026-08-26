@@ -45,6 +45,11 @@ function RunProfileManager(var AProfiles: TProfileArray;
   var AActive, ADefault: integer; out AAction: TProfileAction;
   out ATarget: integer): boolean;
 
+// Creates and persists one enabled user profile with no windows.  It does
+// not activate it and therefore cannot alter the current live workspace.
+function RunNewEmptyProfile(var AProfiles: TProfileArray;
+  out ACreatedName: string): boolean;
+
 type
   // result of the detached session picker
   TSessionPickAction = (spCancel, spAttach, spStartNew);
@@ -70,6 +75,13 @@ function RunDesktopColorPick(var AColor: integer): boolean;
 function RunSessionPicker(AllowStartNew: boolean;
   out ASocketPath: string): TSessionPickAction;
 
+// One creation dialog shared by the startup picker and Sessions > New
+// session. AProfile is -1 for an empty session, otherwise the exact index in
+// AProfiles. Only enabled profiles are offered.
+function RunNewSessionDialog(const AProfiles: TProfileArray;
+  ADefaultProfile: integer; out AName: string;
+  out AProfile: integer): boolean;
+
 implementation
 
 const
@@ -84,12 +96,17 @@ const
   cmPrfRename   = 3312;
   cmPrfDefault  = 3313;
   cmPrfDelete   = 3314;
+  cmPrfNew      = 3315;
   cmSesAttach   = 3320;
   cmSesDelete   = 3321;
+  cmSesStart    = 3322;
+  cmSesProfileChanged = 3330;
+  cmSesNameChanged    = 3331;
 
 type
   TNameArray = array of string;
   PNameArray = ^TNameArray;
+  TIndexArray = array of integer;
 
   // generic manager: the action buttons end the dialog with their
   // command (range CmdLo..CmdHi) and the caller's loop decides; double
@@ -105,6 +122,27 @@ type
   PPickerDialog = ^TPickerDialog;
   TPickerDialog = object(TDialog)
     procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
+  PSessionProfileList = ^TSessionProfileList;
+  TSessionProfileList = object(TListBox)
+    procedure FocusItem(Item: Sw_Integer); virtual;
+  end;
+
+  PSessionNameInput = ^TSessionNameInput;
+  TSessionNameInput = object(TInputLine)
+    procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
+  PNewSessionDialog = ^TNewSessionDialog;
+  TNewSessionDialog = object(TDialog)
+    NameLine: PSessionNameInput;
+    ProfileList: PSessionProfileList;
+    ProfileNames: PNameArray;
+    NameEdited: boolean;
+    procedure HandleEvent(var Event: TEvent); virtual;
+    function Valid(Command: word): boolean; virtual;
+    procedure UpdateSuggestedName;
   end;
 
   // one-class editor; Valid(cmOK) validates and shows the error without
@@ -281,6 +319,13 @@ begin
   begin
     ErrorBox(UiText('The name cannot be empty.',
       'El nombre no puede estar vacio.'));
+    Exit(False);
+  end;
+  if not ValidWindowClassName(N) then
+  begin
+    ErrorBox(UiText(
+      'The name cannot contain brackets or control characters.',
+      'El nombre no puede contener corchetes ni caracteres de control.'));
     Exit(False);
   end;
   if OtherNames <> nil then
@@ -614,6 +659,18 @@ var
   Cmd: word;
   Idx, FocusRow: integer;
   C: TWindowClass;
+  OldName, PreferredName: string;
+
+  procedure RebindFocus(const AName: string);
+  begin
+    FocusRow := FindClassByName(AClasses, AName);
+    if FocusRow < 0 then
+    begin
+      FocusRow := High(AClasses);
+      if FocusRow < 0 then
+        FocusRow := 0;
+    end;
+  end;
 begin
   Result := False;
   FocusRow := 0;
@@ -626,11 +683,25 @@ begin
           C := DefaultWindowClass;
           if EditWindowClass(C, AClasses, -1) then
           begin
-            SetLength(AClasses, Length(AClasses) + 1);
-            AClasses[High(AClasses)] := C;
-            SaveWindowClasses(ConfigFile, AClasses);
-            Result := True;
-            FocusRow := High(AClasses);
+            try
+              if UpsertUserWindowClassAtomic(ConfigFile, SystemConfigFile,
+                '', C, AClasses) then
+              begin
+                Result := True;
+                RebindFocus(C.Name);
+              end
+              else
+              begin
+                ErrorBox(UiText(
+                  'That class appeared in another client; choose another name.',
+                  'Esa clase aparecio en otro cliente; elige otro nombre.'));
+                RebindFocus(C.Name);
+              end;
+            except
+              on E: Exception do
+                ErrorBox(Format(UiText('The class could not be saved: %s',
+                  'No se pudo guardar la clase: %s'), [E.Message]));
+            end;
           end;
         end;
       cmClsEdit:
@@ -641,11 +712,28 @@ begin
           else
           begin
             C := AClasses[Idx];
+            OldName := C.Name;
             if EditWindowClass(C, AClasses, Idx) then
             begin
-              AClasses[Idx] := C;
-              SaveWindowClasses(ConfigFile, AClasses);
-              Result := True;
+              try
+                if UpsertUserWindowClassAtomic(ConfigFile, SystemConfigFile,
+                  OldName, C, AClasses) then
+                begin
+                  Result := True;
+                  RebindFocus(C.Name);
+                end
+                else
+                begin
+                  ErrorBox(UiText(
+                    'The class changed in another client; reopen it and try again.',
+                    'La clase cambio en otro cliente; abrela de nuevo e intentalo.'));
+                  RebindFocus(OldName);
+                end;
+              except
+                on E: Exception do
+                  ErrorBox(Format(UiText('The class could not be saved: %s',
+                    'No se pudo guardar la clase: %s'), [E.Message]));
+              end;
             end;
           end;
         end;
@@ -657,11 +745,25 @@ begin
           C.Name := UniqueCopyName(AClasses, C.Name);
           if EditWindowClass(C, AClasses, -1) then
           begin
-            SetLength(AClasses, Length(AClasses) + 1);
-            AClasses[High(AClasses)] := C;
-            SaveWindowClasses(ConfigFile, AClasses);
-            Result := True;
-            FocusRow := High(AClasses);
+            try
+              if UpsertUserWindowClassAtomic(ConfigFile, SystemConfigFile,
+                '', C, AClasses) then
+              begin
+                Result := True;
+                RebindFocus(C.Name);
+              end
+              else
+              begin
+                ErrorBox(UiText(
+                  'That class appeared in another client; choose another name.',
+                  'Esa clase aparecio en otro cliente; elige otro nombre.'));
+                RebindFocus(C.Name);
+              end;
+            except
+              on E: Exception do
+                ErrorBox(Format(UiText('The class could not be saved: %s',
+                  'No se pudo guardar la clase: %s'), [E.Message]));
+            end;
           end;
         end;
       cmClsDel:
@@ -672,13 +774,26 @@ begin
           else if ConfirmYes(Format(UiText('Delete class "%s"?',
             'Eliminar la clase "%s"?'), [AClasses[Idx].Name])) then
           begin
-            Delete(AClasses, Idx, 1);
-            SaveWindowClasses(ConfigFile, AClasses);
-            Result := True;
-            if FocusRow > High(AClasses) then
-              FocusRow := High(AClasses);
-            if FocusRow < 0 then
-              FocusRow := 0;
+            PreferredName := AClasses[Idx].Name;
+            try
+              if DeleteUserWindowClassAtomic(ConfigFile, SystemConfigFile,
+                PreferredName, AClasses) then
+              begin
+                Result := True;
+                RebindFocus('');
+              end
+              else
+              begin
+                ErrorBox(UiText(
+                  'The class changed in another client; reopen it and try again.',
+                  'La clase cambio en otro cliente; abrela de nuevo e intentalo.'));
+                RebindFocus(PreferredName);
+              end;
+            except
+              on E: Exception do
+                ErrorBox(Format(UiText('The class could not be saved: %s',
+                  'No se pudo guardar la clase: %s'), [E.Message]));
+            end;
           end;
         end;
     end;
@@ -695,6 +810,97 @@ begin
   begin
     EndModal(cmOK);   // double click / space = open
     ClearEvent(Event);
+  end;
+end;
+
+{ The stock FreeVision list box changes Focused silently.  This small
+  descendant publishes only that already-completed change, allowing the
+  session-name suggestion to follow the selected profile without modifying
+  the vendor unit. }
+procedure TSessionProfileList.FocusItem(Item: Sw_Integer);
+begin
+  inherited FocusItem(Item);
+  if Owner <> nil then
+    Message(Owner, evBroadcast, cmSesProfileChanged, @Self);
+end;
+
+procedure TSessionNameInput.HandleEvent(var Event: TEvent);
+var
+  OldText: string;
+begin
+  OldText := '';
+  if Data <> nil then
+    OldText := Data^;
+  inherited HandleEvent(Event);
+  if (Owner <> nil) and (Data <> nil) and (Data^ <> OldText) then
+    Message(Owner, evBroadcast, cmSesNameChanged, @Self);
+end;
+
+procedure TNewSessionDialog.UpdateSuggestedName;
+var
+  Base: string;
+begin
+  if NameEdited or (NameLine = nil) or (ProfileList = nil) or
+     (ProfileNames = nil) or
+     (ProfileList^.Focused < 0) or
+     (ProfileList^.Focused > High(ProfileNames^)) then
+    Exit;
+  Base := ProfileNames^[ProfileList^.Focused];
+  if Base = '' then
+    Base := 'session';
+  SetLineText(PInputLine(NameLine), SuggestSessionName(Base));
+  NameLine^.SelectAll(True);
+end;
+
+procedure TNewSessionDialog.HandleEvent(var Event: TEvent);
+begin
+  inherited HandleEvent(Event);
+  if Event.What <> evBroadcast then
+    Exit;
+  case Event.Command of
+    cmSesProfileChanged:
+      begin
+        UpdateSuggestedName;
+        ClearEvent(Event);
+      end;
+    cmSesNameChanged:
+      begin
+        NameEdited := True;
+        ClearEvent(Event);
+      end;
+  end;
+end;
+
+function TNewSessionDialog.Valid(Command: word): boolean;
+var
+  NameS: string;
+begin
+  Result := inherited Valid(Command);
+  if (not Result) or (Command <> cmOK) then
+    Exit;
+  NameS := '';
+  if (NameLine <> nil) and (NameLine^.Data <> nil) then
+    NameS := Trim(NameLine^.Data^);
+  if NameS = '' then
+  begin
+    ErrorBox(UiText('The session name cannot be empty.',
+      'El nombre de la sesion no puede estar vacio.'));
+    if NameLine <> nil then
+      NameLine^.Select;
+    Exit(False);
+  end;
+  NameS := SanitizeSessionName(NameS);
+  if SessionIsLive(SessionSocketPathFor(NameS)) then
+  begin
+    ErrorBox(Format(UiText('A session named "%s" already exists.',
+      'Ya existe una sesion llamada "%s".'), [NameS]));
+    if NameLine <> nil then
+    begin
+      SetLineText(PInputLine(NameLine), SuggestSessionName(NameS));
+      NameLine^.Select;
+      NameLine^.SelectAll(True);
+    end;
+    Exit(False);
   end;
 end;
 
@@ -810,8 +1016,7 @@ end;
 
 // builds and runs the profile manager dialog; returns the final
 // command. With an empty list it shows an informational row and
-// disables every button except Close (creating profiles belongs to
-// the 'Save as profile' menu, not to this dialog). FocusRow as in
+// leaves New empty enabled. FocusRow as in
 // ExecClassManager: row to focus in, focused row out (-1 if empty).
 function ExecProfileManager(const AProfiles: TProfileArray;
   AActive, ADefault: integer; var FocusRow: integer): word;
@@ -822,7 +1027,7 @@ var
   Coll: PStringCollection;
   R: TRect;
   i: integer;
-  Btn: array[0..4] of PButton;
+  Btn: array[0..5] of PButton;
 begin
   Coll := New(PStringCollection, Init(Length(AProfiles) + 1, 8));
   for i := 0 to High(AProfiles) do
@@ -837,7 +1042,7 @@ begin
   with D^ do
   begin
     CmdLo := cmPrfActivate;
-    CmdHi := cmPrfDelete;
+    CmdHi := cmPrfNew;
     SelectCmd := cmPrfActivate;   // double click = activate
     // buttons BEFORE the listbox: the last selectable control inserted
     // gets the initial focus (fork rule: no Select before ExecView)
@@ -852,10 +1057,13 @@ begin
       cmPrfDefault, hcNoContext, bfNormal);
     Btn[4] := NewButton(19, 11, 12, 2, UiText('Delete', 'Eliminar'),
       cmPrfDelete, hcNoContext, bfNormal);
-    NewButton(32, 11, 10, 2, UiText('Close', 'Cerrar'), cmCancel,
+    Btn[5] := NewButton(32, 11, 13, 2,
+      UiText('New empty', 'Nuevo vacio'), cmPrfNew,
+      hcNoContext, bfNormal);
+    NewButton(46, 11, 10, 2, UiText('Close', 'Cerrar'), cmCancel,
       hcNoContext, bfNormal);
     if Length(AProfiles) = 0 then
-      for i := 0 to High(Btn) do
+      for i := 0 to 4 do
         if Btn[i] <> nil then
           Btn[i]^.SetState(sfDisabled, True);
     R.Assign(56, 1, 57, 8);
@@ -879,15 +1087,67 @@ begin
   Dispose(Coll, Done);
 end;
 
+function RunNewEmptyProfile(var AProfiles: TProfileArray;
+  out ACreatedName: string): boolean;
+var
+  Buf: ShortString;
+  NameS: string;
+begin
+  Result := False;
+  ACreatedName := '';
+  Buf := '';
+  while True do
+  begin
+    if InputBox(UiText('New empty profile', 'Nuevo perfil vacio'),
+      UiText('Profile name:', 'Nombre del perfil:'), Buf, 40) <> cmOK then
+      Exit;
+    NameS := Trim(Buf);
+    if NameS = '' then
+    begin
+      ErrorBox(UiText('The name cannot be empty.',
+        'El nombre no puede estar vacio.'));
+      Continue;
+    end;
+    if not ValidProfileName(NameS) then
+    begin
+      ErrorBox(UiText(
+        'The name cannot contain dots, brackets or control characters.',
+        'El nombre no puede contener puntos, corchetes ni caracteres de control.'));
+      Continue;
+    end;
+    try
+      if CreateEmptyProfileAtomic(ConfigFile, SystemConfigFile, NameS,
+        AProfiles) then
+      begin
+        ACreatedName := NameS;
+        Exit(True);
+      end;
+      // The authoritative reload under the common config lock found it.
+      ErrorBox(Format(UiText('A profile named "%s" already exists.',
+        'Ya existe un perfil llamado "%s".'), [NameS]));
+    except
+      on E: Exception do
+      begin
+        ErrorBox(Format(UiText('The profile could not be saved: %s',
+          'No se pudo guardar el perfil: %s'), [E.Message]));
+        Exit(False);
+      end;
+    end;
+  end;
+end;
+
 // rename with a prefilled InputBox; validates non-empty and uniqueness
 // case-insensitively; persists on accept. False = canceled or no
 // effective change.
-function RenameProfile(var AProfiles: TProfileArray; Idx: integer): boolean;
+function RenameProfile(var AProfiles: TProfileArray; Idx: integer;
+  out AOldName, ANewName: string): boolean;
 var
   Buf: ShortString;   // InputBox requires var ShortString (msgbox unit)
-  N: string;
+  N, OldName: string;
 begin
   Result := False;
+  AOldName := '';
+  ANewName := '';
   Buf := Copy(AProfiles[Idx].Name, 1, 40);
   repeat
     if InputBox(UiText('Rename profile', 'Renombrar perfil'),
@@ -897,6 +1157,13 @@ begin
     if N = '' then
       ErrorBox(UiText('The name cannot be empty.',
         'El nombre no puede estar vacio.'))
+    else if not ValidProfileName(N) then
+    begin
+      ErrorBox(UiText(
+        'The name cannot contain dots, brackets or control characters.',
+        'El nombre no puede contener puntos, corchetes ni caracteres de control.'));
+      N := '';
+    end
     else if ProfileNameExists(AProfiles, N, Idx) then
     begin
       ErrorBox(Format(UiText('A profile named "%s" already exists.',
@@ -906,9 +1173,24 @@ begin
   until N <> '';
   if N = AProfiles[Idx].Name then
     Exit;   // no change: do not persist or count as an edit
-  AProfiles[Idx].Name := N;
-  SaveProfiles(ConfigFile, AProfiles);
-  Result := True;
+  OldName := AProfiles[Idx].Name;
+  AOldName := OldName;
+  ANewName := N;
+  try
+    Result := RenameUserProfileAtomic(ConfigFile, SystemConfigFile,
+      OldName, N, AProfiles);
+    if not Result then
+      ErrorBox(UiText(
+        'The profile changed in another client; reopen the manager and try again.',
+        'El perfil cambio en otro cliente; abre de nuevo el gestor e intentalo otra vez.'));
+  except
+    on E: Exception do
+    begin
+      ErrorBox(Format(UiText('The profile could not be saved: %s',
+        'No se pudo guardar el perfil: %s'), [E.Message]));
+      Result := False;
+    end;
+  end;
 end;
 
 function RunProfileManager(var AProfiles: TProfileArray;
@@ -917,16 +1199,59 @@ function RunProfileManager(var AProfiles: TProfileArray;
 var
   Cmd: word;
   Idx, FocusRow: integer;
+  ProfileName, ActiveName, DefaultName, CreatedName: string;
+  OldName, NewName: string;
+  FreshCfg: TConfig;
+
+  procedure RebindRows(const PreferredName: string);
+  begin
+    AActive := FindProfileByName(AProfiles, ActiveName);
+    ADefault := FindProfileByName(AProfiles, DefaultName);
+    FocusRow := FindProfileByName(AProfiles, PreferredName);
+    if FocusRow < 0 then
+    begin
+      FocusRow := High(AProfiles);
+      if FocusRow < 0 then
+        FocusRow := 0;
+    end;
+  end;
 begin
   AAction := paNone;
   ATarget := -1;
   Result := False;
   FocusRow := 0;
+  ActiveName := '';
+  DefaultName := '';
   if (AActive >= 0) and (AActive <= High(AProfiles)) then
+  begin
     FocusRow := AActive;   // start on the active profile
+    ActiveName := AProfiles[AActive].Name;
+  end;
+  if (ADefault >= 0) and (ADefault <= High(AProfiles)) then
+    DefaultName := AProfiles[ADefault].Name;
   repeat
+    // Another attached client can change the configured default while this
+    // manager remains open. Refresh its marker before every modal pass;
+    // rename/delete perform their conditional remap under the same file lock.
+    LoadConfig(FreshCfg);
+    DefaultName := FreshCfg.DefaultProfile;
+    ADefault := FindProfileByName(AProfiles, DefaultName);
     Cmd := ExecProfileManager(AProfiles, AActive, ADefault, FocusRow);
     Idx := FocusRow;   // rows map 1:1 to AProfiles
+    if Cmd = cmPrfNew then
+    begin
+      ProfileName := '';
+      if (Idx >= 0) and (Idx <= High(AProfiles)) then
+        ProfileName := AProfiles[Idx].Name;
+      if RunNewEmptyProfile(AProfiles, CreatedName) then
+      begin
+        Result := True;
+        RebindRows(CreatedName);
+      end
+      else
+        RebindRows(ProfileName);
+      continue;
+    end;
     if (Idx >= 0) and (Idx <= High(AProfiles)) then
       case Cmd of
         cmPrfActivate:
@@ -956,33 +1281,53 @@ begin
             Exit(True);
           end;
         cmPrfRename:
-          if AProfiles[Idx].Origin = coSystem then
-            InfoProfileReadOnly
-          else if RenameProfile(AProfiles, Idx) then
-            Result := True;
+          begin
+            ProfileName := AProfiles[Idx].Name;
+            if AProfiles[Idx].Origin = coSystem then
+              InfoProfileReadOnly
+            else if RenameProfile(AProfiles, Idx, OldName, NewName) then
+            begin
+              if SameText(ActiveName, OldName) then
+                ActiveName := NewName;
+              if SameText(DefaultName, OldName) then
+                DefaultName := NewName;
+              RebindRows(NewName);
+              Result := True;
+            end
+            else
+              RebindRows(ProfileName);
+          end;
         cmPrfDelete:
           if AProfiles[Idx].Origin = coSystem then
             InfoProfileReadOnly
           else if ConfirmYes(Format(UiText('Delete profile "%s"?',
             'Eliminar el perfil "%s"?'), [AProfiles[Idx].Name])) then
           begin
-            Delete(AProfiles, Idx, 1);
-            SaveProfiles(ConfigFile, AProfiles);
+            ProfileName := AProfiles[Idx].Name;
+            try
+              if not DeleteUserProfileAtomic(ConfigFile, SystemConfigFile,
+                ProfileName, AProfiles) then
+              begin
+                ErrorBox(UiText(
+                  'The profile changed in another client; reopen the manager and try again.',
+                  'El perfil cambio en otro cliente; abre de nuevo el gestor e intentalo otra vez.'));
+                RebindRows(ProfileName);
+                Continue;
+              end;
+            except
+              on E: Exception do
+              begin
+                ErrorBox(Format(UiText('The profile could not be saved: %s',
+                  'No se pudo guardar el perfil: %s'), [E.Message]));
+                Continue;
+              end;
+            end;
             Result := True;
-            // readjust the active/default marks for the next
-            // passes of the dialog (visual effect only)
-            if AActive = Idx then
-              AActive := -1
-            else if AActive > Idx then
-              Dec(AActive);
-            if ADefault = Idx then
-              ADefault := -1
-            else if ADefault > Idx then
-              Dec(ADefault);
-            if FocusRow > High(AProfiles) then
-              FocusRow := High(AProfiles);
-            if FocusRow < 0 then
-              FocusRow := 0;
+            if SameText(ActiveName, ProfileName) then
+              ActiveName := '';
+            if SameText(DefaultName, ProfileName) then
+              DefaultName := '';
+            RebindRows('');
           end;
       end;
   until (Cmd = cmCancel) or (Cmd = cmOK);
@@ -1021,7 +1366,7 @@ begin
   with D^ do
   begin
     CmdLo := cmSesAttach;
-    CmdHi := cmSesDelete;
+    CmdHi := cmSesStart;
     SelectCmd := cmSesAttach;   // double click = attach
     R.Assign(3, 1, 63, 2);
     Insert(New(PStaticText, Init(R, Format('%-20s %-14s %5s  %s',
@@ -1037,8 +1382,15 @@ begin
       hcNoContext, bfDefault);   // Enter = attach
     NewButton(17, 12, 12, 2, UiText('Delete', 'Eliminar'), cmSesDelete,
       hcNoContext, bfNormal);
-    // Esc delivers cmCancel: always equivalent to this third button
-    NewButton(31, 12, 16, 2, ThirdCaption, cmCancel, hcNoContext, bfNormal);
+    // Esc remains cancel.  The explicit Start new button has its own command
+    // so startup can distinguish "continue normally" from "open the new
+    // session dialog".
+    if AllowStartNew then
+      NewButton(31, 12, 16, 2, ThirdCaption, cmSesStart,
+        hcNoContext, bfNormal)
+    else
+      NewButton(31, 12, 16, 2, ThirdCaption, cmCancel,
+        hcNoContext, bfNormal);
     R.Assign(62, 2, 63, 10);
     SB := New(PScrollBar, Init(R));
     Insert(SB);
@@ -1056,6 +1408,96 @@ begin
     FocusRow := -1;
   Dispose(D, Done);
   // the collection is not the listbox's: free after destroying the dialog
+  Dispose(Coll, Done);
+end;
+
+function RunNewSessionDialog(const AProfiles: TProfileArray;
+  ADefaultProfile: integer; out AName: string;
+  out AProfile: integer): boolean;
+var
+  D: PNewSessionDialog;
+  LB: PSessionProfileList;
+  SB: PScrollBar;
+  Coll: PStringCollection;
+  Names: TNameArray;
+  IndexMap: TIndexArray;
+  R: TRect;
+  I, Row, DefaultRow: integer;
+  C: word;
+begin
+  Result := False;
+  AName := '';
+  AProfile := -1;
+  Names := Default(TNameArray);
+  IndexMap := Default(TIndexArray);
+  SetLength(Names, 1);
+  SetLength(IndexMap, 1);
+  Names[0] := '';
+  IndexMap[0] := -1;
+  DefaultRow := 0;
+  Coll := New(PStringCollection, Init(Length(AProfiles) + 1, 8));
+  Coll^.AtInsert(0, Objects.NewStr(UiText(
+    '<Empty (no profile)>', '<Vacio (sin perfil)>')));
+  for I := 0 to High(AProfiles) do
+    if AProfiles[I].Enabled then
+    begin
+      Row := Length(Names);
+      SetLength(Names, Row + 1);
+      SetLength(IndexMap, Row + 1);
+      Names[Row] := AProfiles[I].Name;
+      IndexMap[Row] := I;
+      Coll^.AtInsert(Coll^.Count, Objects.NewStr(AProfiles[I].Name));
+      if I = ADefaultProfile then
+        DefaultRow := Row;
+    end;
+
+  R := CenteredRect(60, 16);
+  D := New(PNewSessionDialog, Init(R,
+    UiText('New session', 'Nueva sesion')));
+  D^.NameLine := nil;
+  D^.ProfileList := nil;
+  D^.ProfileNames := @Names;
+  D^.NameEdited := False;
+  with D^ do
+  begin
+    R.Assign(3, 1, 16, 2);
+    Insert(New(PStaticText, Init(R,
+      UiText('Session name:', 'Nombre sesion:'))));
+    R.Assign(17, 1, 56, 2);
+    NameLine := New(PSessionNameInput, Init(R, 64));
+    Insert(NameLine);
+    R.Assign(3, 3, 56, 4);
+    Insert(New(PStaticText, Init(R,
+      UiText('Starting profile:', 'Perfil inicial:'))));
+    NewButton(16, 12, 12, 2, UiText('Create', 'Crear'), cmOK,
+      hcNoContext, bfDefault);
+    NewButton(31, 12, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
+    R.Assign(55, 4, 56, 11);
+    SB := New(PScrollBar, Init(R));
+    Insert(SB);
+    R.Assign(3, 4, 55, 11);
+    LB := New(PSessionProfileList, Init(R, 1, SB));
+    ProfileList := LB;
+    Insert(LB);
+    LB^.NewList(Coll);
+    LB^.FocusItem(DefaultRow);
+    LB^.DrawView;
+  end;
+  C := Desktop^.ExecView(D);
+  if C = cmOK then
+  begin
+    if (D^.NameLine <> nil) and (D^.NameLine^.Data <> nil) then
+      AName := SanitizeSessionName(Trim(D^.NameLine^.Data^));
+    Row := D^.ProfileList^.Focused;
+    if (Row >= 0) and (Row <= High(IndexMap)) then
+      AProfile := IndexMap[Row]
+    else
+      AProfile := -1;
+    Result := AName <> '';
+  end;
+  Dispose(D, Done);
+  // TListBox does not own its current collection on destruction.
   Dispose(Coll, Done);
 end;
 
@@ -1343,10 +1785,7 @@ var
   Idx, FocusRow, i: integer;
 begin
   ASocketPath := '';
-  if AllowStartNew then
-    Result := spStartNew
-  else
-    Result := spCancel;
+  Result := spCancel;
   Infos := Default(TSessionInfoArray);
   FocusRow := 0;
   repeat
@@ -1387,8 +1826,11 @@ begin
             if FocusRow > 0 then
               Dec(FocusRow);
           end;
+      cmSesStart:
+        if AllowStartNew then
+          Exit(spStartNew);
     else
-      Exit;   // Esc or third button (cmCancel): default action
+      Exit;   // Esc or Cancel
     end;
   until False;
 end;

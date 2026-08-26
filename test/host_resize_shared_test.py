@@ -161,13 +161,13 @@ try:
           wait_shared((a, b), session, shrink_rect, shrink_pty))
 
     # Match B's physical surface without changing the already-canonical size.
-    # F5 must now use the latest 84x24 maximum and raw-broadcast the pane to
+    # Fullscreen must now use the latest 84x24 maximum and raw-broadcast the pane to
     # both equal-sized viewers, not resurrect the original 100x30 desktop.
     host_resize(b, 84, 24)
     drain_all((a, b), 0.8)
-    os.write(a.fd, b'\x1b[15~')
+    os.write(a.fd, stlib.FULLSCREEN_CHORD)
     drain_all((a, b), 1.5)
-    check('F5 uses resized canonical maximum', pane_size(session) == (84, 24))
+    check('fullscreen uses resized canonical maximum', pane_size(session) == (84, 24))
 
     offsets = {client: len(client.raw()) for client in (a, b)}
     # Assemble the visible marker at execution time; the echoed command line
@@ -181,15 +181,15 @@ try:
         if all(b'HOST_RESIZE_F5_OK' in client.raw()[offsets[client]:]
                for client in (a, b)):
             break
-    check('F5 output reaches both clients',
+    check('fullscreen output reaches both clients',
           all(b'HOST_RESIZE_F5_OK' in client.raw()[offsets[client]:]
               for client in (a, b)))
-    check('equal-size F5 is raw in both clients',
+    check('equal-size fullscreen is raw in both clients',
           all(RAW_OSC in client.raw()[offsets[client]:]
               for client in (a, b)))
 
-    os.write(b.fd, b'\x1b[15~')
-    check('F5 restores latest resized frame',
+    os.write(b.fd, stlib.FULLSCREEN_CHORD)
+    check('fullscreen restores latest resized frame',
           wait_shared((a, b), session, shrink_rect, shrink_pty))
 finally:
     if b is not None:

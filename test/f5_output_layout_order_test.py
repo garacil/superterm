@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""F5 output/layout ordering with two equal 100x30 viewers.
+"""Fullscreen output/layout ordering with two equal 100x30 viewers.
 
-The optional F5 animation gives this test a deterministic ordering barrier.
+The optional fullscreen animation gives this test a deterministic ordering barrier.
 The actor does not poll its session socket during the eight animation steps,
 while the daemon and the observer continue to run.  A helper in the pane emits
 numbered cursor-positioned/wrapping bursts during that interval. On entry the
@@ -147,7 +147,7 @@ def wait_state(clients, session, size, raw, timeout=6.0):
         if last[0] == size and all(value != raw for value in last[1]):
             return True
         time.sleep(0.02)
-    print('  last F5 state:', last, 'expected size/raw:', size, raw)
+    print('  last fullscreen state:', last, 'expected size/raw:', size, raw)
     return False
 
 
@@ -266,7 +266,7 @@ try:
     # ordered output frames have been consumed.
     entry_offsets = {client: len(client.raw()) for client in clients}
     os.write(actor.fd, b'E')
-    os.write(actor.fd, b'\x1b[15~')
+    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
     check('entry reaches shared raw 100x30',
           wait_state(clients, session, (100, 30), raw=True))
     entry_chunks = {client: client.raw()[entry_offsets[client]:]
@@ -309,7 +309,7 @@ try:
     # same delayed burst then split actor and observer across different paths.
     exit_offsets = {client: len(client.raw()) for client in clients}
     os.write(actor.fd, b'X')
-    os.write(actor.fd, b'\x1b[15~')
+    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
     check('exit restores shared IDE 96x25',
           wait_state(clients, session, (96, 25), raw=False))
     exit_chunks = {client: client.raw()[exit_offsets[client]:]

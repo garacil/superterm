@@ -13,7 +13,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from stlib import Client, fresh_home, check, report, close_all_daemons
+from stlib import (Client, FULLSCREEN_CHORD, fresh_home, check, report,
+                   close_all_daemons)
 
 home = fresh_home('passmodes')
 with open(os.path.join(home, '.superterm', 'superterm.ini'), 'w') as f:
@@ -28,7 +29,7 @@ def last_word(raw, mode):
 
 
 base = len(c.raw())
-c.send(b'\x1b[15~', 1.5)          # F5: maximise -> passthrough
+c.send(FULLSCREEN_CHORD, 1.5)      # enter passthrough
 check('passthrough released the mouse',
       last_word(c.raw()[base:], 1000) == 'l')
 
@@ -39,7 +40,7 @@ c.send(b"printf '\\033[?1006l\\033[?1002l\\033[?1000l'\r", 1.2)
 check('the inner reset reached the host', last_word(c.raw()[mark:], 1000) == 'l')
 
 mark = len(c.raw())
-c.send(b'\x1b[15~', 2.0)          # F5: back to the window manager
+c.send(FULLSCREEN_CHORD, 2.0)      # back to the window manager
 raw = c.raw()[mark:]
 check('reclaiming re-enables normal tracking', last_word(raw, 1000) == 'h')
 check('reclaiming re-enables button tracking', last_word(raw, 1002) == 'h')
