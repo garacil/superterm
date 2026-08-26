@@ -1552,7 +1552,8 @@ begin
   // This is the exact public proc_bsdinfo layout from sys/proc_info.h.
   // Refuse an unexpected ABI instead of reading offsets from the wrong
   // structure and turning them into signalling authority.
-  if SizeOf(Info) <> 136 then
+  N := SizeOf(Info);
+  if N <> 136 then
     Exit;
   Info := Default(TProcBsdInfo);
   N := proc_pidinfo(Pid, PROC_PIDTBSDINFO_, 0, @Info, SizeOf(Info));
