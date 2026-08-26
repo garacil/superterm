@@ -40,6 +40,8 @@ Required:
 
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
 - Free Pascal FV, FCL, and DB units.
+- On POSIX, Free Pascal thread units (`fp-units-misc` supplies `PThreads` on
+  Debian/Ubuntu). The native Windows build excludes those Unix-only units.
 - GNU make.
 - GNU/Linux (with `/proc`), macOS (Apple Silicon or Intel), or Windows 10
   version 1809 or newer for ConPTY.
@@ -92,15 +94,19 @@ commands, then creates the ignored `Makefile` from `Makefile.in`.
 ./configure
 ```
 
-On native Windows, run the build from Git Bash and put the Free Pascal binary
-directory first on `PATH`. The GNU Make 3.80 shipped with Free Pascal is
-supported; use that `make.exe` explicitly if another tool (for example an
-Embarcadero make) appears first on `PATH`:
+On native Windows, run the build from Git Bash. The generated recipes require
+`/bin/sh` and POSIX utilities, so do not invoke them from PowerShell. The GNU
+Make 3.80 shipped with Free Pascal is supported; invoke that `make.exe`
+explicitly because an unrelated make implementation may appear first on
+`PATH`. Replace `FPC_BIN` with the Git Bash spelling of your FPC Win64 binary
+directory (the verified path on the development machine is recorded in
+[`WINDOWS.md`](WINDOWS.md)):
 
 ```sh
-export PATH="/path/to/fpc/bin:$PATH"
-./configure --with-fpc="$(command -v fpc)"
-make release
+FPC_BIN=/d/path/to/fpc/3.2.2/bin/x86_64-win64
+./configure --with-fpc="$FPC_BIN/fpc.exe"
+"$FPC_BIN/make.exe" info
+"$FPC_BIN/make.exe" release
 ./bin/superterm.exe --version
 ```
 
@@ -296,7 +302,10 @@ terminal, process, input, console, and path implementations.
 GNU/Linux and macOS use `fork/exec`, `poll`, POSIX PTYs, and the bundled
 FreeVision text UI. Their detached server registers its listener, handshakes,
 clients, and PTY masters through `BaseUnix.fpPoll`, with no external
-event-library dependency and no `FD_SETSIZE` ceiling.
+event-library dependency and no `FD_SETSIZE` ceiling. The principal platform
+adapters are the PTY/process and CPU-count backends plus the optional SSH
+service manager; a few small platform type/constant branches remain beside
+their shared call sites:
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free

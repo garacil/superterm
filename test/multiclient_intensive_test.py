@@ -864,6 +864,20 @@ def wait_shared_focus(clients, pane, timeout=3.0):
     return False
 
 
+def wait_shared_pane_state(clients, pane, predicate, timeout=3.0):
+    """Wait for one exact pane state and complete geometry on every PTY."""
+    deadline = time.monotonic() + timeout
+    rects = [pane_frame_rect(client, pane) for client in clients]
+    while time.monotonic() < deadline:
+        if (predicate(rects) and
+                all(geometry(client) == geometry(clients[0])
+                    for client in clients[1:])):
+            return rects
+        drain_all(clients, 0.05)
+        rects = [pane_frame_rect(client, pane) for client in clients]
+    return rects
+
+
 def unit_path(start, finish):
     """Every adjacent mouse point differs by at most one terminal cell."""
     x, y = start
@@ -899,12 +913,12 @@ def mouse_drag(client, start, finish, steps=None, pause=0.025):
     ex, ey = points[-1]
     trace_action(f'MOUSE_DRAG pid={client.pid} from={start} to={finish} '
                  f'steps={len(points) - 1}')
-    os.write(client.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
     time.sleep(pause)
     for x, y in points[1:]:
-        os.write(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+        stlib.write_all(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
         time.sleep(pause)
-    os.write(client.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
 
 
 def slow_mouse_path(clients, actor, points, label, pane=1,
@@ -917,7 +931,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
     trace_action(f'VISUAL_BEGIN label={label} actor={actor.pid} pane={pane} '
                  f'points={len(points)} step_pause={step_pause:.3f} '
                  f'from={points[0]} to={points[-1]}')
-    os.write(actor.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
+    stlib.write_all(actor.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
     lock_seen = False
     # The lease is acquired before FreeVision enters DragView. Sample that
     # real locked frame before the first motion: in wireframe mode motion then
@@ -929,7 +943,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
     marker = f'K{label[0]}{pane}'
     marker_result = None
     for step, (x, y) in enumerate(points[1:], 1):
-        os.write(actor.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+        stlib.write_all(actor.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
         drain_all(clients, step_pause)
         for viewer in clients:
             if viewer is actor:
@@ -941,7 +955,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
                 ['send', f'{SESSION}:{pane}', split_marker_command(marker)],
                 attempts=8)
     ex, ey = points[-1]
-    os.write(actor.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
+    stlib.write_all(actor.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
     drain_all(clients, 0.45)
     unlocked = wait_unlocked(clients, timeout=3.0)
     trace_action(f'VISUAL_END label={label} lock_seen={int(lock_seen)} '
@@ -992,7 +1006,11 @@ def slow_visual_resize(clients, session, cycle):
     gesture_ok = slow_mouse_path(
         clients, clients[cycle % len(clients)],
         unit_path((right, bottom), target), f'RESIZE_{cycle}', pane=1)
-    final_rects = [pane_frame_rect(client, 1) for client in clients]
+    final_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(rect is not None and
+                           rect[0] == left and rect[1] == top and
+                           rect[2:] == target for rect in values))
     check(f'visual resize {cycle} reaches exact shared rectangle',
           all(rect is not None and
               rect[0] == left and rect[1] == top and
@@ -1041,7 +1059,9 @@ def slow_visual_circle(clients, session, cycle):
     expected = (points[-1][0] - grab, points[-1][1],
                 points[-1][0] - grab + width - 1,
                 points[-1][1] + height - 1)
-    final_rects = [pane_frame_rect(client, 1) for client in clients]
+    final_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(rect == expected for rect in values))
     check(f'visual circle {cycle} reaches exact shared rectangle',
           all(rect == expected for rect in final_rects))
     if not gesture_ok:
@@ -1068,7 +1088,7 @@ def held_fullscreen(clients, session, cycle):
     before = layout_rects(clients[0])
     trace_action(f'VISUAL_BEGIN label=F5_{cycle} actor={actor.pid} '
                  f'pane={pane} hold=0.8')
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.8)
     during = [layout_rects(client) for client in clients]
     # All stress viewers use CLIENT_W x CLIENT_H. Client count must not force
@@ -1080,7 +1100,7 @@ def held_fullscreen(clients, session, cycle):
           all(all(rect is None for rect in rects) for rects in during) and
           all('Detach' not in client.text() for client in clients))
     check(f'fullscreen {cycle} clients remain alive', all(c.alive() for c in clients))
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.6)
     check(f'fullscreen {cycle} restores exact shared geometry',
           all(layout_rects(client) == before for client in clients))
@@ -1103,11 +1123,19 @@ def circle_window(clients, session, cycles=1, step_pause=0.20):
     desired_bottom = min(clients[0].h - 3, top + 15)
     mouse_drag(clients[0], (right, bottom),
                (desired_right, desired_bottom), steps=7)
-    drain_all(clients, 0.8)
-    rect = pane_frame_rect(clients[0], 1)
-    check('circle pane resized for travel', rect is not None and
-          rect[2] - rect[0] + 1 <= 45 and rect[3] - rect[1] + 1 <= 17)
-    if rect is None:
+    resized_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(value is not None and
+                           value[2] - value[0] + 1 <= 45 and
+                           value[3] - value[1] + 1 <= 17
+                           for value in values))
+    rect = resized_rects[0]
+    resized_ok = all(value is not None and
+                     value[2] - value[0] + 1 <= 45 and
+                     value[3] - value[1] + 1 <= 17
+                     for value in resized_rects)
+    check('circle pane resized for travel', resized_ok)
+    if not resized_ok:
         return
 
     width = rect[2] - rect[0] + 1
@@ -1142,10 +1170,11 @@ def circle_window(clients, session, cycles=1, step_pause=0.20):
             finish = (target[0] + grab_offset, target[1])
             mouse_drag(clients[cycle % len(clients)], start, finish,
                        steps=6, pause=max(0.015, step_pause / 4.0))
-            drain_all(clients, max(0.30, step_pause))
-
-            actual_rects = [pane_frame_rect(client, 1)
-                            for client in clients]
+            actual_rects = wait_shared_pane_state(
+                clients, 1,
+                lambda values, target=target: all(
+                    item is not None and item[:2] == target
+                    for item in values))
             at_target = all(item is not None and item[:2] == target
                             for item in actual_rects)
             check(f'circle {cycle}.{point_no} exact shared position',
@@ -1222,12 +1251,12 @@ def exact_round(clients, session, number, extra=None):
         # assignment as an exact-output oracle; otherwise ``rS=...`` executes
         # and prints the value of an older S variable, falsely reporting lost
         # input after a zero-viewer reattach.
-        os.write(actor.fd, b'\x03')
+        stlib.write_all(actor.fd, b'\x03')
         drain_all(viewers, 0.15)
         trace_action(f'EXACT round={number} pane={pane} actor={actor.pid} '
                      f'token={token} cell={target_row},{target_col} '
                      f'cursor={cursor_row},{cursor_col}')
-        os.write(actor.fd, command.encode())
+        stlib.write_all(actor.fd, command.encode())
         drain_all(viewers, 0.35)
     drain_all(viewers, 0.9)
     check(f'round {number} exact locks released', wait_unlocked(viewers))
@@ -1288,7 +1317,7 @@ def exact_round(clients, session, number, extra=None):
                       actual == expected)
         require_clean(f'round {number} cursor pane {pane} placement')
         # Stop this pane's foreground sleep before checking the next one.
-        os.write(clients[0].fd, b'\x03')
+        stlib.write_all(clients[0].fd, b'\x03')
         drain_all(viewers, 0.15)
     drain_all(viewers, 0.45)
 
@@ -1327,7 +1356,7 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
     if (ready in reader_command or done in reader_command or
             done in done_command):
         raise AssertionError('reader sentinels must be split in the command')
-    os.write(actor.fd, reader_command.encode('ascii'))
+    stlib.write_all(actor.fd, reader_command.encode('ascii'))
     ready_capture = ''
     ready_rendered = False
     ready_deadline = time.monotonic() + 4.0
@@ -1356,7 +1385,7 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
     def concurrent_write(index):
         try:
             barrier.wait(timeout=3.0)
-            write_results[index] = os.write(
+            write_results[index] = stlib.write_all(
                 clients[index].fd, payloads[index])
         except Exception as exc:  # asserted by the coordinating thread
             write_results[index] = exc
@@ -1416,12 +1445,12 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
         check(f'round {number} churn renders complete live FIFO output',
               all(text.count(symbol) == count
                   for alphabet in alphabets for symbol in alphabet))
-    os.write(actor.fd, b'\x03')
+    stlib.write_all(actor.fd, b'\x03')
     drain_all(viewers, 0.15)
     # Send restoration as a fresh shell command. If cat were still alive it
     # would only render the split literals; the complete sentinel can appear
     # at the exact cell only after the shell executes `stty sane`.
-    os.write(actor.fd, done_command.encode('ascii'))
+    stlib.write_all(actor.fd, done_command.encode('ascii'))
     done_capture = ''
     done_rendered = False
     done_deadline = time.monotonic() + 4.0
@@ -1596,7 +1625,7 @@ def live_stress(clients, session, seconds):
             writes = []
             for client, sequence in zip(clients, sequences):
                 try:
-                    writes.append(os.write(client.fd, sequence))
+                    writes.append(stlib.write_all(client.fd, sequence))
                 except OSError as exc:
                     writes.append(exc)
             check(label + ' writes complete',
@@ -1835,7 +1864,7 @@ for number in range(ROUNDS):
     def concurrent_geometry_write(index):
         try:
             geometry_barrier.wait(timeout=3.0)
-            geometry_results[index] = os.write(
+            geometry_results[index] = stlib.write_all(
                 clients[index].fd, seqs[index])
         except Exception as exc:  # asserted by the coordinating thread
             geometry_results[index] = exc
@@ -1847,7 +1876,7 @@ for number in range(ROUNDS):
         writer.start()
     geometry_barrier.wait(timeout=3.0)
     # Detach the churn client while locks/proposals and PTY output are active.
-    churn_detach_write = os.write(churn.fd, b'\x11d')
+    churn_detach_write = stlib.write_all(churn.fd, b'\x11d')
     for writer in geometry_writers:
         writer.join(timeout=3.0)
     check(f'round {number} concurrent geometry writers finish',

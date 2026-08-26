@@ -250,7 +250,7 @@ try:
     check('initial pane is windowed 96x25', pane_size(session) == (96, 25))
 
     command = f'stty raw -echo; exec python3 -u {HELPER}\r'.encode('ascii')
-    os.write(actor.fd, command)
+    stlib.write_all(actor.fd, command)
     deadline = time.monotonic() + 6.0
     ready = False
     while time.monotonic() < deadline:
@@ -265,8 +265,8 @@ try:
     # The actor must not resize its mirror or enter raw before these already-
     # ordered output frames have been consumed.
     entry_offsets = {client: len(client.raw()) for client in clients}
-    os.write(actor.fd, b'E')
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, b'E')
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     check('entry reaches shared raw 100x30',
           wait_state(clients, session, (100, 30), raw=True))
     entry_chunks = {client: client.raw()[entry_offsets[client]:]
@@ -287,7 +287,7 @@ try:
     # Once the canonical layout is fullscreen, the same OSC must be preserved
     # byte-for-byte in both equal-sized passthrough viewers.
     raw_offsets = {client: len(client.raw()) for client in clients}
-    os.write(actor.fd, b'R')
+    stlib.write_all(actor.fd, b'R')
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         drain_all(clients, 0.08)
@@ -308,18 +308,10 @@ try:
     # the actor, animated for 360 ms, and sent the proposal afterwards; this
     # same delayed burst then split actor and observer across different paths.
     exit_offsets = {client: len(client.raw()) for client in clients}
-    os.write(actor.fd, b'X')
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, b'X')
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     check('exit restores shared IDE 96x25',
           wait_state(clients, session, (96, 25), raw=False))
-    exit_chunks = {client: client.raw()[exit_offsets[client]:]
-                   for client in clients}
-    exit_raw_paths = tuple(EXIT_OSC in exit_chunks[client]
-                           for client in clients)
-    if exit_raw_paths != (False, False):
-        print('  exit OSC raw paths (actor, observer):', exit_raw_paths)
-    check('post-ACK exit output is rendered by both',
-          exit_raw_paths == (False, False))
 
     # wait_state intentionally returns as soon as geometry settles. Do not
     # sample a lucky intermediate burst: require the deterministic final 07.
@@ -348,7 +340,27 @@ try:
     screen_head = daemon_screen_head(path)
     check('daemon screen/cursor is exact',
           screen_head == (96, 25, 18, 24))
-    drain_all(clients, 0.8)
+
+    # The daemon capture can settle before a Darwin PTY has delivered the
+    # corresponding renderer transaction to both viewer models.  Wait for the
+    # actual windowed state, not for a scheduler-sized delay.  This retains the
+    # strict physical cursor oracle: a viewer which never applies the final
+    # cursor movement still times out and fails below.
+    deadline = time.monotonic() + 6.0
+    while time.monotonic() < deadline:
+        drain_all(clients, 0.08)
+        actor_frame = frame_rect(actor)
+        observer_frame = frame_rect(observer)
+        actor_cursor = None if actor_frame is None else (
+            actor_frame[0] + 1 + 18, actor_frame[1] + 1 + 24)
+        observer_cursor = None if observer_frame is None else (
+            observer_frame[0] + 1 + 18, observer_frame[1] + 1 + 24)
+        if (rendered_pane_rows(actor) == final_rows and
+                rendered_pane_rows(observer) == final_rows and
+                (actor.screen.cursor.x, actor.screen.cursor.y) == actor_cursor and
+                (observer.screen.cursor.x,
+                 observer.screen.cursor.y) == observer_cursor):
+            break
 
     actor_rows = rendered_pane_rows(actor)
     observer_rows = rendered_pane_rows(observer)
@@ -360,6 +372,18 @@ try:
           actor_rows is not None and actor_rows == final_rows)
     check('observer mirror/render equals daemon capture',
           observer_rows is not None and observer_rows == final_rows)
+
+    # Only now has the helper's deterministic 07 burst demonstrably reached
+    # the daemon and both windowed mirrors.  Testing raw absence immediately
+    # after the layout ACK was vacuous: the first burst might not exist yet.
+    exit_chunks = {client: client.raw()[exit_offsets[client]:]
+                   for client in clients}
+    exit_raw_paths = tuple(EXIT_OSC in exit_chunks[client]
+                           for client in clients)
+    if exit_raw_paths != (False, False):
+        print('  exit OSC raw paths (actor, observer):', exit_raw_paths)
+    check('post-ACK exit output is rendered by both',
+          exit_raw_paths == (False, False))
 
     actor_frame = frame_rect(actor)
     observer_frame = frame_rect(observer)

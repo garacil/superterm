@@ -2085,10 +2085,9 @@ begin
   Result := False;
   if (not FConnected) or (Length(Data) > MAX_FRAME_SIZE) then
     Exit;
-  // First consume whatever the kernel accepts now.  MSG_DONTWAIT is per-call
-  // on Linux and Darwin (the FPC sockets unit forwards it directly to libc),
-  // so this remains non-blocking even though the attach handshake restored
-  // the descriptor's ordinary blocking mode.
+  // First consume whatever the kernel accepts now. GNU/Linux keeps the
+  // historical blocking descriptor and uses MSG_DONTWAIT for this call;
+  // Darwin also marks the interactive descriptor O_NONBLOCK after READY.
   if not FlushOutgoing then
     Exit;
   AddLen := SizeOf(H) + Length(Data);
@@ -2533,6 +2532,15 @@ begin
     CloseSocket;
     Exit;
   end;
+  // ConnectSocket deliberately restores blocking mode because the same
+  // helper serves short-lived synchronous CLI requests. Darwin's send flags
+  // alone did not keep a stalled daemon from blocking this interactive path;
+  // after READY this descriptor belongs exclusively to the event loop. Keep
+  // GNU/Linux's established MSG_DONTWAIT behaviour and blocking ReadFrame
+  // semantics unchanged.
+  {$IFDEF DARWIN}
+  SetNonBlocking(FSocket);
+  {$ENDIF}
   // READY completes a valid snapshot even when the canonical desktop has no
   // panes.  In that state LayoutNodes is deliberately empty and no SCREEN
   // frames precede READY.
@@ -7534,8 +7542,8 @@ begin
               begin
                 FPanes[I].QueryState;
                 if FPanes[I].TitleCmd <> '' then
-                  NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd),
-                    1, 24)
+                  NewTitle := ' ' + Copy(ExtractFileName(
+                    FirstWordOf(FPanes[I].TitleCmd)), 1, 24)
                 else if FPanes[I].TitleCwd <> '' then
                   NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
                     1, 24);

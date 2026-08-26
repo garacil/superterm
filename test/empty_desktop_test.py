@@ -212,32 +212,39 @@ def wait_empty(label, clients):
 
 def open_local_shell(client):
     """Choose Classes -> Local shell through the actual UI."""
-    client.send(b'\x1bc', 0.35)       # Alt-C: Classes menu
-    menu_visible = 'Local shell' in client.text()
-    client.send(b'1', 0.05)
+    client.send(b'\x1bc', 0.05)       # Alt-C: Classes menu
+    menu_visible = client.wait_until(
+        lambda text: 'Local shell' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'1')
     return menu_visible
 
 
 def close_last_pane(client):
     """Choose Panes -> Close pane through the actual UI."""
-    client.send(b'\x1bp', 0.35)       # Alt-P: Panes menu
-    menu_visible = 'Close pane' in client.text()
-    client.send(b'c', 0.05)
+    client.send(b'\x1bp', 0.05)       # Alt-P: Panes menu
+    menu_visible = client.wait_until(
+        lambda text: 'Close pane' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'c')
     return menu_visible
 
 
-def choose_cycle_class(client, settle=0.10):
+def choose_cycle_class(client, settle=0.05):
     """Choose the enabled test class, entry 2 after Local shell."""
     client.send(b'\x1bc', settle)
-    menu_visible = 'cycle' in client.text()
-    client.send(b'2', 0.015)
+    menu_visible = client.wait_until(lambda text: 'cycle' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'2')
     return menu_visible
 
 
 def close_pane_fast(client):
-    client.send(b'\x1bp', 0.10)
-    menu_visible = 'Close pane' in client.text()
-    client.send(b'c', 0.015)
+    client.send(b'\x1bp', 0.05)
+    menu_visible = client.wait_until(
+        lambda text: 'Close pane' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'c')
     return menu_visible
 
 
@@ -304,7 +311,8 @@ check('temporal case baseline renamed', temporal_rename.returncode == 0 and
       wait_for(lambda: 'TEMPORAL_OLD_PANE' in a.text() and
                'TEMPORAL_OLD_PANE' in b.text(), (a, b)))
 try:
-    os.write(b.fd, b'\x1bpc\x1bc1')  # Alt-P,c then Alt-C,1; no drain here
+    stlib.write_all(
+        b.fd, b'\x1bpc\x1bc1')  # Alt-P,c then Alt-C,1; no drain here
     temporal_sent = True
 except OSError:
     temporal_sent = False
@@ -381,16 +389,17 @@ if not fresh_attach_ok:
 # never let both mutate pane zero simultaneously.
 def concurrent_first_pair(clients, cycle):
     left, right = clients
-    left.send(b'\x1bc', 0.12)
-    right.send(b'\x1bc', 0.12)
-    menus = 'cycle' in left.text() and 'cycle' in right.text()
+    left.send(b'\x1bc', 0.05)
+    right.send(b'\x1bc', 0.05)
+    menus = (left.wait_until(lambda text: 'cycle' in text, 2.0) and
+             right.wait_until(lambda text: 'cycle' in text, 2.0))
     barrier = threading.Barrier(3)
     send_errors = []
 
     def choose(client):
         try:
             barrier.wait(timeout=3.0)
-            os.write(client.fd, b'2')
+            stlib.write_all(client.fd, b'2')
         except Exception as exc:
             send_errors.append(repr(exc))
 

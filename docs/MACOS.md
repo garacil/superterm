@@ -9,11 +9,12 @@ are shared without change. The daemon uses `BaseUnix.fpPoll` in its main thread
 for listeners, pending handshakes, clients and PTYs; sends use the platform's
 `MSG_DONTWAIT` value selected at compile time. GitHub Actions runs the complete
 regression suite on both Apple Silicon (`macos-15`) and Intel
-(`macos-15-intel`). The platform-conditional code is confined to
-`src/st_pty.pas` (PTY/process backend) and `src/st_cpu.pas` (available-CPU
-detection), plus the launchd adapter in `src/st_ssh_server.pas` for the
-optional dedicated OpenSSH entry. Free Pascal auto-defines `DARWIN` for a
-macOS host, so there are no special build flags.
+(`macos-15-intel`). The principal platform adapters are `src/st_pty.pas`
+(PTY/process backend), `src/st_cpu.pas` (available-CPU detection), and the
+launchd path in `src/st_ssh_server.pas` for the optional dedicated OpenSSH
+entry; a few small POSIX type/constant branches remain beside their shared
+call sites. Free Pascal auto-defines `DARWIN` for a macOS host, so there are no
+special build flags.
 
 The optional `[session] multithread=auto` pane reactors are native on macOS.
 SuperTerm reads `hw.activecpu` through FPC's Darwin `SysCtl` unit
@@ -58,7 +59,7 @@ Recommended terminal profile settings:
   the borders cleanly.
 - **Use Option as Meta key** (Terminal.app: *Profiles → Keyboard*; iTerm2:
   *Profiles → Keys → Left/Right Option key → Esc+*) so Alt/Meta shortcuts and
-  the `Ctrl-B` prefix behave as on GNU/Linux.
+  the `Ctrl-Q` prefix behave as on GNU/Linux.
 - **Mouse**: works out of the box — clicks (menus, pane focus, split) and
   drag-to-resize. superterm enables xterm SGR mouse reporting itself on macOS
   because the FPC RTL mouse driver is a `NOMOUSE` stub on Darwin (see the

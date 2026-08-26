@@ -132,8 +132,8 @@ check('terminal palette fits the 62-index format',
 check('terminal artwork emits exactly 46 row pairs',
       len(glyph_rows) == 46 and len(color_rows) == 46)
 check('transparent edge has an explicit logical width', declared_width == '128')
-check('terminal glyph grid uses only shade or empty',
-      all(len(row) <= 128 and set(row) <= {' ', '6'} for row in glyph_rows))
+check('terminal glyph grid uses only filled cell or empty',
+      all(len(row) <= 128 and set(row) <= {' ', '3'} for row in glyph_rows))
 
 indices_valid = True
 for glyphs, colors in zip(glyph_rows, color_rows):
@@ -148,7 +148,7 @@ for glyphs, colors in zip(glyph_rows, color_rows):
 check('every occupied cell has a valid palette index', indices_valid)
 
 padded = [row.ljust(128) for row in glyph_rows]
-occupied = sum(cell == '6' for row in padded for cell in row)
+occupied = sum(cell == '3' for row in padded for cell in row)
 check('cell fade leaves every outer boundary empty',
       all(cell == ' ' for cell in padded[0]) and
       all(cell == ' ' for cell in padded[-1]) and
@@ -156,16 +156,48 @@ check('cell fade leaves every outer boundary empty',
 check('cell fade keeps a substantial central subject',
       2500 <= occupied < 128 * 46)
 
-rendered_palette = {
-    tuple(round(component * 192 / 255) for component in bytes.fromhex(value))
-    for value in palette
-}
+rendered_palette = {tuple(bytes.fromhex(value)) for value in palette}
+
+
+def art_palette(text):
+    """Return the exact RGB colours declared by one generated .art file."""
+    line = next((item for item in text.splitlines()
+                 if item.startswith('palette: ')), '')
+    return {tuple(bytes.fromhex(value))
+            for value in line.removeprefix('palette: ').split()}
+
+
+london_palette = art_palette(generated_assets['london'])
 
 
 def screenshot_signature(path):
     with Image.open(path) as screenshot:
         rgb = screenshot.convert('RGB')
         return screenshot.size, len(set(pixels(rgb)) & rendered_palette)
+
+
+def standalone_matches_art(path):
+    """The documented 8x16-cell render must contain no font-made seams."""
+    with Image.open(path) as screenshot:
+        rgb = screenshot.convert('RGB')
+        if rgb.size != (128 * 8, 46 * 16):
+            return False
+        source = rgb.load()
+        for cy, glyphs in enumerate(glyph_rows):
+            glyphs = glyphs.ljust(128)
+            colors = color_rows[cy].ljust(128)
+            for cx, glyph in enumerate(glyphs):
+                expected = (0, 0, 0)
+                if glyph != ' ':
+                    palette_index = ALPHABET.find(colors[cx])
+                    if palette_index < 0 or palette_index >= len(palette):
+                        return False
+                    expected = tuple(bytes.fromhex(palette[palette_index]))
+                for py in range(cy * 16, (cy + 1) * 16):
+                    for px in range(cx * 8, (cx + 1) * 8):
+                        if source[px, py] != expected:
+                            return False
+        return True
 
 
 desktop_size, desktop_matches = screenshot_signature(DESKTOP_SHOT)
@@ -175,31 +207,42 @@ options_size, options_matches = screenshot_signature(OPTIONS_SHOT)
 with Image.open(BACKGROUND_GIF) as animation:
     gif_size = animation.size
     gif_frames = animation.n_frames
-    gif_matches = []
+    gif_goody_matches = []
+    gif_london_matches = []
     for frame in range(animation.n_frames):
         animation.seek(frame)
-        gif_matches.append(len(set(pixels(animation.convert('RGB'))) &
-                               rendered_palette))
+        frame_colours = set(pixels(animation.convert('RGB')))
+        gif_goody_matches.append(len(frame_colours & rendered_palette))
+        gif_london_matches.append(len(frame_colours & london_palette))
 
-check('documented desktop keeps its previous size',
-      desktop_size == (1296, 1102))
-check('documented standalone art keeps its previous size',
+check('desktop is a real 128x48 Konsole capture',
+      desktop_size == (1290, 912))
+check('standalone art is an exact 128x46 cell grid',
       background_size == (1024, 736))
-check('documented background menu keeps its previous size',
-      menu_size == (1296, 1102))
-check('documented options menu keeps its previous size',
-      options_size == (1296, 1102))
-check('documented animation has two full-size frames',
-      gif_size == (1296, 1102) and gif_frames == 2)
-# U+2593 is rasterized over black at 192/255 coverage in the reviewed Konsole
-# captures. Requiring most derived colours ties every screenshot to this exact
-# .art palette; the former Goody captures match only one (black), despite
-# having the same dimensions and plenty of unrelated colours.
+check('standalone art is exact filled cells without seams',
+      standalone_matches_art(BACKGROUND_SHOT))
+check('background menu is a real 128x48 capture',
+      menu_size == (1290, 912))
+check('options menu is a real 128x48 capture',
+      options_size == (1290, 912))
+check('background animation keeps its real capture geometry',
+      gif_size == (1290, 912) and gif_frames == 15)
+# Filled cells are emitted as spaces on exact RGB backgrounds. Requiring most
+# palette colours ties every screenshot to this exact .art palette; a capture
+# with old shade glyphs or unrelated colours cannot pass by dimensions alone.
 check('static documentation renders this exact artwork',
       min(desktop_matches, background_matches, menu_matches,
           options_matches) >= 40)
-check('every animation frame renders this exact artwork',
-      gif_matches and min(gif_matches) >= 40)
+check('animation starts with the empty desktop',
+      len(gif_goody_matches) == 15 and
+      all(max(goody, london) < 40 for goody, london in
+          zip(gif_goody_matches[:2], gif_london_matches[:2])))
+check('every Goody animation frame is exact',
+      len(gif_goody_matches) == 15 and
+      min(gif_goody_matches[2:10]) >= 40)
+check('every London animation frame is exact',
+      len(gif_london_matches) == 15 and
+      min(gif_london_matches[10:15]) >= 40)
 
 print('\nRESULT:', 'FAIL' if failed else 'PASS')
 sys.exit(1 if failed else 0)

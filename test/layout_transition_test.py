@@ -36,6 +36,13 @@ with open(INI, 'w') as fh:
              'autorestore=0\n'
              'dragcontent=1\n'
              'zoomanim=1\n')
+# This suite audits layout presentations, not concurrent pane output. Keep the
+# login shells alive but quiescent so bash/readline cannot redraw a prompt in
+# response to the deliberate TIOCSWINSZ between two animation frames and be
+# misclassified as a second layout transaction. Output/layout ordering has
+# its own deterministic coverage in f5_output_layout_order_test.py.
+with open(os.path.join(HOME, '.bash_profile'), 'w', encoding='ascii') as fh:
+    fh.write('exec /bin/sleep 3600\n')
 
 ENV = {
     'SUPERTERM_DEBUG': LOG,
@@ -224,15 +231,15 @@ def has_lock(value):
 
 
 def mouse_down(c, x, y):
-    os.write(c.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(c.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_drag(c, x, y):
-    os.write(c.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(c.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_up(c, x, y):
-    os.write(c.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
+    stlib.write_all(c.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
 
 
 def click(c, x, y):
@@ -732,7 +739,7 @@ before_f5 = frame_rect(a)
 f5_in_frame_attr_a = frame_attr(a, before_f5)
 f5_in_frame_attr_b = frame_attr(b, before_f5)
 begin_capture()
-os.write(a.fd, stlib.FULLSCREEN_CHORD)
+stlib.write_all(a.fd, stlib.FULLSCREEN_CHORD)
 drain_all(1.8)
 f5_in_a, f5_in_b = end_capture()
 after_f5 = frame_rect(a)
@@ -750,7 +757,7 @@ check('fullscreen geometry has no stale rollback',
 f5_out_frame_attr_a = frame_attr(a, after_f5)
 f5_out_frame_attr_b = frame_attr(b, after_f5)
 begin_capture()
-os.write(a.fd, stlib.FULLSCREEN_CHORD)
+stlib.write_all(a.fd, stlib.FULLSCREEN_CHORD)
 drain_all(1.8)
 f5_out_a, f5_out_b = end_capture()
 after_f5_out = frame_rect(a)

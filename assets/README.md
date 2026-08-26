@@ -33,3 +33,12 @@ dependencies only; SuperTerm loads the resulting `.art` files without them.
 
 The optional `GOODY_SRC=/path/to/source.png` override is retained for artwork
 experiments, but release regeneration uses `assets/alien-hacker.png`.
+
+## SSH hero illustration
+
+`../screenshots/ssh-anywhere.png` is likewise original AI-generated artwork
+created specifically for SuperTerm and distributed under this repository's
+GNU General Public License version 3. It is a promotional illustration of one
+encrypted workspace reaching several kinds of SSH-capable screen, not a claim
+that those pictured interfaces or devices are third-party products. It contains
+no text, logo, brand, or named character.

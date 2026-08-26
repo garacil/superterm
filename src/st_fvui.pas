@@ -9920,7 +9920,8 @@ begin
       begin
         Panes[i].QueryState;
         if Panes[i].TitleCmd <> '' then
-          Win[i]^.SetTitle(' ' + Copy(FirstWord(Panes[i].TitleCmd), 1, 24))
+          Win[i]^.SetTitle(' ' + Copy(ExtractFileName(
+            FirstWord(Panes[i].TitleCmd)), 1, 24))
         else if Panes[i].TitleCwd <> '' then
           Win[i]^.SetTitle(' ' + Copy(ExtractFileName(Panes[i].TitleCwd), 1, 24));
       end;

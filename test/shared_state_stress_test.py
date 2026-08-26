@@ -35,6 +35,24 @@ def drain_all(clients, seconds=0.4):
             client.drain(0.025)
 
 
+def wait_presentation(clients, predicate, timeout=4.0, stable_for=0.12):
+    """Wait for every PTY renderer to present one stable canonical state."""
+    deadline = time.monotonic() + timeout
+    stable_since = None
+    while time.monotonic() < deadline:
+        drain_all(clients, 0.06)
+        now = time.monotonic()
+        if predicate():
+            if stable_since is None:
+                stable_since = now
+            elif now - stable_since >= stable_for:
+                return True
+        else:
+            stable_since = None
+        time.sleep(0.025)
+    return False
+
+
 def control(args, label):
     result = run_cli(args, HOME)
     if result.returncode != 0:
@@ -202,7 +220,11 @@ if pane1_rect is not None:
     click(a, pane1_rect[0] + 2, pane1_rect[1] + 2)
 check('first client focus reaches daemon',
       wait_state(clients, session, focused=1))
+first_focus_presented = wait_presentation(clients, lambda: (
+    active_frame(a, TITLE1) and active_frame(b, TITLE1) and
+    not active_frame(a, TITLE2) and not active_frame(b, TITLE2)))
 check('first focus is rendered by both clients',
+      first_focus_presented and
       active_frame(a, TITLE1) and active_frame(b, TITLE1) and
       not active_frame(a, TITLE2) and not active_frame(b, TITLE2))
 
@@ -211,7 +233,11 @@ if pane2_rect is not None:
     click(b, pane2_rect[0] + 2, pane2_rect[1] + 2)
 check('second client focus reaches daemon',
       wait_state(clients, session, focused=2))
+second_focus_presented = wait_presentation(clients, lambda: (
+    active_frame(a, TITLE2) and active_frame(b, TITLE2) and
+    not active_frame(a, TITLE1) and not active_frame(b, TITLE1)))
 check('second focus is rendered by both clients',
+      second_focus_presented and
       active_frame(a, TITLE2) and active_frame(b, TITLE2) and
       not active_frame(a, TITLE1) and not active_frame(b, TITLE1))
 
@@ -270,6 +296,21 @@ for turn in range(9):
             f'round {turn} {mode} command succeeds')
     check(f'round {turn} {mode} clears transient flags',
           wait_state(clients, session, focused=pane))
+    mode_key = (mode, pane)
+    known_layout = mode_layouts.get(mode_key)
+
+    def organized_presentation():
+        current = tuple(frame_origin(c, title) for title in TITLES)
+        visible = (any(origin is not None for origin in current)
+                   if mode == 'cascade'
+                   else all(origin is not None for origin in current))
+        return (visible and
+                current == tuple(frame_origin(d, title) for title in TITLES) and
+                geometry(c) == geometry(d) and
+                (mode != 'cascade' or current != before_organize) and
+                (known_layout is None or current == known_layout))
+
+    organize_presented = wait_presentation(clients, organized_presentation)
     layout = tuple(frame_origin(c, title) for title in TITLES)
     # Cascade is allowed to obscure a background title completely; tile/grid
     # are not.  The daemon-state oracle above still proves that both panes
@@ -281,9 +322,9 @@ for turn in range(9):
     check(f'round {turn} {mode} has valid material frame origins',
           visible_origins_ok)
     check(f'round {turn} {mode} reaches both clients',
+          organize_presented and
           layout == tuple(frame_origin(d, title) for title in TITLES) and
           geometry(c) == geometry(d))
-    mode_key = (mode, pane)
     if mode_key in mode_layouts:
         check(f'round {turn} {mode} is deterministic',
               layout == mode_layouts[mode_key])
@@ -301,15 +342,27 @@ for turn in range(9):
                 f'round {turn} pre-minimize grid succeeds')
         check(f'round {turn} pre-minimize grid settles',
               wait_state(clients, session, focused=pane))
-        drain_all(clients, 0.3)
+        grid_presented = wait_presentation(clients, lambda: (
+            all(frame_rect(c, title) is not None for title in TITLES) and
+            tuple(frame_rect(c, title) for title in TITLES) ==
+            tuple(frame_rect(d, title) for title in TITLES) and
+            geometry(c) == geometry(d)))
+        check(f'round {turn} pre-minimize grid is presented',
+              grid_presented)
         before_minimize = frame_rect(c, TITLES[other - 1])
         control(['minimize', f'{session}:{other}'],
                 f'round {turn} minimize command succeeds')
         check(f'round {turn} minimize flag settles',
               wait_state(clients, session, focused=pane,
                          minimized={other}))
+        minimize_presented = wait_presentation(clients, lambda: (
+            frame_rect(c, TITLES[other - 1]) is None and
+            frame_rect(d, TITLES[other - 1]) is None and
+            icon_rect(c, TITLES[other - 1]) is not None and
+            icon_rect(c, TITLES[other - 1]) ==
+            icon_rect(d, TITLES[other - 1])))
         check(f'round {turn} minimized icon is material and shared',
-              before_minimize is not None and
+              minimize_presented and before_minimize is not None and
               frame_rect(c, TITLES[other - 1]) is None and
               frame_rect(d, TITLES[other - 1]) is None and
               icon_rect(c, TITLES[other - 1]) is not None and
@@ -319,7 +372,13 @@ for turn in range(9):
                 f'round {turn} restore minimized command succeeds')
         check(f'round {turn} restore minimized flag settles',
               wait_state(clients, session, focused=pane))
+        restore_presented = wait_presentation(clients, lambda: (
+            frame_rect(c, TITLES[other - 1]) == before_minimize and
+            frame_rect(d, TITLES[other - 1]) == before_minimize and
+            icon_rect(c, TITLES[other - 1]) is None and
+            icon_rect(d, TITLES[other - 1]) is None))
         check(f'round {turn} restore returns exact material frame',
+              restore_presented and
               frame_rect(c, TITLES[other - 1]) == before_minimize and
               frame_rect(d, TITLES[other - 1]) == before_minimize and
               icon_rect(c, TITLES[other - 1]) is None and
@@ -330,16 +389,25 @@ for turn in range(9):
                 f'round {turn} zoom command succeeds')
         check(f'round {turn} zoom flag settles',
               wait_state(clients, session, focused=pane, zoomed={pane}))
+        zoom_presented = wait_presentation(clients, lambda: (
+            frame_rect(c, TITLES[pane - 1]) is not None and
+            frame_rect(c, TITLES[pane - 1]) != before_zoom[pane - 1] and
+            frame_rect(c, TITLES[pane - 1]) ==
+            frame_rect(d, TITLES[pane - 1])))
         zoom_rect = frame_rect(c, TITLES[pane - 1])
         check(f'round {turn} zoom is a shared material transition',
-              zoom_rect is not None and
+              zoom_presented and zoom_rect is not None and
               zoom_rect != before_zoom[pane - 1] and
               frame_rect(d, TITLES[pane - 1]) == zoom_rect)
         control(['restore', f'{session}:{pane}'],
                 f'round {turn} restore zoom command succeeds')
         check(f'round {turn} restore zoom flag settles',
               wait_state(clients, session, focused=pane))
+        zoom_restore_presented = wait_presentation(clients, lambda: (
+            tuple(frame_rect(c, title) for title in TITLES) == before_zoom and
+            tuple(frame_rect(d, title) for title in TITLES) == before_zoom))
         check(f'round {turn} zoom restore returns exact layout',
+              zoom_restore_presented and
               tuple(frame_rect(c, title) for title in TITLES) == before_zoom and
               tuple(frame_rect(d, title) for title in TITLES) == before_zoom)
     marker = f'SHARED_CURSOR_{turn}_{pane}'
@@ -387,7 +455,10 @@ control(['organize', session, 'cascade'],
         'final cascade command succeeds')
 check('final cascade state settles',
       wait_state(clients, session, focused=1))
+final_cascade_presented = wait_presentation(clients, lambda: (
+    geometry(c) != before_final_cascade and geometry(c) == geometry(d)))
 check('final cascade is a material shared transition',
+      final_cascade_presented and
       geometry(c) != before_final_cascade and geometry(c) == geometry(d))
 last_geometry = geometry(c)
 last_rects = tuple(frame_rect(c, title) for title in TITLES)
@@ -396,9 +467,11 @@ detach(d, 'stress observer')
 
 e = stlib.Client(HOME, args=['--attach', session],
                  w=100, h=30, lang='en')
-e.drain(3.0)
+reattach_presented = wait_presentation((e,), lambda: (
+    geometry(e) == last_geometry and
+    tuple(frame_rect(e, title) for title in TITLES) == last_rects))
 check('final geometry survives all detach',
-      geometry(e) == last_geometry and
+      reattach_presented and geometry(e) == last_geometry and
       tuple(frame_rect(e, title) for title in TITLES) == last_rects)
 check('reattach restores explicit final daemon state',
       wait_state((e,), session, focused=1))
