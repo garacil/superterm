@@ -27,6 +27,10 @@ from stlib import check
 HOME = stlib.fresh_home('ssh-server-config')
 ROOT = os.path.join(HOME, 'isolated-sshd')
 USER = pwd.getpwuid(os.getuid()).pw_name
+# BuildGeneratedConfig uses FPC ExpandFileName, which makes ParamStr(0)
+# absolute without resolving symlinks.  Mirror that contract: on Darwin
+# /tmp is the system alias for /private/tmp, so realpath() is not equivalent.
+SELF_BIN = os.path.abspath(stlib.BIN)
 DEFAULT_AUTH_INI = (
     'password_authentication=1\n'
     'managed_authorized_keys=1\n'
@@ -199,7 +203,7 @@ required = (
     'maxsessions 1',
     ('authorizedkeysfile ' + auth_dir.lower() +
      '/%u .ssh/authorized_keys'),
-    'forcecommand ' + os.path.realpath(stlib.BIN).lower() + ' --ssh-entry',
+    'forcecommand ' + SELF_BIN.lower() + ' --ssh-entry',
 )
 check('generated policy is fail-closed', all(item in cfg for item in required))
 if os.name == 'posix' and sys.platform != 'darwin':
@@ -207,7 +211,7 @@ if os.name == 'posix' and sys.platform != 'darwin':
           service_files and 'KillMode=process' in read(service_files[0]))
     check('service validates then execs accepted sshd',
           service_files and
-          (os.path.realpath(stlib.BIN) + ' ssh-server run') in
+          (SELF_BIN + ' ssh-server run') in
           read(service_files[0]) and 'sshd -D' not in read(service_files[0]))
 elif sys.platform == 'darwin':
     check('launchd descriptor abandons the listener process group',
@@ -309,7 +313,7 @@ if sshd:
           ('authorizedkeysfile ' + auth_dir.lower() +
            '/%u .ssh/authorized_keys') in effective_policy)
     check('real sshd confirms forced command',
-          ('forcecommand ' + os.path.realpath(stlib.BIN).lower() +
+          ('forcecommand ' + SELF_BIN.lower() +
            ' --ssh-entry') in effective_policy)
 
 # Debian-style usrmerge keeps /usr/sbin as a root-owned link to /usr/bin.
@@ -1146,7 +1150,7 @@ if sshd:
                 capture_output=True)
             match_global_stays_safe = (
                 global_dump.returncode == 0 and
-                ('forcecommand ' + os.path.realpath(stlib.BIN) +
+                ('forcecommand ' + SELF_BIN +
                  ' --ssh-entry').lower() in global_dump.stdout.lower())
         try:
             os.unlink(wrapper_log)
