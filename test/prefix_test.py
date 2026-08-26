@@ -134,7 +134,21 @@ reset_home()
 write_ini('prefix=ctrl-b')
 check("ctrl-b: Ctrl-Q no es prefijo", not detach_works(b'\x11'))
 
-# ---- 5: prefix-s opens the session picker ----
+# ---- 5: fullscreen follows an explicit non-default prefix ----
+reset_home()
+write_ini('prefix=ctrl-b')
+c = Client()
+c.drain(2.0)
+check("ctrl-b se anuncia para fullscreen",
+      'Ctrl-B f Full screen' in c.text())
+c.send(b'\x02f', 1.2)
+check("ctrl-b f entra en fullscreen", 'Detach' not in c.text())
+c.send(b'\x02f', 1.2)
+check("ctrl-b f restaura el IDE", 'Detach' in c.text())
+c.send(b'\x1bx', 0.8)
+c.close()
+
+# ---- 6: prefix-s opens the session picker ----
 reset_home()
 c = Client()
 c.drain(2.0)
@@ -146,7 +160,7 @@ c.send(b'\x1b', 0.6)
 c.send(b'\x1bx', 0.8)
 c.close()
 
-# ---- 6: the session name is sanitized (no ../ nor spaces) ----
+# ---- 7: the session name is sanitized (no ../ nor spaces) ----
 reset_home()
 c = Client(['--session', '../evil name!'])
 c.drain(2.5)

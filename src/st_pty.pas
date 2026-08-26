@@ -24,16 +24,33 @@ const
 
 type
   TStringArray = array of string;
+  TConfiguredLaunchKind = (clkNone, clkShell, clkArgv);
 
   TPty = class
   private
     FMaster: cint;
     FPid: TPid;
+    FPidIdentity: string;
     FPendingInput: RawByteString;
     FAlive: boolean;
     FShellBase: string;
     FPendingSecret: RawByteString;
     FPromptBuffer: RawByteString;
+    FLaunchKind: TConfiguredLaunchKind;
+    FLaunchProgram: string;
+    FLaunchArgs: TStringArray;
+    FLaunchShell: string;
+    FLaunchCommand: string;
+    FLaunchCwd: string;
+    FLaunchExtraEnv: string;
+    FLaunchSecret: string;
+    FLaunchCols, FLaunchRows: integer;
+    FLaunchLoginShell: boolean;
+    FFallbackShell: string;
+    FFallbackCommand: string;
+    FFallbackCwd: string;
+    FFallbackLoginShell: boolean;
+    FLaunchPending: boolean;
     function SpawnInternal(const AProgram: string;
       const AArgs: array of string; const ACwd: string;
       ACols, ARows: integer; const AExtraEnv, ASecret: string): boolean;
@@ -41,15 +58,31 @@ type
     TitleCmd: string;   // command in progress (for title/session)
     TitleCwd: string;   // current cwd
     TitleArgs: TStringArray;
+    constructor Create;
     destructor Destroy; override;
     property Master: cint read FMaster;
     property Pid: TPid read FPid;
     property Alive: boolean read FAlive write FAlive;
+    property LaunchPending: boolean read FLaunchPending;
     function Spawn(const AShell, ACwd, ACommand: string; ACols, ARows: integer;
       const AExtraEnv: string = ''; ALoginShell: boolean = True): boolean;
     function SpawnArgv(const AProgram: string; const AArgs: array of string;
       const ACwd: string; ACols, ARows: integer;
       const AExtraEnv: string = ''; const ASecret: string = ''): boolean;
+    // A server-first workspace records an exact launch without forking in the
+    // UI.  After StartDetachedServer's grandchild owns this TPty object, it
+    // executes the same launch and consequently becomes the pane's real OS
+    // parent and sole waitpid owner.
+    procedure ConfigureShell(const AShell, ACwd, ACommand: string;
+      ACols, ARows: integer; const AExtraEnv: string;
+      ALoginShell: boolean; const AFallbackShell, AFallbackCwd,
+      AFallbackCommand: string; AFallbackLoginShell: boolean);
+    procedure ConfigureArgv(const AProgram: string;
+      const AArgs: array of string; const ACwd: string;
+      ACols, ARows: integer; const AExtraEnv, ASecret: string;
+      const AFallbackShell, AFallbackCwd, AFallbackCommand: string;
+      AFallbackLoginShell: boolean);
+    function SpawnConfigured(out AUsedFallback: boolean): boolean;
     function ReadBuf(out Buf: array of byte): integer;
     function WriteStr(const S: RawByteString): boolean;
     // push queued input toward the pane; safe to call at any time
@@ -57,10 +90,21 @@ type
     function InputPending: boolean;
     procedure Resize(ACols, ARows: integer);
     procedure KillPane;
+    // Session-daemon close path: signal and retire without waiting in the
+    // sole socket reactor. The returned direct-child PID is reaped later by
+    // the daemon's non-blocking child collector.
+    function TerminateNoWait: TPid;
+    // Observe a direct child's exit with waitid(WNOWAIT), seal its process
+    // group while the leader PID is still reserved, then let the caller reap.
+    function ExitPendingNoReap(out AChildPid: TPid): boolean;
     // releases the PTY without touching the child: the process becomes
     // property of the session daemon (the parent closes its master copy)
     procedure Abandon;
+    // PTY EOF invalidates the process-group identity immediately.
     procedure MarkDead;
+    // The daemon reaped one of its own pane leaders. Keep the master open so
+    // buffered output reaches the screen before EOF, but retire the PID now.
+    procedure MarkReaped;
     procedure MarkExited;
     procedure QueryState;
   end;
@@ -93,13 +137,108 @@ function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
 function ProcArgs(Pid: TPid): TStringArray;
 function ProcCmdLine(Pid: TPid): string;
 function ProcCwd(Pid: TPid): string;
+// Kernel-issued process birth identity.  A numeric PID alone is never safe
+// to retain after the process may have exited and been recycled.
+function ProcBirthIdentity(Pid: TPid): string;
 
 function FirstWordOf(const S: string): string;
 
 implementation
 
 uses
-  st_debug, StrUtils;
+  st_debug, StrUtils
+  {$IFDEF LINUX}, PThreads{$ENDIF};
+
+const
+  PTY_EXEC_POLL_MS = 100;
+  PTY_EXEC_WAIT_POLLS = 50;
+  PTY_REAP_POLL_MS = 10;
+  PTY_REAP_ATTEMPTS = 200;
+
+{$IFDEF DARWIN}
+const
+  ST_WAITID_WNOWAIT = $00000020;
+{$ELSE}
+const
+  ST_WAITID_WNOWAIT = $01000000;
+{$ENDIF}
+
+const
+  ST_WAITID_P_PID = 1;
+  ST_WAITID_WEXITED = $00000004;
+
+function cwaitid(AIdType: cint; AId: cuint; AInfo: pointer;
+  AOptions: cint): cint; cdecl; external 'c' name 'waitid';
+
+{$IFDEF LINUX}
+type
+  // Linux BaseUnix.TSigSet is the compact kernel syscall mask, whereas
+  // pthread_sigmask/sigpending use libc's 1024-bit sigset_t. Use the exact
+  // public type shipped by FPC's pthreads unit instead of guessing its ABI.
+  TThreadSignalSet = PThreads.TSigSet;
+{$ELSE}
+type
+  // Darwin BaseUnix exposes the public libc sigset_t directly.
+  TThreadSignalSet = BaseUnix.TSigSet;
+{$ENDIF}
+
+function c_pthread_sigmask(AHow: cint; ANewSet, AOldSet: pointer): cint;
+  cdecl; external 'c' name 'pthread_sigmask';
+function c_sigemptyset(ASet: pointer): cint;
+  cdecl; external 'c' name 'sigemptyset';
+function c_sigaddset(ASet: pointer; ASignal: cint): cint;
+  cdecl; external 'c' name 'sigaddset';
+function c_sigpending(ASet: pointer): cint;
+  cdecl; external 'c' name 'sigpending';
+function c_sigismember(ASet: pointer; ASignal: cint): cint;
+  cdecl; external 'c' name 'sigismember';
+function c_sigwait(ASet: pointer; ASignal: pcint): cint;
+  cdecl; external 'c' name 'sigwait';
+
+function PipeWriteNoSigPipe(AFd: cint; ABuffer: pointer; ACount: TSize;
+  out AError: cint): TSsize;
+var
+  BlockSet, OldSet, PendingSet: TThreadSignalSet;
+  PendingBefore, PendingAfter: boolean;
+  ReceivedSignal: cint;
+begin
+  Result := -1;
+  AError := ESysEINVAL;
+  BlockSet := Default(TThreadSignalSet);
+  OldSet := Default(TThreadSignalSet);
+  if (c_sigemptyset(@BlockSet) <> 0) or
+     (c_sigaddset(@BlockSet, SIGPIPE) <> 0) then
+    Exit;
+  // Blocking only in this calling thread makes the individual pipe write
+  // safe without changing SIGPIPE handling for the UI, reactor or workers.
+  // pthread_sigmask returns an error number directly and does not use errno.
+  if c_pthread_sigmask(SIG_BLOCK, @BlockSet, @OldSet) <> 0 then
+    Exit;
+  PendingSet := Default(TThreadSignalSet);
+  PendingBefore := (c_sigpending(@PendingSet) = 0) and
+    (c_sigismember(@PendingSet, SIGPIPE) = 1);
+  Result := FpWrite(AFd, ABuffer, ACount);
+  if Result < 0 then
+    AError := FpGetErrNo
+  else
+    AError := 0;
+  // POSIX queues SIGPIPE to the thread which performed a failed write. If
+  // this call introduced it, consume precisely that pending signal before
+  // restoring the old mask. Never consume a SIGPIPE which was already
+  // pending on entry.
+  if (Result < 0) and (AError = ESysEPIPE) and (not PendingBefore) then
+  begin
+    PendingSet := Default(TThreadSignalSet);
+    PendingAfter := (c_sigpending(@PendingSet) = 0) and
+      (c_sigismember(@PendingSet, SIGPIPE) = 1);
+    if PendingAfter then
+    begin
+      ReceivedSignal := 0;
+      c_sigwait(@BlockSet, @ReceivedSignal);
+    end;
+  end;
+  c_pthread_sigmask(SIG_SETMASK, @OldSet, nil);
+end;
 
 function FirstWordOf(const S: string): string;
 var
@@ -276,9 +415,38 @@ var
   Argv, Envp: PPAnsiChar;
   PassPipe, ExecPipe: TFildes;
   B: byte;
-  N, Left, Offset: integer;
+  N, Left, Offset, Flags, Attempt, WaitAttempts, TestAttempts: integer;
+  WriteError: cint;
+  WaitStatus: cint;
+  Waited: TPid;
+  PollItem: TPollFD;
+  TestText: string;
   SecretPtr: PAnsiChar;
-  UseSecretPipe: boolean;
+  UseSecretPipe, SecretWritten: boolean;
+
+  procedure AbortSpawnedChild;
+  var
+    I: integer;
+  begin
+    // NewPid remains our unreaped child throughout this procedure, so both
+    // its PID and (once setsid succeeds) its PGID are kernel-reserved exact
+    // identities.  Signal before waitpid, then retire the master as one
+    // failed spawn transaction.
+    FpKill(NewPid, SIGKILL);
+    FpKill(-NewPid, SIGKILL);
+    WaitStatus := 0;
+    for I := 1 to PTY_REAP_ATTEMPTS do
+    begin
+      Waited := FpWaitPid(NewPid, WaitStatus, WNOHANG);
+      if Waited = NewPid then
+        Break;
+      if (Waited < 0) and (FpGetErrNo <> ESysEINTR) then
+        Break;
+      if I < PTY_REAP_ATTEMPTS then
+        Sleep(PTY_REAP_POLL_MS);
+    end;
+    FpClose(Mfd);
+  end;
 begin
   // settle the session identity in THIS process before forking: BuildEnv
   // runs in the child, and an id first generated there would die with the
@@ -288,6 +456,7 @@ begin
   FAlive := False;
   FMaster := -1;
   FPid := -1;
+  FPidIdentity := '';
   FPendingSecret := '';
   FPromptBuffer := '';
   Argv := nil;
@@ -446,33 +615,102 @@ begin
   FpClose(ExecPipe[1]);
   if PassPipe[0] >= 0 then
     FpClose(PassPipe[0]);
-  if UseSecretPipe then
-  begin
-    SecretPtr := PAnsiChar(ASecret);
-    Offset := 0;
-    Left := Length(ASecret);
-    while Left > 0 do
-    begin
-      N := FpWrite(PassPipe[1], SecretPtr + Offset, Left);
-      if N > 0 then
-      begin
-        Inc(Offset, N);
-        Dec(Left, N);
-      end
-      else if fpgeterrno <> ESysEINTR then
-        Break;
-    end;
-    FpClose(PassPipe[1]);
-  end;
 
   // A byte means setup/exec failed; EOF means the close-on-exec handshake
-  // succeeded and the new process owns the slave terminal.
-  N := FileRead(ExecPipe[0], B, 1);
-  FpClose(ExecPipe[0]);
-  if N > 0 then
+  // succeeded and the new process owns the slave terminal. Never perform a
+  // blocking read here: this function also runs during daemon publication,
+  // and one child stuck before exec must not freeze the session creator.
+  Flags := FpFcntl(ExecPipe[0], F_GETFL, 0);
+  if (Flags < 0) or
+     (FpFcntl(ExecPipe[0], F_SETFL, Flags or O_NONBLOCK) < 0) then
+    WaitAttempts := 0
+  else
+    WaitAttempts := PTY_EXEC_WAIT_POLLS;
+  TestText := GetEnvironmentVariable('SUPERTERM_TEST_PTY_EXEC_POLLS');
+  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     TryStrToInt(TestText, TestAttempts) and (TestAttempts >= 1) and
+     (TestAttempts <= WaitAttempts) then
+    WaitAttempts := TestAttempts;
+  B := 0;
+  N := -1;
+  for Attempt := 1 to WaitAttempts do
   begin
-    FpWaitPid(NewPid, N, 0);
-    FpClose(Mfd);
+    N := FileRead(ExecPipe[0], B, 1);
+    if N >= 0 then
+      Break;
+    if (FpGetErrNo <> ESysEINTR) and (FpGetErrNo <> ESysEAGAIN) and
+       (FpGetErrNo <> ESysEWOULDBLOCK) then
+      Break;
+    if FpGetErrNo = ESysEINTR then
+      Continue;
+    PollItem := Default(TPollFD);
+    PollItem.fd := ExecPipe[0];
+    PollItem.events := POLLIN;
+    FpPoll(@PollItem, 1, PTY_EXEC_POLL_MS);
+  end;
+  // The last poll may itself have observed the close/byte. Consume that
+  // result once before classifying the fixed attempt budget as exhausted.
+  if N < 0 then
+    N := FileRead(ExecPipe[0], B, 1);
+  FpClose(ExecPipe[0]);
+
+  // Do not feed sshpass until the close-on-exec handshake proves that the
+  // child reached exec.  Otherwise a pre-exec child which never consumes fd
+  // 3 could fill the pipe and block session publication before the bounded
+  // handshake even starts.  The write side is non-blocking and has the same
+  // fixed no-progress budget as exec; a partial password is never published
+  // as a live pane.
+  if UseSecretPipe then
+  begin
+    SecretWritten := False;
+    if N = 0 then
+    begin
+      Flags := FpFcntl(PassPipe[1], F_GETFL, 0);
+      if (Flags >= 0) and
+         (FpFcntl(PassPipe[1], F_SETFL, Flags or O_NONBLOCK) >= 0) then
+      begin
+        SecretPtr := PAnsiChar(ASecret);
+        Offset := 0;
+        Left := Length(ASecret);
+        while Left > 0 do
+        begin
+          N := PipeWriteNoSigPipe(PassPipe[1], SecretPtr + Offset, Left,
+            WriteError);
+          if N > 0 then
+          begin
+            Inc(Offset, N);
+            Dec(Left, N);
+            Continue;
+          end;
+          if (N < 0) and (WriteError = ESysEINTR) then
+            Continue;
+          if (N >= 0) or
+             ((WriteError <> ESysEAGAIN) and
+              (WriteError <> ESysEWOULDBLOCK)) or
+             (WaitAttempts <= 0) then
+            Break;
+          Dec(WaitAttempts);
+          PollItem := Default(TPollFD);
+          PollItem.fd := PassPipe[1];
+          PollItem.events := POLLOUT;
+          N := FpPoll(@PollItem, 1, PTY_EXEC_POLL_MS);
+          if (N < 0) and (FpGetErrNo <> ESysEINTR) then
+            Break;
+        end;
+        SecretWritten := Left = 0;
+      end;
+    end;
+    FpClose(PassPipe[1]);
+    PassPipe[1] := -1;
+    if SecretWritten then
+      N := 0
+    else
+      N := -1;
+  end;
+  if N <> 0 then
+  begin
+    // Failure byte, hard error, timeout or incomplete password.
+    AbortSpawnedChild;
     Exit;
   end;
 
@@ -484,6 +722,18 @@ begin
   N := FpFcntl(Mfd, F_GETFL, 0);
   if N >= 0 then
     FpFcntl(Mfd, F_SETFL, N or O_NONBLOCK);
+  FPidIdentity := ProcBirthIdentity(NewPid);
+  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     (GetEnvironmentVariable('SUPERTERM_TEST_PTY_EMPTY_IDENTITY') = '1') then
+    FPidIdentity := '';
+  if FPidIdentity = '' then
+  begin
+    // A numeric PID without its kernel birth generation can never become
+    // signalling authority.  The unreaped child is still exact here, so it
+    // can be cancelled safely instead of publishing an unverifiable pane.
+    AbortSpawnedChild;
+    Exit;
+  end;
   FMaster := Mfd;
   FPid := NewPid;
   FAlive := True;
@@ -492,6 +742,99 @@ begin
     FPendingSecret := ASecret;
   Result := True;
   DebugLog(Format('spawn ok master=%d pid=%d program=%s cwd=%s', [Mfd, NewPid, AProgram, ACwd]));
+end;
+
+constructor TPty.Create;
+begin
+  inherited Create;
+  // fd 0 and PID 0 are valid values with special meanings. A configured but
+  // not-yet-spawned TPty must therefore establish safe destructor invariants
+  // explicitly instead of relying on TObject's zero-filled allocation.
+  FMaster := -1;
+  FPid := -1;
+  FPidIdentity := '';
+  FAlive := False;
+  FLaunchKind := clkNone;
+  FLaunchPending := False;
+end;
+
+procedure TPty.ConfigureShell(const AShell, ACwd, ACommand: string;
+  ACols, ARows: integer; const AExtraEnv: string; ALoginShell: boolean;
+  const AFallbackShell, AFallbackCwd, AFallbackCommand: string;
+  AFallbackLoginShell: boolean);
+begin
+  FLaunchKind := clkShell;
+  FLaunchProgram := '';
+  FLaunchArgs := nil;
+  FLaunchShell := AShell;
+  FLaunchCommand := ACommand;
+  FLaunchCwd := ACwd;
+  FLaunchExtraEnv := AExtraEnv;
+  FLaunchSecret := '';
+  FLaunchCols := ACols;
+  FLaunchRows := ARows;
+  FLaunchLoginShell := ALoginShell;
+  FFallbackShell := AFallbackShell;
+  FFallbackCwd := AFallbackCwd;
+  FFallbackCommand := AFallbackCommand;
+  FFallbackLoginShell := AFallbackLoginShell;
+  FLaunchPending := True;
+end;
+
+procedure TPty.ConfigureArgv(const AProgram: string;
+  const AArgs: array of string; const ACwd: string; ACols, ARows: integer;
+  const AExtraEnv, ASecret: string; const AFallbackShell, AFallbackCwd,
+  AFallbackCommand: string; AFallbackLoginShell: boolean);
+var
+  I: integer;
+begin
+  FLaunchKind := clkArgv;
+  FLaunchProgram := AProgram;
+  SetLength(FLaunchArgs, Length(AArgs));
+  for I := 0 to High(AArgs) do
+    FLaunchArgs[I] := AArgs[I];
+  FLaunchShell := '';
+  FLaunchCommand := '';
+  FLaunchCwd := ACwd;
+  FLaunchExtraEnv := AExtraEnv;
+  FLaunchSecret := ASecret;
+  FLaunchCols := ACols;
+  FLaunchRows := ARows;
+  FLaunchLoginShell := False;
+  FFallbackShell := AFallbackShell;
+  FFallbackCwd := AFallbackCwd;
+  FFallbackCommand := AFallbackCommand;
+  FFallbackLoginShell := AFallbackLoginShell;
+  FLaunchPending := True;
+end;
+
+function TPty.SpawnConfigured(out AUsedFallback: boolean): boolean;
+begin
+  AUsedFallback := False;
+  if not FLaunchPending then
+    Exit(False);
+  case FLaunchKind of
+    clkShell:
+      Result := Spawn(FLaunchShell, FLaunchCwd, FLaunchCommand,
+        FLaunchCols, FLaunchRows, FLaunchExtraEnv, FLaunchLoginShell);
+    clkArgv:
+      Result := SpawnArgv(FLaunchProgram, FLaunchArgs, FLaunchCwd,
+        FLaunchCols, FLaunchRows, FLaunchExtraEnv, FLaunchSecret);
+  else
+    Result := False;
+  end;
+  if Result then
+  begin
+    FLaunchPending := False;
+    Exit;
+  end;
+  if FFallbackShell = '' then
+    Exit;
+  AUsedFallback := True;
+  Result := Spawn(FFallbackShell, FFallbackCwd, FFallbackCommand,
+    FLaunchCols, FLaunchRows, '', FFallbackLoginShell);
+  if Result then
+    FLaunchPending := False;
 end;
 
 destructor TPty.Destroy;
@@ -650,6 +993,15 @@ procedure TPty.Resize(ACols, ARows: integer);
 var
   ws: TWinSize;
 begin
+  // A server-first pane is configured before the daemon spawns it.  Window
+  // layout may settle again in that interval; keep the pending launch at the
+  // same final size as its screen model instead of silently spawning with
+  // the provisional rectangle.
+  if FLaunchPending then
+  begin
+    FLaunchCols := ACols;
+    FLaunchRows := ARows;
+  end;
   if FMaster < 0 then
     Exit;
   ws.ws_col := ACols;
@@ -660,11 +1012,97 @@ begin
   DebugLog(Format('resize master=%d cols=%d rows=%d', [FMaster, ACols, ARows]));
 end;
 
+function TPty.ExitPendingNoReap(out AChildPid: TPid): boolean;
+var
+  {$IFDEF DARWIN}
+  Info: TSigInfo_t;
+  {$ELSE}
+  Info: TSigInfo;
+  {$ENDIF}
+  R, E: integer;
+begin
+  Result := False;
+  AChildPid := FPid;
+  if AChildPid <= 0 then
+    Exit;
+  Info := Default({$IFDEF DARWIN}TSigInfo_t{$ELSE}TSigInfo{$ENDIF});
+  repeat
+    R := cwaitid(ST_WAITID_P_PID, cuint(AChildPid), @Info,
+      ST_WAITID_WEXITED or WNOHANG or ST_WAITID_WNOWAIT);
+    if R = 0 then
+      Break;
+    E := FpGetErrNo;
+  until E <> ESysEINTR;
+  if R <> 0 then
+    Exit;
+  // POSIX requires a no-event WNOHANG result to set si_pid to zero. Never use
+  // other siginfo bytes as the discriminator: Linux may populate si_signo in
+  // that case. P_PID additionally lets us demand the exact expected child.
+  {$IFDEF DARWIN}
+  if Info.si_pid <> AChildPid then
+  {$ELSE}
+  if Info._sifields._sigchld._pid <> AChildPid then
+  {$ENDIF}
+    Exit;
+  // The leader PID/PGID remains reserved until the caller's waitpid. Seal
+  // descendants now; no numeric reuse can occur between these signals and
+  // the reap.
+  FpKill(-AChildPid, SIGHUP);
+  FpKill(-AChildPid, SIGTERM);
+  FpKill(-AChildPid, SIGKILL);
+  Result := True;
+end;
+
+function TPty.TerminateNoWait: TPid;
+var
+  IdentityMatches: boolean;
+begin
+  Result := FPid;
+  IdentityMatches := (Result > 0) and (FPidIdentity <> '') and
+    (ProcBirthIdentity(Result) = FPidIdentity);
+  if IdentityMatches then
+  begin
+    // All calls happen while the exact leader still owns its PID. Signal the
+    // whole private session group in one non-blocking sequence; ReapChildren
+    // collects a direct child later without parking the socket reactor.
+    FpKill(-Result, SIGHUP);
+    FpKill(-Result, SIGTERM);
+    FpKill(-Result, SIGKILL);
+  end
+  else if (Result > 0) and DebugActive then
+    DebugLog(Format('pty: refusing async signal for unverifiable pid=%d',
+      [Result]));
+  if FMaster >= 0 then
+  begin
+    FpClose(FMaster);
+    FMaster := -1;
+  end;
+  FPid := -1;
+  FPidIdentity := '';
+  FAlive := False;
+  FPendingInput := '';
+  FPendingSecret := '';
+  FPromptBuffer := '';
+end;
+
 procedure TPty.KillPane;
 var
-  st: cint;
+  st, E: cint;
   ChildPid: TPid;
   I: integer;
+  Waited: TPid;
+  Reaped, IsOurChild, DirectChildExact, GroupAlive,
+    IdentityMatches, SignalAuthorized: boolean;
+
+  function StoredIdentityMatches: boolean;
+  begin
+    Result := (FPidIdentity <> '') and
+      (ProcBirthIdentity(ChildPid) = FPidIdentity);
+    if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+       (GetEnvironmentVariable(
+         'SUPERTERM_TEST_PTY_KILL_IDENTITY_FAIL') = '1') then
+      Result := False;
+  end;
 begin
   if FMaster >= 0 then
   begin
@@ -675,22 +1113,97 @@ begin
   begin
     st := Default(cint);
     ChildPid := FPid;
+    IdentityMatches := StoredIdentityMatches;
+    Reaped := False;
+    IsOurChild := True;
+    DirectChildExact := False;
+    // If the birth-identity backend has a transient failure, waitpid with
+    // WNOHANG is a second kernel authority available only to the real parent:
+    // return 0 proves this exact PID is still our direct, unreaped child.
+    // A returned PID reaps it, and ECHILD grants no authority at all.
+    if not IdentityMatches then
+    begin
+      repeat
+        Waited := FpWaitPid(ChildPid, st, WNOHANG);
+        if Waited >= 0 then
+          Break;
+        E := FpGetErrNo;
+      until E <> ESysEINTR;
+      if Waited = ChildPid then
+        Reaped := True
+      else if Waited = 0 then
+        DirectChildExact := True
+      else
+        IsOurChild := False;
+    end;
+    SignalAuthorized := (not Reaped) and
+      (IdentityMatches or DirectChildExact);
     // Spawned children are session leaders and therefore process-group
     // leaders. Signal the whole group so ssh/shell descendants do not leak.
-    fpkill(-ChildPid, SIGHUP);
-    fpkill(-ChildPid, SIGTERM);
+    if SignalAuthorized then
+    begin
+      fpkill(-ChildPid, SIGHUP);
+      fpkill(-ChildPid, SIGTERM);
+    end;
     for I := 1 to 50 do
     begin
-      if fpWaitPid(ChildPid, st, WNOHANG) = ChildPid then
+      if Reaped or (not IsOurChild) then
         Break;
+      Waited := fpWaitPid(ChildPid, st, WNOHANG);
+      if Waited = ChildPid then
+      begin
+        Reaped := True;
+        DirectChildExact := False;
+        Break;
+      end;
+      if Waited = 0 then
+        DirectChildExact := True;
+      if Waited < 0 then
+      begin
+        E := FpGetErrNo;
+        if E = ESysEINTR then
+          Continue;
+        // After promotion the daemon owns the PTY master but POSIX cannot
+        // transfer parenthood: waitpid correctly returns ECHILD. It must
+        // still terminate the known pane process group.
+        if E = ESysECHILD then
+          IsOurChild := False;
+        DirectChildExact := False;
+        Break;
+      end;
       Sleep(1);
     end;
-    if fpWaitPid(ChildPid, st, WNOHANG) = 0 then
-    begin
+    // Before a final numeric signal, require authority which is true now.
+    // The latest waitpid(0) keeps a direct child's PID reserved; inherited
+    // panes instead revalidate their stored kernel birth generation.
+    SignalAuthorized := (not Reaped) and
+      ((IsOurChild and DirectChildExact) or
+       ((not IsOurChild) and StoredIdentityMatches));
+    GroupAlive := SignalAuthorized and ((FpKill(-ChildPid, 0) = 0) or
+      (FpGetErrNo = ESysEPERM));
+    if (not Reaped) and GroupAlive then
       fpkill(-ChildPid, SIGKILL);
-      fpWaitPid(ChildPid, st, 0);
+    if (not Reaped) and IsOurChild then
+    begin
+      // Only a real parent can complete waitpid here. For an inherited
+      // pre-promotion pane, its creator deliberately keeps the zombie until
+      // the daemon publishes the reap-safe event; waiting for group
+      // disappearance here would add two seconds to every close.
+      for I := 1 to 200 do
+      begin
+        Waited := fpWaitPid(ChildPid, st, WNOHANG);
+        if Waited = ChildPid then
+        begin
+          Reaped := True;
+          Break;
+        end
+        else if (Waited < 0) and (FpGetErrNo <> ESysEINTR) then
+          Break;
+        Sleep(10);
+      end;
     end;
     FPid := -1;
+    FPidIdentity := '';
   end;
   FAlive := False;
   FPendingSecret := '';
@@ -699,12 +1212,9 @@ end;
 
 procedure TPty.MarkExited;
 begin
-  if FPid > 0 then
-  begin
-    // The leader has exited, but jobs in its process group may remain.
-    fpkill(-FPid, SIGHUP);
-    fpkill(-FPid, SIGTERM);
-  end;
+  // The caller has already reaped the leader. Do not signal its old numeric
+  // process-group ID afterwards: when it was the last member, that ID may be
+  // reused immediately. Explicit close performs HUP/TERM before waitpid.
   if FMaster >= 0 then
   begin
     FpClose(FMaster);
@@ -712,8 +1222,19 @@ begin
   end;
   FAlive := False;
   FPid := -1;
+  FPidIdentity := '';
   FPendingSecret := '';
   FPromptBuffer := '';
+end;
+
+procedure TPty.MarkReaped;
+begin
+  // waitpid has already removed the leader. Never signal its numeric PGID
+  // afterwards: if it was the final member, that number is reusable between
+  // the reap and a kill. Keep the master open so any already-buffered output
+  // is drained before EOF retires the pane.
+  FPid := -1;
+  FPidIdentity := '';
 end;
 
 procedure TPty.Abandon;
@@ -724,11 +1245,26 @@ begin
     FMaster := -1;
   end;
   FPid := 0;   // KillPane/Destroy no longer signal anyone
+  FPidIdentity := '';
   FAlive := False;
 end;
 
 procedure TPty.MarkDead;
+var
+  ChildPid: TPid;
 begin
+  ChildPid := FPid;
+  // EOF retires the terminal, but the leader may still be waitable and a
+  // background descendant may have closed the slave before continuing. Seal
+  // only a kernel-verified generation, then retain PID+identity until the
+  // daemon's WNOWAIT/reap pass completes.
+  if (ChildPid > 0) and (FPidIdentity <> '') and
+     (ProcBirthIdentity(ChildPid) = FPidIdentity) then
+  begin
+    FpKill(-ChildPid, SIGHUP);
+    FpKill(-ChildPid, SIGTERM);
+    FpKill(-ChildPid, SIGKILL);
+  end;
   if FMaster >= 0 then
   begin
     FpClose(FMaster);
@@ -986,6 +1522,106 @@ begin
      (Copy(Result, 1, 12) = '/private/var') or
      (Copy(Result, 1, 12) = '/private/etc') then
     Delete(Result, 1, 8);
+end;
+{$ENDIF}
+
+function ProcBirthIdentity(Pid: TPid): string;
+{$IFDEF DARWIN}
+const
+  PROC_PIDTBSDINFO_ = 3;
+type
+  {$push}{$packrecords C}
+  TProcBsdInfo = record
+    pbi_flags, pbi_status, pbi_xstatus, pbi_pid: cuint32;
+    pbi_ppid, pbi_uid, pbi_gid, pbi_ruid: cuint32;
+    pbi_rgid, pbi_svuid, pbi_svgid, rfu_1: cuint32;
+    pbi_comm: array[0..15] of AnsiChar;
+    pbi_name: array[0..31] of AnsiChar;
+    pbi_nfiles, pbi_pgid, pbi_pjobc, e_tdev, e_tpgid: cuint32;
+    pbi_nice: cint32;
+    pbi_start_tvsec, pbi_start_tvusec: cuint64;
+  end;
+  {$pop}
+var
+  Info: TProcBsdInfo;
+  N: cint;
+begin
+  Result := '';
+  if Pid <= 0 then
+    Exit;
+  // This is the exact public proc_bsdinfo layout from sys/proc_info.h.
+  // Refuse an unexpected ABI instead of reading offsets from the wrong
+  // structure and turning them into signalling authority.
+  if SizeOf(Info) <> 136 then
+    Exit;
+  Info := Default(TProcBsdInfo);
+  N := proc_pidinfo(Pid, PROC_PIDTBSDINFO_, 0, @Info, SizeOf(Info));
+  if (N <> SizeOf(Info)) or (Info.pbi_pid <> cuint32(Pid)) then
+    Exit;
+  Result := 'darwin:' + UIntToStr(Info.pbi_start_tvsec) + ':' +
+    UIntToStr(Info.pbi_start_tvusec);
+end;
+{$ELSE}
+type
+  TStatBuf = array[0..4095] of AnsiChar;
+var
+  Fd, Flags, N, CloseParen, P, StartPos, FieldNo: integer;
+  Buf: TStatBuf;
+  Path, Line, Token: RawByteString;
+  StartTicks: QWord;
+begin
+  Result := '';
+  if Pid <= 0 then
+    Exit;
+  Path := '/proc/' + IntToStr(Pid) + '/stat';
+  Fd := FpOpen(PAnsiChar(Path), O_RDONLY, 0);
+  if Fd < 0 then
+    Exit;
+  try
+    Flags := FpFcntl(Fd, F_GETFD, 0);
+    if Flags >= 0 then
+      // FPC 3.2.2 exposes F_SETFD but not the POSIX FD_CLOEXEC name.
+      FpFcntl(Fd, F_SETFD, Flags or 1 {FD_CLOEXEC});
+    Buf := Default(TStatBuf);
+    N := FileRead(Fd, Buf[0], SizeOf(Buf) - 1);
+  finally
+    FpClose(Fd);
+  end;
+  if N <= 0 then
+    Exit;
+  SetString(Line, PAnsiChar(@Buf[0]), N);
+  // Field 2 (comm) is parenthesized but may itself contain spaces and ')'.
+  // The final ')' is therefore the only safe delimiter before fields 3..N.
+  CloseParen := Length(Line);
+  while (CloseParen > 0) and (Line[CloseParen] <> ')') do
+    Dec(CloseParen);
+  if CloseParen <= 0 then
+    Exit;
+  P := CloseParen + 1;
+  FieldNo := 0;
+  Token := '';
+  while P <= Length(Line) do
+  begin
+    while (P <= Length(Line)) and (Line[P] in [' ', #9, #10, #13]) do
+      Inc(P);
+    if P > Length(Line) then
+      Break;
+    StartPos := P;
+    while (P <= Length(Line)) and
+          not (Line[P] in [' ', #9, #10, #13]) do
+      Inc(P);
+    Inc(FieldNo);
+    // This tail starts with original field 3; its twentieth token is the
+    // documented field 22, starttime in clock ticks after boot.
+    if FieldNo = 20 then
+    begin
+      Token := Copy(Line, StartPos, P - StartPos);
+      Break;
+    end;
+  end;
+  if (Token = '') or (not TryStrToQWord(Token, StartTicks)) then
+    Exit;
+  Result := 'proc:' + UIntToStr(StartTicks);
 end;
 {$ENDIF}
 

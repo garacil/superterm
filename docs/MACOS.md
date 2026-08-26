@@ -11,8 +11,9 @@ for listeners, pending handshakes, clients and PTYs; sends use the platform's
 regression suite on both Apple Silicon (`macos-15`) and Intel
 (`macos-15-intel`). The platform-conditional code is confined to
 `src/st_pty.pas` (PTY/process backend) and `src/st_cpu.pas` (available-CPU
-detection), selected at compile time with `{$IFDEF DARWIN}`. Free Pascal
-auto-defines `DARWIN` for a macOS host, so there are no special build flags.
+detection), plus the launchd adapter in `src/st_ssh_server.pas` for the
+optional dedicated OpenSSH entry. Free Pascal auto-defines `DARWIN` for a
+macOS host, so there are no special build flags.
 
 The optional `[session] multithread=auto` pane reactors are native on macOS.
 SuperTerm reads `hw.activecpu` through FPC's Darwin `SysCtl` unit
@@ -38,6 +39,9 @@ make release            # -> bin/superterm  (Mach-O arm64/x86_64)
 
 The compiler ships with the aarch64-darwin RTL (FreeVision is vendored in
 `vendor/fv322`), so no extra Free Pascal packages are required.
+macOS already provides `/usr/sbin/sshd`, `/usr/bin/ssh`, `sftp` and
+`ssh-keygen`; the isolated TCP service and its launchd setup are documented in
+[`SSH_SERVER.md`](SSH_SERVER.md).
 
 ## Running in Terminal.app / iTerm2
 
@@ -74,9 +78,12 @@ scrollback — is the shared code path and behaves identically.
 
 ## Known differences and tips
 
-- **`sshpass`** is not installed on macOS by default. Prefer SSH keys or an SSH
-  agent (safer, and the default recommendation). If you specifically need
-  password-authenticated SSH panes, `brew install sshpass`.
+- **`sshpass`** is not installed on macOS by default. It applies only when a
+  pane launched by SuperTerm connects *out* to another SSH server. Prefer SSH
+  keys or an SSH agent; if that outgoing pane specifically needs a password,
+  use `brew install sshpass`. Passwords used to connect *into* the dedicated
+  SuperTerm service are handled directly by the system OpenSSH/PAM stack and
+  never need `sshpass`.
 - **Local shell** defaults to your login shell (`$SHELL`, typically `/bin/zsh`).
 - **`/usr/bin/bash` does not exist on macOS** (bash is `/bin/bash`). If you write
   a terminal definition with an explicit shell path, use `/bin/zsh`, `/bin/bash`,
@@ -88,10 +95,14 @@ The Python regression suite (`test/*.py`, driven through a real PTY with `pyte`)
 runs on macOS:
 
 ```sh
-python3 -m pip install --user pyte     # once
+brew install librsvg                  # once, for reproducible artwork checks
+python3 -m pip install --user pyte pillow
 make test
 ```
 
 The suite exercises rendering, local shell panes (the macOS `openpty` path),
 splits, detach/attach, session restore (the `libproc` command capture), and the
-wizard.
+wizard. It also exercises the isolated SSH configuration with the separate
+test runtime. The real encrypted listener requires root for OpenSSH account
+setup, so a local unprivileged run reports that case as skipped; CI repeats it
+under `sudo` with disposable keys and configuration.

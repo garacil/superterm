@@ -8,7 +8,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import Client, fresh_home, check, report, close_all_daemons  # noqa: E402
+from stlib import (Client, FULLSCREEN_CHORD, fresh_home, check, report,
+                   close_all_daemons)  # noqa: E402
 
 
 def bracketed(text):
@@ -169,14 +170,14 @@ c.send(b']', 0.2)
 c.send(b'\r', 0.7)
 check('pane OSC 52 enters history', has_pane_line(c, remote.decode()))
 
-# F5 passthrough remains raw for writes, but a pane cannot use that path to
+# Fullscreen passthrough remains raw for writes, but a pane cannot use that path to
 # query and read the outer host clipboard.
-c.send(b'\x1b[15~', 0.8)
+c.send(FULLSCREEN_CHORD, 0.8)
 before = len(c.raw())
 c.send(b"printf '\\033]52;c;?\\007'\r", 0.6)
 check('passthrough blocks OSC 52 query',
       b'\x1b]52;c;?\x07' not in c.raw()[before:])
-c.send(b'\x1b[15~', 0.8)
+c.send(FULLSCREEN_CHORD, 0.8)
 
 c.send(b'\x1bx', 0.8)
 c.close()

@@ -1,29 +1,29 @@
 # superterm background picture.
-#   >  glyph row   ' '=empty  3=full block
-#      Nothing else is used: a half block or a shade character
-#      falls apart when the terminal font is stretched.
+#   >  glyph row   ' '=empty  6=dark shade
+#      Generated pictures use that one stable glyph; half-block
+#      combinations fall apart when the terminal font stretches.
 #   :  foreground palette index per cell ('0'-'9','a'-'z','A'-'Z')
 # Drawn by tools/mkbackgrounds.py for a 128x46 desktop
 # (1024x768 with an 8x16 console cell, less the menu and status rows).
 name: 7kas phoenix
 name.es: Ave fenix de 7kas
 palette: 7A2A8E C972AC A14C9C 008ECC EE806E 2AA4D8 008EC9 F6AE55 7B2A8F 46C5E4 663898 2AA4D7 5097BE 7A2A90 EF836E 41C0E4 2AA3D8 F6AE57 0390CD 0090CC 139FD5 2AA5D8 DD7C8A 647DBC EE8070
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
 >                                   666666666666666666666666
 :                                   000000000000000000000d66
 >                             66      666666666666666666666666
@@ -84,19 +84,19 @@ palette: 7A2A8E C972AC A14C9C 008ECC EE806E 2AA4D8 008EC9 F6AE55 7B2A8F 46C5E4 6
 :                                             44
 >                                            66
 :                                            42
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
-> 
-: 
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:
+>
+:

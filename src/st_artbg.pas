@@ -19,6 +19,10 @@
     mode:  optional, the layout the picture is meant for (center, tile,
            stretch or fit). Choosing it from the menu adopts that layout.
 
+    width: optional logical cell width. This preserves transparent columns
+           at the right edge without storing trailing spaces. When absent,
+           the longest glyph row remains the width, as in every older file.
+
     charset: optional. 'quad' means a glyph row holds quadrant masks --
            '0'..'9' then 'a'..'f', one bit per quarter of the cell: 1 upper
            left, 2 upper right, 4 lower left, 8 lower right. A cell then
@@ -91,6 +95,11 @@ implementation
 
 uses
   SysUtils, Classes;
+
+const
+  // A user may drop an .art file into a searched directory. Keep declared
+  // geometry bounded before it participates in fit/stretch arithmetic.
+  MAX_ART_DECLARED_WIDTH = 4096;
 
 type
   TArtRow = record
@@ -211,6 +220,14 @@ begin
             P.TitleEs := Val
           else if Key = 'mode' then
             P.Mode := LowerCase(Val)
+          else if Key = 'width' then
+          begin
+            // The declaration may occur before or after the rows. It can
+            // enlarge their logical canvas, never crop visible glyphs.
+            if TryStrToInt(Val, n) and (n > 0) and
+               (n <= MAX_ART_DECLARED_WIDTH) and (n > P.Width) then
+              P.Width := n;
+          end
           else if Key = 'charset' then
             P.Quad := LowerCase(Val) = 'quad'
           else if Key = 'palette' then

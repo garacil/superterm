@@ -421,6 +421,11 @@ try:
     pty_rc, baseline_pty = actual_pty_size(HOME, session, 'baseline')
     collect(owner, 0.15)
     collect(observer, 0.15)
+    if pty_rc != 0 or baseline_pty != (geom[4], geom[5]):
+        print('  baseline PTY metadata/actual:',
+              (geom[4], geom[5]), baseline_pty,
+              'geometry=', geom, 'desk=', baseline['desk'],
+              'cli-returncode=', pty_rc)
     check('fixture reads real canonical PTY size',
           pty_rc == 0 and baseline_pty == (geom[4], geom[5]))
 

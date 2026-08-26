@@ -32,16 +32,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            fp-compiler fp-units-fcl fp-units-db python3-venv
+            fp-compiler fp-units-fcl fp-units-db python3-venv \
+            librsvg2-bin openssh-client openssh-server
 
       - name: Install Free Pascal on macOS
         if: runner.os == 'macOS'
-        run: brew list fpc >/dev/null 2>&1 || brew install fpc
+        run: |
+          brew list fpc >/dev/null 2>&1 || brew install fpc
+          brew list librsvg >/dev/null 2>&1 || brew install librsvg
+
+      - name: Verify macOS system OpenSSH tools
+        if: runner.os == 'macOS'
+        run: |
+          test -x /usr/sbin/sshd
+          test -x /usr/bin/ssh
+          test -x /usr/bin/sftp
+          test -x /usr/bin/ssh-keygen
 
       - name: Create Python test environment
         run: |
           python3 -m venv "$RUNNER_TEMP/superterm-python"
-          "$RUNNER_TEMP/superterm-python/bin/python" -m pip install pyte
+          "$RUNNER_TEMP/superterm-python/bin/python" -m pip install pyte pillow
 
       - name: Configure
         run: |
@@ -52,3 +63,22 @@ jobs:
 
       - name: Build and run regression suite
         run: make test
+
+      # The ordinary suite deliberately reports an honest SKIP when it lacks
+      # euid 0: a real sshd must perform account/PAM/session setup.  CI has a
+      # passwordless isolated root context, so exercise the actual encrypted
+      # TCP listener as a separate mandatory integration on every OS.
+      - name: Run privileged isolated OpenSSH transport integration
+        run: |
+          ssh_test_user="$(id -un)"
+          ssh_test_uid="$(id -u)"
+          if [ "$ssh_test_uid" -eq 0 ]; then
+            echo "The privileged SSH integration requires a non-root runner account" >&2
+            exit 1
+          fi
+          sudo env \
+            SUPERTERM_TEST_BIN="$GITHUB_WORKSPACE/bin/superterm-test" \
+            SUPERTERM_RELEASE_BIN="$GITHUB_WORKSPACE/bin/superterm" \
+            SUPERTERM_TEST_SSH_USER="$ssh_test_user" \
+            "$RUNNER_TEMP/superterm-python/bin/python" \
+            "$GITHUB_WORKSPACE/test/ssh_transport_test.py"

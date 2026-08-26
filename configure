@@ -10,7 +10,7 @@ PYTHON=${PYTHON:-}
 INSTALL_DEPS=0
 
 usage() {
-  cat <<EOF
+  cat <<'EOF'
 Usage: ./configure [options]
 
 Options:
@@ -19,7 +19,7 @@ Options:
   --sysconfdir=PATH       system configuration directory (default: /etc)
   --with-fpc=PATH         Free Pascal compiler to use
   --with-python=PATH      Python 3 interpreter to use for tests
-  --install-deps          install Debian/Ubuntu build dependencies first
+  --install-deps          install Debian/Ubuntu or macOS build dependencies
   -h, --help              show this help
 
 Examples:
@@ -56,7 +56,16 @@ if [ -z "$BINDIR" ]; then
 fi
 
 if [ "$INSTALL_DEPS" -eq 1 ]; then
-  if command -v apt-get >/dev/null 2>&1; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    command -v brew >/dev/null 2>&1 ||
+      fail "Homebrew is required for --install-deps on macOS (https://brew.sh)"
+    command -v fpc >/dev/null 2>&1 || brew install fpc
+    command -v python3 >/dev/null 2>&1 || brew install python
+    python3 -m pip install --user pyte pillow >/dev/null 2>&1 ||
+      warn "could not install Python test modules automatically; run: python3 -m pip install pyte pillow"
+    command -v rsvg-convert >/dev/null 2>&1 || brew install librsvg
+    warn "sshpass is optional and only needed for password-authenticated SSH panes"
+  elif command -v apt-get >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then
       APT=""
     elif command -v sudo >/dev/null 2>&1; then
@@ -67,9 +76,10 @@ if [ "$INSTALL_DEPS" -eq 1 ]; then
     $APT apt-get update
     $APT apt-get install -y \
       fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
-      python3 python3-pyte openssh-client sshpass
+      python3 python3-pyte python3-pil librsvg2-bin \
+      openssh-client openssh-server sshpass
   else
-    fail "--install-deps currently supports Debian/Ubuntu only; install Free Pascal, FV/FCL/DB units, make, Python 3 + pyte, and openssh-client manually"
+    fail "--install-deps supports Debian/Ubuntu and macOS with Homebrew; install Free Pascal, FV/FCL/DB units, make, Python 3 + pyte + Pillow, rsvg-convert and OpenSSH manually"
   fi
 fi
 
@@ -86,15 +96,21 @@ if [ -z "$PYTHON" ]; then
   PYTHON=$(command -v python3 || true)
 fi
 if [ -n "$PYTHON" ]; then
-  if ! "$PYTHON" -c 'import pyte' >/dev/null 2>&1; then
-    warn "Python pyte is not installed; make test will not work until it is installed"
+  if ! "$PYTHON" -c 'import pyte, PIL' >/dev/null 2>&1; then
+    warn "Python pyte and/or Pillow are not installed; make test needs both"
   fi
 else
   warn "Python 3 not found; make test will not work"
 fi
 
+command -v rsvg-convert >/dev/null 2>&1 ||
+  warn "rsvg-convert is not installed; reproducible artwork tests will not work"
+
 SSH=$(command -v ssh || true)
 [ -n "$SSH" ] || warn "openssh-client not found; SSH terminal definitions will not work"
+if [ ! -x /usr/sbin/sshd ] && [ ! -x /usr/bin/sshd ]; then
+  warn "system OpenSSH sshd not found; the optional dedicated TCP entry will not work"
+fi
 
 INSTALL=$(command -v install || true)
 [ -n "$INSTALL" ] || fail "install command not found"
