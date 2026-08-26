@@ -171,9 +171,10 @@ The result is `dist\SuperTerm-4.2.1-windows-x64-setup.exe`; it installs under
 configuration example, and desktop backgrounds.
 
 The Start-menu and desktop shortcuts use `superterm-launch.cmd`: it opens a new
-Windows Terminal tab when `wt.exe` is available and otherwise runs the console
-executable inside the standard `cmd.exe` host. Launching `superterm.exe` from an
-already-open terminal remains supported directly.
+120x52 Windows Terminal window when `wt.exe` is available (matching the default
+120x50 desktop plus menu/status rows) and otherwise runs the console executable
+inside the standard `cmd.exe` host. Launching `superterm.exe` from an already-
+open terminal remains supported directly.
 
 ## Implementation approach
 
