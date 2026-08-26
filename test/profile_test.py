@@ -173,12 +173,10 @@ check("workspace switched", "PROF_PANE_A" not in scr)
 # capturable markers: the pane's cwd and a single-word foreground
 # command (python3), which survives the INI write/re-read cycle
 s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
-if sys.platform.startswith('linux'):
-    s.send(b'set +m\r', 0.3)        # exercise Linux's wait4 fallback
-else:
-    # Darwin libproc exposes pgrp/argv but not a shell's current wait syscall;
-    # keep this test on the normal, unambiguous terminal-foreground path.
-    s.send(b'set -m\r', 0.3)
+# Profile persistence needs one portable, unambiguous foreground oracle.
+# Linux's optional procfs wait-state fallback is exercised independently;
+# this cross-platform suite keeps Python in its own terminal process group.
+s.send(b'set -m\r', 0.3)
 s.send(b'python3\r', 0.2)
 # The pane process scanner is deliberately periodic.  Synchronize with its
 # visible title instead of assuming a one-second CI runner deadline.  The

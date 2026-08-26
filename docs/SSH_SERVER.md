@@ -79,7 +79,7 @@ SuperTerm dedicated sshd (root, configured port)
           v
 superterm --ssh-entry (UID german, root, or another account)
           |
-          | private AF_UNIX: ~/.superterm/sessions/NOMBRE.sock
+          | private AF_UNIX: ~/.superterm/sessions/NAME.sock
           v
 daemon for that SuperTerm session (same UID)
           |
@@ -241,12 +241,12 @@ Each account's state is not stored in `/etc/superterm/sshd`:
 ~/.superterm/
 |-- superterm.ini                 that user's preferences and SSH route
 `-- sessions/
-    |-- NOMBRE.ini               live daemon identity/metadata
-    `-- NOMBRE.sock              private local transport, mode 0600
+    |-- NAME.ini                 live daemon identity/metadata
+    `-- NAME.sock                private local transport, mode 0600
 ```
 
 Processes and screen contents remain live in daemon memory; they are not
-serialized in `NOMBRE.ini`. The sidecar publishes discovery metadata,
+serialized in `NAME.ini`. The sidecar publishes discovery metadata,
 including the PID and process birth identity; the actual connection boundary
 is the private directory, the `0600` socket, and its live listener. When
 removing a session, the daemon verifies that it still owns the socket inode
@@ -303,7 +303,7 @@ The three authentication options are independent:
   `KbdInteractiveAuthentication` remains disabled so that two equivalent
   password paths are not exposed.
 - `managed_authorized_keys=1` reads the keys managed by SuperTerm from
-  `/etc/superterm/sshd/authorized_keys/USUARIO`.
+  `/etc/superterm/sshd/authorized_keys/USER`.
 - `user_authorized_keys=1` reuses each account's regular public keys from
   `.ssh/authorized_keys`. Private keys are never copied to the server: they
   remain on the SSH client.
@@ -360,8 +360,8 @@ for `german`; without one, `german` can still use a password accepted for that
 account by the `sshd` PAM policy:
 
 ```sh
-sudo superterm ssh-server authorize german /ruta/cliente_superterm.pub
-sudo superterm ssh-server authorize root /ruta/cliente_superterm.pub
+sudo superterm ssh-server authorize german /path/to/superterm_client.pub
+sudo superterm ssh-server authorize root /path/to/superterm_client.pub
 sudo superterm ssh-server check
 sudo superterm ssh-server restart
 sudo superterm ssh-server list-keys german
@@ -519,15 +519,15 @@ discards unauthenticated comments, prevents duplicates, and replaces the file
 atomically:
 
 ```sh
-sudo superterm ssh-server authorize german /ruta/id_ed25519.pub
+sudo superterm ssh-server authorize german /path/to/id_ed25519.pub
 sudo superterm ssh-server list-keys german
-sudo superterm ssh-server revoke german SHA256:HUELLA
+sudo superterm ssh-server revoke german SHA256:FINGERPRINT
 ```
 
 Authorizing or revoking affects new authentications; it does not disconnect
 clients that are already logged in. The commands also have the Spanish
 aliases shown by `superterm ssh-server help`. These commands do not modify the
-account's private `.ssh/authorized_keys`; that second store remains under the
+account's own `.ssh/authorized_keys`; that second store remains under the
 user's normal control and retains all OpenSSH semantics. For example, it may
 contain options that further restrict an entry or a `cert-authority` line.
 No per-key option can relax the global `ForceCommand` or prohibitions; a
@@ -562,7 +562,7 @@ Host superterm
 ```
 
 When using a key with a nonstandard name, also add an
-`IdentityFile ~/.ssh/NOMBRE_DE_LA_CLAVE` line.
+`IdentityFile ~/.ssh/KEY_NAME` line.
 
 The SSH entry resolves the per-user session through these options in
 `~/.superterm/superterm.ini`:
@@ -611,8 +611,8 @@ to create a second desktop.
 The connection of a viewer does not by itself resize the PTYs. A subsequent
 resize accepted by the program is a canonical operation and is propagated to
 everyone. When host geometries differ, operations that require a common area
-—such as synchronized fullscreen—are limited to the smallest compatible
-viewport. Raw fullscreen passthrough (`prefijo f`, `Ctrl-Q f` by default) is
+(such as synchronized fullscreen) are limited to the smallest compatible
+viewport. Raw fullscreen passthrough (`prefix f`, `Ctrl-Q f` by default) is
 used only when the physical geometries match; otherwise the shared IDE
 renderer remains active.
 
@@ -681,7 +681,7 @@ does not promise a private text file.
 | Unknown host-key warning | First connection to this instance/port | Compare with `ssh-keygen -lf /etc/superterm/sshd/ssh_host_ed25519_key.pub` on the server |
 | Host key changed | The identity was replaced or the connection reaches another machine | Do not blindly delete `known_hosts`; first verify the server fingerprint |
 | `Permission denied (publickey)` | Wrong private key, unauthorized public key, or permissions rejected by `StrictModes` | `ssh -vv`, `list-keys`, ownership/modes of `~/.ssh` |
-| Password requested despite having a key | None of the offered identities was accepted | Try `IdentitiesOnly=yes -i RUTA` and inspect the fingerprint; do not copy private keys to the server |
+| Password requested despite having a key | None of the offered identities was accepted | Try `IdentitiesOnly=yes -i PATH` and inspect the fingerprint; do not copy private keys to the server |
 | `root` cannot log in with a password | Mandatory behavior | Use a key and check `allow_root=1` |
 | `interactive SSH PTY is required` | `ssh -T`, pipeline without a PTY, or noninteractive client | Request a PTY with `-t`/`-tt` |
 | `remote commands and subsystems are disabled` | A command, SCP, or SFTP was requested | Connect without a command; these functions are not part of the service |
@@ -771,7 +771,7 @@ protected OpenSSH and rechecks its effective configuration.
   disabled. If the account's own `authorized_keys` is enabled, that file
   retains OpenSSH options such as `cert-authority`; SuperTerm's central store
   accepts only plain keys without options.
-- `ssh host comando`, `ssh -T`, SCP/SFTP, and every kind of forwarding are
+- `ssh host command`, `ssh -T`, SCP/SFTP, and every kind of forwarding are
   rejected.
 - The forced command uses an absolute SuperTerm path and accepts no client
   text.

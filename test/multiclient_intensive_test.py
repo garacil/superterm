@@ -11,6 +11,7 @@ import os
 import math
 import random
 import re
+import shlex
 import socket
 import stat
 import struct
@@ -270,16 +271,28 @@ def acquire_test_foreground(session, pane, token, timeout=3.0):
     """Claim authority only after the unique helper is the live foreground."""
     claim = daemon_claim(session)
     stop_path = os.path.join(FOREGROUND_CONTROL_DIR, token + '.stop')
-    expected = (f'{sys.executable} {FOREGROUND_HELPER} '
-                f'{stop_path} {token}')
+
+    def owned_helper(command):
+        """Accept Python's real post-exec path, but no weaker identity."""
+        if command is FOREGROUND_QUERY_FAILED:
+            return False
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+        if len(argv) != 4:
+            return False
+        executable = os.path.basename(argv[0]).lower()
+        return (re.fullmatch(r'python(?:3(?:\.\d+)?)?', executable) is not None
+                and argv[1:] == [FOREGROUND_HELPER, stop_path, token])
+
     deadline = time.monotonic() + timeout
     while claim is not None and time.monotonic() < deadline:
         observed = pane_foreground_command(session, pane)
         if (daemon_claim(session) == claim and
-                observed is not FOREGROUND_QUERY_FAILED and
-                observed == expected):
+                owned_helper(observed)):
             ACTIVE_TEST_FOREGROUNDS[(session, pane)] = (
-                claim[0], claim[1], expected, stop_path)
+                claim[0], claim[1], observed, stop_path)
             return True
         time.sleep(0.04)
     return False
@@ -1399,7 +1412,10 @@ def exact_round(clients, session, number, extra=None):
         foreground_token = f'STFG_{SEED:X}_{number}_{pane}'
         foreground_tokens.append(foreground_token)
         split = len(token) // 2
-        command = (f"S='{token[:split]}''{token[split:]}'; "
+        # Give every platform an unambiguous terminal foreground process
+        # group.  The stress oracle is about exact ownership and safe cleanup,
+        # not about Linux's optional procfs wait-state fallback.
+        command = (f"set -m; S='{token[:split]}''{token[split:]}'; "
                    f"printf '\\033[2J\\033[{target_row};{target_col}H%s"
                    f"\\033[{cursor_row};{cursor_col}H' \"$S\"; "
                    f"'{sys.executable}' '{FOREGROUND_HELPER}' "

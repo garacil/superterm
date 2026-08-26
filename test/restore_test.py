@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """superterm test: session restore across runs."""
 import configparser
-import os, pty, time, select, sys, fcntl, termios, struct, subprocess, shlex
+import errno, os, pty, re, time, select, sys, fcntl, termios, struct, subprocess, shlex
 import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -12,6 +12,7 @@ BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
 HOME = '/tmp/opencode/st-restore'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
+DEBUG_LOG = HOME + '/foreground-debug.log'
 W, H = 110, 35
 
 class Session:
@@ -30,6 +31,8 @@ class Session:
                 # proves exact foreground/background classification.
                 os.environ['SUPERTERM_TESTING'] = '1'
                 os.environ['SUPERTERM_TEST_PROC_CHILDREN_FALLBACK'] = '1'
+                os.environ['SUPERTERM_TEST_FOREGROUND_DIAG'] = '1'
+                os.environ['SUPERTERM_DEBUG'] = DEBUG_LOG
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', H, W, 0, 0))
     def drain(self, t):
@@ -132,6 +135,47 @@ def restored_processes(root_pid, timeout=8.0):
         time.sleep(0.04)
     return final
 
+
+def live_sleep_parent(root_pid, argument='987', timeout=8.0):
+    """Return the exact sleep and shell PIDs below this one test client."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = process_table()
+        descendants = {root_pid}
+        changed = True
+        while changed:
+            before = len(descendants)
+            descendants.update(
+                pid for pid, row in rows.items()
+                if row['ppid'] in descendants and
+                not row['stat'].startswith('Z'))
+            changed = len(descendants) != before
+        for pid in sorted(descendants - {root_pid}):
+            try:
+                argv = shlex.split(rows[pid]['args'])
+            except (KeyError, ValueError):
+                continue
+            if (len(argv) == 2 and
+                    os.path.basename(argv[0]) == 'sleep' and
+                    argv[1] == argument):
+                return pid, rows[pid]['ppid']
+        time.sleep(0.04)
+    return None, None
+
+
+def foreground_diagnostics(offset, shell_pid):
+    """Read only structured markers for this command's exact live shell."""
+    try:
+        with open(DEBUG_LOG, encoding='utf-8', errors='replace') as stream:
+            stream.seek(offset)
+            lines = stream.readlines()
+    except OSError:
+        return []
+    marker = re.compile(
+        rf'foreground-diag shell={shell_pid} (.+)$')
+    return [match.group(1) for line in lines
+            if (match := marker.search(line)) is not None]
+
 close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as f:
@@ -150,17 +194,77 @@ if sys.platform.startswith('linux'):
     a.send(b'set +m; sleep 986 &\r', 0.3)
 a.send(b'\x1bOQ', 1.2)              # F2 vertical split
 if sys.platform.startswith('linux'):
+    # Exercise the optional Linux path as it is actually used: with job
+    # control disabled TIOCGPGRP still names bash, so the product must prove
+    # that bash is synchronously waiting for its one direct child. Some
+    # hardened runners deny /proc/PID/syscall even to the process ancestor;
+    # only that exact, repeatedly observed kernel restriction may skip this
+    # optional probe. The required portable save/restore oracle then runs via
+    # an unambiguous foreground process group.
+    try:
+        foreground_log_offset = os.path.getsize(DEBUG_LOG)
+    except OSError:
+        foreground_log_offset = 0
     a.send(b'set +m; cd /tmp; sleep 987\r', 0.2)
 else:
     a.send(b'set -m; cd /tmp; sleep 987\r', 0.2)
 # Saving immediately after a fixed sleep races the periodic process query on
 # a loaded runner.  Require the real window title to identify the foreground
 # process first; matching only pane text would accept the echoed command.
-# On Linux, `set +m` makes the regression deterministic: TIOCGPGRP then names
-# bash, while the command that must be captured is its synchronous child.
 foreground_observed = a.wait_until(
     lambda rows: any('sleep' in row.lower() and
                      any(ch in row for ch in '═─') for row in rows))
+if sys.platform.startswith('linux'):
+    sleep_pid, shell_pid = live_sleep_parent(a.pid)
+    markers = foreground_diagnostics(foreground_log_offset, shell_pid)
+    accepted = (sleep_pid is not None and
+                f'accepted child={sleep_pid}' in markers)
+    if foreground_observed and accepted:
+        check('A: Linux wait fallback', True)
+    else:
+        denied_markers = [detail for detail in markers
+                          if detail.startswith('wait=read-failed errno=')]
+        allowed_denials = {
+            f'wait=read-failed errno={errno.EPERM}',
+            f'wait=read-failed errno={errno.EACCES}',
+        }
+        restricted = (shell_pid is not None and len(denied_markers) >= 3 and
+                      len(denied_markers) == len(markers) and
+                      all(detail in allowed_denials
+                          for detail in denied_markers))
+        if restricted:
+            print('A: Linux wait fallback : SKIP '
+                  '(/proc/PID/syscall repeatedly denied for exact live '
+                  f'shell {shell_pid}; {denied_markers})')
+        else:
+            print('  Linux fallback diagnostic:',
+                  f'sleep={sleep_pid} shell={shell_pid}',
+                  f'visible={foreground_observed} accepted={accepted}',
+                  markers)
+            check('A: Linux wait fallback', False)
+        # Stop only this pane's exact foreground command, wait until it has
+        # gone, then run the mandatory cross-platform persistence assertion.
+        a.send(b'\x03', 0.3)
+        stop_deadline = time.monotonic() + 4.0
+        old_sleep_stopped = False
+        while time.monotonic() < stop_deadline:
+            row = process_table().get(sleep_pid)
+            if row is None or row['stat'].startswith('Z'):
+                old_sleep_stopped = True
+                break
+            time.sleep(0.04)
+        check('A: exact fallback child stopped', old_sleep_stopped)
+        foreground_observed = False
+        if old_sleep_stopped:
+            a.send(b'set -m; cd /tmp; sleep 987\r', 0.2)
+            foreground_observed = a.wait_until(
+                lambda rows: any('sleep' in row.lower() and
+                                 any(ch in row for ch in '═─')
+                                 for row in rows))
+            new_sleep_pid, _ = live_sleep_parent(a.pid)
+            check('A: portable foreground replacement',
+                  foreground_observed and new_sleep_pid is not None and
+                  new_sleep_pid != sleep_pid)
 check("A: foreground observed", foreground_observed)
 a.send(b'\x1bx', 1.0)               # Alt-X: local autosave on Exit
 a.close()

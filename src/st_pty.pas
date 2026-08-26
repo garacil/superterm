@@ -1283,24 +1283,30 @@ type
     StartTicks: QWord;
   end;
 
-function ReadProcText(const Path: RawByteString; Limit: integer;
-  out Data: RawByteString): boolean;
+function ReadProcTextErr(const Path: RawByteString; Limit: integer;
+  out Data: RawByteString; out ReadError: cint): boolean;
 var
   Fd, Flags, N: integer;
 begin
   Result := False;
   Data := '';
+  ReadError := 0;
   if Limit < 2 then
     Exit;
   Fd := FpOpen(PAnsiChar(Path), O_RDONLY, 0);
   if Fd < 0 then
+  begin
+    ReadError := FpGetErrNo;
     Exit;
+  end;
   try
     Flags := FpFcntl(Fd, F_GETFD, 0);
     if Flags >= 0 then
       FpFcntl(Fd, F_SETFD, Flags or 1 {FD_CLOEXEC});
     SetLength(Data, Limit);
     N := FileRead(Fd, Data[1], Limit);
+    if N < 0 then
+      ReadError := FpGetErrNo;
   finally
     FpClose(Fd);
   end;
@@ -1313,6 +1319,14 @@ begin
   end;
   SetLength(Data, N);
   Result := True;
+end;
+
+function ReadProcText(const Path: RawByteString; Limit: integer;
+  out Data: RawByteString): boolean;
+var
+  IgnoredError: cint;
+begin
+  Result := ReadProcTextErr(Path, Limit, Data, IgnoredError);
 end;
 
 function ReadProcStatInfo(Pid: TPid; out Info: TProcStatInfo): boolean;
@@ -1395,6 +1409,13 @@ var
 {$ENDIF}
 begin
   Result := 0;
+  {$IFNDEF LINUX}
+  // Non-Linux backends do not have procfs child enumeration.  Referencing
+  // both open-array parameters keeps strict cross-platform helper builds
+  // clean without inventing a result on Darwin/BSD.
+  if (ParentPid <= 0) or (Length(Children) = 0) then
+    Exit;
+  {$ENDIF}
   {$IFDEF LINUX}
   if (ParentPid <= 0) or (Length(Children) = 0) then
     Exit;
@@ -1696,6 +1717,15 @@ end;
 {$ENDIF}
 
 {$IFDEF LINUX}
+{$IFDEF SUPERTERM_TEST_BUILD}
+procedure ForegroundTestDiag(ShellPid: TPid; const Detail: string);
+begin
+  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     (GetEnvironmentVariable('SUPERTERM_TEST_FOREGROUND_DIAG') = '1') then
+    DebugLog('foreground-diag shell=' + IntToStr(ShellPid) + ' ' + Detail);
+end;
+{$ENDIF}
+
 function TryProcQWord(const Token: RawByteString; out Value: QWord): boolean;
 var
   Normalized: string;
@@ -1716,14 +1746,23 @@ var
   P, StartPos, Count: integer;
   SysNo, WaitOptions: QWord;
   Matched: boolean;
+  ReadError: cint;
 begin
   Result := False;
   Tokens := Default(TProcTokens);
   WaitOptions := 0;
   Matched := False;
-  if (Pid <= 0) or
-     (not ReadProcText('/proc/' + IntToStr(Pid) + '/syscall', 512, Line)) then
+  if Pid <= 0 then
     Exit;
+  if not ReadProcTextErr('/proc/' + IntToStr(Pid) + '/syscall', 512,
+     Line, ReadError) then
+  begin
+    {$IFDEF SUPERTERM_TEST_BUILD}
+    ForegroundTestDiag(Pid, 'wait=read-failed errno=' +
+      IntToStr(ReadError));
+    {$ENDIF}
+    Exit;
+  end;
   P := 1;
   Count := 0;
   while (P <= Length(Line)) and (Count <= High(Tokens)) do
@@ -1740,13 +1779,24 @@ begin
     Inc(Count);
   end;
   if (Count < 4) or (not TryProcQWord(Tokens[0], SysNo)) then
+  begin
+    {$IFDEF SUPERTERM_TEST_BUILD}
+    ForegroundTestDiag(Pid, 'wait=malformed tokens=' + IntToStr(Count));
+    {$ENDIF}
     Exit;
+  end;
   {$if declared(syscall_nr_wait4)}
   if SysNo = QWord(syscall_nr_wait4) then
   begin
     // wait4(pid, status, options, rusage): WNOHANG is bit zero.
     if not TryProcQWord(Tokens[3], WaitOptions) then
+    begin
+      {$IFDEF SUPERTERM_TEST_BUILD}
+      ForegroundTestDiag(Pid, 'wait=malformed-options syscall=' +
+        UIntToStr(SysNo));
+      {$ENDIF}
       Exit;
+    end;
     Matched := True;
   end;
   {$endif}
@@ -1755,13 +1805,33 @@ begin
   begin
     // waitid(idtype, id, info, options, rusage): options is argument four.
     if (Count < 5) or (not TryProcQWord(Tokens[4], WaitOptions)) then
+    begin
+      {$IFDEF SUPERTERM_TEST_BUILD}
+      ForegroundTestDiag(Pid, 'wait=malformed-options syscall=' +
+        UIntToStr(SysNo));
+      {$ENDIF}
       Exit;
+    end;
     Matched := True;
   end;
   {$endif}
   if not Matched then
+  begin
+    {$IFDEF SUPERTERM_TEST_BUILD}
+    ForegroundTestDiag(Pid, 'wait=other-syscall syscall=' +
+      UIntToStr(SysNo));
+    {$ENDIF}
     Exit;
+  end;
   Result := (WaitOptions and 1 {WNOHANG}) = 0;
+  {$IFDEF SUPERTERM_TEST_BUILD}
+  if Result then
+    ForegroundTestDiag(Pid, 'wait=blocking syscall=' + UIntToStr(SysNo) +
+      ' options=' + UIntToStr(WaitOptions))
+  else
+    ForegroundTestDiag(Pid, 'wait=nonblocking syscall=' + UIntToStr(SysNo) +
+      ' options=' + UIntToStr(WaitOptions));
+  {$ENDIF}
 end;
 
 function SameProcInstance(const A, B: TProcStatInfo): boolean;
@@ -1837,6 +1907,9 @@ begin
     Exit;
   end;
   Result := True;
+  {$IFDEF SUPERTERM_TEST_BUILD}
+  ForegroundTestDiag(ShellPid, 'accepted child=' + IntToStr(ChildPid));
+  {$ENDIF}
 end;
 {$ENDIF}
 

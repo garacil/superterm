@@ -130,13 +130,13 @@ try:
     os.write(s.fd, b'\x1b')
     s.drain(0.2)
 
-    # F8 changes from the split dashboard (both real class titles visible) to
-    # the single logs window. These titles are parsed by st_wclass; ignored
-    # keys in a legacy pane section must never be used as an oracle.
-    dashboard_before_f8 = s.text()
-    check('dashboard state precedes F8',
-          'ALPHA_ONE' in dashboard_before_f8 and
-          'ALPHA_TWO' in dashboard_before_f8)
+    # F8 changes from the split dashboard already proved above to the single
+    # logs window. These titles are parsed by st_wclass; ignored keys in a
+    # legacy pane section must never be used as an oracle.
+    # The menu can cover a title and its closing repaint may be coalesced with
+    # F8 on a loaded host.  `text` is the already-proven dashboard presentation
+    # captured before opening that transient overlay.
+    dashboard_before_f8 = text
     os.write(s.fd, b'\x1b[19~')
     deadline = time.time() + 5.0
     logs_after_f8 = dashboard_before_f8

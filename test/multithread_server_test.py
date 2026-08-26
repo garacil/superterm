@@ -165,9 +165,14 @@ state = wait_state(HOME, lambda s: s['panes'] == 1)
 check('workers shrink with pane count', bool(state) and
       state['threads'] == expected_one)
 # The control CLI deliberately refuses to close a session's last pane; the
-# attached window manager can create the supported empty-desktop state. Use
-# the public physical Alt-F3 binding directly: a menu mnemonic is translated
-# by the active locale/menu state and is not an oracle for pane teardown.
+# attached window manager can create the supported empty-desktop state.  The
+# three CLI closes above enqueue asynchronous KILL events for this UI. Rename
+# the survivor and wait until that later event is visible before exercising
+# the physical binding; otherwise a slow client can still address pane 4.
+barrier = run_cli(['rename', session + ':1', 'LAST_PANE_READY'], HOME)
+check('client catches up before last close',
+      barrier.returncode == 0 and
+      client.wait_until(lambda text: 'LAST_PANE_READY' in text, 5.0))
 client.send(b'\x1b[13;3~', 0.2)
 state = wait_state(HOME, lambda s: s['panes'] == 0 and s['threads'] == 1)
 check('zero panes leaves network reactor', bool(state) and

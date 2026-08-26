@@ -2365,6 +2365,14 @@ begin
     Exit;
   end;
   FConnected := True;
+  {$IFDEF DARWIN}
+  // This descriptor belongs exclusively to the interactive client from this
+  // point onward.  Keep the complete timed handshake non-blocking as well as
+  // the later event loop: a large SCREEN frame can otherwise expose a short
+  // serialization/flush gap on Darwin while the descriptor is still in the
+  // blocking mode restored by the shared ConnectSocket helper.
+  SetNonBlocking(FSocket);
+  {$ENDIF}
   WaitPolls := AttachIoWaitPolls;
   // tolerant tail of the ATTACH: version, desktop and capabilities; an
   // old daemon ignores the payload and serves the usual v1 protocol
@@ -2508,10 +2516,17 @@ begin
   end;
   for I := 0 to Snapshot.PaneCount - 1 do
   begin
-    if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
-       (Kind <> FRAME_SCREEN) or (Pane <> I) then
+    if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) then
     begin
       FAttachError := 'session screen snapshot timed out';
+      CloseSocket;
+      Exit;
+    end;
+    if (Kind <> FRAME_SCREEN) or (Pane <> I) then
+    begin
+      FAttachError := Format(
+        'session returned snapshot frame kind %d pane %d; expected screen %d',
+        [Kind, Pane, I]);
       CloseSocket;
       Exit;
     end;
@@ -2524,15 +2539,6 @@ begin
     CloseSocket;
     Exit;
   end;
-  // ConnectSocket deliberately restores blocking mode because the same
-  // helper serves short-lived synchronous CLI requests. Darwin's send flags
-  // alone did not keep a stalled daemon from blocking this interactive path;
-  // after READY this descriptor belongs exclusively to the event loop. Keep
-  // GNU/Linux's established MSG_DONTWAIT behaviour and blocking ReadFrame
-  // semantics unchanged.
-  {$IFDEF DARWIN}
-  SetNonBlocking(FSocket);
-  {$ENDIF}
   // READY completes a valid snapshot even when the canonical desktop has no
   // panes.  In that state LayoutNodes is deliberately empty and no SCREEN
   // frames precede READY.

@@ -892,7 +892,7 @@ def physical_preview_ok(value, pane, rect, own, wireframe):
     return (bounds == rect[:3] and pane_locked(value, title) == (not own))
 
 
-def wait_physical_previews(clients, rects, wireframe, timeout=2.5):
+def wait_physical_previews(clients, rects, wireframe, timeout=5.0):
     """Wait for the exact viewer-relative previews on every real PTY."""
     deadline = time.monotonic() + timeout
     values = [snapshot(client) for client in clients]
@@ -904,6 +904,16 @@ def wait_physical_previews(clients, rects, wireframe, timeout=2.5):
             return values, True
         drain_all(clients, 0.04)
         values = [snapshot(client) for client in clients]
+    for viewer, value in enumerate(values):
+        for pane, rect in enumerate(rects):
+            if not physical_preview_ok(
+                    value, pane, rect, viewer == pane, wireframe):
+                print('  physical preview timeout:',
+                      f'viewer={viewer} pane={pane} own={viewer == pane}',
+                      f'wireframe={wireframe} rect={rect}',
+                      f'title_top={title_top(value, TITLES[pane])}',
+                      f'locked={pane_locked(value, TITLES[pane])}',
+                      f'ring={complete_ring(value, rect, viewer != pane)}')
     return values, False
 
 

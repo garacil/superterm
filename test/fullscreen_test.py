@@ -11,6 +11,7 @@ They used to be one thing: any zoom put the pane into passthrough, so
 maximising a window with its icon threw the IDE away.
 """
 import os
+import shlex
 import sys
 import time
 
@@ -59,18 +60,37 @@ check('maximise keeps the status line', 'Detach' in txt)
 check('maximise keeps the window frame', framed())
 
 # Read the five physical bytes directly. Bash 3.2's readline ``bind`` macro
-# behaves differently on Darwin and is not an oracle for SuperTerm's keyboard
-# transport. The command clears its own echoed text before waiting, consumes
-# exactly one F5 sequence, and prints the bytes as a deterministic hex value.
+# and the two system implementations of ``dd`` are not identical. A tiny
+# Python reader sets the slave to raw input, clears its echoed command, reads
+# exactly five bytes, restores the termios state, and prints deterministic hex.
 def arm_f5_reader(ready, result):
     split = len(ready) // 2
     ready_left, ready_right = ready[:split], ready[split:]
-    command = (
-        "stty -echo -icanon min 5 time 0; "
-        f"printf '\\033[2J\\033[H%s%s\\n' '{ready_left}' '{ready_right}'; "
-        "B=$(dd bs=1 count=5 2>/dev/null | od -An -tx1 | "
-        "tr -d '[:space:]'); stty sane; "
-        f"printf '\\n{result}_%s\\n' \"$B\"\r")
+    result_split = len(result) // 2
+    result_left, result_right = result[:result_split], result[result_split:]
+    script = (
+        "import os,sys,termios\n"
+        "fd=0\n"
+        "old=termios.tcgetattr(fd)\n"
+        "new=termios.tcgetattr(fd)\n"
+        "new[3] &= ~(termios.ECHO | termios.ICANON)\n"
+        "new[6][termios.VMIN]=1\n"
+        "new[6][termios.VTIME]=0\n"
+        "termios.tcsetattr(fd, termios.TCSANOW, new)\n"
+        f"ready={ready_left!r}+{ready_right!r}\n"
+        f"result={result_left!r}+{result_right!r}\n"
+        "data=b''\n"
+        "try:\n"
+        " sys.stdout.write('\\x1b[2J\\x1b[H'+ready+'\\n')\n"
+        " sys.stdout.flush()\n"
+        " while len(data)<5:\n"
+        "  data += os.read(fd,5-len(data))\n"
+        "finally:\n"
+        " termios.tcsetattr(fd, termios.TCSANOW, old)\n"
+        "sys.stdout.write('\\n'+result+'_'+data.hex()+'\\n')\n"
+        "sys.stdout.flush()\n")
+    command = (shlex.quote(sys.executable) + ' -c ' +
+               shlex.quote(script) + '\r')
     c.send(command.encode(), 0.1)
 
 
