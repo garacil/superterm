@@ -1479,7 +1479,7 @@ function ProcArgs(Pid: TPid): TStringArray;
 type
   TCmdBuf = array[0..4095] of byte;
 var
-  f: file of byte;
+  Fd, Flags: cint;
   buf: TCmdBuf;
   n, i, Start: integer;
   sl: RawByteString;
@@ -1488,15 +1488,23 @@ begin
   if Pid <= 0 then
     Exit;
   buf := Default(TCmdBuf);
-  AssignFile(f, '/proc/' + IntToStr(Pid) + '/cmdline');
-  {$push}{$I-}
-  Reset(f);
-  {$pop}
-  if IOResult <> 0 then
+  // A typed-file Reset uses the process-global FileMode, whose FPC default
+  // is read/write.  Linux procfs exposes cmdline as read-only to ordinary
+  // users, so an O_RDWR Reset silently lost every argv outside root.  Open
+  // the kernel pseudo-file explicitly read-only and avoid changing FileMode
+  // in this multi-threaded process.
+  Fd := FpOpen(PAnsiChar('/proc/' + IntToStr(Pid) + '/cmdline'),
+    O_RDONLY, 0);
+  if Fd < 0 then
     Exit;
-  n := 0;
-  BlockRead(f, buf, SizeOf(buf), n);
-  CloseFile(f);
+  try
+    Flags := FpFcntl(Fd, F_GETFD, 0);
+    if Flags >= 0 then
+      FpFcntl(Fd, F_SETFD, Flags or 1 {FD_CLOEXEC});
+    n := FileRead(Fd, buf[0], SizeOf(buf));
+  finally
+    FpClose(Fd);
+  end;
   if n <= 0 then
     Exit;
   SetString(sl, PAnsiChar(@buf[0]), n);

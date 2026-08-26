@@ -756,6 +756,16 @@ def changed_positions(record):
     }
 
 
+def exact_lock_transition(record, rect):
+    """Recognize only an unlocked-to-locked paint at unchanged geometry."""
+    if record['kind'] != 'sync' or rect is None:
+        return False
+    before = cells_value(record['before_cells'])
+    return (frame_rect(before) == rect and frame_rect(record) == rect and
+            not has_lock(before) and has_lock(record) and
+            changed_positions(record) <= set(perimeter(rect)))
+
+
 def cells_difference(before_cells, after_cells):
     return {
         (x, y)
@@ -912,8 +922,10 @@ def animation_tokens(records, old_rect, new_rect, rects, ring_base,
             tokens.append('sync-ambiguous-ring')
         elif record['kind'] != 'sync':
             tokens.append(record['kind'] + '-visual')
-        elif has_lock(record):
+        elif exact_lock_transition(record, old_rect):
             tokens.append('sync-lock')
+        elif has_lock(record):
+            tokens.append('sync-invalid-lock')
         elif frame_rect(record) == old_rect:
             tokens.append('sync-old')
         elif frame_rect(record) == new_rect:
@@ -1159,8 +1171,14 @@ for name in ('maximize', 'fullscreen in'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',
                    actor_result[0], expanding)
+    # The observer's lease paint can be presented separately before the first
+    # ring or coalesced into that ring. Permit exactly that one optional lock,
+    # just as contraction does below; every ring and final commit remain exact.
+    observer_expanding = observer_result[0]
+    observer_expected = (expanding if observer_expanding == expanding
+                         else ['sync-lock'] + expanding)
     sequence_check(name + ' observer exact physical sequence',
-                   observer_result[0], expanding)
+                   observer_expanding, observer_expected)
 for name in ('unzoom', 'fullscreen out'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',

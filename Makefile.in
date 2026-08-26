@@ -57,7 +57,8 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   profile_switch_transition_test.py multisession_test.py \
   prefix_test.py title_test.py \
   detach_test.py control_test.py cli_test.py cli_help_test.py control_wm_test.py \
-  nonblocking_server_test.py global_command_fifo_test.py sidecar_atomic_test.py \
+  nonblocking_server_test.py attach_progress_budget_test.py \
+  global_command_fifo_test.py sidecar_atomic_test.py \
   client_egress_nonblocking_test.py \
   global_lock_queue_test.py \
   multiclient_input_burst_test.py \

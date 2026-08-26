@@ -55,9 +55,10 @@ usual port. The separation is concrete and verifiable:
 
 `setup`, `restart`, `disable`, and `uninstall-service` manage only the
 dedicated instance: they do not write `/etc/ssh/sshd_config`, replace the
-regular host keys, or stop or restart the normal service. Both instances reuse
-the same installed OpenSSH binary, NSS accounts, and `sshd` PAM policy; the
-dedicated instance can also optionally **read** each account's
+regular host keys, or stop or restart the normal service. The dedicated
+instance reuses a protected `sshd` executable from the host's installed
+OpenSSH implementation, together with the same NSS accounts and `sshd` PAM
+policy; it can also optionally **read** each account's
 `~/.ssh/authorized_keys`, but SuperTerm never modifies it. This reuse is
 stated explicitly so that operational isolation is not mistaken for a second
 account database or a second cryptographic implementation.
@@ -173,8 +174,10 @@ Separating `/etc/superterm/sshd` neither isolates nor duplicates PAM.
 
 Encryption terminates in OpenSSH on the same host. From there to the session
 daemon, communication uses a local socket protected by Unix permissions.
-There is no double encryption, custom SSH serialization, or private key
-handling inside SuperTerm.
+There is no double encryption or custom SSH serialization. SuperTerm
+provisions and protects this dedicated service's host key, but OpenSSH performs
+all SSH cryptography; SuperTerm does not need, store, or use a user's private
+key.
 
 ## Three kinds of keys that must not be confused
 
@@ -184,10 +187,10 @@ handling inside SuperTerm.
 | Authorized public key | server, central store or `~/.ssh/authorized_keys` | Contains no secret | Authorizes a client identity for an account |
 | User private key | client machine, normally `~/.ssh/id_*` | client user | Proves ownership of the authorized public key |
 
-`authorize` accepts only the `.pub` file. Copying a private key to the server
-is unnecessary and weakens security. The entry written to `known_hosts` does
-not authorize the user either: it protects the client from a counterfeit
-server.
+`authorize` accepts only a file containing one valid public key (commonly the
+`.pub` file). Copying a private key to the server is unnecessary and weakens
+security. The entry written to `known_hosts` does not authorize the user
+either: it protects the client from a counterfeit server.
 
 ## Persistent state
 
@@ -466,8 +469,9 @@ authorizations, and `server.ini` are never deleted as part of that rollback.
 The lock covers operations that validate or mutate state, including `check`.
 `status` and help only query state and do not take it; `list-keys` first
 ensures the protected tree and then enumerates it, also without taking this
-lock. The exclusive `run` wrapper is neither a read nor an administrative
-operation: it validates the published artifact and starts the listener.
+lock. The internal, service-only `run` wrapper is neither a read nor an
+administrative operation: it validates the published artifact and starts the
+listener.
 Every process sees complete generations because publication uses atomic
 renames.
 
@@ -513,8 +517,9 @@ described in `DEBUGGING.md` and `HEAP_DEBUGGING.md`.
 
 ## Authorizing central keys
 
-Only the SuperTerm administrator modifies the central store. It validates the
-user, file, and key with OpenSSH tools, rejects `authorized_keys` options,
+Only the SuperTerm administrator modifies the central store. SuperTerm
+validates the account through NSS and validates the source file itself; it then
+uses OpenSSH tools to validate the key. It rejects `authorized_keys` options,
 discards unauthenticated comments, prevents duplicates, and replaces the file
 atomically:
 
@@ -547,8 +552,9 @@ only when invoked from an environment without a terminal or from one that
 would not allocate it. OpenSSH tries its usual keys; if none matches and
 password authentication is enabled, it requests the password that PAM will
 validate for `german`. On the first connection, it displays the host-key
-fingerprint and stores it in the client's `known_hosts`. The `-p` option must
-precede the destination in portable OpenSSH syntax.
+fingerprint and, after the user accepts it under the client's normal host-key
+policy, stores it in the client's `known_hosts`. The `-p` option must precede
+the destination in portable OpenSSH syntax.
 
 To shorten the command to `ssh superterm`, save the following on the client
 without replacing any other entry in `~/.ssh/config`:
@@ -788,5 +794,7 @@ protected OpenSSH and rechecks its effective configuration.
   GNU/Linux and macOS servers, but not literally on every embedded device that
   has only Dropbear, lacks PAM, or cannot run SuperTerm.
 
-The implementation deliberately delegates OpenSSH's `poll` loops,
-authentication, PTY handling, and child reaping to OpenSSH.
+For the outer SSH transport, the implementation deliberately delegates the
+network `poll` loops, authentication, outer PTY handling, and SSH child reaping
+to OpenSSH. The inner SuperTerm session continues to own its event reactor,
+pane PTYs, canonical screens, and pane-child lifecycle.
