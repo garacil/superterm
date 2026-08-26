@@ -64,7 +64,9 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   multiclient_input_burst_test.py \
   multithread_server_test.py \
   multiclient_test.py multiclient_close_test.py shared_geometry_test.py \
-  host_resize_shared_test.py maximize_min_viewport_test.py \
+  host_resize_shared_test.py desktop_resize_protocol_test.py \
+  desktop_persistence_test.py \
+  maximize_min_viewport_test.py \
   zoom_exclusive_switch_test.py \
   host_summary_lease_test.py \
   shared_state_stress_test.py multiclient_intensive_test.py \

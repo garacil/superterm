@@ -185,20 +185,33 @@ survive a host reboot; profiles and preferences do.
   sizes, minimized/maximized/fullscreen state and focus are shared; input is
   delivered in arrival order. Live move/resize outlines are synchronized, and
   per-pane leases allow different clients to manipulate different panes
-  concurrently. A differently sized terminal clips or pads the shared desktop;
-  an explicit physical resize atomically adopts the new desktop and PTY
-  geometry. Bounded flow control prevents a stalled viewer from blocking the
-  rest.
+  concurrently. The desktop has one canonical character size stored with its
+  profile/session. Attach and host `SIGWINCH` only change that viewer's local
+  viewport: they never resize the desktop, its windows or its PTYs. A smaller
+  terminal starts at desktop coordinate `(0,0)` and gets horizontal/vertical
+  scrollbars; a larger one leaves margin. Bounded flow control prevents a
+  stalled viewer from blocking the rest.
+- The `Desktop` / `Escritorio` menu is the only interactive way to change the
+  canonical desktop: adopt the current terminal's usable character area, enter
+  dimensions from `20x25` through `8192x4094`, or inspect the logical desktop,
+  complete IDE, terminal and viewport sizes. Shrinking never scales windows.
+  Their sizes and PTYs stay unchanged; a window is translated only by the
+  minimum needed to leave a draggable part of its title reachable.
 - Opening, splitting, focusing, resizing, maximizing, minimizing, restoring or
   closing panes operates on real PTYs. One visible layout supports up to 16
   panes, and closing every pane leaves a live empty desktop ready for another.
-- `Ctrl-Q f` gives the focused pane the whole terminal and streams its raw PTY
-  output when every attached host has the same geometry. With different host
-  sizes, all clients receive the same IDE-rendered fullscreen area sized to the
-  smallest host. The same chord restores the previous window rectangle.
-- Normal window maximize keeps the IDE visible. At commit time its shared
-  frame and PTY fit the smallest connected host; restore returns to the exact
-  pre-maximize rectangle.
+- `Ctrl-Q f` gives the focused pane the whole terminal. Raw PTY streaming is
+  geometry-safe only when every attached terminal has the same physical grid
+  and that grid exactly matches canonical fullscreen; otherwise clients remain
+  in the synchronized renderer and their local viewports may scroll. The same
+  chord restores the previous window rectangle.
+- Normal maximize and fullscreen always derive from the canonical desktop,
+  never from the smallest or most recently attached terminal. Restore returns
+  to the exact pre-maximize rectangle.
+- Minimized icons keep stable slots, filled left to right in rows from the
+  bottom. Restoring leaves a hole and the next minimization reuses the first
+  free hole; existing icons never jump. Minimizing a focused window preserves
+  the shared focus until a viewer explicitly selects another window.
 
 ### Workspaces and automation
 
@@ -246,7 +259,10 @@ superterm listar prod                           # the same CLI, en español
   mouse wheel, keyboard and control CLI.
 - The English/Spanish interface, three palettes, optional wireframe drag and
   zoom transition are selectable at runtime. Every attached client sees the
-  same shared window operations.
+  same shared window operations. While a window is moved or resized, the
+  themed status line shows `Window X,Y  WxH` (`Ventana X,Y  WxH`) for that
+  active window. This temporary indicator is not the desktop size; use
+  `Desktop -> Show current dimensions...` for the canonical desktop.
 - Nine RGB ASCII-art desktop backgrounds ship as runtime-readable text files;
   custom files can be dropped into `~/.superterm/backgrounds/` without a
   rebuild and displayed centred, tiled, stretched or fitted.
@@ -675,14 +691,16 @@ content keeps exactly the same colors and attributes in every pane, focused or
 not, and unchanged interiors are not retransmitted on a focus switch.
 
 The same actions are available from the `Panes`, `Windows`, `Classes`,
-`Profiles`, `Sessions`, `Options`, `Clipboard`, and `Help` menus. The
+`Profiles`, `Sessions`, `Desktop`, `Options`, `Clipboard`, and `Help` menus.
+`Desktop` contains `Adjust to this terminal size`, `Modify dimensions...`
+(`20x25` through `8192x4094`) and `Show current dimensions...`. The
 `Windows` menu contains `Minimize all windows`, `Restore all windows`,
 `Close all windows`, `Tile`, `Organize`, `Cascade`, `List`, and
 `Refresh display`. `Options` holds the
 language (`English`/`Espanol`, applied immediately), the color palette (color,
 black and white, monochrome), and the autosave/autorestore toggles. In Spanish
 mode the menus are `Paneles`, `Ventanas`, `Clases`, `Perfiles`, `Sesiones`,
-`Opciones`, `Portapapeles`, and `Ayuda`.
+`Escritorio`, `Opciones`, `Portapapeles`, and `Ayuda`.
 
 Clipboard history is client-local, kept only in memory, deduplicated and
 limited to ten UTF-8 items. Copying from a pane also writes the outer host

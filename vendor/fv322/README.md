@@ -18,3 +18,10 @@ which is not stubbed.
 
 `compile.sh` adds this directory before the installed Free Vision unit path;
 the system package is not modified.
+
+`views.pas` deliberately lets `TView.MakeLocal` walk the complete owner chain
+even when an intermediate local coordinate is negative.  The upstream early
+exit assumes that every owner starts inside its parent; SuperTerm's fixed
+logical desktop uses a negative local origin for a client-side viewport.  The
+complete traversal is the inverse of `MakeGlobal` and keeps mouse coordinates
+correct while that viewport is scrolled.

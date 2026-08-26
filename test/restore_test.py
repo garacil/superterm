@@ -374,6 +374,7 @@ d.close()
 time.sleep(0.6)
 txt = open(SESS).read()
 check("D: bounds round-trip", f'bx={BX}' in txt and f'bw={BW_}' in txt)
-check("D: desk size saved", f'deskw={DESKW}' in txt)
+check("D: DeskW/H round-trip",
+      f'deskw={DESKW}' in txt and f'deskh={DESKH}' in txt)
 
 sys.exit(1 if fails else 0)

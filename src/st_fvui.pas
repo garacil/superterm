@@ -28,6 +28,11 @@ const
   // 2320-2349 classes (20 menu slots) - 2400-2439 windows - 2500-2539 minimized
   // - 2550-2569 session (detach/wizard) - 2600 help - 2700 language.
   WHEEL_LINES = 3;   // history lines per wheel notch
+  // FreeVision does not wrap or compact TMenuBar entries: each one consumes
+  // its visible length plus two cells.  These are the exact widths of the
+  // complete English and Spanish top-level bars.
+  FULL_TOP_MENU_EN = 80;
+  FULL_TOP_MENU_ES = 89;
   MAX_PROFILE_MENU_ITEMS = 40;
   MAX_CLASS_MENU_ITEMS = 20;
   cmSplitV     = 2100;
@@ -86,6 +91,9 @@ const
   cmToggleSolidBg     = 2765;   // paint our own ground, or let the host's show
   cmFullScreen        = 2766;   // prefix+f: hand the terminal to the pane
   cmFitSessionSize    = 2767;   // explicit PTY resize from this client's pane
+  cmDesktopFitTerminal = 2768;  // explicit shared logical desktop resize
+  cmDesktopModify      = 2769;
+  cmDesktopShowSize    = 2770;
 
 {$if cmProfileBase + MAX_PROFILE_MENU_ITEMS > cmProfileSaveAs}
   {$fatal Profile command range overlaps a direct command}
@@ -97,6 +105,7 @@ const
 type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
     pfsDropOsc, pfsDropOscEsc);
+  TIconSlotUsed = array[0..MAX_PANES - 1] of boolean;
 
   PSuperApp = ^TSuperApp;
 
@@ -133,6 +142,7 @@ type
     SBShown: boolean;
     PaneIdx: integer;
     Minimized: boolean;
+    IconSlot: integer;          // stable while minimized; -1 otherwise
     Zoomed: boolean;
     // Zoomed means "filling the desktop, frame and all"; FullScreen means
     // "owning the terminal", which is what passthrough is for. They used to
@@ -185,12 +195,32 @@ type
     procedure Draw; virtual;
     // paint the whole desktop black; see the comment on Draw
     function DeskAttr: byte;
-    procedure FillDesk(AWidth: integer);
+    procedure FillDesk(AStartX, AStartY, AWidth, AHeight: integer);
   end;
 
   PArtDesktop = ^TArtDesktop;
   TArtDesktop = object(TDeskTop)
     procedure InitBackground; virtual;
+    function ExecView(P: PView): word; virtual;
+  end;
+
+  // Physical, client-local viewport chrome.  These views are siblings of the
+  // logical Desktop: they never enter snapshots, profiles or daemon state.
+  PDesktopScrollBar = ^TDesktopScrollBar;
+  TDesktopScrollBar = object(TScrollBar)
+    Axis: byte;                 // 0 = horizontal, 1 = vertical
+    constructor Init(var Bounds: Objects.TRect; AAxis: byte);
+    procedure ScrollDraw; virtual;
+  end;
+
+  PDesktopBackdrop = ^TDesktopBackdrop;
+  TDesktopBackdrop = object(TView)
+    procedure Draw; virtual;
+  end;
+
+  PGeometryStatusLine = ^TGeometryStatusLine;
+  TGeometryStatusLine = object(TStatusLine)
+    procedure Draw; virtual;
   end;
 
   TSuperApp = object(TApplication)
@@ -214,6 +244,7 @@ type
     ProfileMenuCount: integer;
     ClassMenuNames: array[0..MAX_CLASS_MENU_ITEMS - 1] of string;
     ClassMenuCount: integer;
+    MenuCompact: boolean;       // only changes when a width threshold crosses
     ActiveProfile: integer;
     ActiveWindow: integer;
     ProfileMode: boolean;
@@ -232,6 +263,16 @@ type
     RemoteMinHostW, RemoteMinHostH: integer;
     RemoteHostSizesMatch: boolean;
     RemoteHostSummaryValid: boolean;
+    // The shared Desktop keeps canonical coordinates.  Only these offsets and
+    // root-level scrollbars are private to this viewer.
+    ViewportX, ViewportY, ViewportW, ViewportH: integer;
+    ViewportHVisible, ViewportVVisible: boolean;
+    ViewportSyncing: boolean;
+    DesktopHBar, DesktopVBar: PDesktopScrollBar;
+    DesktopCorner, DesktopBackdrop: PDesktopBackdrop;
+    GeometryStatusActive: boolean;
+    GeometryStatusX, GeometryStatusY: integer;
+    GeometryStatusW, GeometryStatusH: integer;
     // Remote zoom/fullscreen is proposed first and becomes visible only when the
     // daemon echoes its authoritative LAYOUT_EV. Output already queued before
     // that event must still be parsed using the old TScreen width.
@@ -263,14 +304,9 @@ type
     // screen until that canonical transaction arrives; otherwise the old
     // RemoteGeom would be exposed for one physical frame.
     RemotePreviewClearPending: array[0..MAX_PANES - 1] of boolean;
-    // Armed only after attach has consumed its startup TIOCGWINSZ. Therefore
-    // the attaching terminal's initial size is metadata, while a later edge
-    // is a deliberate request to replace the shared canonical desktop.
+    // Armed only after attach has consumed its startup TIOCGWINSZ. Physical
+    // size is always client metadata; it never mutates the shared desktop.
     RemoteHostSizeArmed: boolean;
-    HostResizePending, HostResizeInFlight: boolean;
-    PendingHostDeskW, PendingHostDeskH: integer;
-    InFlightHostDeskW, InFlightHostDeskH: integer;
-    HostResizeTick, HostResizeFlightTick: QWord;
     RemoteLockedPanes: LongWord; // one daemon-authoritative bit per pane
     RemoteSharedFocus: integer;
     SharedFullScreenRendered: boolean;
@@ -357,11 +393,23 @@ type
     procedure ShowAbout;
     procedure RenameFocusedWindow;
     procedure ArrangeIcons;
+    function FirstFreeIconSlot: integer;
     procedure DoTilePanes;
     procedure DoCascadePanes;
     procedure DoOrganizePanes;
     procedure DoPaneList;
     procedure ApplyPalette(AKind: integer);
+    procedure InitViewportViews;
+    procedure UpdateDesktopViewport(AReset: boolean);
+    procedure SetDesktopViewport(AX, AY: integer; ARedraw: boolean = True);
+    procedure CanonicalDesktopSize(out AWidth, AHeight: integer);
+    procedure SetCanonicalDesktop(AWidth, AHeight: integer;
+      AResetViewport, AKeepWindowsReachable: boolean);
+    procedure RequestDesktopSize(AWidth, AHeight: integer);
+    procedure AdjustDesktopToTerminal;
+    procedure ModifyDesktopDimensions;
+    procedure ShowDesktopDimensions;
+    procedure SetGeometryStatus(const R: Objects.TRect; AActive: boolean);
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
     // -2 acquires the required lock here; -1 is a preheld global lock;
@@ -393,7 +441,6 @@ type
     procedure ResetRemoteZoomState;
     procedure BeginRemoteZoom(ACommand: word; AInfoPtr: Pointer);
     procedure FinishRemoteZoomAnimation;
-    procedure TryCommitHostResize;
     procedure ZoomAnimate(AWindow: PTermWindow;
       AX1, AY1, AX2, AY2, BX1, BY1, BX2, BY2: integer);
     function ComputeLayoutHash: string;
@@ -598,6 +645,14 @@ var
   // reason the last attach was refused (shown to the user instead of silently
   // starting a fresh local session)
   AttachFailReason: string = '';
+
+function CompactTopMenuFor(AWidth: integer): boolean;
+begin
+  if CurrentLanguage = ulSpanish then
+    Result := AWidth < FULL_TOP_MENU_ES
+  else
+    Result := AWidth < FULL_TOP_MENU_EN;
+end;
 
 procedure ResetVideoSurface;
 begin
@@ -1650,6 +1705,7 @@ begin
   inherited Init(Bounds, ATitle, APane + 1);
   PaneIdx := APane;
   Minimized := False;
+  IconSlot := -1;
   Zoomed := False;
   FullScreen := False;
   TitleClickTick := 0;
@@ -1910,6 +1966,7 @@ begin
     // never that superseded cosmetic position.
     BeforeBounds := Default(Objects.TRect);
     GetBounds(BeforeBounds);
+    App^.SetGeometryStatus(BeforeBounds, True);
     if not App^.Cfg.DragContent then
       OutlineArmed := PaneIdx; // armed only; hidden later, see ChangeBounds
   end;
@@ -1990,6 +2047,7 @@ begin
     end;
     PreviewGestureId := 0;
     PreviewSeq := 0;
+    App^.SetGeometryStatus(AfterBounds, False);
   end;
 end;
 
@@ -2061,6 +2119,9 @@ begin
       end;
     end;
     inherited ChangeBounds(Bounds);
+    App := PSuperApp(Application);
+    if (App <> nil) and GetState(sfDragging) then
+      App^.SetGeometryStatus(Bounds, True);
     // Wireframe drag, step by step. The real window stays hidden: VideoBuf
     // therefore contains the actual uncovered desktop and the renderer owns
     // the transient ring above it.
@@ -2250,14 +2311,424 @@ end;
 
 { ---------------- TSuperApp ---------------- }
 
+constructor TDesktopScrollBar.Init(var Bounds: Objects.TRect; AAxis: byte);
+var
+  OrientedBounds: Objects.TRect;
+begin
+  // TScrollBar chooses its private arrow glyph table only in Init, from the
+  // initial shape (width=1 means vertical). ChangeBounds does not revisit it,
+  // so a shared 1x1 placeholder made the horizontal bar draw ^/V forever.
+  OrientedBounds := Bounds;
+  if AAxis = 0 then
+    OrientedBounds.Assign(Bounds.A.X, Bounds.A.Y,
+      Bounds.A.X + 2, Bounds.A.Y + 1)
+  else
+    OrientedBounds.Assign(Bounds.A.X, Bounds.A.Y,
+      Bounds.A.X + 1, Bounds.A.Y + 2);
+  inherited Init(OrientedBounds);
+  Axis := AAxis;
+  Options := Options and not ofSelectable;
+end;
+
+procedure TDesktopScrollBar.ScrollDraw;
+var
+  App: PSuperApp;
+begin
+  App := PSuperApp(Application);
+  if (App = nil) or App^.ViewportSyncing then
+    Exit;
+  if Axis = 0 then
+    App^.SetDesktopViewport(Value, App^.ViewportY)
+  else
+    App^.SetDesktopViewport(App^.ViewportX, Value);
+end;
+
+procedure TDesktopBackdrop.Draw;
+var
+  App: PSuperApp;
+  B: TDrawBuffer;
+  Attr: byte;
+  W: integer;
+begin
+  App := PSuperApp(Application);
+  Attr := 0;
+  if App <> nil then
+    Attr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+  W := Size.X;
+  if W > MaxViewWidth then W := MaxViewWidth;
+  if W < 0 then W := 0;
+  B := Default(TDrawBuffer);
+  MoveChar(B, ' ', Attr, W);
+  WriteLine(0, 0, W, Size.Y, B);
+end;
+
+procedure TGeometryStatusLine.Draw;
+var
+  App: PSuperApp;
+  B: TDrawBuffer;
+  S: string;
+  X, L: integer;
+begin
+  inherited Draw;
+  App := PSuperApp(Application);
+  if (App = nil) or (not App^.GeometryStatusActive) then
+    Exit;
+  S := Format(UiText(' Window %d,%d  %dx%d ',
+                     ' Ventana %d,%d  %dx%d '),
+    [App^.GeometryStatusX, App^.GeometryStatusY,
+     App^.GeometryStatusW, App^.GeometryStatusH]);
+  if Length(S) > Size.X then
+    S := Copy(S, Length(S) - Size.X + 1, Size.X);
+  L := Length(S);
+  X := Size.X - L;
+  if X < 0 then X := 0;
+  B := Default(TDrawBuffer);
+  // Use the status/menu selected pair, never a literal colour. This makes
+  // the live geometry a clearly delimited status block in color, light/BW
+  // and monochrome palettes alike.
+  MoveStr(B, S, byte(GetColor($0604)));
+  WriteLine(X, 0, L, 1, B);
+end;
+
+procedure TSuperApp.SetGeometryStatus(const R: Objects.TRect;
+  AActive: boolean);
+begin
+  GeometryStatusActive := AActive;
+  if AActive then
+  begin
+    GeometryStatusX := R.A.X;
+    GeometryStatusY := R.A.Y;
+    GeometryStatusW := R.B.X - R.A.X;
+    GeometryStatusH := R.B.Y - R.A.Y;
+  end;
+  if StatusLine <> nil then
+    StatusLine^.DrawView;
+end;
+
+procedure TSuperApp.InitViewportViews;
+var
+  R: Objects.TRect;
+begin
+  ViewportX := 0;
+  ViewportY := 0;
+  ViewportW := 0;
+  ViewportH := 0;
+  ViewportHVisible := False;
+  ViewportVVisible := False;
+  ViewportSyncing := False;
+  DesktopHBar := nil;
+  DesktopVBar := nil;
+  DesktopCorner := nil;
+  DesktopBackdrop := nil;
+  if Desktop = nil then
+    Exit;
+
+  R.Assign(0, 0, 1, 1);
+  DesktopBackdrop := New(PDesktopBackdrop, Init(R));
+  DesktopHBar := New(PDesktopScrollBar, Init(R, 0));
+  DesktopVBar := New(PDesktopScrollBar, Init(R, 1));
+  DesktopCorner := New(PDesktopBackdrop, Init(R));
+  DesktopHBar^.Hide;
+  DesktopVBar^.Hide;
+  DesktopCorner^.Hide;
+
+  // First is frontmost in this FreeVision view ring.  The filler is behind
+  // the logical desktop; bars/corner sit immediately in front of it while the
+  // menu and status line, already inserted by TProgram, stay in front of all.
+  InsertBefore(PView(DesktopBackdrop), nil);
+  InsertBefore(PView(DesktopHBar), PView(Desktop));
+  InsertBefore(PView(DesktopVBar), PView(Desktop));
+  InsertBefore(PView(DesktopCorner), PView(Desktop));
+  PArtDesktop(Desktop)^.GrowMode := 0;
+  UpdateDesktopViewport(True);
+end;
+
+procedure TSuperApp.CanonicalDesktopSize(out AWidth, AHeight: integer);
+begin
+  AWidth := 0;
+  AHeight := 0;
+  if Desktop <> nil then
+  begin
+    AWidth := Desktop^.Size.X;
+    AHeight := Desktop^.Size.Y;
+  end;
+end;
+
+procedure TSuperApp.UpdateDesktopViewport(AReset: boolean);
+var
+  DeskW, DeskH, TopY, BottomY, AvailW, AvailH: integer;
+  NewViewW, NewViewH, MaxX, MaxY, PageX, PageY: integer;
+  NeedH, NeedV, OldH, OldV: boolean;
+  R: Objects.TRect;
+begin
+  if (Desktop = nil) or (DesktopHBar = nil) or (DesktopVBar = nil) or
+     (DesktopCorner = nil) or (DesktopBackdrop = nil) then
+    Exit;
+  CanonicalDesktopSize(DeskW, DeskH);
+  if (DeskW < 1) or (DeskH < 1) then
+    Exit;
+  TopY := 0;
+  BottomY := Size.Y;
+  if MenuBar <> nil then Inc(TopY);
+  if StatusLine <> nil then Dec(BottomY);
+  AvailW := Size.X;
+  AvailH := BottomY - TopY;
+  if AvailW < 1 then AvailW := 1;
+  if AvailH < 1 then AvailH := 1;
+
+  // Point-fixed visibility: either scrollbar consumes the last row/column
+  // and can therefore make its perpendicular peer necessary.
+  NeedH := False;
+  NeedV := False;
+  repeat
+    OldH := NeedH;
+    OldV := NeedV;
+    NewViewW := AvailW - Ord(NeedV);
+    NewViewH := AvailH - Ord(NeedH);
+    if NewViewW < 1 then NewViewW := 1;
+    if NewViewH < 1 then NewViewH := 1;
+    NeedH := DeskW > NewViewW;
+    NeedV := DeskH > NewViewH;
+  until (NeedH = OldH) and (NeedV = OldV);
+  NewViewW := AvailW - Ord(NeedV);
+  NewViewH := AvailH - Ord(NeedH);
+  if NewViewW < 1 then NewViewW := 1;
+  if NewViewH < 1 then NewViewH := 1;
+  ViewportW := NewViewW;
+  ViewportH := NewViewH;
+  ViewportHVisible := NeedH;
+  ViewportVVisible := NeedV;
+  if AReset then
+  begin
+    ViewportX := 0;
+    ViewportY := 0;
+  end;
+  MaxX := DeskW - ViewportW;
+  MaxY := DeskH - ViewportH;
+  if MaxX < 0 then MaxX := 0;
+  if MaxY < 0 then MaxY := 0;
+  if ViewportX < 0 then ViewportX := 0;
+  if ViewportY < 0 then ViewportY := 0;
+  if ViewportX > MaxX then ViewportX := MaxX;
+  if ViewportY > MaxY then ViewportY := MaxY;
+
+  R.Assign(-ViewportX, TopY - ViewportY,
+    -ViewportX + DeskW, TopY - ViewportY + DeskH);
+  Desktop^.ChangeBounds(R);
+  R.Assign(0, TopY, AvailW, TopY + AvailH);
+  DesktopBackdrop^.ChangeBounds(R);
+
+  ViewportSyncing := True;
+  try
+    PageX := ViewportW - 1;
+    PageY := ViewportH - 1;
+    if PageX < 1 then PageX := 1;
+    if PageY < 1 then PageY := 1;
+    R.Assign(0, TopY + ViewportH, ViewportW, TopY + ViewportH + 1);
+    DesktopHBar^.ChangeBounds(R);
+    DesktopHBar^.SetParams(ViewportX, 0, MaxX, PageX, 1);
+    R.Assign(ViewportW, TopY, ViewportW + 1, TopY + ViewportH);
+    DesktopVBar^.ChangeBounds(R);
+    DesktopVBar^.SetParams(ViewportY, 0, MaxY, PageY, 1);
+    R.Assign(ViewportW, TopY + ViewportH,
+      ViewportW + 1, TopY + ViewportH + 1);
+    DesktopCorner^.ChangeBounds(R);
+    if NeedH then DesktopHBar^.Show else DesktopHBar^.Hide;
+    if NeedV then DesktopVBar^.Show else DesktopVBar^.Hide;
+    if NeedH and NeedV then DesktopCorner^.Show else DesktopCorner^.Hide;
+  finally
+    ViewportSyncing := False;
+  end;
+end;
+
+procedure TSuperApp.SetDesktopViewport(AX, AY: integer; ARedraw: boolean);
+var
+  DeskW, DeskH, MaxX, MaxY: integer;
+  SavedSuppress: boolean;
+begin
+  CanonicalDesktopSize(DeskW, DeskH);
+  MaxX := DeskW - ViewportW;
+  MaxY := DeskH - ViewportH;
+  if MaxX < 0 then MaxX := 0;
+  if MaxY < 0 then MaxY := 0;
+  if AX < 0 then AX := 0;
+  if AY < 0 then AY := 0;
+  if AX > MaxX then AX := MaxX;
+  if AY > MaxY then AY := MaxY;
+  if (AX = ViewportX) and (AY = ViewportY) then
+    Exit;
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    ViewportX := AX;
+    ViewportY := AY;
+    UpdateDesktopViewport(False);
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  if ARedraw and (not SavedSuppress) then
+    RepaintChanges;
+end;
+
+procedure TSuperApp.SetCanonicalDesktop(AWidth, AHeight: integer;
+  AResetViewport, AKeepWindowsReachable: boolean);
+var
+  W, H, I, X, Y: Longint;
+  R: Objects.TRect;
+  SavedGrowMode: array[0..MAX_PANES - 1] of Byte;
+  SavedSettling: boolean;
+begin
+  W := AWidth;
+  H := AHeight;
+  NormalizeDesktopSize(W, H);
+  if Desktop = nil then
+    Exit;
+  SavedSettling := RemoteAttachSettling;
+  RemoteAttachSettling := True;
+  Desktop^.Lock;
+  try
+    // TWindow defaults to gfGrowAll+gfGrowRel.  A logical desktop resize is
+    // not a host resize and must not proportionally scale normal windows (or
+    // resize their PTYs through TTermWindow.ChangeBounds).  Freeze only the
+    // desktop's direct window children while TGroup applies its new bounds;
+    // with an unchanged window rectangle its frame/terminal children receive
+    // a zero delta and need no separate GrowMode override.
+    for I := 0 to MAX_PANES - 1 do
+      if Win[I] <> nil then
+      begin
+        SavedGrowMode[I] := Win[I]^.GrowMode;
+        Win[I]^.GrowMode := 0;
+      end;
+    R.Assign(Desktop^.Origin.X, Desktop^.Origin.Y,
+      Desktop^.Origin.X + W, Desktop^.Origin.Y + H);
+    try
+      Desktop^.ChangeBounds(R);
+    finally
+      for I := 0 to MAX_PANES - 1 do
+        if Win[I] <> nil then
+          Win[I]^.GrowMode := SavedGrowMode[I];
+    end;
+    if AKeepWindowsReachable then
+      for I := 0 to MAX_PANES - 1 do
+        if Win[I] <> nil then
+        begin
+          if Win[I]^.Zoomed then
+            R := Win[I]^.ZoomRect
+          else if Win[I]^.Minimized then
+            R := Win[I]^.SavedRect
+          else
+          begin
+            R := Default(Objects.TRect);
+            Win[I]^.GetBounds(R);
+          end;
+          X := R.A.X;
+          Y := R.A.Y;
+          if KeepWindowTitleReachable(X, Y, R.B.X - R.A.X, W, H) then
+          begin
+            R.Move(X - R.A.X, Y - R.A.Y);
+            if Win[I]^.Zoomed then
+              Win[I]^.ZoomRect := R
+            else if Win[I]^.Minimized then
+              Win[I]^.SavedRect := R
+            else
+              Win[I]^.ChangeBounds(R);
+          end;
+          if Win[I]^.Zoomed then
+          begin
+            R.Assign(0, 0, W, H);
+            Win[I]^.ChangeBounds(R);
+            if Win[I]^.FullScreen then
+              RequestPaneSize(I, W, H + 2);
+          end;
+        end;
+    ArrangeIcons;
+    UpdateDesktopViewport(AResetViewport);
+  finally
+    Desktop^.Unlock;
+    RemoteAttachSettling := SavedSettling;
+  end;
+end;
+
+procedure TSuperApp.RequestDesktopSize(AWidth, AHeight: integer);
+var
+  CurrentW, CurrentH: integer;
+begin
+  if not IsDesktopSizeValid(AWidth, AHeight) then
+  begin
+    MessageBox(Format(UiText(
+      'Desktop dimensions must be between %dx%d and %dx%d cells.',
+      'Las dimensiones deben estar entre %dx%d y %dx%d caracteres.'),
+      [DESKTOP_MIN_W, DESKTOP_MIN_H, DESKTOP_MAX_W, DESKTOP_MAX_H]), nil,
+      mfError or mfOKButton);
+    Exit;
+  end;
+  CanonicalDesktopSize(CurrentW, CurrentH);
+  if (CurrentW = AWidth) and (CurrentH = AHeight) then
+  begin
+    SetDesktopViewport(0, 0);
+    Exit;
+  end;
+  if RemoteMode then
+  begin
+    if (Remote = nil) or (not Remote.Connected) or
+       (not Remote.SendDesktopResize(AWidth, AHeight)) then
+      MessageBox(UiText(
+        'The shared desktop is busy. Try again when its current action finishes.',
+        'El escritorio compartido esta ocupado. Intentalo al terminar la accion actual.'),
+        nil, mfError or mfOKButton);
+    Exit;
+  end;
+  SetCanonicalDesktop(AWidth, AHeight, True, True);
+  RepaintChanges;
+  RebuildMenu;
+end;
+
+procedure TSuperApp.AdjustDesktopToTerminal;
+var
+  W, H: integer;
+begin
+  W := Size.X;
+  H := Size.Y;
+  if MenuBar <> nil then Dec(H);
+  if StatusLine <> nil then Dec(H);
+  RequestDesktopSize(W, H);
+end;
+
+procedure TSuperApp.ModifyDesktopDimensions;
+var
+  W, H: integer;
+begin
+  CanonicalDesktopSize(W, H);
+  if RunDesktopSizeDialog(W, H, DESKTOP_MIN_W, DESKTOP_MIN_H,
+    DESKTOP_MAX_W, DESKTOP_MAX_H) then
+    RequestDesktopSize(W, H);
+end;
+
+procedure TSuperApp.ShowDesktopDimensions;
+var
+  W, H: integer;
+  S: string;
+begin
+  CanonicalDesktopSize(W, H);
+  S := Format(UiText(
+    'Logical desktop: %dx%d'#10'Complete IDE: %dx%d'#10 +
+    'This terminal: %dx%d'#10'Visible viewport: %dx%d at (%d,%d)',
+    'Escritorio logico: %dx%d'#10'IDE completo: %dx%d'#10 +
+    'Este terminal: %dx%d'#10'Area visible: %dx%d en (%d,%d)'),
+    [W, H, W, H + Ord(MenuBar <> nil) + Ord(StatusLine <> nil),
+     Size.X, Size.Y, ViewportW, ViewportH, ViewportX, ViewportY]);
+  MessageBox(S, nil, mfInformation or mfOKButton);
+end;
+
 constructor TSuperApp.Init;
 var
   Pin: TPaneArray;
   i, n, k, SysIdx: integer;
+  SavedX, SavedY: Longint;
   Ok: boolean;
   Dir: TSplitDir;
   DeskW, DeskH: integer;
-  RD, WR: Objects.TRect;
+  WR: Objects.TRect;
   SysClassesTmp: TWindowClassArray;
 begin
   InstallWideVideoOutput;
@@ -2293,6 +2764,7 @@ begin
   st_video.SolidBackground := Cfg.SolidBg;
   CurrentLanguage := Cfg.Language;
   SetMessageBoxLanguage(CurrentLanguage = ulSpanish);
+  InitViewportViews;
   // window classes: user file + system file (user wins); if
   // SUPERTERM_INI points to the user file, the merge deduplicates
   LoadWindowClasses(ConfigFile, coUser, WClasses);
@@ -2350,14 +2822,6 @@ begin
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   RemoteHostSizeArmed := False;
-  HostResizePending := False;
-  HostResizeInFlight := False;
-  PendingHostDeskW := 0;
-  PendingHostDeskH := 0;
-  InFlightHostDeskW := 0;
-  InFlightHostDeskH := 0;
-  HostResizeTick := 0;
-  HostResizeFlightTick := 0;
   RemoteLockedPanes := 0;
   RemoteSharedFocus := -1;
   SharedFullScreenRendered := False;
@@ -2376,6 +2840,12 @@ begin
   PassFilterState := pfsGround;
   PassFilterBuf := '';
   PassFilterLen := 0;
+
+  // A newly created/legacy workspace starts from this terminal once. From
+  // this point onward the logical desktop is independent of host SIGWINCH.
+  CanonicalDesktopSize(DeskW, DeskH);
+  NormalizeDesktopSize(DeskW, DeskH);
+  SetCanonicalDesktop(DeskW, DeskH, True, False);
 
   CurrentSessionName := '';
   if AttachRequested then
@@ -2446,6 +2916,32 @@ begin
   DeskH := 0;
   if Cfg.AutoRestore then
     Ok := LoadSession(SessionFile, Lay, Pin, DeskW, DeskH);
+  if Ok and (DeskW > 0) and (DeskH > 0) then
+  begin
+    NormalizeDesktopSize(DeskW, DeskH);
+    SetCanonicalDesktop(DeskW, DeskH, True, False);
+  end;
+  if Ok then
+  begin
+    // Sessions written before the fixed logical desktop have no DeskW/H.
+    // Use this startup terminal's canonical desktop, preserving every saved
+    // size and every already-accessible position. Repair only a rectangle
+    // whose draggable title is wholly outside, before any window is created
+    // and therefore before an unreachable intermediate frame can be shown.
+    CanonicalDesktopSize(DeskW, DeskH);
+    for i := 0 to High(Pin) do
+      if (Pin[i].BW > 0) and (Pin[i].BH > 0) then
+      begin
+        SavedX := Pin[i].BX;
+        SavedY := Pin[i].BY;
+        if KeepWindowTitleReachable(SavedX, SavedY, Pin[i].BW,
+             DeskW, DeskH) then
+        begin
+          Pin[i].BX := SavedX;
+          Pin[i].BY := SavedY;
+        end;
+      end;
+  end;
   if not Ok then
   begin
     Lay.Free;
@@ -2516,13 +3012,9 @@ begin
   if Lay.Focused >= n then
     Lay.Focused := 0;
   RelayoutAll;
-  // reapply manual window geometry/state (moved or resized with
-  // Ctrl-F5, maximized, minimized) saved in session.ini; only if the
-  // desktop has the same size as when saving, because the bounds
-  // are absolute
-  RD := Default(Objects.TRect);
-  Desktop^.GetExtent(RD);
-  if Ok and (DeskW = RD.B.X - RD.A.X) and (DeskH = RD.B.Y - RD.A.Y) then
+  // Reapply absolute bounds after restoring the saved canonical desktop.
+  // A client's physical size is only a viewport and never gates restoration.
+  if Ok then
   begin
     for i := 0 to n - 1 do
       if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) then
@@ -2542,7 +3034,10 @@ begin
     for i := 0 to n - 1 do
       if (i <= High(Pin)) and (i < MAX_PANES) and (Win[i] <> nil) and
          Pin[i].Minimized then
+      begin
+        Win[i]^.IconSlot := Pin[i].IconSlot;
         MinimizeWindow(i);
+      end;
   end;
   RepaintChanges;
   FocusPane(Lay.Focused);
@@ -2615,9 +3110,8 @@ procedure TSuperApp.ApplyTerminalSize(ACols, ARows: integer);
 { logs a forced full repaint when the terminal actually changed size }
 var
   Mode: TVideoMode;
-  R, WR: Objects.TRect;
-  I, SavedPalette, NewDeskW, NewDeskH: integer;
-  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
+  R: Objects.TRect;
+  SavedPalette: integer;
   NeedVideo, NeedBounds, SavedSuppress, SavedSettling: boolean;
 begin
   if (ACols < 1) or (ARows < 1) then
@@ -2628,30 +3122,15 @@ begin
   NeedBounds := (Size.X <> ACols) or (Size.Y <> ARows);
   if (not NeedVideo) and (not NeedBounds) then
     Exit;
-  // The physical surface and the canonical desktop are distinct on attach.
-  // Only a later TIOCGWINSZ edge, after RemoteHostSizeArmed, is a shared
-  // resize operation. Coalesce here; Idle commits the latest target after it
-  // has drained all preceding authoritative socket events.
+  // A physical TIOCGWINSZ is client metadata only.  It changes this viewer's
+  // surface/viewport and can never propose a canonical desktop mutation.
   if NeedVideo and RemoteMode and RemoteHostSizeArmed and
      (Remote <> nil) and Remote.Connected and (Lay <> nil) and
      (Length(RemoteGeom) = Lay.PaneCount) then
-  begin
     if Remote.SendClientSize(ACols, ARows) then
       // Until FRAME_HOST_SUMMARY_EV returns in socket order, the previous
       // comparison does not describe this physical surface any more.
       RemoteHostSummaryValid := False;
-    NewDeskW := ACols;
-    NewDeskH := ARows;
-    if MenuBar <> nil then Dec(NewDeskH);
-    if StatusLine <> nil then Dec(NewDeskH);
-    if (NewDeskW >= 16) and (NewDeskH >= 6) then
-    begin
-      PendingHostDeskW := NewDeskW;
-      PendingHostDeskH := NewDeskH;
-      HostResizePending := True;
-      HostResizeTick := GetTickCount64;
-    end;
-  end;
   // SetScreenVideoMode itself calls ChangeBounds, and every Locate below can
   // draw. Keep the whole host-resize as one buffered visual transaction; the
   // user must never see the temporary apColor selected by InitScreen or two
@@ -2687,48 +3166,14 @@ begin
       R.Assign(0, 0, ACols, ARows);
       ChangeBounds(R);
     end;
-    if Lay <> nil then
-    begin
-      if RemoteMode and (Length(RemoteGeom) = Lay.PaneCount) and
-         (RemoteDeskW > 0) and (RemoteDeskH > 0) then
-      begin
-        RemoteAttachSettling := True;
-        try
-          for I := 0 to Lay.PaneCount - 1 do
-            if (I < MAX_PANES) and (Win[I] <> nil) then
-            begin
-              WR.Assign(RemoteGeom[I].BX, RemoteGeom[I].BY,
-                RemoteGeom[I].BX + RemoteGeom[I].BW,
-                RemoteGeom[I].BY + RemoteGeom[I].BH);
-              if Win[I]^.Minimized then
-                Win[I]^.SavedRect := WR
-              else if RemoteGeom[I].Zoomed then
-              begin
-                Win[I]^.ZoomRect := WR;
-                if RemoteGeom[I].FullScreen then
-                  SharedFullScreenSize(MaxDeskW, MaxDeskH, MaxCols, MaxRows)
-                else
-                begin
-                  // Normal maximized bounds are canonical state.  The host
-                  // minimum was applied by the daemon when the zoom commit
-                  // happened; a later physical resize only clips the view.
-                  MaxDeskW := RemoteGeom[I].Cols + 2;
-                  MaxDeskH := RemoteGeom[I].Rows + 2;
-                end;
-                R.Assign(0, 0, MaxDeskW, MaxDeskH);
-                Win[I]^.Locate(R);
-              end
-              else
-                Win[I]^.Locate(WR);
-            end;
-          ArrangeIcons;
-        finally
-          RemoteAttachSettling := False;
-        end;
-      end
-      else
-        RelayoutAll;
-    end;
+    // Rebuild the dynamic tree only when crossing the exact compact/full
+    // threshold.  Repeated resize events inside one mode do no allocation;
+    // the one necessary rebuild remains inside this synchronized paint.
+    if MenuCompact <> CompactTopMenuFor(Size.X) then
+      RebuildMenu;
+    // A new physical size always starts at the canonical upper-left corner.
+    // Existing window bounds and PTY grids remain byte-for-byte untouched.
+    UpdateDesktopViewport(True);
     ResetVideoSurface;
     // Build the final frame while writes are held. EffOld remains invalid,
     // so the post-transaction ReDraw below emits every settled cell once.
@@ -2747,149 +3192,6 @@ var
 begin
   if ReadTerminalSize(Cols, Rows) then
     ApplyTerminalSize(Cols, Rows);
-end;
-
-procedure TSuperApp.TryCommitHostResize;
-const
-  RESIZE_DEBOUNCE_MS = 100;
-  RESIZE_ACK_TIMEOUT_MS = 3000;
-var
-  Candidate: TPaneGeomArray;
-  Titles: TStrArray;
-  ChangeMask: LongWord;
-  OldW, OldH, NewW, NewH: integer;
-  I, L, T, R, B, MinW, MinH: integer;
-  MaxDeskW, MaxDeskH, MaxCols, MaxRows: integer;
-  Tick: QWord;
-
-  function ScaleEdge(AValue, AOldSize, ANewSize: integer): integer;
-  var
-    N: Int64;
-  begin
-    if AOldSize <= 0 then
-      Exit(AValue);
-    N := Int64(AValue) * ANewSize + AOldSize div 2;
-    Result := N div AOldSize;
-  end;
-
-  procedure ScaleRect(var G: TPaneGeom);
-  begin
-    L := ScaleEdge(G.BX, OldW, NewW);
-    T := ScaleEdge(G.BY, OldH, NewH);
-    R := ScaleEdge(G.BX + G.BW, OldW, NewW);
-    B := ScaleEdge(G.BY + G.BH, OldH, NewH);
-    MinW := 16;
-    MinH := 6;
-    if MinW > NewW then MinW := NewW;
-    if MinH > NewH then MinH := NewH;
-    if L < 0 then L := 0;
-    if T < 0 then T := 0;
-    if R > NewW then R := NewW;
-    if B > NewH then B := NewH;
-    if R - L < MinW then R := L + MinW;
-    if B - T < MinH then B := T + MinH;
-    if R > NewW then
-    begin
-      R := NewW;
-      L := R - MinW;
-    end;
-    if B > NewH then
-    begin
-      B := NewH;
-      T := B - MinH;
-    end;
-    if L < 0 then L := 0;
-    if T < 0 then T := 0;
-    G.BX := L;
-    G.BY := T;
-    G.BW := R - L;
-    G.BH := B - T;
-    if G.FullScreen then
-    begin
-      if (RemoteMinHostW > 0) and (RemoteMinHostH > 0) then
-      begin
-        G.Cols := RemoteMinHostW;
-        G.Rows := RemoteMinHostH;
-      end
-      else
-      begin
-        G.Cols := NewW;
-        G.Rows := NewH + 2;
-      end;
-    end
-    else if G.Zoomed then
-    begin
-      SharedMaximizedSize(NewW, NewH, MaxDeskW, MaxDeskH,
-        MaxCols, MaxRows);
-      G.Cols := MaxCols;
-      G.Rows := MaxRows;
-    end
-    else if not G.Minimized then
-    begin
-      G.Cols := G.BW - 2;
-      G.Rows := G.BH - 2;
-    end;
-    if G.Cols < 4 then G.Cols := 4;
-    if G.Rows < 2 then G.Rows := 2;
-  end;
-
-begin
-  Candidate := nil;
-  Titles := nil;
-  if (not HostResizePending) or (not RemoteMode) or
-     (Remote = nil) or (not Remote.Connected) or (Lay = nil) or
-     (Length(RemoteGeom) <> Lay.PaneCount) or
-     (not RemoteHostSummaryValid) then
-    Exit;
-  Tick := GetTickCount64;
-  if HostResizeInFlight then
-  begin
-    if Tick - HostResizeFlightTick < RESIZE_ACK_TIMEOUT_MS then
-      Exit;
-    HostResizeInFlight := False;
-  end;
-  if Tick - HostResizeTick < RESIZE_DEBOUNCE_MS then
-    Exit;
-  NewW := PendingHostDeskW;
-  NewH := PendingHostDeskH;
-  if (NewW < 16) or (NewH < 6) then
-    Exit;
-  if (NewW = RemoteDeskW) and (NewH = RemoteDeskH) then
-  begin
-    HostResizePending := False;
-    Exit;
-  end;
-  if not LockRemoteLayout(-1) then
-  begin
-    HostResizeTick := Tick;
-    Exit;
-  end;
-  OldW := RemoteDeskW;
-  OldH := RemoteDeskH;
-  Candidate := Copy(RemoteGeom, 0, Length(RemoteGeom));
-  SetLength(Titles, Lay.PaneCount);
-  ChangeMask := LAYOUT_CHANGE_DESKTOP;
-  for I := 0 to Lay.PaneCount - 1 do
-  begin
-    ScaleRect(Candidate[I]);
-    if (I < MAX_PANES) and (Win[I] <> nil) then
-      Titles[I] := Win[I]^.GetTitle(80);
-    ChangeMask := ChangeMask or (LongWord(1) shl I);
-  end;
-  if not Remote.SendLayout(SaveLayoutString(Lay), Lay.Focused, Titles,
-    Candidate, NewW, NewH, ChangeMask) then
-  begin
-    Remote.UnlockLayout(-1);
-    HostResizeTick := Tick;
-    Exit;
-  end;
-  HostResizeInFlight := True;
-  InFlightHostDeskW := NewW;
-  InFlightHostDeskH := NewH;
-  HostResizeFlightTick := Tick;
-  if DebugActive then
-    DebugLog(Format('host-resize: queued canonical %dx%d panes=%d',
-      [NewW, NewH, Lay.PaneCount]));
 end;
 
 function TSuperApp.PaneCount: integer;
@@ -3458,8 +3760,7 @@ procedure TSuperApp.FocusPane(i: integer);
 var
   SavedOptions: word;
 begin
-  if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
-     (not Win[i]^.Minimized) then
+  if (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) then
   begin
     if DebugFull then
       DebugLog(Format('focus: pane=%d remote=%d settling=%d shared=%d',
@@ -3485,7 +3786,9 @@ begin
         Win[i]^.Options := SavedOptions;
       end;
     end;
-    if Win[i]^.Term <> nil then
+    // A minimized pane may intentionally retain shared focus. Its icon stays
+    // selected, but its hidden terminal child must not become current.
+    if (not Win[i]^.Minimized) and (Win[i]^.Term <> nil) then
       Win[i]^.Term^.Select;
     // TWindow.Select is allowed to raise the focused normal window. Minimized
     // icons are desktop controls and must remain above it, without becoming
@@ -3495,7 +3798,8 @@ begin
     // Each click/key selection is an ordered frame; the daemon echoes the
     // winner to every viewer. Input itself remains independently writable.
     if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
-       Remote.Connected and (RemoteSharedFocus <> i) then
+       Remote.Connected and (not Win[i]^.Minimized) and
+       (RemoteSharedFocus <> i) then
     begin
       if Remote.SendFocus(i) then
         RemoteSharedFocus := i;
@@ -3545,14 +3849,38 @@ begin
   end;
 end;
 
-// groups the minimized icons into rows at the bottom of the desktop
+function TSuperApp.FirstFreeIconSlot: integer;
+var
+  Used: TIconSlotUsed;
+  I, Slot: integer;
+begin
+  Used := Default(TIconSlotUsed);
+  for I := 0 to MAX_PANES - 1 do
+    if (Win[I] <> nil) and Win[I]^.Minimized then
+    begin
+      Slot := Win[I]^.IconSlot;
+      if (Slot >= 0) and (Slot < MAX_PANES) then
+        Used[Slot] := True;
+    end;
+  for Slot := 0 to MAX_PANES - 1 do
+    if not Used[Slot] then
+      Exit(Slot);
+  Result := MAX_PANES - 1;
+end;
+
+// Keep each minimized icon in the slot it obtained on entry.  Restoring one
+// leaves a hole; a later minimize reuses the first free hole.  This routine
+// maps stable slot numbers to coordinates and raises icons above normal panes,
+// but never compacts or renumbers them.
 procedure TSuperApp.ArrangeIcons;
 const
-  ICON_W = 26;
+  DEFAULT_ICON_W = 26;
+  MIN_ICON_W = 10;
   ICON_H = 2;
 var
   RD, R: Objects.TRect;
-  i, k, PerRow, DeskW: integer;
+  Used: TIconSlotUsed;
+  i, Slot, PerRow, DeskW, DeskH, IconW, RowsAvail, ColsNeeded: integer;
   SavedOptions: word;
 begin
   if Desktop = nil then
@@ -3562,17 +3890,48 @@ begin
   if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
     RD.Assign(0, 0, RemoteDeskW, RemoteDeskH);
   DeskW := RD.B.X - RD.A.X;
-  PerRow := DeskW div (ICON_W + 1);
+  DeskH := RD.B.Y - RD.A.Y;
+  IconW := DEFAULT_ICON_W;
+  RowsAvail := DeskH div ICON_H;
+  if RowsAvail < 1 then RowsAvail := 1;
+  ColsNeeded := (MAX_PANES + RowsAvail - 1) div RowsAvail;
+  if ColsNeeded < 1 then ColsNeeded := 1;
+  if (DeskW div IconW) < ColsNeeded then
+    IconW := DeskW div ColsNeeded;
+  if IconW < MIN_ICON_W then IconW := MIN_ICON_W;
+  if IconW > DeskW then IconW := DeskW;
+  PerRow := DeskW div IconW;
   if PerRow < 1 then
     PerRow := 1;
-  k := 0;
+  Used := Default(TIconSlotUsed);
+  // Repair only malformed/duplicate legacy state. Valid occupied slots never
+  // move, regardless of pane index or holes before them.
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.Minimized then
     begin
-      R.Assign((k mod PerRow) * (ICON_W + 1),
-        RD.B.Y - ICON_H * (1 + k div PerRow),
-        (k mod PerRow) * (ICON_W + 1) + ICON_W,
-        RD.B.Y - ICON_H * (k div PerRow));
+      Slot := Win[i]^.IconSlot;
+      if (Slot < 0) or (Slot >= MAX_PANES) or Used[Slot] then
+        Win[i]^.IconSlot := -1
+      else
+        Used[Slot] := True;
+    end;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
+      if Win[i]^.IconSlot < 0 then
+      begin
+        for Slot := 0 to MAX_PANES - 1 do
+          if not Used[Slot] then
+            Break;
+        if Slot >= MAX_PANES then Slot := MAX_PANES - 1;
+        Win[i]^.IconSlot := Slot;
+        Used[Slot] := True;
+      end;
+      Slot := Win[i]^.IconSlot;
+      R.Assign((Slot mod PerRow) * IconW,
+        RD.B.Y - ICON_H * (1 + Slot div PerRow),
+        (Slot mod PerRow) * IconW + IconW,
+        RD.B.Y - ICON_H * (Slot div PerRow));
       Win[i]^.Locate(R);
       // Icons are desktop controls, not ordinary windows occupying their old
       // Z slot. Keep every icon above every non-minimized pane; otherwise a
@@ -3589,14 +3948,12 @@ begin
       Win[i]^.Options := SavedOptions;
       if DebugFull then
         DebugLog(Format('icon: pane=%d slot=%d rect=%d,%d %dx%d',
-          [i, k, R.A.X, R.A.Y, R.B.X - R.A.X, R.B.Y - R.A.Y]));
-      Inc(k);
+          [i, Slot, R.A.X, R.A.Y, R.B.X - R.A.X, R.B.Y - R.A.Y]));
     end;
 end;
 
 procedure TSuperApp.MinimizeWindow(i: integer);
 var
-  NextPane: integer;
   SavedSuppress: boolean;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
@@ -3615,41 +3972,17 @@ begin
     if not RemoteAttachSettling then
       RemoteGeomDirtyPanes[i] := True;
   end;
-  NextPane := FindVisiblePane(i, 1);
-  if NextPane = i then
-    NextPane := -1;
   SavedSuppress := SuppressFlush;
   SuppressFlush := True;
   try
+    if (Win[i]^.IconSlot < 0) or (Win[i]^.IconSlot >= MAX_PANES) then
+      Win[i]^.IconSlot := FirstFreeIconSlot;
+    if RemoteMode and (i < Length(RemoteGeom)) then
+      RemoteGeom[i].IconSlot := Win[i]^.IconSlot;
     Win[i]^.Minimize;
-    // do NOT re-tile: the other windows stay where the user left them.
-    // Only the minimized icons are re-placed at the desktop bottom.
+    // Do not re-tile, compact icons or choose another focus. A minimized pane
+    // remains the shared logical focus until a user explicitly selects one.
     ArrangeIcons;
-    if Lay.Focused = i then
-      Lay.Focused := NextPane;
-    // Publish the definitive shared focus before committing the geometry.
-    // The daemon's final layout snapshot must already contain that winner;
-    // sending focus afterwards produced old-focus -> new-focus and two full
-    // frame paints during one minimize/restore action.
-    if Lay.Focused >= 0 then
-    begin
-      // The geometry commit makes the old focused pane invalid and carries
-      // our intended fallback. Do not also emit a standalone FOCUS frame:
-      // observers would otherwise paint the same locked window twice before
-      // the final icon. The daemon accepts this fallback only if no newer
-      // valid focus won concurrently.
-      if RemoteMode and (not RemoteAttachSettling) then
-      begin
-        RemoteAttachSettling := True;
-        try
-          FocusPane(Lay.Focused);
-        finally
-          RemoteAttachSettling := False;
-        end;
-      end
-      else
-        FocusPane(Lay.Focused);
-    end;
     if RemoteMode and (not RemoteAttachSettling) then
       SyncRemoteLayout(i);
     RebuildMenu;
@@ -3664,7 +3997,7 @@ end;
 
 procedure TSuperApp.RestoreWindow(i: integer);
 var
-  SavedSuppress: boolean;
+  SavedSuppress, SavedSettling: boolean;
 begin
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) or
      (not Win[i]^.Minimized) then
@@ -3676,6 +4009,7 @@ begin
   if RemoteMode and (i < Length(RemoteGeom)) then
   begin
     RemoteGeom[i].Minimized := False;
+    RemoteGeom[i].IconSlot := -1;
     if not RemoteAttachSettling then
       RemoteGeomDirtyPanes[i] := True;
   end;
@@ -3688,11 +4022,25 @@ begin
     if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
        (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
       Win[i]^.Locate(Win[i]^.SavedRect);
+    Win[i]^.IconSlot := -1;
     Lay.Focused := i;
-    ArrangeIcons;   // re-place the icons that remain minimized
-    // Focus first so the following atomic layout snapshot carries the same
-    // final pane; observers never paint an obsolete focus in between.
-    FocusPane(i);
+    ArrangeIcons;   // only raises remaining icons; their slots do not move
+    if RemoteMode then
+    begin
+      // Select immediately in this client, but do not emit FRAME_FOCUS while
+      // the daemon still considers the pane minimized. The leased layout
+      // commit carries this pane as both restored and focused, which the
+      // daemon accepts atomically and publishes in one settled snapshot.
+      SavedSettling := RemoteAttachSettling;
+      RemoteAttachSettling := True;
+      try
+        FocusPane(i);
+      finally
+        RemoteAttachSettling := SavedSettling;
+      end;
+    end
+    else
+      FocusPane(i);
     if RemoteMode and (not RemoteAttachSettling) then
       SyncRemoteLayout(i);
     RebuildMenu;
@@ -3727,8 +4075,11 @@ begin
     for i := 0 to MAX_PANES - 1 do
       if Win[i] <> nil then
         Win[i]^.Minimize;
-    Lay.Focused := -1;
     ArrangeIcons;   // place all icons at the bottom, without re-tiling
+    if RemoteMode then
+      for i := 0 to High(RemoteGeom) do
+        if (i < MAX_PANES) and (Win[i] <> nil) then
+          RemoteGeom[i].IconSlot := Win[i]^.IconSlot;
     if RemoteMode and (not RemoteAttachSettling) then
       SyncRemoteLayout(-1);
     RebuildMenu;
@@ -3741,7 +4092,7 @@ end;
 
 procedure TSuperApp.RestoreAllWindows;
 var
-  i, LastRestored: integer;
+  i: integer;
   SavedSuppress: boolean;
 begin
   if RemoteMode and (not RemoteAttachSettling) and (Remote <> nil) and
@@ -3752,17 +4103,15 @@ begin
     for i := 0 to High(RemoteGeom) do
     begin
       RemoteGeom[i].Minimized := False;
+      RemoteGeom[i].IconSlot := -1;
       if not RemoteAttachSettling then
         RemoteGeomDirtyPanes[i] := True;
     end;
-  // each window returns to its pre-minimize position; nothing re-tiles.
-  // Windows may overlap now, so the ones coming back are brought to the
-  // front and the last of them takes the focus: the user asked to see them,
-  // and focusing whatever was already visible would put it on top of them.
+  // Each window returns to its pre-minimize position; nothing re-tiles and
+  // this bulk operation never invents a new focus.
   SavedSuppress := SuppressFlush;
   SuppressFlush := True;
   try
-    LastRestored := -1;
     for i := 0 to MAX_PANES - 1 do
       if (Win[i] <> nil) and Win[i]^.Minimized then
       begin
@@ -3770,13 +4119,11 @@ begin
         if (Win[i]^.SavedRect.B.X > Win[i]^.SavedRect.A.X) and
            (Win[i]^.SavedRect.B.Y > Win[i]^.SavedRect.A.Y) then
           Win[i]^.Locate(Win[i]^.SavedRect);
+        Win[i]^.IconSlot := -1;
         Win[i]^.MakeFirst;
-        LastRestored := i;
       end;
-    if LastRestored >= 0 then
-      Lay.Focused := LastRestored
-    else if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
-       (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+    if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
+       (Win[Lay.Focused] = nil) then
       Lay.Focused := FirstVisiblePane;
     FocusPane(Lay.Focused);
     if RemoteMode and (not RemoteAttachSettling) then
@@ -4051,6 +4398,8 @@ begin
 end;
 
 procedure TSuperApp.BuildEmptyWorkspace(AProfile: integer);
+var
+  W, H: Longint;
 begin
   StopRuntime;
   FreeAndNil(Lay);
@@ -4061,6 +4410,10 @@ begin
   ActiveProfile := AProfile;
   ActiveWindow := -1;
   ProfileMode := (AProfile >= 0) and (AProfile < Length(Profiles));
+  W := Size.X;
+  H := Size.Y - Ord(MenuBar <> nil) - Ord(StatusLine <> nil);
+  NormalizeDesktopSize(W, H);
+  SetCanonicalDesktop(W, H, True, False);
   ResetSizeRequests;
   RepaintChanges;
   RebuildMenu;
@@ -4178,10 +4531,11 @@ begin
     Panes[i].WriteStr(S);
 end;
 
-// Raw passthrough keeps every terminal sequence except an OSC 52 clipboard
-// query. Letting an SSH pane ask the outer terminal for its clipboard would
-// send the reply back toward an untrusted process. Writes remain byte-for-byte
-// raw and are also observed by TScreen for history; only reads are removed.
+// Raw passthrough keeps terminal output except host-read queries which cannot
+// have one coherent answer in a shared session. OSC 52 could expose an outer
+// clipboard; OSC 10..19 would make every attached terminal answer separately
+// and those replies would become pane input. Pure setters remain byte-for-byte
+// raw; a mixed setter/query is blocked as one indivisible OSC transaction.
 procedure TSuperApp.PassthroughFiltered(const Data; ALen: integer);
 const
   MAX_PASS_OSC = 2 * 1024 * 1024;
@@ -4258,10 +4612,47 @@ var
     Result := (Sep > 0) and (Copy(Rest, Sep + 1, MaxInt) = '?');
   end;
 
+  function IsDynamicColorQuery: boolean;
+  var
+    Body: RawByteString;
+    BodyLen, Command, I, Sep, Start, Stop: integer;
+  begin
+    Result := False;
+    if PassFilterLen < 6 then Exit;
+    if byte(PassFilterBuf[PassFilterLen]) = 7 then
+      BodyLen := PassFilterLen - 3
+    else
+      BodyLen := PassFilterLen - 4; // ESC ] body ESC \
+    if BodyLen < 4 then Exit;
+    Body := Copy(PassFilterBuf, 3, BodyLen);
+    Sep := Pos(';', Body);
+    if Sep <= 1 then Exit;
+    Command := 0;
+    for I := 1 to Sep - 1 do
+    begin
+      if (Body[I] < '0') or (Body[I] > '9') then Exit;
+      Command := Command * 10 + Ord(Body[I]) - Ord('0');
+      if Command > 19 then Exit;
+    end;
+    if (Command < 10) or (Command > 19) then Exit;
+    // PassFilterBuf can hold 2 MiB: scan by index so a hostile OSC with many
+    // separators stays O(n), rather than deleting/copying its suffix per field.
+    Start := Sep + 1;
+    while Start <= Length(Body) do
+    begin
+      Stop := Start;
+      while (Stop <= Length(Body)) and (Body[Stop] <> ';') do
+        Inc(Stop);
+      if (Stop = Start + 1) and (Body[Start] = '?') then
+        Exit(True);
+      Start := Stop + 1;
+    end;
+  end;
+
   procedure FinishPassOsc;
   begin
     SetLength(PassFilterBuf, PassFilterLen);
-    if not IsClipboardQuery then
+    if (not IsClipboardQuery) and (not IsDynamicColorQuery) then
       EmitString(PassFilterBuf);
     ResetPassBuffer;
     PassFilterState := pfsGround;
@@ -4664,6 +5055,7 @@ var
   NewLay, OldLay: TLayout;
   Stream: TMemoryStream;
   I, N, SysIdx, FullDeskW, FullDeskH, FullCols, FullRows: integer;
+  OldDeskW, OldDeskH: integer;
   MaxDeskW, MaxDeskH: integer;
   OldActiveProfile, OldActiveWindow: integer;
   OldProfileMode: boolean;
@@ -4678,8 +5070,6 @@ begin
   RemoteHostSummaryValid := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
-  HostResizePending := False;
-  HostResizeInFlight := False;
   Remote := TSessionClient.Create;
   if not Remote.Connect(APath, Snapshot, ScreenWidth, ScreenHeight) then
   begin
@@ -4721,6 +5111,8 @@ begin
     Remote := nil;
     Exit;
   end;
+  CanonicalDesktopSize(OldDeskW, OldDeskH);
+  SetCanonicalDesktop(RemoteDeskW, RemoteDeskH, True, False);
   // save the previous state: per-pane loading can still fail (corrupt
   // screen blob or window not created) and it must be restorable
   OldLay := Lay;
@@ -4784,6 +5176,7 @@ begin
     ActiveProfile := OldActiveProfile;
     ActiveWindow := OldActiveWindow;
     CurrentSessionName := OldSessionName;
+    SetCanonicalDesktop(OldDeskW, OldDeskH, True, False);
     NewLay.Free;
     Remote.Free;
     Remote := nil;
@@ -4846,7 +5239,10 @@ begin
     for I := 0 to Lay.PaneCount - 1 do
       if (I < MAX_PANES) and (Win[I] <> nil) and
          Snapshot.Geom[I].Minimized then
+      begin
+        Win[I]^.IconSlot := Snapshot.Geom[I].IconSlot;
         MinimizeWindow(I);
+      end;
   end;
   // Attaching never sends the host's size to the daemon.
   RemoteAttachSettling := False;
@@ -4881,8 +5277,6 @@ begin
   RemoteHostSummaryValid := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
-  HostResizePending := False;
-  HostResizeInFlight := False;
   Candidate := TSessionClient.Create;
   CheckLay := nil;
   try
@@ -4952,6 +5346,13 @@ begin
     RemoteLockedPanes := Snapshot.LockedPanes;
     RemoteSharedFocus := Snapshot.Focused;
     RemoteGeom := Copy(Snapshot.Geom, 0, Length(Snapshot.Geom));
+    for I := 0 to N - 1 do
+      if (I < MAX_PANES) and (Win[I] <> nil) then
+        if Snapshot.Geom[I].Minimized then
+          Win[I]^.IconSlot := Snapshot.Geom[I].IconSlot
+        else
+          Win[I]^.IconSlot := -1;
+    ArrangeIcons;
     RemoteGeometryDirty := False;
     RemoteTreeDirty := False;
     for I := 0 to MAX_PANES - 1 do
@@ -5198,8 +5599,6 @@ begin
   RemoteHostSummaryValid := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
-  HostResizePending := False;
-  HostResizeInFlight := False;
   RemoteMode := False;
   CurrentSessionSocket := '';
   CurrentSessionName := '';
@@ -5230,8 +5629,6 @@ begin
   RemoteHostSummaryValid := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
-  HostResizePending := False;
-  HostResizeInFlight := False;
   RemoteMode := False;
   CurrentSessionSocket := '';
   CurrentSessionName := '';
@@ -5625,6 +6022,7 @@ var
   PS: TProfilePaneSpec;
   AdHoc: TWindowClass;
   i, n, SysIdx: integer;
+  DeskW, DeskH: Longint;
   Started, OldDefer: boolean;
   CommandOverride, LocalCmd, ShellFor, TitleS: string;
 begin
@@ -5681,6 +6079,20 @@ begin
   Lay := NewLay;
   ActiveProfile := AProfile;
   ActiveWindow := AWindow;
+  if IsDesktopSizeValid(WS.DeskW, WS.DeskH) then
+  begin
+    DeskW := WS.DeskW;
+    DeskH := WS.DeskH;
+  end
+  else
+  begin
+    // Legacy profile: the creator establishes its canonical size exactly
+    // once; promotion then stores it in the live daemon snapshot.
+    DeskW := Size.X;
+    DeskH := Size.Y - Ord(MenuBar <> nil) - Ord(StatusLine <> nil);
+    NormalizeDesktopSize(DeskW, DeskH);
+  end;
+  SetCanonicalDesktop(DeskW, DeskH, True, False);
 
   // Build the profile as data and detached view objects.  CreateWindowForPane
   // deliberately does not insert them into Desktop in this scope, so the
@@ -5692,6 +6104,7 @@ begin
     for i := 0 to n - 1 do
     begin
       PS := Default(TProfilePaneSpec);
+      PS.IconSlot := -1;
       PS.Name := 'pane' + IntToStr(i);
       PS.Enabled := True;
       if i <= High(WS.Panes) then
@@ -5781,9 +6194,8 @@ begin
   DeferPaneSpawn := OldDefer;
 end;
 
-// reapplies the EXACT geometry saved in the profile (manual
-// position/size, maximized and minimized), leaving everything as
-// saved; only if the desktop size matches (bounds are absolute)
+// Reapply the exact geometry after ActivateProfile has installed that
+// workspace's canonical desktop. Physical terminal size is irrelevant.
 procedure TSuperApp.ApplyWindowGeometry(const WS: TProfileWindowSpec);
 var
   RD, WR: Objects.TRect;
@@ -5825,10 +6237,13 @@ begin
   for i := 0 to n - 1 do
     if (i <= High(WS.Panes)) and (i < MAX_PANES) and (Win[i] <> nil) and
        WS.Panes[i].Minimized then
+    begin
+      Win[i]^.IconSlot := WS.Panes[i].IconSlot;
       Win[i]^.Minimize;
+    end;
   ArrangeIcons;
   if (Lay.Focused < 0) or (Lay.Focused >= n) or
-     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+     (Win[Lay.Focused] = nil) then
     Lay.Focused := FirstVisiblePane;
 end;
 
@@ -5850,8 +6265,7 @@ begin
   Result.Enabled := True;
   Result.Layout := SaveLayoutString(Lay);
   Result.FocusedPane := Lay.Focused;
-  // desktop size: the saved bounds are absolute and are reapplied
-  // only if the desktop size matches when restoring the profile
+  // Persist the one canonical desktop together with its absolute bounds.
   RD := Default(Objects.TRect);
   if Desktop <> nil then
   begin
@@ -5866,6 +6280,7 @@ begin
   for i := 0 to n - 1 do
   begin
     Result.Panes[i] := Default(TProfilePaneSpec);
+    Result.Panes[i].IconSlot := -1;
     Result.Panes[i].Name := 'pane' + IntToStr(i + 1);
     Result.Panes[i].Enabled := True;
     // A saved profile is a snapshot of the workspace, not merely a recipe
@@ -5898,6 +6313,8 @@ begin
       Result.Panes[i].BW := WR.B.X - WR.A.X;
       Result.Panes[i].BH := WR.B.Y - WR.A.Y;
       Result.Panes[i].Minimized := Win[i]^.Minimized;
+      if Win[i]^.Minimized then
+        Result.Panes[i].IconSlot := Win[i]^.IconSlot;
       Result.Panes[i].Zoomed := Win[i]^.Zoomed;
     end;
     if (PaneTerm[i] >= 0) and (PaneTerm[i] < Length(WClasses)) then
@@ -6538,7 +6955,7 @@ begin
   if Lay.Focused >= PaneCount then
     Lay.Focused := PaneCount - 1;
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
-     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+     (Win[Lay.Focused] = nil) then
     Lay.Focused := FirstVisiblePane;
   // do NOT re-tile: remaining windows keep their size and position.
   // KillPane already removed the closed one from the desktop; repaint.
@@ -6647,6 +7064,10 @@ begin
       AGeom[i].BH := WR.B.Y - WR.A.Y;
       AGeom[i].Zoomed := Win[i]^.Zoomed;
       AGeom[i].Minimized := Win[i]^.Minimized;
+      if Win[i]^.Minimized then
+        AGeom[i].IconSlot := Win[i]^.IconSlot
+      else
+        AGeom[i].IconSlot := -1;
       AGeom[i].FullScreen := Win[i]^.FullScreen;
       if Win[i]^.Minimized and (Scr[i] <> nil) then
       begin
@@ -6968,43 +7389,21 @@ begin
   ADeskH := RemoteDeskH;
   ACols := RemoteDeskW;
   ARows := RemoteDeskH + 2;
-  if (RemoteMinHostW > 0) and (RemoteMinHostH > 2) then
-  begin
-    ACols := RemoteMinHostW;
-    ARows := RemoteMinHostH;
-    // Equal hosts can all take the exact same raw stream. With unequal hosts
-    // keep FreeVision visible and make the shared fullscreen rectangle fit
-    // the smallest physical viewport; the normal saved desktop is untouched.
-    if (RemoteClientCount > 1) and (not RemoteHostSizesMatch) then
-    begin
-      if ADeskW > ACols then ADeskW := ACols;
-      if ADeskH > ARows - 2 then ADeskH := ARows - 2;
-    end;
-  end;
   if ADeskW < 1 then ADeskW := 1;
   if ADeskH < 1 then ADeskH := 1;
   if ACols < 4 then ACols := 4;
   if ARows < 2 then ARows := 2;
 end;
 
-// A normal maximized window keeps the IDE menu/status and its own frame. The
-// canonical desktop may be larger than one connected terminal after another
-// client deliberately resizes it, but the one shared maximum must remain
-// completely visible on every viewer. This is distinct from fullscreen: its PTY owns
-// the full physical viewport, whereas a normal maximized PTY loses two cells
-// in each dimension to the window frame.
+// A normal maximized window keeps the IDE menu/status and its own frame. Its
+// one shared maximum always derives from the canonical desktop, independent
+// of physical viewers; a smaller viewer scrolls or clips its local viewport.
+// Fullscreen uses the same canonical desktop without the 2x2 window frame.
 procedure TSuperApp.SharedMaximizedSize(ACanonicalDeskW,
   ACanonicalDeskH: integer; out ADeskW, ADeskH, ACols, ARows: integer);
 begin
   ADeskW := ACanonicalDeskW;
   ADeskH := ACanonicalDeskH;
-  if (RemoteMinHostW > 0) and (RemoteMinHostH > 2) then
-  begin
-    if ADeskW > RemoteMinHostW then
-      ADeskW := RemoteMinHostW;
-    if ADeskH > RemoteMinHostH - 2 then
-      ADeskH := RemoteMinHostH - 2;
-  end;
   // Match TWindow.SizeLimits/FreeVision's MinWinSize exactly. Otherwise the
   // daemon could install a 4-column PTY while Locate silently paints a
   // 16-column frame on a malformed/tiny host.
@@ -7530,6 +7929,7 @@ begin
     RemoteHostSummaryValid := True;
   end;
   Target.Minimized := False;
+  Target.IconSlot := -1;
   if Target.FullScreen then
   begin
     SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
@@ -7687,20 +8087,25 @@ end;
 // leaves it automatically without wiring every command.
 procedure TSuperApp.UpdatePassthrough;
 var
-  f: integer;
+  f, DeskW, DeskH: integer;
   want: boolean;
 begin
   f := Lay.Focused;
+  CanonicalDesktopSize(DeskW, DeskH);
   // Raw pane bytes cannot be width-preserving on a host which failed the
   // UTF-8 rendering probe. Keep that one client on the cell renderer; other
   // UTF-8 clients attached to the same canonical session may still use raw.
   want := HostUtf8Output and
     (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
     Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop)) and
-    ((not RemoteMode) or
-     (RemoteHostSummaryValid and RemoteHostSizesMatch and
+    (((not RemoteMode) and (ScreenWidth = DeskW) and
+      (ScreenHeight = DeskH + 2) and (Scr[f] <> nil) and
+      (Scr[f].Width = ScreenWidth) and (Scr[f].Height = ScreenHeight)) or
+     (RemoteMode and RemoteHostSummaryValid and RemoteHostSizesMatch and
       (ScreenWidth = RemoteMinHostW) and
       (ScreenHeight = RemoteMinHostH) and
+      (ScreenWidth = RemoteDeskW) and
+      (ScreenHeight = RemoteDeskH + 2) and
       (not SharedFullScreenRendered) and
       (Scr[f] <> nil) and (Scr[f].Width = ScreenWidth) and
       (Scr[f].Height = ScreenHeight)));
@@ -7759,10 +8164,11 @@ begin
     IntToStr(DeskW) + 'x' + IntToStr(DeskH);
   for i := 0 to Length(Geom) - 1 do
   begin
-    Result := Result + Format('|%d,%d,%d,%d,%d,%d,%d,%d,%d',
+    Result := Result + Format('|%d,%d,%d,%d,%d,%d,%d,%d,%d,%d',
       [Geom[i].BX, Geom[i].BY, Geom[i].BW, Geom[i].BH,
        Geom[i].Cols, Geom[i].Rows, Ord(Geom[i].Zoomed),
-       Ord(Geom[i].Minimized), Ord(Geom[i].FullScreen)]);
+       Ord(Geom[i].Minimized), Geom[i].IconSlot,
+       Ord(Geom[i].FullScreen)]);
     if (i < MAX_PANES) and (Win[i] <> nil) then
       Result := Result + ',' + Win[i]^.GetTitle(80);
   end;
@@ -7828,7 +8234,7 @@ var
   NewLay: TLayout;
   I: integer;
   GR: Objects.TRect;
-  AnyFull, WireHostSizesMatch, ZoomAck, ZoomReply: boolean;
+  AnyFull, WireHostSizesMatch, ZoomAck, ZoomReply, DesktopChanged: boolean;
   SavedSuppress: boolean;
   FullDeskW, FullDeskH, FullCols, FullRows: integer;
   MaxDeskW, MaxDeskH: integer;
@@ -7853,6 +8259,10 @@ var
     Geom[APane].BH := R.B.Y - R.A.Y;
     Geom[APane].Zoomed := Win[APane]^.Zoomed;
     Geom[APane].Minimized := Win[APane]^.Minimized;
+    if Win[APane]^.Minimized then
+      Geom[APane].IconSlot := Win[APane]^.IconSlot
+    else
+      Geom[APane].IconSlot := -1;
     Geom[APane].FullScreen := Win[APane]^.FullScreen;
     // A live drag changes only presentation until its reliable commit. Keep
     // parsing/drawing this actor pane at the mirror size which was actually
@@ -7945,6 +8355,7 @@ begin
   RemoteLockedPanes := LockedPanes;
   // Every SizeLimits/Zoom/ArrangeIcons call below must see the incoming desk,
   // never the one from the preceding revision.
+  DesktopChanged := (RemoteDeskW <> DeskW) or (RemoteDeskH <> DeskH);
   RemoteDeskW := DeskW;
   RemoteDeskH := DeskH;
   // A canonical event is one visual transaction. Locate/Hide/Show/Select all
@@ -7953,6 +8364,8 @@ begin
   SavedSuppress := SuppressFlush;
   SuppressFlush := True;
   try
+  if DesktopChanged then
+    SetCanonicalDesktop(DeskW, DeskH, True, False);
   PrepareRemotePreviewsForLayout(LockedPanes);
   Lay.Free;
   Lay := NewLay;
@@ -7965,6 +8378,10 @@ begin
     for I := 0 to Lay.PaneCount - 1 do
       if (I < MAX_PANES) and (Win[I] <> nil) then
       begin
+        if Geom[I].Minimized then
+          Win[I]^.IconSlot := Geom[I].IconSlot
+        else
+          Win[I]^.IconSlot := -1;
         // A layout commit owns PTY dimensions as well as the window bounds.
         // Apply the mirror resize under the same suppressed transaction; the
         // daemon deliberately sends no earlier RESIZE_EV for this commit.
@@ -8098,7 +8515,7 @@ begin
     // event may enter fullscreen while the latest summary is incompatible.
     SharedFullScreenRendered := True;
   if (Focused >= 0) and (Focused < Lay.PaneCount) and
-     (Win[Focused] <> nil) and (not Win[Focused]^.Minimized) then
+     (Win[Focused] <> nil) then
     Lay.Focused := Focused
   else
     Lay.Focused := FirstVisiblePane;
@@ -8118,20 +8535,6 @@ begin
     SuppressFlush := SavedSuppress;
   end;
   UpdatePassthrough;
-  if (not APeer) and HostResizeInFlight and
-     (DeskW = InFlightHostDeskW) and
-     (DeskH = InFlightHostDeskH) then
-  begin
-    HostResizeInFlight := False;
-    if HostResizePending and (DeskW = PendingHostDeskW) and
-       (DeskH = PendingHostDeskH) then
-      HostResizePending := False
-    else
-      HostResizeTick := GetTickCount64;
-  end
-  else if (not APeer) and (not HostResizeInFlight) and HostResizePending and
-          (DeskW = PendingHostDeskW) and (DeskH = PendingHostDeskH) then
-    HostResizePending := False;
   if (not APeer) and (Remote <> nil) then
     Remote.AcceptLayoutState(Revision, LockedPanes);
   // The remote loop batches all canonical events and repaints once after the
@@ -8185,7 +8588,7 @@ begin
   if Lay.Focused >= PaneCount then
     Lay.Focused := PaneCount - 1;
   if (Lay.Focused < 0) or (Lay.Focused >= MAX_PANES) or
-     (Win[Lay.Focused] = nil) or Win[Lay.Focused]^.Minimized then
+     (Win[Lay.Focused] = nil) then
     Lay.Focused := FirstVisiblePane;
   finally
     SuppressFlush := SavedSuppress;
@@ -8691,6 +9094,10 @@ begin
       Pin[i].BW := WR.B.X - WR.A.X;
       Pin[i].BH := WR.B.Y - WR.A.Y;
       Pin[i].Minimized := Win[i]^.Minimized;
+      if Win[i]^.Minimized then
+        Pin[i].IconSlot := Win[i]^.IconSlot
+      else
+        Pin[i].IconSlot := -1;
       Pin[i].Zoomed := Win[i]^.Zoomed;
       Pin[i].FullScreen := Win[i]^.FullScreen;
     end;
@@ -8820,10 +9227,9 @@ begin
             SharedFullScreenRendered := False;
             if Win[ZoomF]^.Zoomed then
             begin
-              // In unequal-host fallback the visible fullscreen rectangle is
-              // the smallest common viewport, not SizeLimits.Max. Put the
-              // hidden logical window at Max first so FV's TWindow.Zoom takes
-              // its restore branch and keeps the original ZoomRect.
+              // Rendered fullscreen still uses the canonical rectangle. Put
+              // the hidden logical window there first so FV's TWindow.Zoom
+              // takes its restore branch and keeps the original ZoomRect.
               if RemoteMode then
               begin
                 SharedR.Assign(0, 0, RemoteDeskW, RemoteDeskH);
@@ -8855,6 +9261,10 @@ begin
         RemoteGeom[ZoomF].Zoomed := Win[ZoomF]^.Zoomed;
         RemoteGeom[ZoomF].FullScreen := Win[ZoomF]^.FullScreen;
         RemoteGeom[ZoomF].Minimized := Win[ZoomF]^.Minimized;
+        if Win[ZoomF]^.Minimized then
+          RemoteGeom[ZoomF].IconSlot := Win[ZoomF]^.IconSlot
+        else
+          RemoteGeom[ZoomF].IconSlot := -1;
         if Win[ZoomF]^.FullScreen then
         begin
           SharedFullScreenSize(FullDeskW, FullDeskH, FullCols, FullRows);
@@ -9099,6 +9509,9 @@ begin
       cmAbout: ShowAbout;
       cmRenameWindow: RenameFocusedWindow;
       cmFitSessionSize: FitSessionToWindow;
+      cmDesktopFitTerminal: AdjustDesktopToTerminal;
+      cmDesktopModify: ModifyDesktopDimensions;
+      cmDesktopShowSize: ShowDesktopDimensions;
       cmPaneTile: DoTilePanes;
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
@@ -9610,8 +10023,6 @@ begin
             RemoteHostSummaryValid := False;
             ResetRemotePreviewState;
             ResetRemoteZoomState;
-            HostResizePending := False;
-            HostResizeInFlight := False;
             SkipSave := True;
             MessageBox(UiText('The session was closed.',
               'La sesion se cerro.'), nil, mfInformation or mfOKButton);
@@ -9625,8 +10036,6 @@ begin
             RemoteHostSummaryValid := False;
             ResetRemotePreviewState;
             ResetRemoteZoomState;
-            HostResizePending := False;
-            HostResizeInFlight := False;
             // flag before the MessageBox: nothing from this instance must
             // be saved (the layout belongs to the lost remote session)
             SkipSave := True;
@@ -9672,9 +10081,6 @@ begin
         LocalGestureActive := True;
         Break;
       end;
-    if RemoteMode and (Current = PView(Desktop)) and
-       (not LocalGestureActive) then
-      TryCommitHostResize;
     // Debounced shared-layout push. The daemon orders and echoes one
     // authoritative state to every client. Never turn a modal pane lease into
     // a zero-change global commit while its mouse button is still held.
@@ -9873,21 +10279,24 @@ begin
   DeskAttr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
 end;
 
-procedure TArtBackground.FillDesk(AWidth: integer);
+procedure TArtBackground.FillDesk(AStartX, AStartY, AWidth,
+  AHeight: integer);
 var
   B: TDrawBuffer;
   y: integer;
 begin
+  if (AWidth <= 0) or (AHeight <= 0) then
+    Exit;
   B := Default(TDrawBuffer);
   MoveChar(B, ' ', DeskAttr, AWidth);
-  for y := 0 to Size.Y - 1 do
-    WriteLine(0, y, AWidth, 1, B);
+  for y := AStartY to AStartY + AHeight - 1 do
+    WriteLine(AStartX, y, AWidth, 1, B);
 end;
 
 procedure TArtBackground.Draw;
 var
   B: TDrawBuffer;
-  x, y, FrontN: integer;
+  x, y, FrontN, X0, Y0, X1, Y1, VX, VY: integer;
   App: PSuperApp;
   Idx: integer;
   Mode: TArtMode;
@@ -9922,18 +10331,37 @@ begin
     W := MaxViewWidth;
   if W < 0 then
     W := 0;
+  X0 := 0;
+  Y0 := 0;
+  X1 := W;
+  Y1 := Size.Y;
+  if (App <> nil) and (App^.ViewportW > 0) and (App^.ViewportH > 0) then
+  begin
+    X0 := App^.ViewportX;
+    Y0 := App^.ViewportY;
+    X1 := X0 + App^.ViewportW;
+    Y1 := Y0 + App^.ViewportH;
+    if X0 < 0 then X0 := 0;
+    if Y0 < 0 then Y0 := 0;
+    if X1 > W then X1 := W;
+    if Y1 > Size.Y then Y1 := Size.Y;
+  end;
+  VX := X1 - X0;
+  VY := Y1 - Y0;
+  if (VX <= 0) or (VY <= 0) then
+    Exit;
   if (App = nil) or (App^.Cfg.Background = '') or
      (App^.Cfg.Background = 'none') then
   begin
     // With no picture this costs exactly what the ancestor cost: one filled
     // buffer and one WriteLine per row, nothing looked up or registered.
-    FillDesk(W);
+    FillDesk(X0, Y0, VX, VY);
     Exit;
   end;
   Idx := ArtIndexOf(App^.Cfg.Background);
   // Clear first: this covers the view's whole extent, so nothing of a
   // previous layout can survive in a row the picture does not reach.
-  FillDesk(W);
+  FillDesk(X0, Y0, VX, VY);
   if Idx <= 0 then
     Exit;                // name not found on disk: a plain desktop
   Mode := ArtModeOf(App^.Cfg.BackgroundMode);
@@ -9974,14 +10402,14 @@ begin
   end;
   // Nothing registered on exposed desktop ground by a previous layout may
   // survive. Covered cells still belong to their pane or dialog.
-  for y := 0 to Size.Y - 1 do
-    for x := 0 to W - 1 do
+  for y := Y0 to Y1 - 1 do
+    for x := X0 to X1 - 1 do
       if not CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
         RichClear(GOrig.X + x, GOrig.Y + y);
-  for y := 0 to Size.Y - 1 do
+  for y := Y0 to Y1 - 1 do
   begin
     B := Default(TDrawBuffer);
-    for x := 0 to W - 1 do
+    for x := X0 to X1 - 1 do
     begin
       C := ArtCellFor(Idx, Mode, W, Size.Y, x, y);
       if C.Glyph = '' then
@@ -9991,7 +10419,7 @@ begin
         // the overlay with entries that a later layout could match by
         // coincidence and resurrect as a stale glyph.
         Word0 := (word(DeskAttr) shl 8) or word(' ');
-        B[x] := Word0;
+        B[x - X0] := Word0;
         if not CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
           RichClear(GOrig.X + x, GOrig.Y + y);
       end
@@ -10018,7 +10446,7 @@ begin
         if (C.Bg <> 0) and (C.Glyph <> FULL_BLOCK) then
           Attr := Attr or (Vga16FromRgb(C.Bg) shl 4);
         Word0 := (word(Attr) shl 8) or word(CP437_FULL_BLOCK);
-        B[x] := Word0;
+        B[x - X0] := Word0;
         if CoveredByFrontView(GOrig.X + x, GOrig.Y + y) then
           Continue
         else if C.Glyph = FULL_BLOCK then
@@ -10032,7 +10460,7 @@ begin
             Word0, False, False, True);
       end;
     end;
-    WriteLine(0, y, W, 1, B);
+    WriteLine(X0, y, VX, 1, B);
   end;
 end;
 
@@ -10043,6 +10471,64 @@ begin
   R := Default(Objects.TRect);
   GetExtent(R);
   Background := New(PArtBackground, Init(R, ' '));
+end;
+
+function TArtDesktop.ExecView(P: PView): word;
+var
+  App: PSuperApp;
+  R: Objects.TRect;
+  X, Y, W, H, DeskW, DeskH: integer;
+  SavedOptions: word;
+begin
+  App := PSuperApp(Application);
+  if (P <> nil) and (App <> nil) and
+     (App^.ViewportW > 0) and (App^.ViewportH > 0) then
+  begin
+    R := Default(Objects.TRect);
+    P^.GetBounds(R);
+    W := R.B.X - R.A.X;
+    H := R.B.Y - R.A.Y;
+    DeskW := Size.X;
+    DeskH := Size.Y;
+    if W > App^.ViewportW then
+      // Keep the dialog's controls and title origin visible. Aligning its far
+      // edge instead put the left side outside a scrolled small client.
+      X := App^.ViewportX
+    else
+    begin
+      X := App^.ViewportX + (App^.ViewportW - W) div 2;
+      if X < App^.ViewportX then X := App^.ViewportX;
+      if X + W > App^.ViewportX + App^.ViewportW then
+        X := App^.ViewportX + App^.ViewportW - W;
+      if X < 0 then X := 0;
+      if (W <= DeskW) and (X + W > DeskW) then X := DeskW - W;
+    end;
+    if H > App^.ViewportH then
+      Y := App^.ViewportY
+    else
+    begin
+      Y := App^.ViewportY + (App^.ViewportH - H) div 2;
+      if Y < App^.ViewportY then Y := App^.ViewportY;
+      if Y + H > App^.ViewportY + App^.ViewportH then
+        Y := App^.ViewportY + App^.ViewportH - H;
+      if Y < 0 then Y := 0;
+      if (H <= DeskH) and (Y + H > DeskH) then Y := DeskH - H;
+    end;
+    R.Assign(X, Y, X + W, Y + H);
+    P^.Locate(R);
+  end;
+  if P = nil then
+    Exit(inherited ExecView(P));
+  // TGroup.InsertBefore reapplies ofCenterX/ofCenterY when ExecView inserts a
+  // detached dialog. Keep the caller's option for reuse, but suppress that
+  // second centering while our viewport-aware rectangle is modal.
+  SavedOptions := P^.Options;
+  P^.Options := SavedOptions and (not ofCentered);
+  try
+    Result := inherited ExecView(P);
+  finally
+    P^.Options := SavedOptions;
+  end;
 end;
 
 procedure TSuperApp.InitDeskTop;
@@ -10064,13 +10550,13 @@ end;
 procedure TSuperApp.InitMenuBar;
 var
   R: Objects.TRect;
-  MPanes, MWindows, MClipboard, MClasses, MProfiles, MSessMenu, MOptions,
-    MHelp: PMenu;
+  MPanes, MWindows, MDesktop, MClipboard, MClasses, MProfiles, MSessMenu,
+    MOptions, MHelp: PMenu;
   Chain: PMenuItem;
-  PaneItems, WindowItems, ClipboardItems, ClassItems, ProfileItems, SessItems,
-    LanguageItems: PMenuItem;
+  PaneItems, WindowItems, DesktopItems, ClipboardItems, ClassItems,
+    ProfileItems, SessItems, LanguageItems: PMenuItem;
   i, Num, Idx: integer;
-  TitleS: string;
+  TitleS, ProfileTopTitle, SessionTopTitle, OptionsTopTitle: string;
   HasProfiles: boolean;
   PaletteItems: PMenuItem;
   BgItems, BgModeItems: PMenuItem;
@@ -10079,6 +10565,28 @@ begin
   R := Default(Objects.TRect);
   GetExtent(R);
   R.B.Y := R.A.Y + 1;
+  MenuCompact := CompactTopMenuFor(R.B.X - R.A.X);
+  if MenuCompact then
+  begin
+    if CurrentLanguage = ulSpanish then
+    begin
+      ProfileTopTitle := 'Pe~r~f.';
+      SessionTopTitle := '~S~es.';
+      OptionsTopTitle := '~O~pc.';
+    end
+    else
+    begin
+      ProfileTopTitle := 'P~r~of.';
+      SessionTopTitle := '~S~ess.';
+      OptionsTopTitle := '~O~pts.';
+    end;
+  end
+  else
+  begin
+    ProfileTopTitle := UiText('P~r~ofiles', 'Pe~r~files');
+    SessionTopTitle := UiText('~S~essions', '~S~esiones');
+    OptionsTopTitle := UiText('~O~ptions', '~O~pciones');
+  end;
 
   // ---- Panes: tile operations (split, focus, zoom, min, size) ----
   PaneItems := nil;
@@ -10188,6 +10696,18 @@ begin
   WindowItems := NewItem(UiText('~T~ile', '~M~osaico'), '', kbNoKey,
     cmPaneTile, hcNoContext, WindowItems);
   MWindows := NewMenu(WindowItems);
+
+  // ---- Desktop: one canonical shared work area, changed only explicitly ----
+  DesktopItems := NewItem(UiText('~S~how current dimensions...',
+    '~M~ostrar dimensiones actuales...'), '', kbNoKey,
+    cmDesktopShowSize, hcNoContext, nil);
+  DesktopItems := NewItem(UiText('~M~odify dimensions...',
+    'Modificar ~d~imensiones...'), '', kbNoKey,
+    cmDesktopModify, hcNoContext, DesktopItems);
+  DesktopItems := NewItem(UiText('~A~djust to this terminal size',
+    '~A~justar al tamano de este terminal'), '', kbNoKey,
+    cmDesktopFitTerminal, hcNoContext, DesktopItems);
+  MDesktop := NewMenu(DesktopItems);
 
   // ---- Clipboard: copy mode and the ten client-local history entries ----
   ClipboardItems := NewItem(UiText('~C~lear history...',
@@ -10392,13 +10912,14 @@ begin
   MenuBar := New(PMenuBar, Init(R, NewMenu(
     NewSubMenu(UiText('~P~anes', '~P~aneles'), 0, MPanes,
     NewSubMenu(UiText('~W~indows', '~V~entanas'), 0, MWindows,
+    NewSubMenu(UiText('~D~esktop', '~E~scritorio'), 0, MDesktop,
     NewSubMenu(UiText('~C~lasses', '~C~lases'), 0, MClasses,
-    NewSubMenu(UiText('P~r~ofiles', 'Pe~r~files'), 0, MProfiles,
-    NewSubMenu(UiText('~S~essions', '~S~esiones'), 0, MSessMenu,
-    NewSubMenu(UiText('~O~ptions', '~O~pciones'), 0, MOptions,
+    NewSubMenu(ProfileTopTitle, 0, MProfiles,
+    NewSubMenu(SessionTopTitle, 0, MSessMenu,
+    NewSubMenu(OptionsTopTitle, 0, MOptions,
     NewSubMenu(UiText('Clip~b~oard', 'Por~t~apapeles'), 0, MClipboard,
     NewSubMenu(UiText('~H~elp', '~A~yuda'), 0, MHelp,
-    nil)))))))))));
+    nil))))))))))));
 end;
 
 procedure TSuperApp.InitStatusLine;
@@ -10436,7 +10957,7 @@ begin
     cmPaneNext, Items);
   Items := NewStatusKey(UiText('~F2~ Split', '~F2~ Dividir'), kbF2,
     cmSplitV, Items);
-  StatusLine := New(PStatusLine, Init(R,
+  StatusLine := New(PGeometryStatusLine, Init(R,
     NewStatusDef(0, $FFFF, Items, nil)));
 end;
 

@@ -98,7 +98,9 @@ There are two deliberately separate transport planes:
 
 - The outer plane is SSH over TCP. OpenSSH implements key exchange,
   encryption, integrity, authentication, PAM, PTY allocation, keepalives,
-  and `SIGWINCH` changes.
+  and delivery of `SIGWINCH`/physical PTY sizes as viewer metadata. Those
+  reports resize only the SSH client's local viewport, never SuperTerm's
+  canonical desktop or pane PTYs.
 - The inner plane is SuperTerm's binary session protocol over a `0600` Unix
   socket. It is the same protocol used by a local client; it is never exposed
   directly over TCP or published to the LAN.
@@ -592,8 +594,10 @@ If that session is already live, the client attaches without changing its
 geometry. If it does not exist, the first connection creates it using
 `default_profile`; a missing or unconfigured profile produces an empty
 desktop. `default_session` determines the session **name**, not its initial
-contents. Initial geometry comes from that first PTY. A per-user, per-name
-lock prevents two simultaneous connections from creating two daemons.
+contents. A saved profile supplies its canonical desktop dimensions; only a
+new/legacy profile without dimensions takes its initial size from the first
+PTY. A per-user, per-name lock prevents two simultaneous connections from
+creating two daemons.
 
 The `Sessions` menu can create another session at any time. The dialog asks
 for a name and a starting profile, and includes `<Empty (no profile)>` to
@@ -655,16 +659,35 @@ and [console VT sequences](https://learn.microsoft.com/en-us/windows/console/con
 Attach does not create private geometry. Everyone receives the same pane
 tree, positions, sizes, minimized/maximized/fullscreen state, shared focus,
 contents, and output order. A client on which the desktop does not physically
-fit displays that same view inside its terminal; it does not force the daemon
-to create a second desktop.
+fit displays a local scrollable viewport, initially anchored at canonical
+`(0,0)`, with horizontal/vertical bars as needed. It does not force the daemon
+to create a second desktop. A larger terminal leaves margin.
 
-The connection of a viewer does not by itself resize the PTYs. A subsequent
-resize accepted by the program is a canonical operation and is propagated to
-everyone. When host geometries differ, operations that require a common area
-(such as synchronized fullscreen) are limited to the smallest compatible
-viewport. Raw fullscreen passthrough (`prefix f`, `Ctrl-Q f` by default) is
-used only when the physical geometries match; otherwise the shared IDE
-renderer remains active.
+Attach and every later physical resize are metadata-only. They do not change
+the canonical desktop, window bounds or `TIOCSWINSZ` of a pane. The only
+interactive desktop-size operations are in `Desktop` / `Escritorio`: adopt the
+current viewer's usable terminal area, enter dimensions from `20x25` through
+`8192x4094`, or show the logical desktop, complete IDE, terminal and viewport
+dimensions. The daemon validates the exact base revision and global lease and
+publishes one canonical result to every local and SSH viewer.
+
+Shrinking the desktop never scales windows and never resizes a normal or
+minimized PTY. It preserves each rectangle, translating it only by the minimum
+amount if no safe draggable title cell would remain reachable. Maximized and
+fullscreen grids derive from the canonical desktop rather than the smallest
+host. Raw fullscreen passthrough (`prefix f`, `Ctrl-Q f` by default) passes its
+geometry gate only when every attached terminal has the same physical grid and
+that grid exactly matches canonical fullscreen; otherwise the synchronized
+renderer and local viewports remain active.
+
+Minimized icons retain stable slots from left to right in rows from the bottom.
+Restore leaves a hole and the next minimization reuses the first free one;
+existing icons do not compact. Minimizing the focused pane preserves shared
+focus until an explicit focus operation. During a shared move or resize, the
+viewer performing the gesture sees `Window X,Y  WxH` (`Ventana X,Y  WxH`) in
+its status line using the active theme; peers see the shared motion and lock.
+That is the active window rectangle, not the desktop size shown by `Desktop ->
+Show current dimensions...`.
 
 Input from multiple clients is delivered in the order in which the reactor
 accepts it. Structural changes to a window are serialized with revision and
@@ -679,7 +702,7 @@ exceeds the congestion threshold is disconnected independently, without
 blocking the PTYs or the other clients.
 
 Client and daemon must speak the same attach protocol version
-(`ATTACH_PROTO_VER`, currently 15). After a binary update, an old daemon may
+(`ATTACH_PROTO_VER`, currently 16). After a binary update, an old daemon may
 reject a new client—or vice versa—instead of interpreting an incompatible
 snapshot. Explicitly close that old session or temporarily use a client from
 the same version; never force the attach.

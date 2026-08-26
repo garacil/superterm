@@ -15,6 +15,13 @@ uses
 
 const
   MAX_PANES = 16;
+  // Canonical desktop work area, in character cells. The menu and status
+  // rows are outside this height. Keep the ceiling aligned with TScreen's
+  // 8192 x 4096 limit: fullscreen additionally owns those two UI rows.
+  DESKTOP_MIN_W = 20;
+  DESKTOP_MIN_H = 25;
+  DESKTOP_MAX_W = 8192;
+  DESKTOP_MAX_H = 4094;
   // FreeVision's MinWinSize (vendor/fv322/views.pas). A window smaller than
   // this cannot be dragged or resized by hand, so nothing should place one.
   MIN_WIN_W = 16;
@@ -87,8 +94,84 @@ procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
 // existing one, so it is placed on its own merits and simply lands on top.
 function CentredRect(AW, AH, ADeskW, ADeskH: integer): TRect;
 
+// Shared validation for profile/session loading, UI dialogs and the daemon's
+// explicit desktop-resize command. Dimensions are the usable desktop area,
+// not the two fixed menu/status rows.
+function IsDesktopSizeValid(AWidth, AHeight: Longint): boolean;
+procedure NormalizeDesktopSize(var AWidth, AHeight: Longint);
+
+// Preserve a window's size and, whenever possible, its position. If no safe
+// draggable title cell intersects the new desktop, move only far enough to
+// expose one. The safe interval excludes FreeVision/SuperTerm's left close
+// control and right minimize/zoom controls.
+function KeepWindowTitleReachable(var AX, AY: Longint;
+  AWindowWidth, ADeskW, ADeskH: Longint): boolean;
+
 
 implementation
+
+function IsDesktopSizeValid(AWidth, AHeight: Longint): boolean;
+begin
+  Result := (AWidth >= DESKTOP_MIN_W) and
+    (AWidth <= DESKTOP_MAX_W) and
+    (AHeight >= DESKTOP_MIN_H) and
+    (AHeight <= DESKTOP_MAX_H);
+end;
+
+procedure NormalizeDesktopSize(var AWidth, AHeight: Longint);
+begin
+  if AWidth < DESKTOP_MIN_W then AWidth := DESKTOP_MIN_W;
+  if AWidth > DESKTOP_MAX_W then AWidth := DESKTOP_MAX_W;
+  if AHeight < DESKTOP_MIN_H then AHeight := DESKTOP_MIN_H;
+  if AHeight > DESKTOP_MAX_H then AHeight := DESKTOP_MAX_H;
+end;
+
+function KeepWindowTitleReachable(var AX, AY: Longint;
+  AWindowWidth, ADeskW, ADeskH: Longint): boolean;
+const
+  // See TTermWindow.HandleEvent and TFrame.Draw. X=2..4 is close;
+  // width-10..width-8 is minimize and width-5..width-3 is zoom.
+  SAFE_TITLE_LEFT = 5;
+  SAFE_TITLE_RIGHT_MARGIN = 11;
+var
+  LocalLeft, LocalRight, SafeLeft, SafeRight, NewX: Int64;
+  OldX, OldY: Longint;
+begin
+  Result := False;
+  if not IsDesktopSizeValid(ADeskW, ADeskH) then
+    Exit;
+  OldX := AX;
+  OldY := AY;
+  if AWindowWidth >= MIN_WIN_W then
+  begin
+    LocalLeft := SAFE_TITLE_LEFT;
+    LocalRight := Int64(AWindowWidth) - SAFE_TITLE_RIGHT_MARGIN;
+  end
+  else
+  begin
+    // Malformed legacy geometry can be narrower than FreeVision permits.
+    // Do not resize it here: expose its middle title cell instead.
+    LocalLeft := AWindowWidth div 2;
+    LocalRight := LocalLeft;
+  end;
+  SafeLeft := Int64(AX) + LocalLeft;
+  SafeRight := Int64(AX) + LocalRight;
+  NewX := AX;
+  if SafeRight < 0 then
+    NewX := Int64(AX) - SafeRight
+  else if SafeLeft >= ADeskW then
+    NewX := Int64(AX) - (SafeLeft - (ADeskW - 1));
+  // Both expressions above land close to the small canonical desktop even
+  // for hostile Longint input, but keep the narrowing conversion explicit.
+  if NewX < Low(Longint) then NewX := Low(Longint);
+  if NewX > High(Longint) then NewX := High(Longint);
+  AX := Longint(NewX);
+  if AY < 0 then
+    AY := 0
+  else if AY >= ADeskH then
+    AY := ADeskH - 1;
+  Result := (AX <> OldX) or (AY <> OldY);
+end;
 
 procedure WantedWindowSize(ACols, ARows, ADeskW, ADeskH: integer;
   out AW, AH: integer);

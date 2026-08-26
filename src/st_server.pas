@@ -28,7 +28,7 @@ const
   FRAME_NEWPANE = 8;    // QWord BaseRevision; byte Dir; Class,Cmd,Cwd,Title
   FRAME_FOCUS = 9;      // changes the focused pane (pane in header)
   FRAME_RENAME = 10;    // string NewTitle (pane in header)
-  // frame kind 16 retired: a live session has no save-layout operation
+  FRAME_DESKTOP_RESIZE = 16; // QWord BaseRevision; Longint DeskW,DeskH
   FRAME_LAYOUT_LOCK = 17; // pane=-1 atomically locks every existing pane
   FRAME_LAYOUT_UNLOCK = 18;
   FRAME_CLIENT_SIZE = 19; // physical host Cols,Rows; never changes layout alone
@@ -148,10 +148,9 @@ const
   // 11: one KILLPANE_EV with pane=-1 replaces a burst of up to sixteen
   //     individual close events, so every viewer applies Close all inside
   //     one visual transaction even at the socket drain budget boundary.
-  // 12: clients publish their physical host dimensions. A deliberate host
-  //     resize can atomically replace the canonical desktop; fullscreen may use raw
-  //     passthrough for several viewers only when every host has the same
-  //     geometry, otherwise it uses the smallest common viewport.
+  // 12: clients publish their physical host dimensions. They are transport
+  //     metadata only; fullscreen may use raw passthrough for several viewers
+  //     only when every host has the same geometry.
   // 13: host compatibility is an independent event. It reaches every ready
   //     viewer even while that viewer owns a layout lease, so an attaching,
   //     detaching or resizing peer can stop unsafe raw passthrough without
@@ -162,7 +161,11 @@ const
   // 15: a canonical commit on one pane also reaches viewers holding another
   //     pane lease. The peer event preserves their local pane and deliberately
   //     leaves its older lease-base revision unchanged.
-  ATTACH_PROTO_VER = 15;
+  // 16: the canonical desktop can change only through the explicit
+  //     FRAME_DESKTOP_RESIZE command. Physical FRAME_CLIENT_SIZE reports are
+  //     metadata and never propose geometry. The existing Minimized geometry
+  //     byte carries stable icon slot + 1 (zero still means restored).
+  ATTACH_PROTO_VER = 16;
   ATTACH_CAP_EVENTS = 1;   // bit0 of Caps: understands events 26+
 
   // Preview frames remain on the ordered command socket. Callers coalesce
@@ -172,6 +175,9 @@ const
   LAYOUT_PREVIEW_TAIL_MS = 2000;
   LAYOUT_PREVIEW_PAYLOAD_SIZE = 44;
 
+  // Reserved old FRAME_LAYOUT bit. Protocol v16 rejects it: desktop changes
+  // use FRAME_DESKTOP_RESIZE so a rendered client snapshot cannot smuggle in
+  // physical host geometry.
   LAYOUT_CHANGE_DESKTOP = LongWord($20000000);
   LAYOUT_CHANGE_TREE = LongWord($40000000);
   LAYOUT_CHANGE_PANES = LongWord($0000FFFF);
@@ -246,6 +252,9 @@ type
     Cols, Rows: Longint;
     Zoomed: boolean;
     Minimized: boolean;
+    // Stable shared icon cell. -1 while normal/restored; 0..15 while
+    // minimized. Slots are never compacted when another icon is restored.
+    IconSlot: Longint;
     FullScreen: boolean;
   end;
   TPaneGeomArray = array of TPaneGeom;
@@ -347,6 +356,9 @@ type
     function SendInput(APane: integer; const S: RawByteString): boolean;
     function SendResize(APane, ACols, ARows: integer): boolean;
     function SendClientSize(ACols, ARows: integer): boolean;
+    // Explicitly changes the one shared desktop work area. The method obtains
+    // the global structural lease and sends its exact granted base revision.
+    function SendDesktopResize(AWidth, AHeight: integer): boolean;
     function Detach: boolean;
     // closes this viewer; the daemon stops only for the last viewer
     function CloseSession: boolean;
@@ -518,6 +530,35 @@ const
 var
   HeldSessionNameLockFD: cint = -1;
   HeldSessionNameLockName: string = '';
+
+function MinimizedWireFlag(const AGeom: TPaneGeom): byte;
+begin
+  if not AGeom.Minimized then
+    Exit(0);
+  if (AGeom.IconSlot >= 0) and (AGeom.IconSlot < MAX_PANES) then
+    Exit(byte(AGeom.IconSlot + 1));
+  // A speculative client may not know the authoritative slot yet. Slot zero
+  // is a valid boolean-compatible placeholder; the daemon assigns the first
+  // actual hole when it commits the minimize transition.
+  Result := 1;
+end;
+
+function DecodeMinimizedWireFlag(AFlag: byte; out AMinimized: boolean;
+  out AIconSlot: Longint): boolean;
+begin
+  Result := AFlag <= MAX_PANES;
+  if not Result then
+  begin
+    AMinimized := False;
+    AIconSlot := -1;
+    Exit;
+  end;
+  AMinimized := AFlag <> 0;
+  if AMinimized then
+    AIconSlot := Longint(AFlag) - 1
+  else
+    AIconSlot := -1;
+end;
 
 function SessionStartupTestStage(const AStage: string): boolean;
 begin
@@ -767,6 +808,10 @@ type
     procedure FlushPending(AIdx: integer);
     procedure ApplyCanonicalResize(APane, ACols, ARows: integer;
       ANotify: boolean = True; AWorkersStopped: boolean = False);
+    function ApplyDesktopResize(AClient: integer; const AData: TByteArray;
+      out AErr: string): boolean;
+    function FirstFreeIconSlot(AExceptPane: integer = -1): Longint;
+    procedure NormalizeIconSlots;
     procedure NormalizeFocusedPane;
     function TryLockLayout(AOwner, APane: integer;
       ABroadcast: boolean = True): boolean;
@@ -1996,10 +2041,25 @@ begin
       Stream.ReadBuffer(AGeom[I].Rows, SizeOf(Longint));
       Flag := Default(byte);
       Stream.ReadBuffer(Flag, SizeOf(Flag));
+      if Flag > 1 then
+      begin
+        AGeom := nil;
+        Exit;
+      end;
       AGeom[I].Zoomed := Flag <> 0;
       Stream.ReadBuffer(Flag, SizeOf(Flag));
-      AGeom[I].Minimized := Flag <> 0;
+      if not DecodeMinimizedWireFlag(Flag, AGeom[I].Minimized,
+         AGeom[I].IconSlot) then
+      begin
+        AGeom := nil;
+        Exit;
+      end;
       Stream.ReadBuffer(Flag, SizeOf(Flag));
+      if Flag > 1 then
+      begin
+        AGeom := nil;
+        Exit;
+      end;
       AGeom[I].FullScreen := Flag <> 0;
     end;
     Stream.ReadBuffer(ARevision, SizeOf(ARevision));
@@ -2400,10 +2460,25 @@ begin
     Stream.ReadBuffer(Snapshot.Geom[I].Rows, SizeOf(Longint));
     Flag := Default(byte);
     Stream.ReadBuffer(Flag, SizeOf(Flag));
+    if Flag > 1 then
+    begin
+      Snapshot.Geom := nil;
+      Exit;
+    end;
     Snapshot.Geom[I].Zoomed := Flag <> 0;
     Stream.ReadBuffer(Flag, SizeOf(Flag));
-    Snapshot.Geom[I].Minimized := Flag <> 0;
+    if not DecodeMinimizedWireFlag(Flag, Snapshot.Geom[I].Minimized,
+       Snapshot.Geom[I].IconSlot) then
+    begin
+      Snapshot.Geom := nil;
+      Exit;
+    end;
     Stream.ReadBuffer(Flag, SizeOf(Flag));
+    if Flag > 1 then
+    begin
+      Snapshot.Geom := nil;
+      Exit;
+    end;
     Snapshot.Geom[I].FullScreen := Flag <> 0;
   end;
 end;
@@ -2755,6 +2830,29 @@ begin
   Result := SendFrame(FRAME_CLIENT_SIZE, -1, Data);
 end;
 
+function TSessionClient.SendDesktopResize(AWidth, AHeight: integer): boolean;
+var
+  Data: TByteArray;
+  Width, Height: Longint;
+begin
+  Result := False;
+  Data := nil;
+  Width := AWidth;
+  Height := AHeight;
+  if not IsDesktopSizeValid(Width, Height) then
+    Exit;
+  if not LockLayout(-1) then
+    Exit;
+  SetLength(Data, SizeOf(FLayoutRevision) + 2 * SizeOf(Longint));
+  Move(FLayoutRevision, Data[0], SizeOf(FLayoutRevision));
+  Move(Width, Data[SizeOf(FLayoutRevision)], SizeOf(Width));
+  Move(Height, Data[SizeOf(FLayoutRevision) + SizeOf(Width)],
+    SizeOf(Height));
+  Result := SendFrame(FRAME_DESKTOP_RESIZE, -1, Data);
+  if not Result then
+    UnlockLayout(-1);
+end;
+
 function TSessionClient.Detach: boolean;
 var
   Data: TByteArray;
@@ -2868,10 +2966,7 @@ begin
       else
         Flag := 0;
       Stream.WriteBuffer(Flag, SizeOf(Flag));
-      if AGeom[I].Minimized then
-        Flag := 1
-      else
-        Flag := 0;
+      Flag := MinimizedWireFlag(AGeom[I]);
       Stream.WriteBuffer(Flag, SizeOf(Flag));
       if AGeom[I].FullScreen then
         Flag := 1
@@ -3342,6 +3437,7 @@ begin
   FGeomValid := Length(AGeom) = FPaneCount;
   FDeskW := ADeskW;
   FDeskH := ADeskH;
+  NormalizeDesktopSize(FDeskW, FDeskH);
   if FGeomValid then
     for I := 0 to FPaneCount - 1 do
     begin
@@ -3351,7 +3447,10 @@ begin
         FGeom[I].Cols := FScreens[I].Width;
         FGeom[I].Rows := FScreens[I].Height;
       end;
+      KeepWindowTitleReachable(FGeom[I].BX, FGeom[I].BY, FGeom[I].BW,
+        FDeskW, FDeskH);
     end;
+  NormalizeIconSlots;
 end;
 
 destructor TDetachedSession.Destroy;
@@ -3609,42 +3708,24 @@ begin
   end;
 end;
 
-// Derive the PTY grid from daemon-owned host metadata at the instant a zoom
-// is committed. A client may have acquired its pane lease just before another
-// viewer attached or resized; normalizing here closes that TOCTOU window and
-// keeps a stale proposal from making the shared maximum larger than one host.
+// Derive a zoomed PTY only from the one canonical desktop. Physical client
+// sizes are viewports: a smaller viewer scrolls and can never shrink the
+// shared pane merely by attaching or reporting FRAME_CLIENT_SIZE.
 procedure TDetachedSession.SharedZoomedPaneSize(ADeskW, ADeskH: Longint;
   AFullScreen: boolean; out ACols, ARows: Longint);
-var
-  MinHostW, MinHostH, SafeDeskW, SafeDeskH: Longint;
-  HostSizesMatch: boolean;
 begin
-  ClientSizeSummary(MinHostW, MinHostH, HostSizesMatch);
   if DebugFull then
-    DebugLog(Format('shared-zoom-size: desk=%dx%d host-min=%dx%d match=%d full=%d',
-      [ADeskW, ADeskH, MinHostW, MinHostH, Ord(HostSizesMatch),
-       Ord(AFullScreen)]));
+    DebugLog(Format('shared-zoom-size: desk=%dx%d full=%d',
+      [ADeskW, ADeskH, Ord(AFullScreen)]));
   if AFullScreen then
   begin
-    ACols := MinHostW;
-    ARows := MinHostH;
+    ACols := ADeskW;
+    ARows := ADeskH + 2;
   end
   else
   begin
-    SafeDeskW := ADeskW;
-    SafeDeskH := ADeskH;
-    // Normal maximize must fit the smallest current viewer even when that is
-    // now the sole viewer or all remaining viewers have the same small size.
-    // HostSizesMatch is relevant to raw fullscreen passthrough, not to this bound.
-    if MinHostW > 0 then
-    begin
-      if SafeDeskW > MinHostW then
-        SafeDeskW := MinHostW;
-      if (MinHostH > 2) and (SafeDeskH > MinHostH - 2) then
-        SafeDeskH := MinHostH - 2;
-    end;
-    ACols := SafeDeskW - 2;
-    ARows := SafeDeskH - 2;
+    ACols := ADeskW - 2;
+    ARows := ADeskH - 2;
   end;
   if AFullScreen then
   begin
@@ -4383,6 +4464,112 @@ begin
     Broadcast(FRAME_RESIZE_EV, APane, Pair, SizeOf(Pair), True, -1);
 end;
 
+function TDetachedSession.ApplyDesktopResize(AClient: integer;
+  const AData: TByteArray; out AErr: string): boolean;
+var
+  BaseRevision: QWord;
+  NewDeskW, NewDeskH: Longint;
+  NewX, NewY, NewCols, NewRows: array[0..MAX_PANES - 1] of Longint;
+  I: integer;
+  Changed, NeedPtyResize, WorkersStopped: boolean;
+begin
+  Result := False;
+  AErr := 'invalid desktop resize';
+  if Length(AData) <> SizeOf(QWord) + 2 * SizeOf(Longint) then
+    Exit;
+  BaseRevision := 0;
+  NewDeskW := 0;
+  NewDeskH := 0;
+  Move(AData[0], BaseRevision, SizeOf(BaseRevision));
+  Move(AData[SizeOf(BaseRevision)], NewDeskW, SizeOf(NewDeskW));
+  Move(AData[SizeOf(BaseRevision) + SizeOf(NewDeskW)], NewDeskH,
+    SizeOf(NewDeskH));
+  if not IsDesktopSizeValid(NewDeskW, NewDeskH) then
+  begin
+    AErr := Format('desktop size must be between %dx%d and %dx%d',
+      [DESKTOP_MIN_W, DESKTOP_MIN_H, DESKTOP_MAX_W, DESKTOP_MAX_H]);
+    Exit;
+  end;
+  if (AClient < 0) or (AClient >= MAX_CLIENTS) or
+     (FClients[AClient].Fd < 0) or (not FGeomValid) or
+     (not OwnsAllLayout(AClient)) then
+  begin
+    AErr := 'layout busy';
+    Exit;
+  end;
+  if BaseRevision <> FRevision then
+  begin
+    AErr := 'layout changed';
+    Exit;
+  end;
+  // A global lease records the connection generation and exact base on every
+  // existing pane. Validate those records too, so a recycled client slot or a
+  // malformed peer cannot reuse only the tree-owner flag.
+  for I := 0 to FPaneCount - 1 do
+    if (FPaneLayoutOwner[I] <> AClient) or
+       (FPaneLeaseGeneration[I] <> FClients[AClient].Generation) or
+       (FPaneLeaseRevision[I] <> BaseRevision) then
+    begin
+      AErr := 'layout changed';
+      Exit;
+    end;
+
+  Changed := (FDeskW <> NewDeskW) or (FDeskH <> NewDeskH);
+  NeedPtyResize := False;
+  for I := 0 to FPaneCount - 1 do
+  begin
+    NewX[I] := FGeom[I].BX;
+    NewY[I] := FGeom[I].BY;
+    if KeepWindowTitleReachable(NewX[I], NewY[I], FGeom[I].BW,
+       NewDeskW, NewDeskH) then
+      Changed := True;
+    NewCols[I] := FGeom[I].Cols;
+    NewRows[I] := FGeom[I].Rows;
+    if FGeom[I].Zoomed then
+    begin
+      SharedZoomedPaneSize(NewDeskW, NewDeskH, FGeom[I].FullScreen,
+        NewCols[I], NewRows[I]);
+      if (NewCols[I] <> FGeom[I].Cols) or
+         (NewRows[I] <> FGeom[I].Rows) then
+      begin
+        Changed := True;
+        NeedPtyResize := True;
+      end;
+    end;
+  end;
+
+  WorkersStopped := False;
+  if NeedPtyResize then
+  begin
+    StopPaneWorkers;
+    WorkersStopped := True;
+  end;
+  try
+    FDeskW := NewDeskW;
+    FDeskH := NewDeskH;
+    for I := 0 to FPaneCount - 1 do
+    begin
+      // BW/BH are deliberately never assigned here. BX/BY move only when the
+      // safe draggable title interval would otherwise be wholly unreachable.
+      FGeom[I].BX := NewX[I];
+      FGeom[I].BY := NewY[I];
+      if FGeom[I].Zoomed then
+      begin
+        FGeom[I].Cols := NewCols[I];
+        FGeom[I].Rows := NewRows[I];
+        ApplyCanonicalResize(I, NewCols[I], NewRows[I], False, True);
+      end;
+    end;
+    if Changed then
+      Inc(FRevision);
+  finally
+    if WorkersStopped then
+      StartPaneWorkers;
+  end;
+  AErr := '';
+  Result := True;
+end;
+
 // A pane lock protects one window operation.  A pane=-1 request protects the
 // split tree itself and all existing panes.  The explicit tree owner is
 // essential for an empty desktop: an empty per-pane array cannot represent a
@@ -4567,7 +4754,7 @@ begin
       Meta.WriteBuffer(FGeom[I].Rows, SizeOf(Longint));
       if FGeom[I].Zoomed then Flag := 1 else Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
-      if FGeom[I].Minimized then Flag := 1 else Flag := 0;
+      Flag := MinimizedWireFlag(FGeom[I]);
       Meta.WriteBuffer(Flag, SizeOf(Flag));
       if FGeom[I].FullScreen then Flag := 1 else Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
@@ -4751,10 +4938,7 @@ begin
       else
         Flag := 0;
       Meta.WriteBuffer(Flag, SizeOf(Flag));
-      if FGeom[I].Minimized then
-        Flag := 1
-      else
-        Flag := 0;
+      Flag := MinimizedWireFlag(FGeom[I]);
       Meta.WriteBuffer(Flag, SizeOf(Flag));
       if FGeom[I].FullScreen then
         Flag := 1
@@ -4966,6 +5150,7 @@ begin
     FTerms[FPaneCount - 1] := '';
     FTitleFixed[FPaneCount - 1] := False;
     FGeom[FPaneCount - 1] := Default(TPaneGeom);
+    FGeom[FPaneCount - 1].IconSlot := -1;
     FPaneLayoutOwner[FPaneCount - 1] := -1;
     FPaneLeaseGeneration[FPaneCount - 1] := 0;
     FPaneLeaseRevision[FPaneCount - 1] := 0;
@@ -5009,6 +5194,7 @@ begin
       FTitleFixed[I] := False;
       FTerms[I] := '';
       FGeom[I] := Default(TPaneGeom);
+      FGeom[I].IconSlot := -1;
       // Keep the global owner itself until FRAME_KILLPANE's finally block,
       // but stale per-pane slots must never survive index reuse.
       FPaneLayoutOwner[I] := -1;
@@ -5047,9 +5233,11 @@ var
   Titles: TStrArray;
   Geom: TPaneGeomArray;
   NewLay: TLayout;
-  I, ZoomedCount, EnteringZoomPane: integer;
+  I, Slot, ZoomedCount, EnteringZoomPane, RestoreFocusPane: integer;
   NormalizedCols, NormalizedRows: Longint;
-  Changed, DesktopChanged, HostSizesMatch: boolean;
+  Left64, Top64, Right64, Bottom64: Int64;
+  Changed, HostSizesMatch: boolean;
+  IconUsed: array[0..MAX_PANES - 1] of boolean;
 begin
   Result := False;
   ABaseRevision := 0;
@@ -5065,31 +5253,16 @@ begin
       'host-match=%d mask=%x base=%d', [AClient, DeskW, DeskH, MinHostW,
       MinHostH, Ord(HostSizesMatch), Changes, BaseRevision]));
   AllowedPanes := (LongWord(1) shl FPaneCount) - 1;
-  DesktopChanged := (Changes and LAYOUT_CHANGE_DESKTOP) <> 0;
   if (AClient < 0) or (AClient >= MAX_CLIENTS) or
      (FClients[AClient].Fd < 0) or
      (Length(Titles) <> FPaneCount) or (Length(Geom) <> FPaneCount) or
-     ((Changes and not (LAYOUT_CHANGE_DESKTOP or LAYOUT_CHANGE_TREE or
-       AllowedPanes)) <> 0) or
+     ((Changes and not (LAYOUT_CHANGE_TREE or AllowedPanes)) <> 0) or
      ((BaseRevision <> FRevision) and (Changes = 0) and (not AAllowStale)) or
-     ((not DesktopChanged) and
-      ((DeskW <> FDeskW) or (DeskH <> FDeskH))) or
+     (DeskW <> FDeskW) or (DeskH <> FDeskH) or
      (Focused < -1) or (Focused >= FPaneCount) or
      (ClientCount < 0) or (ClientCount > MAX_CLIENTS) or
      (LockedPanes <> 0) then
     Exit;
-  if DesktopChanged then
-  begin
-    if (not OwnsAllLayout(AClient)) or (BaseRevision <> FRevision) or
-       (DeskW < 8) or (DeskW > MAX_SCREEN_COLS) or
-       (DeskH < 5) or (DeskH + 2 > MAX_SCREEN_ROWS) or
-       (AClient < 0) or (AClient >= MAX_CLIENTS) or
-       ((Changes and AllowedPanes) <> AllowedPanes) then
-      Exit;
-    if (DeskW <> FClients[AClient].HostW) or
-       (DeskH + 2 <> FClients[AClient].HostH) then
-      Exit;
-  end;
   if (Changes and LAYOUT_CHANGE_TREE) <> 0 then
     if (not OwnsAllLayout(AClient)) or (BaseRevision <> FRevision) then
       Exit;
@@ -5108,13 +5281,38 @@ begin
   // an invalid tail can never leave a partially applied shared desktop.
   for I := 0 to FPaneCount - 1 do
     if (Changes and (LongWord(1) shl I)) <> 0 then
+    begin
+      Left64 := Geom[I].BX;
+      Top64 := Geom[I].BY;
+      Right64 := Left64 + Int64(Geom[I].BW);
+      Bottom64 := Top64 + Int64(Geom[I].BH);
+      // TRect coordinates are signed Longints, while the renderer and screen
+      // models have the stricter 8192x4096 span. Permit rectangle corners up
+      // to one maximum screen beyond a canonical edge (needed by legitimate
+      // drag/resize recovery), but reject hostile sizes, coordinates and
+      // corner additions before Longint arithmetic can wrap in a client.
       if (Geom[I].Cols < 4) or (Geom[I].Cols > MAX_SCREEN_COLS) or
          (Geom[I].Rows < 2) or (Geom[I].Rows > MAX_SCREEN_ROWS) or
-         (Geom[I].BW < 0) or (Geom[I].BH < 0) or
-         (Geom[I].Zoomed and
-          ((Geom[I].BW <= 0) or (Geom[I].BH <= 0))) or
+         (Geom[I].BW <= 0) or (Geom[I].BW > MAX_SCREEN_COLS) or
+         (Geom[I].BH <= 0) or (Geom[I].BH > MAX_SCREEN_ROWS) or
+         (Left64 < -Int64(MAX_SCREEN_COLS)) or
+         (Top64 < -Int64(MAX_SCREEN_ROWS)) or
+         (Right64 > Int64(DeskW) + MAX_SCREEN_COLS) or
+         (Bottom64 > Int64(DeskH) + MAX_SCREEN_ROWS) or
+         (Right64 < Low(Longint)) or (Right64 > High(Longint)) or
+         (Bottom64 < Low(Longint)) or (Bottom64 > High(Longint)) or
          (Geom[I].FullScreen and (not Geom[I].Zoomed)) then
         Exit;
+    end;
+  // An icon click is one atomic restore+focus operation.  Honor the embedded
+  // focus only when that exact leased pane changes from minimized to normal;
+  // ordinary geometry snapshots must never roll back the independent FIFO
+  // focus channel.  A focus frame before this commit loses, one after wins.
+  RestoreFocusPane := -1;
+  if (Focused >= 0) and
+     ((Changes and (LongWord(1) shl Focused)) <> 0) and
+     FGeom[Focused].Minimized and (not Geom[Focused].Minimized) then
+    RestoreFocusPane := Focused;
   // Exactly one window may own normal maximize/fullscreen. Validate the merged
   // canonical result, not merely this frame's changed subset. If two clients
   // acquired different panes from the same base and both enter zoom, their
@@ -5153,6 +5351,33 @@ begin
       if ZoomedCount > 1 then
         Exit;
     end;
+  // Icon positions are canonical state too. Existing minimized panes retain
+  // their exact holes; all restores release their holes before new minimizes
+  // take the first free slot from left to right, bottom row upward.
+  for I := 0 to MAX_PANES - 1 do
+    IconUsed[I] := False;
+  for I := 0 to FPaneCount - 1 do
+    if FGeom[I].Minimized and
+       (((Changes and (LongWord(1) shl I)) = 0) or Geom[I].Minimized) and
+       (FGeom[I].IconSlot >= 0) and (FGeom[I].IconSlot < MAX_PANES) then
+    begin
+      Geom[I].IconSlot := FGeom[I].IconSlot;
+      IconUsed[FGeom[I].IconSlot] := True;
+    end;
+  for I := 0 to FPaneCount - 1 do
+    if (Changes and (LongWord(1) shl I)) <> 0 then
+      if not Geom[I].Minimized then
+        Geom[I].IconSlot := -1
+      else if not FGeom[I].Minimized then
+      begin
+        Slot := 0;
+        while (Slot < MAX_PANES) and IconUsed[Slot] do
+          Inc(Slot);
+        if Slot >= MAX_PANES then
+          Exit;
+        Geom[I].IconSlot := Slot;
+        IconUsed[Slot] := True;
+      end;
   NewLay := nil;
   if (Changes and LAYOUT_CHANGE_TREE) <> 0 then
   begin
@@ -5170,12 +5395,6 @@ begin
   StopPaneWorkers;
   try
     Changed := False;
-    if DesktopChanged then
-    begin
-      FDeskW := DeskW;
-      FDeskH := DeskH;
-      Changed := True;
-    end;
     if NewLay <> nil then
     begin
       FLayout.Free;
@@ -5194,13 +5413,13 @@ begin
         ApplyCanonicalResize(I, FGeom[I].Cols, FGeom[I].Rows, False, True);
         Changed := True;
       end;
-    // Focus normally has its own ordered FRAME_FOCUS channel. A geometry
-    // proposal never overwrites a still-valid focus with an older rendered
-    // snapshot. The sole exception is minimizing the currently focused pane:
-    // once this transaction makes that focus invalid, its proposed fallback
-    // can be accepted without an extra focus broadcast/paint. A newer valid
-    // focus from another client always wins. Titles likewise remain separate
-    // live metadata, so a delayed geometry frame cannot roll a rename back.
+    // Focus normally has its own ordered FRAME_FOCUS channel. Geometry cannot
+    // overwrite a still-valid focus with an older rendered snapshot; the one
+    // exception identified above is the leased minimized-to-restored icon
+    // click. Minimizing itself is not a focus operation: its icon retains
+    // shared focus until another explicit operation changes it. Titles likewise
+    // remain separate live metadata, so a delayed frame cannot roll a rename
+    // back.
     for I := 0 to FPaneCount - 1 do
       if (Changes and (LongWord(1) shl I)) <> 0 then
       begin
@@ -5220,13 +5439,13 @@ begin
         ApplyCanonicalResize(I, FGeom[I].Cols, FGeom[I].Rows, False, True);
         Changed := True;
       end;
-    // Focus is shared, but it can never designate an icon. If this very
-    // transaction invalidated the current focus, honor its valid fallback;
-    // otherwise keep the newer ordered focus already stored by the daemon.
-    if ((FFocused < 0) or (FFocused >= FPaneCount) or
-        FGeom[FFocused].Minimized) and
-       (Focused >= 0) and (Focused < FPaneCount) and
-       (not FGeom[Focused].Minimized) then
+    // Restore+focus is the sole geometry transaction allowed to replace a
+    // valid focus. Otherwise only a structurally invalid index is repaired;
+    // a minimized pane remains the focused pane by design.
+    if RestoreFocusPane >= 0 then
+      FFocused := RestoreFocusPane
+    else if ((FFocused < 0) or (FFocused >= FPaneCount)) and
+       (Focused >= 0) and (Focused < FPaneCount) then
       FFocused := Focused;
     NormalizeFocusedPane;
     if Changed then
@@ -5240,22 +5459,58 @@ begin
   Result := True;
 end;
 
-procedure TDetachedSession.NormalizeFocusedPane;
+function TDetachedSession.FirstFreeIconSlot(AExceptPane: integer): Longint;
 var
+  Used: array[0..MAX_PANES - 1] of boolean;
   I: integer;
+begin
+  for I := 0 to MAX_PANES - 1 do
+    Used[I] := False;
+  for I := 0 to FPaneCount - 1 do
+    if (I <> AExceptPane) and FGeom[I].Minimized and
+       (FGeom[I].IconSlot >= 0) and (FGeom[I].IconSlot < MAX_PANES) then
+      Used[FGeom[I].IconSlot] := True;
+  for I := 0 to MAX_PANES - 1 do
+    if not Used[I] then
+      Exit(I);
+  Result := -1;
+end;
+
+procedure TDetachedSession.NormalizeIconSlots;
+var
+  Used: array[0..MAX_PANES - 1] of boolean;
+  I, Slot: integer;
+begin
+  for I := 0 to MAX_PANES - 1 do
+    Used[I] := False;
+  for I := 0 to FPaneCount - 1 do
+    if not FGeom[I].Minimized then
+      FGeom[I].IconSlot := -1
+    else
+    begin
+      Slot := FGeom[I].IconSlot;
+      if (Slot < 0) or (Slot >= MAX_PANES) or Used[Slot] then
+      begin
+        Slot := 0;
+        while (Slot < MAX_PANES) and Used[Slot] do
+          Inc(Slot);
+        if Slot >= MAX_PANES then
+          Slot := MAX_PANES - 1;
+        FGeom[I].IconSlot := Slot;
+      end;
+      Used[FGeom[I].IconSlot] := True;
+    end;
+end;
+
+procedure TDetachedSession.NormalizeFocusedPane;
 begin
   if FPaneCount <= 0 then
     FFocused := -1
-  else if (FFocused < 0) or (FFocused >= FPaneCount) or
-          FGeom[FFocused].Minimized then
+  else if (FFocused < 0) or (FFocused >= FPaneCount) then
   begin
-    FFocused := -1;
-    for I := 0 to FPaneCount - 1 do
-      if not FGeom[I].Minimized then
-      begin
-        FFocused := I;
-        Break;
-      end;
+    // A minimized pane may intentionally retain the shared focus. Only a
+    // structurally invalid index needs a deterministic replacement.
+    FFocused := 0;
   end;
   if FLayout <> nil then
     FLayout.Focused := FFocused;
@@ -5583,6 +5838,7 @@ begin
     else
       NewTitle := ' shell';
     NewGeom := Default(TPaneGeom);
+    NewGeom.IconSlot := -1;
     NewGeom.Cols := Cols;
     NewGeom.Rows := Rows;
     NewGeom.BW := Cols + 2;
@@ -5707,6 +5963,7 @@ var
   ClassS, CmdS, CwdS, TitleS, ErrS: string;
   NewIdx, j, N, i, k, LockTarget: integer;
   Cols, Rows: Longint;
+  IconSlot: Longint;
   GC, GR, CW, CH: integer;
   Slot: st_layout.TRect;
   Rects: array[0..MAX_PANES - 1] of st_layout.TRect;
@@ -5842,6 +6099,7 @@ begin
         // focusing restores if it was minimized
         WasMinimized := FGeom[APane].Minimized;
         FGeom[APane].Minimized := False;
+        FGeom[APane].IconSlot := -1;
         FGeomValid := True;
         if WasMinimized then
           Inc(FRevision)
@@ -5858,10 +6116,22 @@ begin
         end;
         WasZoomed := FGeom[APane].Zoomed or FGeom[APane].FullScreen;
         case Op of
-          WINOP_MINIMIZE: FGeom[APane].Minimized := True;
+          WINOP_MINIMIZE:
+            if not FGeom[APane].Minimized then
+            begin
+              IconSlot := FirstFreeIconSlot(APane);
+              if IconSlot < 0 then
+              begin
+                CtlReplyErr(AFd, 'no free icon slot');
+                Exit;
+              end;
+              FGeom[APane].Minimized := True;
+              FGeom[APane].IconSlot := IconSlot;
+            end;
           WINOP_RESTORE:
             begin
               FGeom[APane].Minimized := False;
+              FGeom[APane].IconSlot := -1;
               FGeom[APane].Zoomed := False;
               FGeom[APane].FullScreen := False;
               if WasZoomed then
@@ -5899,6 +6169,7 @@ begin
                 FGeom[APane].Zoomed := True;
                 FGeom[APane].FullScreen := False;
                 FGeom[APane].Minimized := False;
+                FGeom[APane].IconSlot := -1;
                 FFocused := APane;
                 SharedZoomedPaneSize(FDeskW, FDeskH, False, Cols, Rows);
                 FGeom[APane].Cols := Cols;
@@ -5946,6 +6217,7 @@ begin
                 FGeom[i].BH := Slot.H;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
+                FGeom[i].IconSlot := -1;
                 FGeom[i].FullScreen := False;
                 Inc(k);
               end;
@@ -5965,6 +6237,7 @@ begin
                   FGeom[i].BH := MIN_WIN_H;
                 FGeom[i].Zoomed := False;
                 FGeom[i].Minimized := False;
+                FGeom[i].IconSlot := -1;
                 FGeom[i].FullScreen := False;
               end;
             end;
@@ -5986,6 +6259,7 @@ begin
             FGeom[i].BY := (i div GC) * (FDeskH div GR);
             FGeom[i].Zoomed := False;
             FGeom[i].Minimized := False;
+            FGeom[i].IconSlot := -1;
             FGeom[i].FullScreen := False;
           end;
         end;
@@ -6446,6 +6720,29 @@ begin
           end;
         end;
       end;
+    FRAME_DESKTOP_RESIZE:
+      begin
+        Applied := False;
+        ErrS := '';
+        try
+          if APane <> -1 then
+            ErrS := 'invalid desktop resize'
+          else
+            Applied := ApplyDesktopResize(AIdx, AData, ErrS);
+        finally
+          // The explicit command is the atomic end of the global lease. Its
+          // one settled layout event below contains the new desktop, any
+          // minimally translated windows and every derived zoomed PTY size.
+          ReleaseLayout(AIdx, -1, False);
+        end;
+        if (not Applied) and (ErrS <> '') then
+          SendFrameToIdx(AIdx, FRAME_ERROR, -1, ErrS[1], Length(ErrS));
+        if DebugFull then
+          DebugLog(Format(
+            'desktop-resize: owner=%d applied=%d desk=%dx%d revision=%d',
+            [AIdx, Ord(Applied), FDeskW, FDeskH, FRevision]));
+        BroadcastLayoutEv(-1);
+      end;
     FRAME_CLIENT_SIZE:
       if Length(AData) = 2 * SizeOf(Longint) then
       begin
@@ -6656,18 +6953,11 @@ begin
       end;
     FRAME_FOCUS:
       if (APane >= 0) and (APane < FPaneCount) and
-         ((not FGeom[APane].Minimized) or
-          (FPaneLayoutOwner[APane] = AIdx)) then
+         (not FGeom[APane].Minimized) then
       begin
         FFocused := APane;
         FLayout.Focused := APane;
-        // A restore owns this pane before its geometry commit. Record its
-        // definitive focus now so the final layout snapshot contains it, but
-        // do not ask observers to focus an icon. They receive it atomically
-        // with the restore. An ordinary visible focus remains its own
-        // lock-free event.
-        if not FGeom[APane].Minimized then
-          Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
+        Broadcast(FRAME_FOCUS_EV, APane, B0, 0, True, -1);
       end;
     FRAME_RENAME:
       begin

@@ -190,6 +190,10 @@ es = Client(home_es, w=80, h=25, lang='es')
 es.drain(2.0)
 menu_row = es.screen.display[0]
 check('Spanish Clipboard menu fits', 'Portapapeles' in menu_row)
+check('Spanish compact menu keeps Desktop and Help',
+      'Escritorio' in menu_row and 'Ayuda' in menu_row)
+check('Spanish compact menu abbreviates only crowded neighbours',
+      all(label in menu_row for label in ('Perf.', 'Ses.', 'Opc.')))
 check('Spanish Clipboard immediately before Help',
       menu_row.find('Portapapeles') < menu_row.find('Ayuda') and
       menu_row[menu_row.find('Portapapeles') + len('Portapapeles'):
@@ -197,8 +201,40 @@ check('Spanish Clipboard immediately before Help',
 es.send(b'\x1bt', 0.4)  # Alt-T: Por-t-apapeles
 check('Spanish Clipboard actions',
       'Copiar del panel' in es.text() and 'Pegar del historial' in es.text())
+es.send(b'\x1b', 0.2)
+
+# Crossing the exact 89-column Spanish boundary rebuilds only the menu tree;
+# resizing within compact mode leaves it compact. Returning below the boundary
+# must restore the same complete 80-column-safe bar.
+es.resize(88, 25, 0.5)
+check('Spanish 88-column menu remains compact',
+      all(label in es.screen.display[0]
+          for label in ('Perf.', 'Ses.', 'Opc.', 'Portapapeles', 'Ayuda')))
+es.resize(89, 25, 0.5)
+check('Spanish 89-column menu restores full names',
+      all(label in es.screen.display[0]
+          for label in ('Perfiles', 'Sesiones', 'Opciones',
+                        'Portapapeles', 'Ayuda')))
+es.resize(88, 25, 0.5)
+check('Spanish menu returns to compact form',
+      all(label in es.screen.display[0]
+          for label in ('Perf.', 'Ses.', 'Opc.', 'Portapapeles', 'Ayuda')))
 es.send(b'\x1bx', 0.7)
 es.close()
 close_all_daemons(home_es)
+
+# English consumes exactly 80 cells with the full names; the threshold is
+# deliberately strict (<80), so no unnecessary abbreviation occurs here.
+home_en80 = fresh_home('clipboard-en80')
+en80 = Client(home_en80, w=80, h=25, lang='en')
+en80.drain(2.0)
+menu_row = en80.screen.display[0]
+check('English 80-column menu keeps every full name',
+      all(label in menu_row for label in
+          ('Desktop', 'Profiles', 'Sessions', 'Options',
+           'Clipboard', 'Help')))
+en80.send(b'\x1bx', 0.7)
+en80.close()
+close_all_daemons(home_en80)
 
 report()

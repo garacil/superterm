@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""One live desktop is shared; attach and later host resize are distinct.
+"""The shared desktop is fixed; every physical host is a local viewport.
 
 An attach at a different physical size receives the existing canonical
-geometry verbatim and clips it if necessary.  A SIGWINCH after that attach is
-an explicit window-management action: it atomically replaces the common
-desktop, pane rectangles and PTY size for every viewer.
+geometry verbatim. A smaller host clips it behind local horizontal/vertical
+scrollbars. Neither attach nor a later SIGWINCH changes the desktop, windows
+or PTYs seen by another viewer.
 """
 import fcntl
 import os
@@ -68,25 +68,37 @@ def host_resize(client, width, height):
                 struct.pack('HHHH', height, width, 0, 0))
 
 
-def scaled_single_pane(rectangle, old_host, new_host):
-    """Precompute the canonical inclusive frame and PTY after ScaleRect."""
-    left, top, right, bottom = rectangle
-    old_width, old_height = old_host[0], old_host[1] - 2
-    new_width, new_height = new_host[0], new_host[1] - 2
+def desktop_bars(client):
+    """Both client-local viewport bars occupy the physical bottom/right."""
+    rows = client.screen.display
+    if len(rows) < client.h or client.w < 3 or client.h < 5:
+        return False
+    horizontal = (rows[client.h - 2][0] in ('◄', '<') and
+                  rows[client.h - 2][client.w - 2] in ('►', '>'))
+    vertical = (rows[1][client.w - 1] in ('▲', '^') and
+                rows[client.h - 3][client.w - 1] in ('▼', 'V'))
+    return horizontal and vertical
 
-    def edge(value, old_size, new_size):
-        return (value * new_size + old_size // 2) // old_size
 
-    new_left = edge(left, old_width, new_width)
-    new_top = edge(top - 1, old_height, new_height)
-    new_right = edge(right + 1, old_width, new_width)
-    new_bottom = edge(bottom, old_height, new_height)
-    new_left = max(0, min(new_left, new_width - 16))
-    new_top = max(0, min(new_top, new_height - 6))
-    new_right = min(new_width, max(new_right, new_left + 16))
-    new_bottom = min(new_height, max(new_bottom, new_top + 6))
-    return ((new_left, new_top + 1, new_right - 1, new_bottom),
-            (new_right - new_left - 2, new_bottom - new_top - 2))
+def print_bar_diagnostic(client):
+    rows = client.screen.display
+    points = ((0, client.h - 2), (client.w - 2, client.h - 2),
+              (client.w - 1, 1), (client.w - 1, client.h - 3))
+    print('  viewport bar cells:',
+          [(point, repr(rows[point[1]][point[0]])) for point in points])
+
+
+def title_pos(client):
+    for y, row in enumerate(client.screen.display):
+        x = row.find(TITLE)
+        if x >= 0:
+            return x, y
+    return None
+
+
+def click(client, x, y):
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
 
 
 def drain_all(clients, seconds=0.25):
@@ -133,24 +145,43 @@ try:
           wait_state((a, b), session,
                      ((0, 1, 117, 33), None), (116, 31)))
 
-    # A subsequent physical resize is a deliberate shared action even when it
-    # comes from the client that originally joined at another size.
-    smaller_rect, smaller_pty = scaled_single_pane(
-        (0, 1, 117, 33), (120, 36), (90, 28))
-    host_resize(b, 90, 28)
-    check('attached-client resize becomes shared',
-          wait_state((a, b), session,
-                     (smaller_rect, smaller_rect), smaller_pty))
+    bars_ready = b.wait_until(lambda _text: desktop_bars(b), 5.0)
+    if not bars_ready:
+        print_bar_diagnostic(b)
+    check('smaller client has both local viewport scrollbars', bars_ready)
+    original_a_title = title_pos(a)
+    original_b_title = title_pos(b)
+    if original_b_title is not None:
+        click(b, b.w - 2, b.h - 2)
+    scrolled = b.wait_until(
+        lambda _text: (original_b_title is not None and
+                       title_pos(b) == (original_b_title[0] - 1,
+                                        original_b_title[1])), 5.0)
+    check('horizontal scrollbar changes only the small local viewport',
+          scrolled and title_pos(a) == original_a_title and
+          pane_size(session) == (116, 31))
 
-    larger_rect, larger_pty = scaled_single_pane(
-        smaller_rect, (90, 28), (140, 40))
-    host_resize(a, 140, 40)
-    check('creator resize becomes shared',
+    # A physical resize changes only B's surface and viewport chrome.
+    host_resize(b, 90, 28)
+    check('attached-client SIGWINCH keeps shared geometry',
           wait_state((a, b), session,
-                     (larger_rect, None), larger_pty))
+                     ((0, 1, 117, 33), None), (116, 31)))
+    resized_bars = b.wait_until(lambda _text: desktop_bars(b), 5.0)
+    if not resized_bars:
+        print_bar_diagnostic(b)
+    check('resized smaller client still owns both local scrollbars',
+          resized_bars)
+
+    # Growing A changes its physical margin only; it cannot resize B's world.
+    host_resize(a, 140, 40)
+    check('creator SIGWINCH keeps shared geometry',
+          wait_state((a, b), session,
+                     ((0, 1, 117, 33), None), (116, 31)))
+    check('large client needs no viewport scrollbars',
+          a.wait_until(lambda _text: not desktop_bars(a), 5.0))
 
     # The control command changes one pane's canonical terminal grid, not the
-    # outer desktop/window geometry chosen by the last host resize.
+    # outer desktop/window geometry.
     result = run_cli(['resize', session + ':1', '90x25'], HOME)
     check('explicit pane resize succeeds', result.returncode == 0)
     deadline = time.monotonic() + 5.0
@@ -159,7 +190,7 @@ try:
         time.sleep(0.025)
     check('explicit pane resize changes only PTY',
           pane_size(session) == (90, 25) and
-          frame_rect(a) == larger_rect and frame_rect(b) is None)
+          frame_rect(a) == (0, 1, 117, 33) and frame_rect(b) is None)
 
     run_cli(['send', session + ':1', 'echo ONE_SHARED_DESKTOP'], HOME)
     a.wait_until(lambda text: 'ONE_SHARED_DESKTOP' in text, 5.0)
@@ -185,7 +216,7 @@ try:
     c.drain(3.0)
     check('reattach receives prior contents', 'ONE_SHARED_DESKTOP' in c.text())
     check('reattach geometry is not renegotiated',
-          frame_rect(c) == larger_rect and
+          frame_rect(c) == (0, 1, 117, 33) and
           pane_size(session) == (90, 25))
 finally:
     if c is not None:

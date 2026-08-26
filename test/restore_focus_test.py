@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Restoring the sole minimized icon must restore real shared focus.
+"""Minimizing and restoring the focused icon preserve real shared focus.
 
 This reproduces the FreeVision edge case where the icon is already first in
-Z order while Desktop.Current still names the fallback window.  It checks the
-active frame and routes real shell input from both attached clients, so a
-daemon-only focus flag cannot make the test pass by itself.
+Z order.  The icon must retain logical focus while minimized, and restoring it
+must reactivate its real terminal child in both viewers.  Shell routing checks
+that a daemon-only focus flag cannot make the test pass by itself.
 """
 import os
 import sys
@@ -174,7 +174,7 @@ check('restore-focus target frame found', target is not None)
 if target is not None:
     _left, top, right, _bottom = target
     click(a, right - 8, top)    # centre of the active [-] button
-check('minimize selects fallback', wait_state({1}, 2))
+check('minimize retains logical pane focus', wait_state({1}, 1))
 
 icon = icon_rect(a, 'RESTOREDPANE')
 check('sole restore icon found', icon is not None)

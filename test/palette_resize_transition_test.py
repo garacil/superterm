@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Palette changes and host resizes must preserve one coherent surface.
+"""Palette changes and local viewport resizes preserve one coherent surface.
 
 The final menu mark is not evidence: the reported resize bug kept
 "Monochrome" checked while FreeVision had silently reset AppPalette to colour.
@@ -369,11 +369,10 @@ try:
                     for record in resize_material]
     settled_rect = active_frame_rect(c)
     resize_geometry_ok = (
-        len(resize_material) == 2 and
-        all(record['kind'] == 'sync' for record in resize_material) and
-        resize_rects == [mono_rect, settled_rect] and
-        mono_rect is not None and settled_rect is not None and
-        settled_rect != mono_rect)
+        len(resize_material) == 1 and
+        resize_material[0]['kind'] == 'sync' and
+        resize_rects == [mono_rect] and
+        mono_rect is not None and settled_rect == mono_rect)
     resize_ok = (
         resize_parse_ok and resize_records and
         active_frame_attr(c) == mono_attr and resize_path == [mono_attr] and
@@ -387,18 +386,15 @@ try:
         print_records('resize', resize_records)
     check('resize stream is completely parsed',
           resize_parse_ok and bool(resize_records))
-    check('PTY resize preserves mono attributes',
+    check('host resize preserves mono attributes',
           active_frame_attr(c) == mono_attr and resize_path == [mono_attr])
-    check('PTY resize never presents empty frame',
+    check('host resize never presents empty frame',
           all(has_complete_surface(record) for record in resize_changed))
-    check('PTY resize has no direct visual output', resize_direct_ok)
-    # A non-blocking host resize necessarily has two meaningful publications:
-    # first FreeVision adopts the new physical viewport while retaining the
-    # last authoritative shared layout; then the server commits and broadcasts
-    # the newly scaled canonical layout.  Requiring exactly those two complete
-    # frames catches both duplicate repaint flicker and hidden intermediate
-    # geometry without pretending the server round trip is instantaneous.
-    check('PTY resize publishes viewport then canonical exactly once',
+    check('host resize has no direct visual output', resize_direct_ok)
+    # SIGWINCH is now presentation-only. FreeVision adopts the new physical
+    # viewport in one synchronized repaint while retaining the exact canonical
+    # frame; no later server layout publication may scale it a second time.
+    check('host resize publishes one fixed-canonical viewport',
           resize_geometry_ok)
 finally:
     # Detach the UI, then close the isolated daemon through stlib's protocol.
