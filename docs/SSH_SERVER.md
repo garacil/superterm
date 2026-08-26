@@ -27,6 +27,11 @@ diagnostics, and security limits. The configuration file to edit is always
 `server.ini`; the other generated files are explained so that they can be
 audited, not so that they can be edited manually.
 
+For a concise LAN installation with one complete configuration, AI/operator
+safety rules, remote validation, and connection example, start with
+[SuperTerm over SSH: AI deployment quickstart](SSH_QUICKSTART.md), then
+return here for the full security and operational reference.
+
 ## Immediate result: standard `ssh`, separate service
 
 Once the listener has been prepared, a standard OpenSSH client enters

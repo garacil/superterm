@@ -21,6 +21,7 @@ ssh -p 8022 user@server
 **[Download 4.2.1](https://github.com/garacil/superterm/releases/latest)** ·
 **[Run it locally](#run-locally)** ·
 **[Publish it over SSH](#publish-it-over-ssh)** ·
+**[AI-ready SSH deployment](docs/SSH_QUICKSTART.md)** ·
 **[Read the SSH guide](docs/SSH_SERVER.md)** ·
 **[Visit superterm.org](https://www.superterm.org)**
 
@@ -118,7 +119,9 @@ one.
 The service is intentionally explicit about addresses, authentication and
 privileged installation. Follow the complete, auditable procedure in
 [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md) when publishing it on a network,
-especially an Internet-facing one.
+especially an Internet-facing one. For a concise, AI-operable LAN setup with
+explicit validation and stop conditions, use the
+[AI deployment quickstart](docs/SSH_QUICKSTART.md).
 
 ## Standard SSH outside, one SuperTerm session inside
 
