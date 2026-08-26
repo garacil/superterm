@@ -31,11 +31,11 @@ for path in (HOME + '/.superterm/session.ini', HOME + '/.superterm/superterm.ini
         pass
 
 CONFIG = '\n'.join([
-    '[t1]', 'name=one', 'enabled=1', 'type=local',
+    '[t1]', 'name=one', 'title=ALPHA_ONE', 'enabled=1', 'type=local',
     'cmd=/bin/bash -i',
-    '', '[t2]', 'name=two', 'enabled=1', 'type=local',
+    '', '[t2]', 'name=two', 'title=ALPHA_TWO', 'enabled=1', 'type=local',
     'cmd=/bin/bash -i',
-    '', '[t3]', 'name=beta', 'enabled=1', 'type=local',
+    '', '[t3]', 'name=beta', 'title=BETA_ONLY', 'enabled=1', 'type=local',
     'cmd=/bin/bash -i',
     '', '[template.alpha]', 'name=alpha', 'enabled=1',
     'default_session=main', 'sessions=main',
@@ -121,7 +121,8 @@ s = Session()
 try:
     s.drain(1.5)
     text = s.text()
-    check('template starts two panes', 'one' in text and 'two' in text)
+    check('template starts two panes',
+          'ALPHA_ONE' in text and 'ALPHA_TWO' in text)
     os.write(s.fd, b'\x1br')
     s.drain(0.4)
     check('template menu opens', 'Profiles' in s.text())
@@ -129,12 +130,13 @@ try:
     os.write(s.fd, b'\x1b')
     s.drain(0.2)
 
-    # F8 changes from the split dashboard (both terminal titles visible) to
-    # the single logs window.  Looking only for ``two`` was vacuous because
-    # that title was already on the dashboard before F8.
+    # F8 changes from the split dashboard (both real class titles visible) to
+    # the single logs window. These titles are parsed by st_wclass; ignored
+    # keys in a legacy pane section must never be used as an oracle.
     dashboard_before_f8 = s.text()
     check('dashboard state precedes F8',
-          'one' in dashboard_before_f8 and 'two' in dashboard_before_f8)
+          'ALPHA_ONE' in dashboard_before_f8 and
+          'ALPHA_TWO' in dashboard_before_f8)
     os.write(s.fd, b'\x1b[19~')
     deadline = time.time() + 5.0
     logs_after_f8 = dashboard_before_f8
@@ -142,18 +144,20 @@ try:
         s.drain(0.2)
         logs_after_f8 = s.text()
         if (logs_after_f8 != dashboard_before_f8 and
-                'two' in logs_after_f8 and 'one' not in logs_after_f8):
+                'ALPHA_TWO' in logs_after_f8 and
+                'ALPHA_ONE' not in logs_after_f8):
             break
     check('F8 visibly changes window state',
           logs_after_f8 != dashboard_before_f8 and
-          'two' in logs_after_f8 and 'one' not in logs_after_f8)
+          'ALPHA_TWO' in logs_after_f8 and
+          'ALPHA_ONE' not in logs_after_f8)
 
     # Return to the template menu and select the second template.
     os.write(s.fd, b'\x1br')
     s.drain(0.2)
     os.write(s.fd, b'\x1b[B\r')
     s.drain(1.0)
-    check('hot template switch works', 'beta' in s.text())
+    check('hot template switch works', 'BETA_ONLY' in s.text())
 finally:
     s.close()
     close_all_daemons(HOME)

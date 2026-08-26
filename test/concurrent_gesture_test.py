@@ -1039,6 +1039,7 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
     released = [snapshot(client) for client in clients]
     intermediate = daemon_state(sock_path)
     released_ok = False
+    release_presented = False
     while time.monotonic() < release_deadline:
         released_ok = all(
             title_top(value, TITLES[first]) == held_rects[first][:3] and
@@ -1051,7 +1052,24 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
             expected_geom and
             [pane['pty'] for pane in intermediate['panes']] ==
             expected_intermediate_ptys)
-        if released_ok and state_ok:
+        # snapshot() can already contain bytes from a DEC-2026 frame whose
+        # closing ?2026l has not arrived in the same PTY read.  The temporal
+        # oracle may inspect only complete presentations. Every viewer that
+        # needs a changed frame must record the exact committed+held state;
+        # the bounds actor already renders that identical rectangle as its
+        # own live preview, so its release can correctly be paint-free.
+        current_records = [client.transitions()[mark:]
+                           for client, mark in zip(clients, marks)]
+        release_presented = all(
+            ((not wireframe and viewer == first) or
+             any(record['changed_cells'] > 0 and
+                 not stlib.cursor_only_transition(record) and
+                 title_top(record, TITLES[first]) == held_rects[first][:3] and
+                 physical_preview_ok(record, other, held_rects[other],
+                                     viewer == other, wireframe)
+                 for record in records))
+            for viewer, records in enumerate(current_records))
+        if released_ok and state_ok and release_presented:
             break
         drain_all(clients, 0.04)
         released = [snapshot(client) for client in clients]
@@ -1063,7 +1081,8 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
           [pane['geom'] for pane in intermediate['panes']] == expected_geom and
           [pane['pty'] for pane in intermediate['panes']] ==
           expected_intermediate_ptys)
-    check(label + ' first final and other held preview coexist', released_ok)
+    check(label + ' first final and other held preview coexist',
+          released_ok and release_presented)
 
     rollback = []
     for viewer, records in enumerate(released_records):
@@ -1149,11 +1168,7 @@ def run_physical_mode(dragcontent):
     mode = 'live' if dragcontent else 'wire'
     home = stlib.fresh_home('concurrent-gesture-' + mode)
     ini = home + '/.superterm/superterm.ini'
-    log = '/tmp/superterm-concurrent-gesture-' + mode + '.log'
-    try:
-        os.unlink(log)
-    except FileNotFoundError:
-        pass
+    log = os.path.join(home, 'concurrent-gesture-' + mode + '.log')
     with open(ini, 'w', encoding='utf-8') as stream:
         stream.write('[ui]\nlanguage=en\npalette=mono\nbackground=none\n'
                      '[session]\nserver=always\nautosave=0\n'

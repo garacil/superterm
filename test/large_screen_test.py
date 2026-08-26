@@ -8,10 +8,12 @@ extreme-width renderer covered without retaining the obsolete contract where
 every post-attach SIGWINCH was only a local viewport change.
 """
 import fcntl
+import glob
 import os
 import pty
 import select
 import signal
+import stat
 import struct
 import sys
 import termios
@@ -27,8 +29,49 @@ from stlib import check
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = stlib.fresh_home('large-screen')
+DEBUG_LOG = HOME + '/large-screen-debug.log'
 CANON_WIDTH = 4096
 CANON_HEIGHT = 35
+
+
+def diagnostic_tail(path, limit=65536):
+    """Read a bounded tail only from the exact regular file globbed."""
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return f'[cannot lstat diagnostic: {error}]\n'
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        return '[diagnostic path is not a regular non-symlink file]\n'
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        return f'[cannot open diagnostic: {error}]\n'
+    try:
+        after = os.fstat(fd)
+        if (not stat.S_ISREG(after.st_mode) or
+                (before.st_dev, before.st_ino) !=
+                (after.st_dev, after.st_ino)):
+            return '[diagnostic file changed identity before open]\n'
+        os.lseek(fd, max(0, after.st_size - limit), os.SEEK_SET)
+        chunks = []
+        remaining = limit
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks).decode('utf-8', 'replace')
+    except OSError as error:
+        return f'[cannot read diagnostic: {error}]\n'
+    finally:
+        os.close(fd)
+
 
 with open(HOME + '/.superterm/superterm.ini', 'w') as config:
     config.write('[ui]\n'
@@ -46,6 +89,8 @@ class Session:
         self.height = height
         self.screen = pyte.Screen(width, height)
         self.stream = pyte.ByteStream(self.screen)
+        self.raw_tail = bytearray()
+        self.wait_status = None
         # Install the unusually wide PTY geometry before SuperTerm can inspect
         # it.  Without this gate Darwin can schedule the child through exec
         # first, so the session is born from the PTY's transient 0x0/default
@@ -63,6 +108,8 @@ class Session:
                 'SHELL': '/bin/bash',
                 'HOME': HOME,
                 'SUPERTERM_INI': HOME + '/no-sys.ini',
+                'SUPERTERM_DEBUG': DEBUG_LOG,
+                'SUPERTERM_DEBUG_FULL': '1',
             })
             os.execv(BIN, [BIN])
         os.close(start_read)
@@ -91,8 +138,16 @@ class Session:
             readable, _, _ = select.select([self.fd], [], [], 0.05)
             if readable:
                 try:
-                    self.stream.feed(os.read(self.fd, 65536))
+                    data = os.read(self.fd, 65536)
+                    if not data:
+                        self.poll_status(0.5)
+                        return
+                    self.raw_tail.extend(data)
+                    if len(self.raw_tail) > 65536:
+                        del self.raw_tail[:-65536]
+                    self.stream.feed(data)
                 except OSError:
+                    self.poll_status(0.5)
                     return
                 except Exception:
                     pass
@@ -100,6 +155,50 @@ class Session:
     def send(self, data, seconds=0.8):
         os.write(self.fd, data)
         self.drain(seconds)
+
+    def poll_status(self, timeout=0.0):
+        """Record, but never invent, the exact Darwin/Linux child result."""
+        if self.wait_status is not None:
+            return self.wait_status
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                waited, status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                return self.wait_status
+            if waited == self.pid:
+                self.wait_status = status
+                return status
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.02)
+
+    def diagnose_exit(self, label):
+        """Print evidence when the extreme-width child disappears early."""
+        status = self.poll_status(0.5)
+        if status is None:
+            outcome = 'still running or not yet waitable'
+        elif os.WIFEXITED(status):
+            outcome = f'exit={os.WEXITSTATUS(status)}'
+        elif os.WIFSIGNALED(status):
+            outcome = f'signal={os.WTERMSIG(status)}'
+        elif os.WIFSTOPPED(status):
+            outcome = f'stopped={os.WSTOPSIG(status)}'
+        else:
+            outcome = f'wait_status={status}'
+        print(f'  {label}: child pid={self.pid} {outcome}')
+        if self.raw_tail:
+            print('  PTY tail:')
+            print(bytes(self.raw_tail[-4096:]).decode('utf-8', 'replace'))
+        debug_tail = diagnostic_tail(DEBUG_LOG)
+        if debug_tail is not None:
+            print('  debug log tail:')
+            print(debug_tail)
+        reports = sorted(glob.glob(
+            f'/tmp/superterm-crash-*-{self.pid}-*.log'))
+        for path in reports:
+            print(f'  crash report: {path}')
+            print(diagnostic_tail(path) or '[diagnostic disappeared]\n')
 
     def close(self):
         end = time.time() + 4.0
@@ -244,7 +343,10 @@ canonical_pty = None
 try:
     current_host = (CANON_WIDTH, CANON_HEIGHT)
     current_rect = (0, 1, CANON_WIDTH - 3, CANON_HEIGHT - 3)
-    check('4096x35 startup settles', settle(s, current_rect) is not None)
+    startup_settled = settle(s, current_rect) is not None
+    check('4096x35 startup settles', startup_settled)
+    if not startup_settled:
+        s.diagnose_exit('4096x35 startup')
     check_layout(s, '4096x35 startup', current_rect)
     sockets = stlib.session_sockets(HOME)
     check('one canonical session exists', len(sockets) == 1)

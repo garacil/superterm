@@ -58,24 +58,41 @@ check('maximise keeps the menu bar', 'Panes' in txt)
 check('maximise keeps the status line', 'Detach' in txt)
 check('maximise keeps the window frame', framed())
 
-# Bind physical F5 in bash and prove that SuperTerm forwards the escape
-# sequence instead of changing layout.  Clear the pane after installing the
-# binding: the command's own echo contains the marker, so a raw-byte search is
-# not a valid windowed-mode oracle.  The renderer's logical pane model must
-# show a new marker after F5 instead.
-c.send(b"bind '\"\\e[15~\":\"PHYSICAL_F5_REACHED\"'; "
-       b"printf '\\033[2J\\033[HWINDOWED_F5_READY\\n'\r", 0.1)
+# Read the five physical bytes directly. Bash 3.2's readline ``bind`` macro
+# behaves differently on Darwin and is not an oracle for SuperTerm's keyboard
+# transport. The command clears its own echoed text before waiting, consumes
+# exactly one F5 sequence, and prints the bytes as a deterministic hex value.
+def arm_f5_reader(ready, result):
+    split = len(ready) // 2
+    ready_left, ready_right = ready[:split], ready[split:]
+    command = (
+        "stty -echo -icanon min 5 time 0; "
+        f"printf '\\033[2J\\033[H%s%s\\n' '{ready_left}' '{ready_right}'; "
+        "B=$(dd bs=1 count=5 2>/dev/null | od -An -tx1 | "
+        "tr -d '[:space:]'); stty sane; "
+        f"printf '\\n{result}_%s\\n' \"$B\"\r")
+    c.send(command.encode(), 0.1)
+
+
+arm_f5_reader('WINDOWED_F5_READY', 'PHYSICAL_F5')
 binding_ready = c.wait_until(
     lambda text: ('WINDOWED_F5_READY' in text and
-                  'PHYSICAL_F5_REACHED' not in text), 6.0)
-check('windowed F5 binding is ready', binding_ready)
+                  'PHYSICAL_F5_1b5b31357e' not in text), 6.0)
+check('windowed F5 byte reader is ready', binding_ready)
 c.send(b'\x1b[15~', 0.1)
 physical_reached = c.wait_until(
-    lambda text: 'PHYSICAL_F5_REACHED' in text, 6.0)
+    lambda text: 'PHYSICAL_F5_1b5b31357e' in text, 6.0)
 check('physical F5 reaches the pane',
       physical_reached)
 check('physical F5 keeps the IDE visible', 'Panes' in c.text())
-c.send(b'\x15', 0.2)  # Ctrl-U: clear the injected readline text
+
+# Arm a fresh deterministic reader while the IDE still owns the terminal.
+# The fullscreen chord is consumed by SuperTerm; the following F5 is the only
+# input the pane reader receives.
+arm_f5_reader('FULLSCREEN_F5_READY', 'FULLSCREEN_F5')
+check('fullscreen F5 byte reader is ready', c.wait_until(
+    lambda text: ('FULLSCREEN_F5_READY' in text and
+                  'FULLSCREEN_F5_1b5b31357e' not in text), 6.0))
 
 # ---- prefix+f: the pane owns the terminal ----
 c.send(stlib.FULLSCREEN_CHORD, 0.1)
@@ -88,8 +105,7 @@ check('fullscreen hides the status line', 'Detach' not in txt)
 physical_offset = len(c.raw())
 c.send(b'\x1b[15~', 0.1)
 check('fullscreen physical F5 reaches the pane',
-      wait_raw(physical_offset, b'PHYSICAL_F5_REACHED'))
-c.send(b'\x15', 0.2)
+      wait_raw(physical_offset, b'FULLSCREEN_F5_1b5b31357e'))
 
 # ---- prefix+f again: the IDE comes back, window and all ----
 c.send(stlib.FULLSCREEN_CHORD, 0.1)

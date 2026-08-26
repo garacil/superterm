@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """superterm test: session restore across runs."""
-import os, pty, time, select, sys, fcntl, termios, struct, subprocess
+import configparser
+import os, pty, time, select, sys, fcntl, termios, struct, subprocess, shlex
 import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,6 +24,12 @@ class Session:
             os.environ['SHELL'] = '/bin/bash'
             os.environ['HOME'] = HOME
             os.environ['SUPERTERM_INI'] = HOME + '/no-sys.ini'  # no system config
+            if sys.platform.startswith('linux'):
+                # Upstream Linux can omit CONFIG_PROC_CHILDREN. Exercise the
+                # O(all-procs) compatibility fallback while this suite also
+                # proves exact foreground/background classification.
+                os.environ['SUPERTERM_TESTING'] = '1'
+                os.environ['SUPERTERM_TEST_PROC_CHILDREN_FALLBACK'] = '1'
             os.execv(BIN, [BIN])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', H, W, 0, 0))
     def drain(self, t):
@@ -63,6 +70,68 @@ def check(name, cond):
     if not cond:
         fails.append(name)
 
+
+def process_table():
+    """Portable PID tree snapshot; never selects a process by global name."""
+    try:
+        result = subprocess.run(
+            ['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=',
+             '-o', 'stat=', '-o', 'args='],
+            capture_output=True, text=True, timeout=3.0, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    rows = {}
+    if result.returncode != 0:
+        return rows
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 4)
+        if len(parts) < 4:
+            continue
+        try:
+            pid, ppid, pgid = map(int, parts[:3])
+        except ValueError:
+            continue
+        rows[pid] = {
+            'ppid': ppid, 'pgid': pgid, 'stat': parts[3],
+            'args': parts[4] if len(parts) == 5 else '',
+        }
+    return rows
+
+
+def restored_processes(root_pid, timeout=8.0):
+    """Return exact pane leaders and sleep descendants rooted at this UI."""
+    final = ([], [])
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = process_table()
+        leaders = sorted(pid for pid, row in rows.items()
+                         if row['ppid'] == root_pid and
+                         not row['stat'].startswith('Z'))
+        descendants = set(leaders)
+        changed = True
+        while changed:
+            before = len(descendants)
+            descendants.update(
+                pid for pid, row in rows.items()
+                if row['ppid'] in descendants and
+                not row['stat'].startswith('Z'))
+            changed = len(descendants) != before
+        sleeps = []
+        for pid in sorted(descendants):
+            try:
+                argv = shlex.split(rows[pid]['args'])
+            except ValueError:
+                continue
+            if (len(argv) == 2 and
+                    os.path.basename(argv[0]) == 'sleep' and
+                    argv[1] == '987'):
+                sleeps.append(pid)
+        final = leaders, sleeps
+        if len(leaders) == 2 and len(sleeps) == 1:
+            break
+        time.sleep(0.04)
+    return final
+
 close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as f:
@@ -75,11 +144,20 @@ if os.path.exists(SESS):
 # --- run A: split, run a command, quit
 a = Session()
 a.drain(2.0)
+if sys.platform.startswith('linux'):
+    # One background child at an interactive prompt must not be mistaken for
+    # foreground merely because job control makes it share bash's pgrp.
+    a.send(b'set +m; sleep 986 &\r', 0.3)
 a.send(b'\x1bOQ', 1.2)              # F2 vertical split
-a.send(b'cd /tmp; sleep 987\r', 0.2) # distinctive foreground in pane 2
+if sys.platform.startswith('linux'):
+    a.send(b'set +m; cd /tmp; sleep 987\r', 0.2)
+else:
+    a.send(b'set -m; cd /tmp; sleep 987\r', 0.2)
 # Saving immediately after a fixed sleep races the periodic process query on
 # a loaded runner.  Require the real window title to identify the foreground
 # process first; matching only pane text would accept the echoed command.
+# On Linux, `set +m` makes the regression deterministic: TIOCGPGRP then names
+# bash, while the command that must be captured is its synchronous child.
 foreground_observed = a.wait_until(
     lambda rows: any('sleep' in row.lower() and
                      any(ch in row for ch in '═─') for row in rows))
@@ -93,21 +171,24 @@ if os.path.exists(SESS):
     txt = open(SESS).read()
     print("--- session.ini ---")
     print(txt)
+    saved = configparser.ConfigParser(interpolation=None)
+    saved.read(SESS)
     check("A: layout V saved", 'V:' in txt)
-    check("A: cmd captured", 'sleep 987' in txt)
+    check("A: background ignored",
+          saved.get('pane0', 'cmd', fallback='').strip() == '')
+    check("A: cmd captured",
+          saved.get('pane1', 'cmd', fallback='').strip() == 'sleep 987')
 
 # --- run B: restore
 b = Session()
 b.drain(2.5)
-scr = b.text()
-# windows are centred and stack, so the second one covers the first: count
-# what was restored rather than what happens to be visible
-check("B: two panes restored",
-      'sleep' in scr or scr.count('bash') >= 2
-      or scr.count('sthome') + scr.count('tmp') >= 1
-      or open(SESS).read().count('[pane') >= 2)
-ps = subprocess.run(['pgrep', '-f', 'sleep 987'], capture_output=True, text=True).stdout.strip()
-check("B: command restarted", ps != '')
+# The top restored window can cover most of the other one, so prove the live
+# PTY topology instead of accepting text from session.ini.  Only direct
+# children of this exact SuperTerm PID are pane leaders; the command oracle is
+# likewise restricted to their descendant tree and exact two-argument argv.
+restored_leaders, restored_sleeps = restored_processes(b.pid)
+check("B: two panes restored", len(restored_leaders) == 2)
+check("B: command restarted", len(restored_sleeps) == 1)
 b.send(b'\x1bx', 0.8)
 b.close()
 

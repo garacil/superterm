@@ -240,12 +240,13 @@ def choose_cycle_class(client, settle=0.05):
 
 
 def close_pane_fast(client):
-    client.send(b'\x1bp', 0.05)
-    menu_visible = client.wait_until(
-        lambda text: 'Close pane' in text, 2.0)
-    if menu_visible:
-        stlib.write_all(client.fd, b'c')
-    return menu_visible
+    """Use the public physical Alt-F3 command in the high-rate cycle."""
+    try:
+        stlib.write_all(client.fd, b'\x1b[13;3~')
+        client.drain(0.05)
+        return True
+    except (OSError, TimeoutError):
+        return False
 
 
 def detach(client):
@@ -414,9 +415,33 @@ def concurrent_first_pair(clients, cycle):
                                         for thread in threads)
     check(f'cycle {cycle} concurrent menus opened', menus)
     check(f'cycle {cycle} concurrent requests delivered', delivered)
-    both_created = wait_for(lambda: pane_count() == 2, clients, timeout=6.0)
+    both_created = wait_created_count(clients, 2, cycle, timeout=6.0)
     check(f'cycle {cycle} FIFO creates both panes', both_created)
     return menus and delivered and both_created
+
+
+def wait_created_count(clients, expected, cycle, timeout=5.0):
+    """Prove daemon, sidecar and both UI mirrors consumed the same NEWPANE."""
+    canonical = wait_for(
+        lambda: (pane_count() == expected and
+                 sidecar_state().get('panes') == expected),
+        clients, timeout=timeout)
+    if not canonical:
+        return False
+    # Every new window is initially centred over its predecessor, so counting
+    # visible corners is not a valid creation oracle. Rename the new top pane;
+    # seeing that indexed TITLE event in both clients proves each first applied
+    # the preceding NEWPANE event from the same daemon FIFO.
+    marker = f'SYNC_C{cycle}_P{expected:02d}'
+    renamed = run_cli(['rename', f'{SESSION}:{expected}', marker], HOME)
+    visible = renamed.returncode == 0 and wait_for(
+        lambda: all(marker in client.text() for client in clients),
+        clients, timeout=timeout)
+    if not visible:
+        print(f'  creation sync failed expected={expected} '
+              f'state={sidecar_state()} rows={pane_rows()!r} '
+              f'frames={[frame_count(client) for client in clients]}')
+    return visible
 
 
 def fill_to_max(clients, cycle):
@@ -426,8 +451,7 @@ def fill_to_max(clients, cycle):
     for expected in range(3, 17):
         actor = clients[(expected + cycle) & 1]
         menu_ok = choose_cycle_class(actor)
-        created = wait_for(lambda expected=expected:
-                           pane_count() == expected, clients, timeout=5.0)
+        created = wait_created_count(clients, expected, cycle, timeout=5.0)
         ok = ok and menu_ok and created
         if not created:
             print(f'  creation stopped at expected={expected} '
@@ -505,8 +529,15 @@ def close_all_panes(clients, cycle):
         actor = clients[(before + cycle) & 1]
         menu_ok = close_pane_fast(actor)
         expected = before - 1
-        closed = wait_for(lambda expected=expected:
-                          pane_count() == expected, clients, timeout=5.0)
+        # expose_all_panes organized the workspace as a non-overlapping grid.
+        # Require the daemon, atomic sidecar and both physical UI mirrors to
+        # reach this exact count before another client is allowed to close.
+        closed = wait_for(
+            lambda expected=expected:
+                (pane_count() == expected and
+                 sidecar_state().get('panes') == expected and
+                 all(frame_count(client) == expected for client in clients)),
+            clients, timeout=5.0)
         ok = ok and menu_ok and closed
         if not closed:
             print(f'  close stopped at before={before} '

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """superterm test: [profile.*] profiles, flattened legacy templates and saving."""
 import configparser
-import os, pty, time, select, sys, fcntl, termios, struct, shutil
+import os, pty, time, select, sys, fcntl, termios, struct, shutil, re, shlex
 import pyte
 
 from stlib import wait_pid
@@ -173,6 +173,12 @@ check("workspace switched", "PROF_PANE_A" not in scr)
 # capturable markers: the pane's cwd and a single-word foreground
 # command (python3), which survives the INI write/re-read cycle
 s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
+if sys.platform.startswith('linux'):
+    s.send(b'set +m\r', 0.3)        # exercise Linux's wait4 fallback
+else:
+    # Darwin libproc exposes pgrp/argv but not a shell's current wait syscall;
+    # keep this test on the normal, unambiguous terminal-foreground path.
+    s.send(b'set -m\r', 0.3)
 s.send(b'python3\r', 0.2)
 # The pane process scanner is deliberately periodic.  Synchronize with its
 # visible title instead of assuming a one-second CI runner deadline.  The
@@ -202,12 +208,32 @@ captured_titles = [
     for section in saved_ini.sections()
     if section.startswith('profile.captured.window.') and '.pane.' in section
 ]
+captured_cmds = [
+    saved_ini.get(section, 'cmd', fallback='').strip()
+    for section in saved_ini.sections()
+    if section.startswith('profile.captured.window.') and '.pane.' in section
+]
+
+
+def captured_python(value):
+    """Recognise the actual executable recorded from argv, not one OS path."""
+    try:
+        argv = shlex.split(value)
+    except ValueError:
+        return False
+    if len(argv) != 1:
+        return False
+    executable = argv[0]
+    basename = os.path.basename(executable).lower()
+    return re.fullmatch(r'python(?:3(?:\.\d+)?)?', basename) is not None
+
+
 check("ini has profile.captured", "[profile.captured]" in txt)
 check("ini has layout key", "layout=" in txt)
-# macOS: /usr/bin/python3 is a stub that re-execs the framework Python, so the
-# captured foreground command is the resolved Python.framework path, not "python3".
-check("ini captured marker cmd", ("cmd=python3" in txt) or ("cmd='python3'" in txt)
-      or ("Python3.framework" in txt))
+# macOS /usr/bin/python3 may re-exec Python.framework/Python; parse the saved
+# argv and validate its executable instead of grepping one framework spelling.
+check("ini captured marker cmd",
+      len(captured_cmds) == 1 and captured_python(captured_cmds[0]))
 check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
 check("ini captured visible basename title",
       len(captured_titles) == 1 and

@@ -11,6 +11,9 @@ import os
 import math
 import random
 import re
+import socket
+import stat
+import struct
 import sys
 import tempfile
 import threading
@@ -180,6 +183,148 @@ def drain_all(clients, seconds):
 
 KNOWN_CLIENT_PIDS = set()
 TRACKED_CLIENTS = {}
+ACTIVE_TEST_FOREGROUNDS = {}
+FOREGROUND_QUERY_FAILED = object()
+os.makedirs('/tmp/opencode', exist_ok=True)
+FOREGROUND_CONTROL_DIR = tempfile.mkdtemp(
+    prefix='superterm-stress-foreground-', dir='/tmp/opencode')
+FOREGROUND_HELPER_FD, FOREGROUND_HELPER = tempfile.mkstemp(
+    prefix='wait-', suffix='.py', dir=FOREGROUND_CONTROL_DIR)
+try:
+    os.write(FOREGROUND_HELPER_FD,
+             b'import os, sys, time\n'
+             b'deadline = time.monotonic() + 60\n'
+             b'while time.monotonic() < deadline:\n'
+             b'    try:\n'
+             b'        os.lstat(sys.argv[1])\n'
+             b'        break\n'
+             b'    except FileNotFoundError:\n'
+             b'        time.sleep(0.02)\n')
+finally:
+    os.close(FOREGROUND_HELPER_FD)
+
+
+def daemon_claim(session):
+    """Return one sidecar-authenticated daemon generation."""
+    path = os.path.join(stlib.sessions_dir(HOME), session + '.ini')
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        parser = configparser.ConfigParser()
+        with open(path, encoding='utf-8') as stream:
+            parser.read_file(stream, source=path)
+        pid = parser.getint('session', 'pid')
+        identity = parser.get('session', 'pid_identity').strip()
+    except (OSError, UnicodeError, ValueError, configparser.Error):
+        return None
+    if pid <= 1 or not identity or stlib.process_identity(pid) != identity:
+        return None
+    return pid, identity
+
+
+def pane_foreground_command(session, pane):
+    """Read one live command from the daemon's untruncated CTL_LIST frame."""
+    socket_path = os.path.join(stlib.sessions_dir(HOME), session + '.sock')
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.settimeout(2.0)
+    try:
+        peer.connect(socket_path)
+        peer.sendall(stlib.raw_frame(11, -1))
+        payload = None
+        while True:
+            frame = stlib.read_frame(peer, timeout=2.0)
+            if frame is None or frame[0] == 43:
+                break
+            if frame[0] == 42:
+                payload = frame[2]
+        if payload is None:
+            return FOREGROUND_QUERY_FAILED
+        offset = 0
+        _name, offset = stlib.read_pas_string(payload, offset)
+        _profile, offset = stlib.read_pas_string(payload, offset)
+        count, _focused, _clients, _desk_w, _desk_h = struct.unpack_from(
+            '<iiiii', payload, offset)
+        offset += struct.calcsize('<iiiii')
+        if pane < 1 or pane > count:
+            return FOREGROUND_QUERY_FAILED
+        for pane_no in range(1, count + 1):
+            _title, offset = stlib.read_pas_string(payload, offset)
+            _term, offset = stlib.read_pas_string(payload, offset)
+            offset += 1
+            _host, offset = stlib.read_pas_string(payload, offset)
+            _user, offset = stlib.read_pas_string(payload, offset)
+            command, offset = stlib.read_pas_string(payload, offset)
+            _cwd, offset = stlib.read_pas_string(payload, offset)
+            offset += struct.calcsize('<iiiiiii') + 3
+            if pane_no == pane:
+                return command
+    except (OSError, ValueError, IndexError, struct.error):
+        return FOREGROUND_QUERY_FAILED
+    finally:
+        peer.close()
+    return FOREGROUND_QUERY_FAILED
+
+
+def acquire_test_foreground(session, pane, token, timeout=3.0):
+    """Claim authority only after the unique helper is the live foreground."""
+    claim = daemon_claim(session)
+    stop_path = os.path.join(FOREGROUND_CONTROL_DIR, token + '.stop')
+    expected = (f'{sys.executable} {FOREGROUND_HELPER} '
+                f'{stop_path} {token}')
+    deadline = time.monotonic() + timeout
+    while claim is not None and time.monotonic() < deadline:
+        observed = pane_foreground_command(session, pane)
+        if (daemon_claim(session) == claim and
+                observed is not FOREGROUND_QUERY_FAILED and
+                observed == expected):
+            ACTIVE_TEST_FOREGROUNDS[(session, pane)] = (
+                claim[0], claim[1], expected, stop_path)
+            return True
+        time.sleep(0.04)
+    return False
+
+
+def stop_test_foreground(session, pane, timeout=3.0):
+    """Stop only the exact helper through its private one-use file."""
+    key = (session, pane)
+    authority = ACTIVE_TEST_FOREGROUNDS.get(key)
+    if authority is None:
+        return False
+    pid, identity, expected, stop_path = authority
+    if daemon_claim(session) != (pid, identity):
+        return False
+    observed = pane_foreground_command(session, pane)
+    if observed is FOREGROUND_QUERY_FAILED or observed != expected:
+        return False
+    # This cannot race into a later foreground: no byte is sent to the PTY.
+    # Only the helper whose exact argv was authenticated polls this private,
+    # per-run path, and every invocation has its own one-use token.
+    try:
+        marker = os.open(stop_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         0o600)
+        os.close(marker)
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if daemon_claim(session) != (pid, identity):
+            return False
+        observed = pane_foreground_command(session, pane)
+        if observed is FOREGROUND_QUERY_FAILED:
+            time.sleep(0.04)
+            continue
+        if observed != expected:
+            del ACTIVE_TEST_FOREGROUNDS[key]
+            try:
+                os.unlink(stop_path)
+            except FileNotFoundError:
+                pass
+            return True
+        time.sleep(0.04)
+    return False
 
 
 def track_client(client):
@@ -194,6 +339,15 @@ def untrack_client(client):
 
 def cleanup_tracked_clients():
     """Bounded exception-path cleanup; never touch an external daemon."""
+    # exact_round deliberately holds one test-owned helper in each pane. If
+    # fail-fast aborts after acquisition, release only those helpers through
+    # their private files before detaching our UIs. No cleanup byte is ever
+    # written to an external session's PTY.
+    for session, pane in sorted(ACTIVE_TEST_FOREGROUNDS):
+        try:
+            stop_test_foreground(session, pane, timeout=2.0)
+        except Exception:
+            pass
     for client in list(TRACKED_CLIENTS.values()):
         try:
             if client.alive():
@@ -204,6 +358,18 @@ def cleanup_tracked_clients():
             pass
         client.close()
         untrack_client(client)
+    # Do not remove a stop marker which a still-running helper has not yet
+    # observed. The helper self-expires after 60 seconds; a failed test keeps
+    # its tiny private directory as evidence instead of risking interference.
+    if not ACTIVE_TEST_FOREGROUNDS:
+        try:
+            os.unlink(FOREGROUND_HELPER)
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(FOREGROUND_CONTROL_DIR)
+        except OSError:
+            pass
 
 
 atexit.register(cleanup_tracked_clients)
@@ -1225,14 +1391,20 @@ def exact_round(clients, session, number, extra=None):
     cursor_row = 8 + number % 2
     cursor_col = 12 + number % 4
     tokens = []
+    foreground_tokens = []
     for pane, client in enumerate(clients, 1):
         # Seven cells: fits at the worst target column 8 in 14 PTY columns.
         token = f'R{round_code(number)}C{pane}P{pane}'
         tokens.append(token)
+        foreground_token = f'STFG_{SEED:X}_{number}_{pane}'
+        foreground_tokens.append(foreground_token)
         split = len(token) // 2
         command = (f"S='{token[:split]}''{token[split:]}'; "
                    f"printf '\\033[2J\\033[{target_row};{target_col}H%s"
-                   f"\\033[{cursor_row};{cursor_col}H' \"$S\"; sleep 8\r")
+                   f"\\033[{cursor_row};{cursor_col}H' \"$S\"; "
+                   f"'{sys.executable}' '{FOREGROUND_HELPER}' "
+                   f"'{os.path.join(FOREGROUND_CONTROL_DIR, foreground_token + '.stop')}' "
+                   f"'{foreground_token}'\r")
         # Focus is one shared channel. Let every viewer consume it before this
         # actor types; otherwise a focus event from a different client may
         # legitimately win between Alt-N and a later key. Different clients
@@ -1289,6 +1461,9 @@ def exact_round(clients, session, number, extra=None):
         for viewer_no, viewer in enumerate(viewers, 1):
             check(f'round {number} P{pane} visible C{viewer_no}',
                   token_at(viewer, pane, token))
+        check(f'round {number} owns exact foreground {pane}',
+              acquire_test_foreground(
+                  session, pane, foreground_tokens[pane - 1]))
     if extra is not None:
         check(f'round {number} churn renders every live exact token',
               all(token_at(extra, pane, token)
@@ -1316,8 +1491,10 @@ def exact_round(clients, session, number, extra=None):
                 check(f'round {number} churn cursor exact P{pane}',
                       actual == expected)
         require_clean(f'round {number} cursor pane {pane} placement')
-        # Stop this pane's foreground sleep before checking the next one.
-        stlib.write_all(clients[0].fd, b'\x03')
+        # Stop the exact helper through its private channel. No input is ever
+        # sent to the shared PTY, so a later foreground cannot be interrupted.
+        check(f'round {number} stops exact foreground {pane}',
+              stop_test_foreground(session, pane))
         drain_all(viewers, 0.15)
     drain_all(viewers, 0.45)
 

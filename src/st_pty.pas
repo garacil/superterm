@@ -147,7 +147,7 @@ implementation
 
 uses
   st_debug, StrUtils
-  {$IFDEF LINUX}, PThreads{$ENDIF};
+  {$IFDEF LINUX}, PThreads, SysCall{$ENDIF};
 
 const
   PTY_EXEC_POLL_MS = 100;
@@ -1275,62 +1275,183 @@ begin
   FPromptBuffer := '';
 end;
 
-function IsNumeric(const S: string): boolean;
+{$IFNDEF DARWIN}
+type
+  TProcStatInfo = record
+    Pid, ParentPid, Pgrp, SessionId, TtyPgrp: TPid;
+    State: AnsiChar;
+    StartTicks: QWord;
+  end;
+
+function ReadProcText(const Path: RawByteString; Limit: integer;
+  out Data: RawByteString): boolean;
 var
-  i: integer;
+  Fd, Flags, N: integer;
 begin
-  Result := S <> '';
-  for i := 1 to Length(S) do
-    if not (S[i] in ['0'..'9']) then
-      Exit(False);
+  Result := False;
+  Data := '';
+  if Limit < 2 then
+    Exit;
+  Fd := FpOpen(PAnsiChar(Path), O_RDONLY, 0);
+  if Fd < 0 then
+    Exit;
+  try
+    Flags := FpFcntl(Fd, F_GETFD, 0);
+    if Flags >= 0 then
+      FpFcntl(Fd, F_SETFD, Flags or 1 {FD_CLOEXEC});
+    SetLength(Data, Limit);
+    N := FileRead(Fd, Data[1], Limit);
+  finally
+    FpClose(Fd);
+  end;
+  // A full buffer may end inside a PID/stat token. Fail closed rather than
+  // turn a truncated procfs read into process identity.
+  if (N < 0) or (N >= Limit) then
+  begin
+    Data := '';
+    Exit;
+  end;
+  SetLength(Data, N);
+  Result := True;
 end;
 
-function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
+function ReadProcStatInfo(Pid: TPid; out Info: TProcStatInfo): boolean;
 var
+  Line, Token: RawByteString;
+  CloseParen, P, StartPos, FieldNo, Value: integer;
+begin
+  Result := False;
+  Info := Default(TProcStatInfo);
+  if (Pid <= 0) or
+     (not ReadProcText('/proc/' + IntToStr(Pid) + '/stat', 4096, Line)) then
+    Exit;
+  // Linux field 2 (comm) may itself contain spaces and ')'. Only the final
+  // ')' safely separates it from fields 3..N.
+  CloseParen := Length(Line);
+  while (CloseParen > 0) and (Line[CloseParen] <> ')') do
+    Dec(CloseParen);
+  if CloseParen <= 0 then
+    Exit;
+  Info.Pid := Pid;
+  P := CloseParen + 1;
+  FieldNo := 0;
+  while P <= Length(Line) do
+  begin
+    while (P <= Length(Line)) and (Line[P] in [' ', #9, #10, #13]) do
+      Inc(P);
+    if P > Length(Line) then
+      Break;
+    StartPos := P;
+    while (P <= Length(Line)) and
+          not (Line[P] in [' ', #9, #10, #13]) do
+      Inc(P);
+    Inc(FieldNo);
+    Token := Copy(Line, StartPos, P - StartPos);
+    case FieldNo of
+      1:
+        begin
+          if Length(Token) <> 1 then
+            Exit;
+          Info.State := Token[1];
+        end;
+      2:
+        begin
+          if not TryStrToInt(Token, Value) then Exit;
+          Info.ParentPid := Value;
+        end;
+      3:
+        begin
+          if not TryStrToInt(Token, Value) then Exit;
+          Info.Pgrp := Value;
+        end;
+      4:
+        begin
+          if not TryStrToInt(Token, Value) then Exit;
+          Info.SessionId := Value;
+        end;
+      6:
+        begin
+          if not TryStrToInt(Token, Value) then Exit;
+          Info.TtyPgrp := Value;
+        end;
+      20:
+        begin
+          if not TryStrToQWord(Token, Info.StartTicks) then Exit;
+          Break;
+        end;
+    end;
+  end;
+  Result := (FieldNo >= 20) and (Info.State <> #0);
+end;
+{$ENDIF}
+
+function FindChildProcs(ParentPid: TPid; out Children: array of TPid): integer;
+{$IFDEF LINUX}
+var
+  Line, Token: RawByteString;
+  P, StartPos, Candidate: integer;
   SR: TSearchRec;
-  f: Text;
-  line: string;
-  parts: TStringList;
-  ppid: TPid;
+  Info: TProcStatInfo;
+{$ENDIF}
 begin
   Result := 0;
-  if FindFirst('/proc/*', faDirectory, SR) = 0 then
+  {$IFDEF LINUX}
+  if (ParentPid <= 0) or (Length(Children) = 0) then
+    Exit;
+  if not ((GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+          (GetEnvironmentVariable(
+            'SUPERTERM_TEST_PROC_CHILDREN_FALLBACK') = '1')) and
+     ReadProcText('/proc/' + IntToStr(ParentPid) + '/task/' +
+       IntToStr(ParentPid) + '/children', 65536, Line) then
   begin
+    // CONFIG_PROC_CHILDREN exposes the direct children of this task in one
+    // file. This is O(children), unlike scanning every process for every idle
+    // shell, so it remains the normal Linux path.
+    P := 1;
+    while P <= Length(Line) do
+    begin
+      while (P <= Length(Line)) and (Line[P] in [' ', #9, #10, #13]) do
+        Inc(P);
+      if P > Length(Line) then
+        Break;
+      StartPos := P;
+      while (P <= Length(Line)) and (Line[P] in ['0'..'9']) do
+        Inc(P);
+      Token := Copy(Line, StartPos, P - StartPos);
+      if (Token = '') or (not TryStrToInt(Token, Candidate)) or
+         (Candidate <= 0) then
+        Exit(0);
+      if Result < Length(Children) then
+      begin
+        Children[Result] := Candidate;
+        Inc(Result);
+      end;
+      while (P <= Length(Line)) and
+            not (Line[P] in [' ', #9, #10, #13]) do
+        Inc(P);
+    end;
+    Exit;
+  end;
+  // CONFIG_PROC_CHILDREN is optional in upstream Linux. Preserve the
+  // portable procfs fallback for kernels which omit that file; the stat
+  // parser still validates the final ')' and the observed parent relation.
+  if FindFirst('/proc/*', faDirectory, SR) <> 0 then
+    Exit;
+  try
     repeat
-      if (SR.Name = '.') or (SR.Name = '..') or (not IsNumeric(SR.Name)) then
-        continue;
-      AssignFile(f, '/proc/' + SR.Name + '/stat');
-      {$push}{$I-}
-      Reset(f);
-      {$pop}
-      if IOResult <> 0 then
-        continue;
-      ReadLn(f, line);
-      CloseFile(f);
-      line := Copy(line, Pos(')', line) + 2, MaxInt);
-      parts := TStringList.Create;
-      try
-        parts.Delimiter := ' ';
-        parts.StrictDelimiter := True;
-        parts.DelimitedText := line;
-        if parts.Count >= 2 then
-        begin
-          ppid := StrToIntDef(parts[1], 0);
-          if ppid = ParentPid then
-          begin
-            if Result < Length(Children) then
-            begin
-              Children[Result] := StrToIntDef(SR.Name, 0);
-              Inc(Result);
-            end;
-          end;
-        end;
-      finally
-        parts.Free;
+      if TryStrToInt(SR.Name, Candidate) and (Candidate > 0) and
+         ReadProcStatInfo(Candidate, Info) and
+         (Info.ParentPid = ParentPid) and
+         (Result < Length(Children)) then
+      begin
+        Children[Result] := Candidate;
+        Inc(Result);
       end;
     until FindNext(SR) <> 0;
+  finally
+    FindClose(SR);
   end;
-  FindClose(SR);
+  {$ENDIF}
 end;
 
 function ProcArgs(Pid: TPid): TStringArray;
@@ -1565,45 +1686,47 @@ begin
     UIntToStr(Info.pbi_start_tvusec);
 end;
 {$ELSE}
-type
-  TStatBuf = array[0..4095] of AnsiChar;
 var
-  Fd, Flags, N, CloseParen, P, StartPos, FieldNo: integer;
-  Buf: TStatBuf;
-  Path, Line, Token: RawByteString;
-  StartTicks: QWord;
+  Info: TProcStatInfo;
 begin
   Result := '';
-  if Pid <= 0 then
+  if ReadProcStatInfo(Pid, Info) then
+    Result := 'proc:' + UIntToStr(Info.StartTicks);
+end;
+{$ENDIF}
+
+{$IFDEF LINUX}
+function TryProcQWord(const Token: RawByteString; out Value: QWord): boolean;
+var
+  Normalized: string;
+begin
+  Normalized := string(Token);
+  if (Length(Normalized) > 2) and (Normalized[1] = '0') and
+     (UpCase(Normalized[2]) = 'X') then
+    Normalized := '$' + Copy(Normalized, 3, MaxInt);
+  Result := TryStrToQWord(Normalized, Value);
+end;
+
+function ProcWaitsForChild(Pid: TPid): boolean;
+type
+  TProcTokens = array[0..4] of RawByteString;
+var
+  Line: RawByteString;
+  Tokens: TProcTokens;
+  P, StartPos, Count: integer;
+  SysNo, WaitOptions: QWord;
+  Matched: boolean;
+begin
+  Result := False;
+  Tokens := Default(TProcTokens);
+  WaitOptions := 0;
+  Matched := False;
+  if (Pid <= 0) or
+     (not ReadProcText('/proc/' + IntToStr(Pid) + '/syscall', 512, Line)) then
     Exit;
-  Path := '/proc/' + IntToStr(Pid) + '/stat';
-  Fd := FpOpen(PAnsiChar(Path), O_RDONLY, 0);
-  if Fd < 0 then
-    Exit;
-  try
-    Flags := FpFcntl(Fd, F_GETFD, 0);
-    if Flags >= 0 then
-      // FPC 3.2.2 exposes F_SETFD but not the POSIX FD_CLOEXEC name.
-      FpFcntl(Fd, F_SETFD, Flags or 1 {FD_CLOEXEC});
-    Buf := Default(TStatBuf);
-    N := FileRead(Fd, Buf[0], SizeOf(Buf) - 1);
-  finally
-    FpClose(Fd);
-  end;
-  if N <= 0 then
-    Exit;
-  SetString(Line, PAnsiChar(@Buf[0]), N);
-  // Field 2 (comm) is parenthesized but may itself contain spaces and ')'.
-  // The final ')' is therefore the only safe delimiter before fields 3..N.
-  CloseParen := Length(Line);
-  while (CloseParen > 0) and (Line[CloseParen] <> ')') do
-    Dec(CloseParen);
-  if CloseParen <= 0 then
-    Exit;
-  P := CloseParen + 1;
-  FieldNo := 0;
-  Token := '';
-  while P <= Length(Line) do
+  P := 1;
+  Count := 0;
+  while (P <= Length(Line)) and (Count <= High(Tokens)) do
   begin
     while (P <= Length(Line)) and (Line[P] in [' ', #9, #10, #13]) do
       Inc(P);
@@ -1613,18 +1736,107 @@ begin
     while (P <= Length(Line)) and
           not (Line[P] in [' ', #9, #10, #13]) do
       Inc(P);
-    Inc(FieldNo);
-    // This tail starts with original field 3; its twentieth token is the
-    // documented field 22, starttime in clock ticks after boot.
-    if FieldNo = 20 then
-    begin
-      Token := Copy(Line, StartPos, P - StartPos);
-      Break;
-    end;
+    Tokens[Count] := Copy(Line, StartPos, P - StartPos);
+    Inc(Count);
   end;
-  if (Token = '') or (not TryStrToQWord(Token, StartTicks)) then
+  if (Count < 4) or (not TryProcQWord(Tokens[0], SysNo)) then
     Exit;
-  Result := 'proc:' + UIntToStr(StartTicks);
+  {$if declared(syscall_nr_wait4)}
+  if SysNo = QWord(syscall_nr_wait4) then
+  begin
+    // wait4(pid, status, options, rusage): WNOHANG is bit zero.
+    if not TryProcQWord(Tokens[3], WaitOptions) then
+      Exit;
+    Matched := True;
+  end;
+  {$endif}
+  {$if declared(syscall_nr_waitid)}
+  if (not Matched) and (SysNo = QWord(syscall_nr_waitid)) then
+  begin
+    // waitid(idtype, id, info, options, rusage): options is argument four.
+    if (Count < 5) or (not TryProcQWord(Tokens[4], WaitOptions)) then
+      Exit;
+    Matched := True;
+  end;
+  {$endif}
+  if not Matched then
+    Exit;
+  Result := (WaitOptions and 1 {WNOHANG}) = 0;
+end;
+
+function SameProcInstance(const A, B: TProcStatInfo): boolean;
+begin
+  Result := (A.Pid = B.Pid) and (A.ParentPid = B.ParentPid) and
+    (A.Pgrp = B.Pgrp) and (A.SessionId = B.SessionId) and
+    (A.TtyPgrp = B.TtyPgrp) and (A.StartTicks = B.StartTicks) and
+    (A.State <> 'Z') and (B.State <> 'Z');
+end;
+
+function SoleDirectChild(ParentPid: TPid; out ChildPid: TPid): boolean;
+type
+  TChildPair = array[0..1] of TPid;
+var
+  Children: TChildPair;
+  N: integer;
+begin
+  ChildPid := 0;
+  Children := Default(TChildPair);
+  N := FindChildProcs(ParentPid, Children);
+  Result := N = 1;
+  if Result then
+    ChildPid := Children[0];
+end;
+
+function TrySynchronousShellChild(ShellPid, ForegroundPgrp: TPid;
+  out ChildPid: TPid; out ChildArgs: TStringArray;
+  out ChildCwd: string): boolean;
+var
+  ShellBefore, ShellAfter, ChildBefore, ChildAfter: TProcStatInfo;
+  ConfirmedChild: TPid;
+begin
+  Result := False;
+  ChildPid := 0;
+  ChildArgs := nil;
+  ChildCwd := '';
+  // With job control disabled, foreground and background children share the
+  // shell's pgrp. Linux still exposes the one decisive distinction: an idle
+  // shell blocks on tty input, while a shell synchronously awaiting its only
+  // child blocks in wait4/waitid. Anything ambiguous fails closed.
+  if (not ReadProcStatInfo(ShellPid, ShellBefore)) or
+     (ShellBefore.State = 'Z') or
+     (ShellBefore.Pgrp <> ForegroundPgrp) or
+     (ShellBefore.TtyPgrp <> ForegroundPgrp) or
+     (not ProcWaitsForChild(ShellPid)) or
+     (not SoleDirectChild(ShellPid, ChildPid)) or
+     (not ReadProcStatInfo(ChildPid, ChildBefore)) or
+     (ChildBefore.State = 'Z') or
+     (ChildBefore.ParentPid <> ShellPid) or
+     (ChildBefore.Pgrp <> ShellBefore.Pgrp) or
+     (ChildBefore.SessionId <> ShellBefore.SessionId) or
+     (ChildBefore.TtyPgrp <> ShellBefore.TtyPgrp) then
+    Exit;
+  ChildArgs := ProcArgs(ChildPid);
+  ChildCwd := ProcCwd(ChildPid);
+  if (Length(ChildArgs) = 0) or (ChildCwd = '') then
+    Exit;
+  // procfs files are individual observations, not one atomic snapshot.
+  // Re-read both generations, relation, pgrp and the shell wait state after
+  // argv/cwd so PID reuse or a child exiting between reads cannot publish
+  // metadata belonging to another process.
+  if (not ReadProcStatInfo(ChildPid, ChildAfter)) or
+     (not ReadProcStatInfo(ShellPid, ShellAfter)) or
+     (not SameProcInstance(ChildBefore, ChildAfter)) or
+     (not SameProcInstance(ShellBefore, ShellAfter)) or
+     (not SoleDirectChild(ShellPid, ConfirmedChild)) or
+     (ConfirmedChild <> ChildPid) or
+     (not ProcWaitsForChild(ShellPid)) then
+  begin
+    ChildPid := 0;
+    ChildArgs := nil;
+    ChildCwd := '';
+    Exit;
+  end;
+  Result := True;
 end;
 {$ENDIF}
 
@@ -1684,6 +1896,11 @@ var
   Kids: array[0..15] of TPid;
   n, i: integer;
   best: TPid;
+  {$IFDEF LINUX}
+  ChildPid: TPid;
+  ChildCwd: string;
+  ChildArgs: TStringArray;
+  {$ENDIF}
   ForegroundPgrp: cint;
   cmdline: string;
   base: string;
@@ -1714,10 +1931,38 @@ begin
   end
   else
   begin
+    best := FPid;
     Args := ProcArgs(FPid);
     cmdline := ProcCmdLine(FPid);
     TitleCwd := ProcCwd(FPid);
   end;
+  base := ExtractFileName(FirstWordOf(cmdline));
+  if (base <> '') and (base[1] = '-') then
+    Delete(base, 1, 1);
+  // Bash with `set +m` keeps its own process group in TIOCGPGRP while it
+  // synchronously waits for a command in the same group.  Preserve the tty
+  // query as the primary path. Linux alone exposes the current wait syscall,
+  // so only there can the direct child be resolved without mistaking an idle
+  // background job for the foreground command.
+  {$IFDEF LINUX}
+  if SameText(base, FShellBase) then
+  begin
+    if TrySynchronousShellChild(best, ForegroundPgrp, ChildPid,
+      ChildArgs, ChildCwd) then
+    begin
+      best := ChildPid;
+      Args := ChildArgs;
+      cmdline := '';
+      for i := 0 to High(Args) do
+      begin
+        if i > 0 then
+          cmdline := cmdline + ' ';
+        cmdline := cmdline + Args[i];
+      end;
+      TitleCwd := ChildCwd;
+    end;
+  end;
+  {$ENDIF}
   // if the "command" is the login shell itself, store empty; compare
   // by basename: the cmdline may carry the full path (/bin/bash)
   base := ExtractFileName(FirstWordOf(cmdline));
