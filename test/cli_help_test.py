@@ -244,6 +244,91 @@ if manifest_failures:
 check('every main page contains its complete public contract',
       not manifest_failures)
 
+# The short SSH guide is an executable handoff contract for human and AI
+# operators. Keep it discoverable, keep every local reference resolvable, and
+# reject examples which drift away from the real administrative command set.
+quickstart_path = os.path.join(ROOT, 'docs', 'SSH_QUICKSTART.md')
+readme_path = os.path.join(ROOT, 'README.md')
+ssh_reference_path = os.path.join(ROOT, 'docs', 'SSH_SERVER.md')
+try:
+    with open(quickstart_path, encoding='utf-8') as stream:
+        ssh_quickstart = stream.read()
+    with open(readme_path, encoding='utf-8') as stream:
+        project_readme = stream.read()
+    with open(ssh_reference_path, encoding='utf-8') as stream:
+        ssh_reference = stream.read()
+except OSError as exc:
+    print('  SSH quick-start read failure:', exc)
+    ssh_quickstart = ''
+    project_readme = ''
+    ssh_reference = ''
+
+quickstart_contract = (
+    'Required inputs',
+    'Safety contract for an AI or automated operator',
+    'Read-only preflight',
+    'sha256sum -c superterm_4.2.1_amd64.deb.sha256',
+    'sudo apt-get install -y openssh-server',
+    'sudo dnf install -y openssh-server',
+    'sudo pacman -S --needed openssh',
+    'superterm --version',
+    'sudo superterm ssh-server setup',
+    'sudoedit /etc/superterm/sshd/server.ini',
+    'listen=192.168.0.214:8022',
+    'password_authentication=0',
+    'managed_authorized_keys=1',
+    'user_authorized_keys=0',
+    'sudo superterm ssh-server authorize german',
+    'sudo superterm ssh-server check',
+    'sudo superterm ssh-server restart',
+    'sudo superterm ssh-server status',
+    'ssh -p 8022 german@192.168.0.214',
+    'Never copy, display, log, or upload a private key',
+    'sudo test ! -e /etc/ssh/sshrc',
+    "sudo ss -H -ltn 'sport = :8022'",
+    'StrictHostKeyChecking=yes',
+    'Never use `StrictHostKeyChecking=no`',
+    'is **not** an allow-list',
+    '/etc/systemd/system/superterm-sshd.service',
+    'ssh-keygen -l -E sha256 -f',
+    'Test from a different client machine',
+    'Required completion report',
+    'not modified',
+)
+missing_quickstart = [token for token in quickstart_contract
+                      if token not in ssh_quickstart]
+if missing_quickstart:
+    print('  SSH quick-start missing contract:', missing_quickstart)
+check('AI SSH quick-start preserves its complete safe workflow',
+      not missing_quickstart)
+check('AI SSH quick-start is linked from both documentation entrances',
+      'docs/SSH_QUICKSTART.md' in project_readme and
+      'SSH_QUICKSTART.md' in ssh_reference)
+
+quickstart_links = re.findall(r'\]\(([^)]+\.md)(?:#[^)]+)?\)',
+                              ssh_quickstart)
+broken_quickstart_links = [
+    target for target in quickstart_links
+    if not os.path.isfile(os.path.normpath(os.path.join(
+        os.path.dirname(quickstart_path), target)))
+]
+if broken_quickstart_links:
+    print('  SSH quick-start broken links:', broken_quickstart_links)
+check('every AI SSH quick-start Markdown reference resolves',
+      bool(quickstart_links) and not broken_quickstart_links)
+
+quickstart_admin_commands = set(re.findall(
+    r'(?:sudo )?superterm ssh-server ([a-z][a-z-]*)', ssh_quickstart))
+public_admin_commands = {
+    'setup', 'check', 'restart', 'status', 'enable', 'disable',
+    'uninstall-service', 'authorize', 'list-keys', 'revoke',
+}
+check('AI SSH quick-start uses only public SSH administration commands',
+      quickstart_admin_commands and
+      quickstart_admin_commands <= public_admin_commands and
+      all(command in english_pages['ssh-server'].stdout
+          for command in quickstart_admin_commands))
+
 # Every executable command alias resolves through all three public help paths
 # and publishes the exact canonical page, never a marker-only partial page.
 command_aliases = {
