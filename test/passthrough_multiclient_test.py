@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Raw F5 is shared only when every attached host has the same geometry.
+"""Raw fullscreen is shared only when every attached host has the same geometry.
 
 The daemon broadcasts each PTY output frame to every viewer, so equal-sized
 clients can all preserve the byte-for-byte fullscreen path. A mixed-size set
 cannot safely map one canonical terminal byte stream onto every physical
 surface; all viewers then use the synchronized renderer at the smallest common
-viewport. Leaving F5 restores the normal canonical desktop, which a smaller
+viewport. Leaving fullscreen restores the normal canonical desktop, which a smaller
 host continues to crop deterministically.
 
 An unknown OSC 777 is the transport oracle. Raw passthrough preserves it,
@@ -106,22 +106,22 @@ try:
     check('equal-size attach leaves windowed PTY',
           pane_size(same_home, same_session) == (96, 25))
 
-    os.write(same_a.fd, b'\x1b[15~')
+    os.write(same_a.fd, stlib.FULLSCREEN_CHORD)
     drain_all(same_clients, 1.5)
-    check('equal-size F5 uses whole canonical terminal',
+    check('equal-size fullscreen uses whole canonical terminal',
           pane_size(same_home, same_session) == (100, 30))
     same_chunks, same_osc = send_raw_oracle(
         same_a, same_clients, b'RAW_F5_SAME_GEOMETRY')
-    check('equal-size F5 is raw in actor and observer',
+    check('equal-size fullscreen is raw in actor and observer',
           all(same_osc in same_chunks[client] for client in same_clients))
-    check('equal-size raw F5 hides the IDE in both',
+    check('equal-size raw fullscreen hides the IDE in both',
           all('Detach' not in client.text() for client in same_clients))
 
-    os.write(same_b.fd, b'\x1b[15~')
+    os.write(same_b.fd, stlib.FULLSCREEN_CHORD)
     drain_all(same_clients, 1.3)
-    check('shared F5 exit restores both IDEs',
+    check('shared fullscreen exit restores both IDEs',
           all('Detach' in client.text() for client in same_clients))
-    check('shared F5 exit restores windowed PTY',
+    check('shared fullscreen exit restores windowed PTY',
           pane_size(same_home, same_session) == (96, 25))
 finally:
     if same_b is not None:
@@ -148,16 +148,16 @@ try:
           pane_size(mixed_home, mixed_session) == (116, 31))
     check('smaller host initially crops shared frame', frame_right(small) == -1)
 
-    os.write(large.fd, b'\x1b[15~')
+    os.write(large.fd, stlib.FULLSCREEN_CHORD)
     drain_all(mixed_clients, 1.5)
     # Fullscreen uses one renderer grid that fits every host. The normal
-    # 120x36 desktop remains saved for F5-out, while the live PTY temporarily
+    # 120x36 desktop remains saved for fullscreen-out, while the live PTY temporarily
     # adopts the smallest common 70x22 viewport.
-    check('mixed-size F5 uses common safe viewport',
+    check('mixed-size fullscreen uses common safe viewport',
           pane_size(mixed_home, mixed_session) == (70, 22))
     mixed_chunks, mixed_osc = send_raw_oracle(
         large, mixed_clients, b'GRID_F5_MIXED_GEOMETRY')
-    check('mixed-size F5 uses renderer in both clients',
+    check('mixed-size fullscreen uses renderer in both clients',
           all(mixed_osc not in mixed_chunks[client]
               for client in mixed_clients))
 
@@ -179,11 +179,11 @@ try:
           all(client.alive() for client in mixed_clients) and
           pane_size(mixed_home, mixed_session) == (70, 22))
 
-    os.write(small.fd, b'\x1b[15~')
+    os.write(small.fd, stlib.FULLSCREEN_CHORD)
     drain_all(mixed_clients, 1.3)
-    check('mixed-size F5 exit restores large frame', frame_right(large) == 117)
-    check('mixed-size F5 exit keeps safe crop', frame_right(small) == -1)
-    check('mixed-size F5 exit restores canonical PTY',
+    check('mixed-size fullscreen exit restores large frame', frame_right(large) == 117)
+    check('mixed-size fullscreen exit keeps safe crop', frame_right(small) == -1)
+    check('mixed-size fullscreen exit restores canonical PTY',
           pane_size(mixed_home, mixed_session) == (116, 31))
 finally:
     if small is not None:

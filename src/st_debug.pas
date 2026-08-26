@@ -60,8 +60,8 @@ procedure DumpNow(const AReason: string);
 implementation
 
 uses
-  SysUtils, ctypes, st_os
-  {$IFDEF UNIX}, BaseUnix{$ENDIF}
+  SysUtils, st_os
+  {$IFDEF UNIX}, ctypes, BaseUnix{$ENDIF}
   {$IFDEF WINDOWS}, Windows{$ENDIF}
   {$IFDEF SUPERTERM_HEAPTRACE}, HeapTrc{$ENDIF};
 
@@ -255,12 +255,20 @@ end;
 
 procedure DebugLog(const S: string);
 var
-  Line: string;
+  Line, ThreadId: string;
 begin
   if System.InterlockedCompareExchange(ResolveState, 1, 1) = 0 then
     DebugActive;
+  {$IFDEF DARWIN}
+  // The BSD RTL models pthread_t as a pointer.  Formatting that native type
+  // directly avoids the non-portable pointer-to-ordinal cast diagnosed by
+  // FPC on Apple Silicon.
+  ThreadId := Format('%p', [GetThreadID]);
+  {$ELSE}
+  ThreadId := UIntToStr(QWord(System.GetThreadID));
+  {$ENDIF}
   Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' [' + IntToStr(OsGetPid) +
-    ' ' + Role + ' tid=' + UIntToStr(QWord(System.GetThreadID)) + '] ' + S;
+    ' ' + Role + ' tid=' + ThreadId + '] ' + S;
   EnterCriticalsection(Lock);
   try
     RingAdd(Line);

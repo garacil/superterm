@@ -158,7 +158,7 @@ stable clients are released concurrently by a barrier while the fourth client
 detaches; the test requires complete writes, non-empty and converged layouts,
 an observable minimized/zoomed or changed-frame state, and a one-to-one,
 monotonic enqueue/dequeue trace from the global command FIFO. Visible resize,
-circle and F5 phases additionally require the exact target pane lock, exact
+circle and fullscreen phases additionally require the exact target pane lock, exact
 final geometry, canonical PTY markers and identical rendering in every client.
 Pane and icon identity is title-keyed and preserves multiplicity, so a stale
 duplicate drawing cannot disappear inside a set comparison. The oracle treats

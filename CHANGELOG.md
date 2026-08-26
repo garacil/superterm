@@ -1,5 +1,129 @@
 # Changelog
 
+## 4.2.1 - 2026-08
+
+### Original copyleft alien-hacker desktop artwork
+
+The legacy `goody.art` compatibility slot now contains an original alien
+hacker created for SuperTerm instead of the Opera Soft loading screen. Its
+checked-in RGBA source is distributed with the project under GPLv3, and fades
+to transparency on all four edges. The deterministic background generator
+turns that alpha gradient into ordered cell dithering, so the picture dissolves
+into any desktop colour without a hard rectangular slab. Existing profiles
+keep working because the installed filename and configuration identifier do
+not change. An optional bounded logical-width field preserves the full 128x46
+transparent canvas without trailing whitespace; regression coverage rebuilds
+all generated backgrounds and asks the real Pascal loader for that geometry.
+
+### Standard SSH clients can open SuperTerm over encrypted TCP
+
+SuperTerm can now publish its interactive UI through a dedicated instance of
+the system OpenSSH server. A normal client connects with a normal command,
+for example `ssh -p 8022 user@server`; OpenSSH provides the TCP listener,
+cryptography, Unix-account authentication, PAM and the outer PTY, then a
+restricted `ForceCommand` starts the regular SuperTerm client. From there the
+existing private Unix-socket protocol attaches to exactly the same session
+daemon as a local client. A network loss, terminal close or Detach therefore
+removes only that viewer and the live desktop remains available for reattach.
+
+This TCP listener is deliberately independent of the host's ordinary SSH
+service. It has its own process, service, addresses, ports and PID. Its
+configuration, host key and managed public-key store live under
+`/etc/superterm/sshd`; setup never edits `/etc/ssh/sshd_config`, replaces the
+normal host keys, restarts the normal `sshd` or takes port 22. The two
+listeners may run together, using the same installed and audited OpenSSH
+binary. The dedicated instance may accept PAM-backed passwords, centrally
+managed public keys and/or each account's existing `authorized_keys`; root is
+public-key-only and must be enabled explicitly.
+
+The service is configured with an explicit list of TCP interfaces and ports
+and is administered through idempotent `ssh-server setup`, `check`, `enable`,
+`disable`, `restart`, `status`, `authorize`, `list-keys`, `revoke` and
+`uninstall-service` commands. Candidate configurations are published
+atomically only after both SuperTerm's checks and the installed `sshd -t/-T`
+accept them; failed service updates roll back. systemd and launchd use the
+same source-level policy and keep all persistent service state across package
+updates.
+
+The entry is intentionally an interactive SuperTerm service, not a second
+general-purpose shell service: UDP, remote commands, sessions without a PTY,
+SFTP/SCP, subsystems, forwarding, X11, agent forwarding and client-supplied
+environment are not supported. Keep the ordinary `sshd` for those facilities.
+The complete security boundary, authentication matrix, installation and
+diagnostic procedure is documented in `docs/SSH_SERVER.md`.
+
+### Sessions and profiles can be created safely at runtime
+
+The Sessions menu can create another named session at any time and asks which
+profile supplies its initial desktop, including an explicit empty choice. The
+Profiles manager can likewise create an empty profile before any panes exist.
+Profile and class catalog updates now use a process-safe lock, generation
+checks and atomic file replacement, so concurrent clients either observe one
+complete update or receive a real conflict instead of overwriting one another.
+
+An SSH entry routes each account to its last live SSH session by default, or
+to the configured default session/profile chain. The first connection uses a
+per-user session lock so simultaneous logins attach to one published daemon
+rather than starting duplicate desktops. Reconnecting receives the exact live
+shared geometry, panes, focus and terminal contents already owned by that
+daemon.
+
+### Process ownership and network backpressure are hardened
+
+The detached daemon is now the real parent and reaper of the initial panes,
+including panes created by the first SSH client. PTY spawning has a bounded,
+nonblocking result channel and validates process birth identity before any
+signal; shutdown and test cleanup cannot target a reused PID or process group.
+Daemon startup uses an isolated double-fork/`setsid` path, cancellation cleans
+partially published sockets, and dead pane children are reaped without
+blocking the session reactor. A deliberately empty desktop remains live for
+later pane creation.
+
+Every viewer also has a bounded nonblocking output queue. A client which
+stops reading can be disconnected independently without stalling panes,
+other clients or the global command FIFO. Discovery sidecars and mutable
+configuration are written with validated ownership and atomic replacement on
+GNU/Linux and macOS.
+
+### Fullscreen no longer consumes physical F5
+
+Fullscreen/restore moved to the configurable `prefix f` chord (`Ctrl-Q f` by
+default), which is safe inside browser-hosted terminals. Physical F5 is now
+delivered to the focused pane during normal input and raw passthrough. The
+status line, menus, help, nested-SuperTerm forwarding and shared-client
+animation path all use the same binding; Exit is no longer exposed on the
+status bar, leaving Detach as the safe everyday action.
+
+### Contextual command-line help is a complete navigable reference
+
+`superterm --help` is now an index whose topic links lead to dedicated pages
+for startup, targets, sessions, pane I/O, every window operation, standard SSH
+clients, dedicated SSH administration and automation details. Every page gives
+the exact syntax, accepted aliases and options, behavior, limits and copyable
+examples; `--help all` emits the full deterministic plain-text reference for
+people, scripts and AI agents.
+
+`--help TOPIC`, `help TOPIC` and `COMMAND --help` use the same implementation,
+including all English and Spanish aliases. Help never attaches, enters the TUI,
+requires root or mutates user/service state; unknown topics return usage status 2.
+The parser and reference now agree on the documented `--no-enter` and
+`--sin-intro` forms, while a literal `help` or `--help` after `send --` remains
+terminal input. A black-box index crawler checks every page and alias, compares
+release/test output, validates deterministic formatting and proves the input
+semantics against a real detached session.
+
+### Release and regression boundaries are explicit
+
+The administrative path overrides used by SSH tests exist only in the
+separate, non-installed `bin/superterm-test`; the release binary rejects them
+even when run as root. The suite now covers configuration publication,
+authentication policy, standard OpenSSH transport, uninstall preservation,
+session first-creation races, concurrent profile edits, daemon/PID identity,
+PTY spawn failure, pane reaping and stalled-client backpressure. CI builds and
+tests the shared implementation on GNU/Linux and both macOS architectures,
+then exercises a real isolated OpenSSH listener in a privileged disposable
+fixture.
+
 ## 3.5.2 - 2026-08
 
 One live session is now exactly one shared desktop.  The daemon owns the

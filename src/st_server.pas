@@ -152,7 +152,7 @@ const
   //     individual close events, so every viewer applies Close all inside
   //     one visual transaction even at the socket drain budget boundary.
   // 12: clients publish their physical host dimensions. A deliberate host
-  //     resize can atomically replace the canonical desktop; F5 may use raw
+  //     resize can atomically replace the canonical desktop; fullscreen may use raw
   //     passthrough for several viewers only when every host has the same
   //     geometry, otherwise it uses the smallest common viewport.
   // 13: host compatibility is an independent event. It reaches every ready
@@ -184,6 +184,9 @@ const
   // accepted sockets which have not become interactive clients: handshakes
   // and one-shot control requests. They never consume an interactive slot.
   MAX_PENDING_CONNECTIONS = 16;
+  // Explicit pane closes never wait in the socket reactor. SIGKILLed direct
+  // children stay in this small bounded reap set until waitpid(WNOHANG).
+  MAX_RETIRED_CHILDREN = 256;
   // hard cap on the per-client output buffer (immediate disconnect)
   MAX_EGRESS = 8 * 1024 * 1024;
   // lagging client: high pending with no progress at all during the
@@ -192,7 +195,17 @@ const
   LAG_GRACE_MS = 10000;
   FIRST_FRAME_TIMEOUT_MS = 1000;
   LAYOUT_LOCK_REPLY_TIMEOUT_MS = 2000;
+  LAYOUT_LOCK_REPLY_POLL_MS = 100;
+  LAYOUT_LOCK_REPLY_POLLS =
+    LAYOUT_LOCK_REPLY_TIMEOUT_MS div LAYOUT_LOCK_REPLY_POLL_MS;
   CONTROL_IDLE_TIMEOUT_MS = 5000;
+  // A local listener must not be able to park an attaching UI forever after
+  // accept().  Handshake I/O uses non-blocking send/recv and spends one fixed
+  // poll attempt only when no byte can progress.  This deliberately avoids
+  // GetTickCount64: FPC 3.2.2 implements it with gettimeofday on Darwin.
+  ATTACH_IO_POLL_MS = 100;
+  ATTACH_IO_WAIT_POLLS = 300;
+  CONNECT_WAIT_POLLS = 30;
   IO_BUDGET = 256 * 1024;
   FRAME_BUDGET = 32;
   ACCEPT_BUDGET = 8;
@@ -201,6 +214,12 @@ const
   // normal live egress queue, but it is still bounded so one local peer cannot
   // make the daemon allocate until the process is killed by the OS.
   MAX_SNAPSHOT_EGRESS = 256 * 1024 * 1024;
+  // The interactive client must obey the same rule as the daemon: no peer
+  // may stop reading and park the UI thread in send(2).  Complete frames are
+  // queued atomically up to this bound and drained with MSG_DONTWAIT.
+  CLIENT_EGRESS_LIMIT = MAX_EGRESS;
+  CLIENT_CLOSE_POLL_MS = 100;
+  CLIENT_CLOSE_WAIT_POLLS = 15;
 
   // Workers feed the socket reactor through a bounded in-process queue. If
   // the main reactor is busy producing a snapshot/capture, a full queue
@@ -302,6 +321,8 @@ type
     FHostSummaryValid: boolean;
     FInBuf: RawByteString;
     FInPos: integer;
+    FOutBuf: RawByteString;
+    FOutPos: integer;
     FPeerClosed: boolean;
     FNextLayoutLockRequest: QWord;
     FNextPreviewId: QWord;
@@ -320,6 +341,9 @@ type
       const AData: TByteArray; out AEvent: TSessionEvent): boolean;
     procedure QueueEvent(const AEvent: TSessionEvent);
     function PopQueuedEvent(out AEvent: TSessionEvent): boolean;
+    function FlushOutgoing: boolean;
+    function FlushOutgoingBounded(var AWaitPolls: integer): boolean;
+    function OutputPending: boolean;
     procedure CloseSocket;
   public
     constructor Create;
@@ -414,12 +438,16 @@ type
   // data callback for control requests with chunked replies
   TCtlDataProc = procedure(const AChunk: TByteArray) of object;
 
-  // A fork has three materially different outcomes.  In the parent a live
-  // daemon can be attached; in the child the daemon has already run to
-  // completion and the inherited application must only unwind; a failure
-  // leaves the parent in its original local mode.
+  // One process-wide namespace protects publication/removal of a named
+  // session. Busy is retryable; Error means the lock path itself was not a
+  // safe regular file or another non-contention syscall failed.
+  TSessionNameLockResult = (snlAcquired, snlBusy, snlError);
+
+  // A fork has four materially different outcomes. A pre-transfer failure
+  // leaves the parent in local mode; dssOwnershipLost means the child had
+  // already adopted the PTYs and the parent must abandon its duplicates.
   TDetachedServerStartResult = (dssFailed, dssParentStarted,
-    dssChildFinished);
+    dssOwnershipLost, dssChildFinished);
   TDetachedServerChildHook = procedure of object;
 
 // simple control request (OK/ERR): connects, sends one frame, waits for
@@ -431,6 +459,12 @@ function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
 // each FRAME_CTL_DATA through the callback until FRAME_CTL_END
 function CtlStream(const ASocket: string; AKind: byte; APane: integer;
   const APayload: TByteArray; AOnData: TCtlDataProc): boolean;
+
+// Shared by ordinary startup and the restricted SSH entry. A held lock is
+// deliberately process-global so the two paths never open/close independent
+// POSIX record-lock descriptors for the same session.
+function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
+procedure ReleaseHeldSessionNameLock;
 
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
@@ -466,6 +500,10 @@ var
   AttachRequested: boolean = False;
   AttachSocket: string = '';   // socket resolved by the CLI ('' = selector)
   CliSessionName: string = ''; // name requested with --session/--sesion
+  // Set only by the restricted OpenSSH ForceCommand entry point.  The UI
+  // then bypasses interactive startup selection and always materialises the
+  // exact configured default session (which may legitimately have no panes).
+  SshEntryMode: boolean = False;
   // Fork gives each process its own copy.  Only the daemon child sets this
   // after Run has returned; the program block then finalizes Pascal units
   // once and leaves through the raw Unix exit instead of inherited atexit
@@ -475,6 +513,36 @@ var
 implementation
 
 {$IFDEF UNIX}
+const
+  SESSION_CREATE_WAIT_MS = 30000;
+  SESSION_CREATE_RETRY_MS = 25;
+  // FPC 3.2.2 exposes struct flock/F_SETLK but not these platform values.
+  {$ifdef linux}
+  SESSION_F_WRLCK = 1;
+  {$else}
+  SESSION_F_WRLCK = 3;
+  {$endif}
+
+var
+  HeldSessionNameLockFD: cint = -1;
+  HeldSessionNameLockName: string = '';
+
+function SessionStartupTestStage(const AStage: string): boolean;
+begin
+  Result := (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+    SameText(GetEnvironmentVariable('SUPERTERM_TEST_DAEMON_STAGE'), AStage);
+end;
+
+function SessionStartupPollAttempts: integer;
+var
+  V: integer;
+begin
+  Result := SESSION_CREATE_WAIT_MS div 100;
+  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     TryStrToInt(GetEnvironmentVariable('SUPERTERM_TEST_STARTUP_POLLS'), V) and
+     (V >= 1) and (V <= Result) then
+    Result := V;
+end;
 
 type
   TFrameHeader = packed record
@@ -598,11 +666,20 @@ type
     FTerms: array[0..MAX_PANES - 1] of string;
     FSocketPath: string;
     FMetaPath: string;
+    FPidIdentity: string;
     FName: string;
     FProfile: string;
     FListener: cint;
+    // Set only after the listener exists and the child hook has relinquished
+    // the inherited UI. Before that edge, destructor must not touch objects
+    // which the parent still owns.
+    FOwnsPanes: boolean;
+    FSocketDev, FSocketIno: QWord;
+    FSocketIdentityValid: boolean;
     FClients: array[0..MAX_CLIENTS - 1] of TClientConn;
     FPending: array[0..MAX_PENDING_CONNECTIONS - 1] of TPendingConn;
+    FRetiredChildren: array[0..MAX_RETIRED_CHILDREN - 1] of TPid;
+    FRetiredChildCount: integer;
     FCommandQueue: array[0..COMMAND_QUEUE_SLOTS - 1] of TQueuedCommand;
     FCommandHead: integer;
     FCommandCount: integer;
@@ -629,6 +706,7 @@ type
     FEmptySince: QWord;               // tick with no clients or live panes
     FLastTitleTick: QWord;            // periodic title derivation
     FPaneLocks: array[0..MAX_PANES - 1] of TRTLCriticalSection;
+    FPaneLocksInitialized: integer;
     FWorkers: array[0..MAX_PANES - 1] of TPanePollWorker;
     FWorkerCount: integer;
     FAvailableCPUs: integer;
@@ -636,12 +714,14 @@ type
     FThreadLimit: integer;            // effective total, CPU/pane capped
     FWorkerResultPipe: TFilDes;
     FWorkerResultLock: TRTLCriticalSection;
+    FWorkerResultLockInitialized: boolean;
     FWorkerResultSpace: PRTLEvent;
     FWorkerResults: array[0..WORKER_RESULT_SLOTS - 1] of TWorkerResult;
     FWorkerResultHead: integer;
     FWorkerResultCount: integer;
     FWorkerResultBytes: integer;
     function CreateListener: boolean;
+    function OwnsSocketPath: boolean;
     function AttachedCount: integer;
     function HasLegacyClient: boolean;
     procedure ClientSizeSummary(out AMinW, AMinH: Longint;
@@ -708,6 +788,8 @@ type
     function SpawnPaneForSpec(const AClass, ACmd, ACwd: string;
       var ACols, ARows: integer; out APty: TPty; out ATerm: string;
       out ADefTitle: string): boolean;
+    function SpawnInitialPanes: boolean;
+    procedure TrackRetiredChild(APid: TPid);
     procedure ReapChildren;
     function HandleAttach(APendingIdx: integer; AFirstKind: byte;
       const AFirstData: TByteArray): boolean;
@@ -740,6 +822,8 @@ type
       AFocused: integer; const AGeom: TPaneGeomArray;
       ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray);
     destructor Destroy; override;
+    function PrepareListener: boolean;
+    procedure AdoptPanes;
     procedure Run(var AReadyFd: cint);
   end;
 
@@ -756,6 +840,123 @@ begin
   if (Result > 0) and
      ((P.revents and (AEvents or POLLERR or POLLHUP or POLLNVAL)) = 0) then
     Result := 0;
+end;
+
+function AttachIoWaitPolls: integer;
+var
+  S: string;
+  V: integer;
+begin
+  Result := ATTACH_IO_WAIT_POLLS;
+  // Fault-injection tests need a short deterministic bound.  The override is
+  // inert unless the explicit test guard is present and cannot weaken a real
+  // installation accidentally.
+  if GetEnvironmentVariable('SUPERTERM_TESTING') <> '1' then
+    Exit;
+  S := GetEnvironmentVariable('SUPERTERM_TEST_ATTACH_POLLS');
+  if TryStrToInt(S, V) and (V >= 1) and (V <= ATTACH_IO_WAIT_POLLS) then
+    Result := V;
+end;
+
+function WaitSocketReady(AFd: cint; AEvents: cshort;
+  var AWaitPolls: integer): boolean;
+var
+  P: TPollFD;
+  N, E: cint;
+begin
+  Result := False;
+  while AWaitPolls > 0 do
+  begin
+    Dec(AWaitPolls);
+    P := Default(TPollFD);
+    P.fd := AFD;
+    P.events := AEvents;
+    N := fpPoll(@P, 1, ATTACH_IO_POLL_MS);
+    if N > 0 then
+    begin
+      if (P.revents and POLLNVAL) <> 0 then
+        Exit;
+      // POLLHUP/POLLERR are returned as ready deliberately: the following
+      // send/recv obtains the definitive EOF or socket error without another
+      // wait.  POLLIN/POLLOUT are the ordinary progress path.
+      Exit((P.revents and (AEvents or POLLHUP or POLLERR)) <> 0);
+    end;
+    if N = 0 then
+      Continue;
+    E := FpGetErrNo;
+    if E <> ESysEINTR then
+      Exit;
+  end;
+end;
+
+function WriteFullTimed(AFd: cint; const Buffer; ASize: integer;
+  var AWaitPolls: integer): boolean;
+var
+  P: PByte;
+  Left, N, E: integer;
+begin
+  Result := False;
+  if ASize < 0 then
+    Exit;
+  if ASize = 0 then
+    Exit(True);
+  P := @Buffer;
+  Left := ASize;
+  while Left > 0 do
+  begin
+    N := fpSend(AFd, P, Left, ST_MSG_DONTWAIT);
+    if N > 0 then
+    begin
+      Inc(P, N);
+      Dec(Left, N);
+      Continue;
+    end;
+    if N = 0 then
+      Exit;
+    E := FpGetErrNo;
+    if E = ESysEINTR then
+      Continue;
+    if (E <> ESysEAGAIN) and (E <> ESysEWOULDBLOCK) then
+      Exit;
+    if not WaitSocketReady(AFd, POLLOUT, AWaitPolls) then
+      Exit;
+  end;
+  Result := True;
+end;
+
+function ReadFullTimed(AFd: cint; var Buffer; ASize: integer;
+  var AWaitPolls: integer): boolean;
+var
+  P: PByte;
+  Left, N, E: integer;
+begin
+  Result := False;
+  if ASize < 0 then
+    Exit;
+  if ASize = 0 then
+    Exit(True);
+  P := @Buffer;
+  Left := ASize;
+  while Left > 0 do
+  begin
+    N := fpRecv(AFd, P, Left, ST_MSG_DONTWAIT);
+    if N > 0 then
+    begin
+      Inc(P, N);
+      Dec(Left, N);
+      Continue;
+    end;
+    if N = 0 then
+      Exit;
+    E := FpGetErrNo;
+    if E = ESysEINTR then
+      Continue;
+    if (E <> ESysEAGAIN) and (E <> ESysEWOULDBLOCK) then
+      Exit;
+    if not WaitSocketReady(AFd, POLLIN, AWaitPolls) then
+      Exit;
+  end;
+  Result := True;
 end;
 
 // close-on-exec on a descriptor the daemon owns. Without it every socket --
@@ -976,9 +1177,12 @@ var
 begin
   Result := False;
   S := '';
+  if Stream.Position + SizeOf(L) > Stream.Size then
+    Exit;
   L := Default(Longint);
   Stream.ReadBuffer(L, SizeOf(L));
-  if (L < 0) or (L > 1024 * 1024) then
+  if (L < 0) or (L > MAX_WIRE_STRING_SIZE) or
+     (Stream.Position + L > Stream.Size) then
     Exit;
   SetLength(S, L);
   if L > 0 then
@@ -1065,6 +1269,48 @@ begin
   Result := True;
 end;
 
+function WriteFrameToTimed(AFd: cint; AKind: byte; APane: integer;
+  const Data: TByteArray; var AWaitPolls: integer): boolean;
+var
+  H: TFrameHeader;
+begin
+  if Length(Data) > MAX_FRAME_SIZE then
+    Exit(False);
+  H := Default(TFrameHeader);
+  H.Kind := AKind;
+  H.Pane := APane;
+  H.Size := Length(Data);
+  Result := WriteFullTimed(AFd, H, SizeOf(H), AWaitPolls);
+  if Result and (Length(Data) > 0) then
+    Result := WriteFullTimed(AFd, Data[0], Length(Data), AWaitPolls);
+end;
+
+function ReadFrameFromTimed(AFd: cint; out AKind: byte; out APane: integer;
+  out Data: TByteArray; var AWaitPolls: integer): boolean;
+var
+  H: TFrameHeader;
+begin
+  Result := False;
+  AKind := 0;
+  APane := -1;
+  Data := nil;
+  H := Default(TFrameHeader);
+  if not ReadFullTimed(AFd, H, SizeOf(H), AWaitPolls) then
+    Exit;
+  if H.Size > MAX_FRAME_SIZE then
+    Exit;
+  AKind := H.Kind;
+  APane := H.Pane;
+  SetLength(Data, H.Size);
+  if (H.Size > 0) and
+     (not ReadFullTimed(AFd, Data[0], H.Size, AWaitPolls)) then
+  begin
+    Data := nil;
+    Exit;
+  end;
+  Result := True;
+end;
+
 function SocketAddress(const Path: string; out Addr: TUnixSockAddr;
   out AddrLen: TSockLen): boolean;
 begin
@@ -1083,6 +1329,9 @@ function ConnectSocket(const APath: string): cint;
 var
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
+  Flags, N, E, SocketError: cint;
+  ErrorLen: TSockLen;
+  WaitPolls: integer;
 begin
   Result := -1;
   if not SocketAddress(APath, Addr, AddrLen) then
@@ -1090,7 +1339,43 @@ begin
   Result := fpSocket(AF_UNIX, SOCK_STREAM, 0);
   if Result < 0 then
     Exit;
-  if fpConnect(Result, @Addr, AddrLen) <> 0 then
+  SetCloExec(Result);
+  Flags := FpFcntl(Result, F_GETFL, 0);
+  if (Flags < 0) or
+     (FpFcntl(Result, F_SETFL, Flags or O_NONBLOCK) < 0) then
+  begin
+    FpClose(Result);
+    Result := -1;
+    Exit;
+  end;
+  N := fpConnect(Result, @Addr, AddrLen);
+  if N <> 0 then
+  begin
+    E := FpGetErrNo;
+    if (E <> ESysEINPROGRESS) and (E <> ESysEINTR) then
+    begin
+      FpClose(Result);
+      Result := -1;
+      Exit;
+    end;
+    WaitPolls := CONNECT_WAIT_POLLS;
+    if not WaitSocketReady(Result, POLLOUT, WaitPolls) then
+    begin
+      FpClose(Result);
+      Result := -1;
+      Exit;
+    end;
+    SocketError := 0;
+    ErrorLen := SizeOf(SocketError);
+    if (fpGetSockOpt(Result, SOL_SOCKET, SO_ERROR, @SocketError,
+       @ErrorLen) <> 0) or (SocketError <> 0) then
+    begin
+      FpClose(Result);
+      Result := -1;
+      Exit;
+    end;
+  end;
+  if FpFcntl(Result, F_SETFL, Flags) < 0 then
   begin
     FpClose(Result);
     Result := -1;
@@ -1201,6 +1486,72 @@ begin
     SetLength(Result, 64);
   if Result = '' then
     Result := 'sesion';
+end;
+
+// Session names are a process-wide creation namespace. Keep exactly one
+// descriptor per process: traditional POSIX record locks are process-owned,
+// and closing *any* descriptor for the inode can release every lock that
+// process holds on it. The SSH entry may already own this descriptor while
+// it constructs the first profile, so StartDetachedServer reuses it.
+function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
+var
+  Region: flock;
+  LockPath: string;
+  St: Stat;
+  ErrNo: cint;
+begin
+  if HeldSessionNameLockFD >= 0 then
+  begin
+    if HeldSessionNameLockName = SanitizeSessionName(AName) then
+      Exit(snlAcquired)
+    else
+      Exit(snlError);
+  end;
+  Result := snlError;
+  LockPath := SessionsDir + '/.create-' + SanitizeSessionName(AName) + '.lock';
+  // Open_NoFollow closes the final-component symlink race. The parent sessions
+  // directory is private (0700); fstat still validates an existing inode so
+  // a FIFO/device or same-UID group-writable file can never become a lock.
+  HeldSessionNameLockFD := FpOpen(PAnsiChar(LockPath),
+    O_RDWR or O_CREAT or Open_NoFollow, &600);
+  if HeldSessionNameLockFD < 0 then
+    Exit;
+  St := Default(Stat);
+  if (FpFStat(HeldSessionNameLockFD, St) <> 0) or
+     (not FpS_ISREG(St.st_mode)) or (St.st_uid <> FpGetEUid) or
+     ((St.st_mode and (S_IWGRP or S_IWOTH)) <> 0) or
+     (FpFcntl(HeldSessionNameLockFD,
+       2 {F_SETFD}, 1 {FD_CLOEXEC}) <> 0) then
+  begin
+    FpClose(HeldSessionNameLockFD);
+    HeldSessionNameLockFD := -1;
+    Exit;
+  end;
+  Region := Default(flock);
+  Region.l_type := SESSION_F_WRLCK;
+  Region.l_whence := SEEK_SET;
+  Region.l_start := 0;
+  Region.l_len := 0;
+  repeat
+    if FpFcntl(HeldSessionNameLockFD, F_SETLK, Region) = 0 then
+    begin
+      HeldSessionNameLockName := SanitizeSessionName(AName);
+      Exit(snlAcquired);
+    end;
+    ErrNo := FpGetErrNo;
+  until ErrNo <> ESysEINTR;
+  FpClose(HeldSessionNameLockFD);
+  HeldSessionNameLockFD := -1;
+  if (ErrNo = ESysEACCES) or (ErrNo = ESysEAGAIN) then
+    Result := snlBusy;
+end;
+
+procedure ReleaseHeldSessionNameLock;
+begin
+  if HeldSessionNameLockFD >= 0 then
+    FpClose(HeldSessionNameLockFD);
+  HeldSessionNameLockFD := -1;
+  HeldSessionNameLockName := '';
 end;
 
 function SessionSocketPathFor(const AName: string): string;
@@ -1388,14 +1739,17 @@ function CloseSessionAt(const APath: string): boolean;
 var
   Fd: cint;
   Data: TByteArray;
-  I: integer;
+  I, WaitPolls: integer;
+  Probe: TSocketProbe;
+  St: Stat;
 begin
   Result := False;
   Fd := ConnectSocket(APath);
   if Fd < 0 then
     Exit;
   Data := nil;
-  if not WriteFrameTo(Fd, FRAME_CLOSE, -1, Data) then
+  WaitPolls := AttachIoWaitPolls;
+  if not WriteFrameToTimed(Fd, FRAME_CLOSE, -1, Data, WaitPolls) then
   begin
     FpClose(Fd);
     Exit;
@@ -1405,7 +1759,10 @@ begin
   // (an old daemon ignores the FRAME_CLOSE and stays alive)
   for I := 1 to 20 do
   begin
-    if not SessionIsLive(APath) then
+    Probe := ProbeSocket(APath);
+    St := Default(Stat);
+    if (Probe = spDead) and (FpLStat(RawByteString(APath), St) <> 0) and
+       (FpGetErrNo = ESysENOENT) then
       Exit(True);
     Sleep(100);
   end;
@@ -1418,6 +1775,7 @@ var
   RKind: byte;
   RPane: integer;
   RData: TByteArray;
+  WaitPolls: integer;
 begin
   Result := False;
   AReply := '';
@@ -1425,9 +1783,12 @@ begin
   if Fd < 0 then
     Exit;
   try
-    if not WriteFrameTo(Fd, AKind, APane, APayload) then
+    WaitPolls := AttachIoWaitPolls;
+    if not WriteFrameToTimed(Fd, AKind, APane, APayload,
+       WaitPolls) then
       Exit;
-    if not ReadFrameFrom(Fd, RKind, RPane, RData) then
+    if not ReadFrameFromTimed(Fd, RKind, RPane, RData,
+       WaitPolls) then
       Exit;
     if RKind = FRAME_CTL_OK then
       Result := True
@@ -1445,16 +1806,20 @@ var
   RKind: byte;
   RPane: integer;
   RData: TByteArray;
+  WaitPolls: integer;
 begin
   Result := False;
   Fd := ConnectSocket(ASocket);
   if Fd < 0 then
     Exit;
   try
-    if not WriteFrameTo(Fd, AKind, APane, APayload) then
+    WaitPolls := AttachIoWaitPolls;
+    if not WriteFrameToTimed(Fd, AKind, APane, APayload,
+       WaitPolls) then
       Exit;
     repeat
-      if not ReadFrameFrom(Fd, RKind, RPane, RData) then
+      if not ReadFrameFromTimed(Fd, RKind, RPane, RData,
+         WaitPolls) then
         Exit;   // old daemon closes without replying -> False
       case RKind of
         FRAME_CTL_DATA:
@@ -1649,7 +2014,7 @@ end;
 
 function SuggestSessionName(const ABase: string): string;
 var
-  Base: string;
+  Base, Suffix: string;
   N: integer;
 begin
   Base := SanitizeSessionName(ABase);
@@ -1658,7 +2023,10 @@ begin
   while SessionIsLive(SessionSocketPathFor(Result)) do
   begin
     Inc(N);
-    Result := Base + '-' + IntToStr(N);
+    Suffix := '-' + IntToStr(N);
+    // SanitizeSessionName truncates at 64. Appending to an already 64-byte
+    // base and sanitizing later would therefore probe the same name forever.
+    Result := Copy(Base, 1, 64 - Length(Suffix)) + Suffix;
   end;
 end;
 
@@ -1676,6 +2044,8 @@ begin
   FHostSummaryValid := False;
   FInBuf := '';
   FInPos := 0;
+  FOutBuf := '';
+  FOutPos := 0;
   FPeerClosed := False;
   FNextLayoutLockRequest := 0;
   FNextPreviewId := 0;
@@ -1693,6 +2063,8 @@ begin
   FConnected := False;
   FInBuf := '';
   FInPos := 0;
+  FOutBuf := '';
+  FOutPos := 0;
   FPeerClosed := False;
   FLastPreviewId := 0;
   FLastPreviewTick := 0;
@@ -1706,8 +2078,107 @@ end;
 
 function TSessionClient.SendFrame(AKind: byte; APane: integer;
   const Data: TByteArray): boolean;
+var
+  H: TFrameHeader;
+  AddLen, OldLen, Pending: integer;
 begin
-  Result := FConnected and WriteFrameTo(FSocket, AKind, APane, Data);
+  Result := False;
+  if (not FConnected) or (Length(Data) > MAX_FRAME_SIZE) then
+    Exit;
+  // First consume whatever the kernel accepts now.  MSG_DONTWAIT is per-call
+  // on Linux and Darwin (the FPC sockets unit forwards it directly to libc),
+  // so this remains non-blocking even though the attach handshake restored
+  // the descriptor's ordinary blocking mode.
+  if not FlushOutgoing then
+    Exit;
+  AddLen := SizeOf(H) + Length(Data);
+  Pending := Length(FOutBuf) - FOutPos;
+  if (AddLen > CLIENT_EGRESS_LIMIT) or
+     (Pending > CLIENT_EGRESS_LIMIT - AddLen) then
+    Exit;
+  // Retain a consumed prefix while capacity remains.  Compact only before an
+  // append would take the allocation past its hard cap, keeping a slow-peer
+  // stream linear instead of moving the whole queue after every short send.
+  if (FOutPos > 0) and
+     (Length(FOutBuf) > CLIENT_EGRESS_LIMIT - AddLen) then
+  begin
+    Delete(FOutBuf, 1, FOutPos);
+    FOutPos := 0;
+  end;
+  H := Default(TFrameHeader);
+  H.Kind := AKind;
+  H.Pane := SmallInt(APane);
+  H.Size := Length(Data);
+  OldLen := Length(FOutBuf);
+  SetLength(FOutBuf, OldLen + AddLen);
+  Move(H, FOutBuf[OldLen + 1], SizeOf(H));
+  if Length(Data) > 0 then
+    Move(Data[0], FOutBuf[OldLen + 1 + SizeOf(H)], Length(Data));
+  // A successful return means the complete frame was accepted into the
+  // bounded FIFO; it need not already have reached a deliberately stalled
+  // daemon. Fatal socket errors still fail and disconnect immediately.
+  Result := FlushOutgoing;
+end;
+
+function TSessionClient.OutputPending: boolean;
+begin
+  Result := FOutPos < Length(FOutBuf);
+end;
+
+function TSessionClient.FlushOutgoing: boolean;
+var
+  N: ssize_t;
+  E, Pending, Want, Total: integer;
+begin
+  Result := False;
+  if not FConnected or (FSocket < 0) then
+    Exit;
+  Total := 0;
+  while OutputPending and (Total < IO_BUDGET) do
+  begin
+    Pending := Length(FOutBuf) - FOutPos;
+    Want := Pending;
+    if Want > IO_BUDGET - Total then
+      Want := IO_BUDGET - Total;
+    N := FpSend(FSocket, PAnsiChar(FOutBuf) + FOutPos, Want,
+      ST_MSG_DONTWAIT);
+    if N > 0 then
+    begin
+      Inc(FOutPos, integer(N));
+      Inc(Total, integer(N));
+      Continue;
+    end;
+    if N = 0 then
+    begin
+      CloseSocket;
+      Exit;
+    end;
+    E := FpGetErrNo;
+    if E = ESysEINTR then
+      Continue;
+    if (E = ESysEAGAIN) or (E = ESysEWOULDBLOCK) then
+      Break;
+    CloseSocket;
+    Exit;
+  end;
+  if not OutputPending then
+  begin
+    FOutBuf := '';
+    FOutPos := 0;
+  end;
+  Result := FConnected;
+end;
+
+function TSessionClient.FlushOutgoingBounded(
+  var AWaitPolls: integer): boolean;
+begin
+  Result := FlushOutgoing;
+  while Result and OutputPending do
+  begin
+    if not WaitSocketReady(FSocket, POLLOUT, AWaitPolls) then
+      Exit(False);
+    Result := FlushOutgoing;
+  end;
 end;
 
 function TSessionClient.ReadFrame(out AKind: byte; out APane: integer;
@@ -1851,8 +2322,9 @@ var
   Pane: integer;
   Data: TByteArray;
   Stream: TMemoryStream;
-  I: integer;
+  I, WaitPolls: integer;
   L: Longint;
+  SessionParsed: boolean;
 begin
   Result := False;
   FAttachError := '';
@@ -1882,6 +2354,8 @@ begin
   FHostSummaryValid := False;
   FInBuf := '';
   FInPos := 0;
+  FOutBuf := '';
+  FOutPos := 0;
   FPeerClosed := False;
   FLastPreviewId := 0;
   FLastPreviewTick := 0;
@@ -1895,8 +2369,12 @@ begin
   end;
   FSocket := ConnectSocket(APath);
   if FSocket < 0 then
+  begin
+    FAttachError := 'cannot connect to the session socket';
     Exit;
+  end;
   FConnected := True;
+  WaitPolls := AttachIoWaitPolls;
   // tolerant tail of the ATTACH: version, desktop and capabilities; an
   // old daemon ignores the payload and serves the usual v1 protocol
   Data := nil;
@@ -1917,16 +2395,21 @@ begin
   Move(L, Data[4 * SizeOf(Longint)], SizeOf(L));
   if L > 0 then
     Move(ChainS[1], Data[5 * SizeOf(Longint)], L);
-  if not SendFrame(FRAME_ATTACH, -1, Data) then
+  if not WriteFrameToTimed(FSocket, FRAME_ATTACH, -1, Data,
+     WaitPolls) then
   begin
+    FAttachError := 'session attach request timed out';
     CloseSocket;
     Exit;
   end;
-  if not ReadFrame(Kind, Pane, Data) or (Kind <> FRAME_SESSION) then
+  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
+     (Kind <> FRAME_SESSION) then
   begin
+    FAttachError := 'session did not return a valid snapshot';
     CloseSocket;
     Exit;
   end;
+  SessionParsed := False;
   Stream := TMemoryStream.Create;
   try
     if Length(Data) > 0 then
@@ -2006,8 +2489,14 @@ begin
     FMinHostH := Snapshot.MinHostH;
     FHostSizesMatch := Snapshot.HostSizesMatch;
     FHostSummaryValid := Snapshot.HostSummaryValid;
+    SessionParsed := True;
   finally
     Stream.Free;
+    if not SessionParsed then
+    begin
+      FAttachError := 'session returned a malformed snapshot';
+      CloseSocket;
+    end;
   end;
   // The daemon refuses clients older than itself, but an OLDER daemon happily
   // accepts a newer client and then feeds it cells of the wrong size. Refuse
@@ -2028,16 +2517,19 @@ begin
   end;
   for I := 0 to Snapshot.PaneCount - 1 do
   begin
-    if not ReadFrame(Kind, Pane, Data) or (Kind <> FRAME_SCREEN) or
-       (Pane <> I) then
+    if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
+       (Kind <> FRAME_SCREEN) or (Pane <> I) then
     begin
+      FAttachError := 'session screen snapshot timed out';
       CloseSocket;
       Exit;
     end;
     Snapshot.Panes[I].ScreenData := Copy(Data, 0, Length(Data));
   end;
-  if not ReadFrame(Kind, Pane, Data) or (Kind <> FRAME_READY) then
+  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
+     (Kind <> FRAME_READY) then
   begin
+    FAttachError := 'session did not finish its snapshot';
     CloseSocket;
     Exit;
   end;
@@ -2063,6 +2555,14 @@ begin
     Exit(True);
   if not FConnected then
     Exit;
+  // Sending commands is opportunistic: a daemon that temporarily stops
+  // reading can never stall the UI's Idle loop.  A fatal error is reported
+  // through the same single lost event as a failed read.
+  if not FlushOutgoing then
+  begin
+    Event.Kind := sekLost;
+    Exit(True);
+  end;
   PopResult := PopBufferedFrame(FInBuf, FInPos, Kind, Pane, Data);
   if PopResult = fpReady then
     Exit(DecodeEvent(Kind, Pane, Data, Event));
@@ -2136,9 +2636,13 @@ end;
 function TSessionClient.Detach: boolean;
 var
   Data: TByteArray;
+  WaitPolls: integer;
 begin
   Data := nil;
   Result := SendFrame(FRAME_DETACH, -1, Data);
+  WaitPolls := CLIENT_CLOSE_WAIT_POLLS;
+  if Result then
+    Result := FlushOutgoingBounded(WaitPolls);
   CloseSocket;
 end;
 
@@ -2147,10 +2651,13 @@ var
   Data: TByteArray;
   Buf: array[0..4095] of byte;
   N: ssize_t;
-  Deadline: QWord;
+  I, E, WaitPolls: integer;
 begin
   Data := nil;
   Result := SendFrame(FRAME_CLOSE, -1, Data);
+  WaitPolls := CLIENT_CLOSE_WAIT_POLLS;
+  if Result then
+    Result := FlushOutgoingBounded(WaitPolls);
   if DebugActive then
     DebugLog(Format('client: exit sent=%d', [Ord(Result)]));
   if Result and (FSocket >= 0) then
@@ -2160,18 +2667,22 @@ begin
     // EPIPE; the daemon then dropped this client before reaching the already
     // buffered CLOSE, leaving a zero-viewer session behind.
     FpShutdown(FSocket, 1); // POSIX SHUT_WR
-    Deadline := GetTickCount64 + 1500;
-    repeat
-      if PollFd(FSocket, POLLIN or POLLHUP, 100) > 0 then
+    for I := 1 to CLIENT_CLOSE_WAIT_POLLS do
+    begin
+      if PollFd(FSocket, POLLIN or POLLHUP, CLIENT_CLOSE_POLL_MS) > 0 then
       begin
         N := FpRecv(FSocket, @Buf[0], SizeOf(Buf), ST_MSG_DONTWAIT);
         if N = 0 then
           Break;
-        if (N < 0) and (fpgeterrno <> ESysEINTR) and
-           (fpgeterrno <> ESysEAGAIN) then
-          Break;
+        if N < 0 then
+        begin
+          E := FpGetErrNo;
+          if (E <> ESysEINTR) and (E <> ESysEAGAIN) and
+             (E <> ESysEWOULDBLOCK) then
+            Break;
+        end;
       end;
-    until GetTickCount64 >= Deadline;
+    end;
   end;
   CloseSocket;
 end;
@@ -2268,10 +2779,11 @@ end;
 function TSessionClient.LockLayout(APane: integer): boolean;
 var
   Kind: byte;
-  Pane, WaitMs, K, LastLayoutEvent: integer;
+  Pane, K, LastLayoutEvent, WaitAttempt: integer;
+  PollEvents: cshort;
   Data: TByteArray;
   Event: TSessionEvent;
-  Deadline, NowTick, RequestId, ReplyId, ReplyRevision: QWord;
+  RequestId, ReplyId, ReplyRevision: QWord;
   GotReply, ClosedNow, Granted: boolean;
   PopResult: TFramePop;
 begin
@@ -2290,9 +2802,9 @@ begin
   // grant/deny while preserving every PTY/layout event already ahead of the
   // reply for the normal Idle loop. This never blocks the daemon or another
   // client, and prevents the losing client from mutating then rolling back.
-  Deadline := GetTickCount64 + LAYOUT_LOCK_REPLY_TIMEOUT_MS;
   GotReply := False;
   Granted := False;
+  WaitAttempt := 0;
   repeat
     Data := nil;
     PopResult := PopBufferedFrame(FInBuf, FInPos, Kind, Pane, Data);
@@ -2392,12 +2904,30 @@ begin
       QueueEvent(Event);
       Exit;
     end;
-    NowTick := GetTickCount64;
-    if NowTick >= Deadline then
+    if not FlushOutgoing then
+    begin
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+      QueueEvent(Event);
+      Exit;
+    end;
+    Inc(WaitAttempt);
+    if WaitAttempt > LAYOUT_LOCK_REPLY_POLLS then
       Break;
-    WaitMs := integer(Deadline - NowTick);
-    if PollFd(FSocket, POLLIN or POLLHUP, WaitMs) <= 0 then
-      Break;
+    PollEvents := POLLIN or POLLHUP;
+    if OutputPending then
+      PollEvents := PollEvents or POLLOUT;
+    if PollFd(FSocket, PollEvents, LAYOUT_LOCK_REPLY_POLL_MS) <= 0 then
+      Continue;
+    if OutputPending and (not FlushOutgoing) then
+    begin
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+      QueueEvent(Event);
+      Exit;
+    end;
     ClosedNow := False;
     if not ReadSocketAvailable(FSocket, FInBuf, FInPos, ClosedNow) then
     begin
@@ -2580,20 +3110,54 @@ var
   ServerCfg: TConfig;
 begin
   inherited Create;
+  // TObject.InitInstance zeroes the allocation, but fd 0 is valid and an
+  // RTL synchronisation object must be finalized only after its successful
+  // initialization.  Establish every destructor invariant before the first
+  // operation below which can raise (RTLEventCreate, LoadConfig or pipe).
+  FName := SanitizeSessionName(AName);
+  FProfile := AProfile;
+  FSocketPath := SessionSocketPathFor(FName);
+  FMetaPath := SessionMetaPathFor(FName);
+  // Cache this while the daemon is unquestionably the current process.  All
+  // later sidecar generations must carry the same birth identity even if a
+  // transient process-information query would fail during an update.
+  FPidIdentity := ProcBirthIdentity(FpGetPid);
+  FListener := -1;
+  FOwnsPanes := False;
   FWorkerCount := 0;
+  FPaneLocksInitialized := 0;
+  FWorkerResultLockInitialized := False;
   FWorkerResultPipe[0] := -1;
   FWorkerResultPipe[1] := -1;
+  FWorkerResultSpace := nil;
+  for I := 0 to MAX_CLIENTS - 1 do
+  begin
+    FClients[I] := Default(TClientConn);
+    FClients[I].Fd := -1;
+  end;
+  for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
+  begin
+    FPending[I] := Default(TPendingConn);
+    FPending[I].Fd := -1;
+  end;
+  FRetiredChildCount := 0;
+  for I := 0 to MAX_RETIRED_CHILDREN - 1 do
+    FRetiredChildren[I] := 0;
   FWorkerResultHead := 0;
   FWorkerResultCount := 0;
   FWorkerResultBytes := 0;
   InitCriticalSection(FWorkerResultLock);
+  FWorkerResultLockInitialized := True;
   FWorkerResultSpace := RTLEventCreate;
   if FWorkerResultSpace <> nil then
     RTLEventSetEvent(FWorkerResultSpace);
   for I := 0 to MAX_PANES - 1 do
   begin
     InitCriticalSection(FPaneLocks[I]);
+    Inc(FPaneLocksInitialized);
     FWorkers[I] := nil;
+    if (I = 2) and SessionStartupTestStage('constructor-partial') then
+      raise Exception.Create('injected partial detached-session constructor');
   end;
   LoadConfig(ServerCfg);
   FConfiguredThreads := ServerCfg.MultiThread;
@@ -2634,27 +3198,15 @@ begin
     if I <= High(ATerms) then FTerms[I] := ATerms[I];
     if I <= High(ATitleFixed) then FTitleFixed[I] := ATitleFixed[I];
   end;
-  FName := SanitizeSessionName(AName);
-  FProfile := AProfile;
-  FSocketPath := SessionSocketPathFor(FName);
-  FMetaPath := SessionMetaPathFor(FName);
-  FListener := -1;
+  FSocketDev := 0;
+  FSocketIno := 0;
+  FSocketIdentityValid := False;
   FCommandHead := 0;
   FCommandCount := 0;
   FCommandBytes := 0;
   FNextCommandSequence := 0;
   FNextConnectionGeneration := 0;
   FDispatchCursor := 0;
-  for I := 0 to MAX_CLIENTS - 1 do
-  begin
-    FClients[I] := Default(TClientConn);
-    FClients[I].Fd := -1;
-  end;
-  for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
-  begin
-    FPending[I] := Default(TPendingConn);
-    FPending[I].Fd := -1;
-  end;
   for I := 0 to COMMAND_QUEUE_SLOTS - 1 do
     FCommandQueue[I].Data := nil;
   FStop := False;
@@ -2686,7 +3238,19 @@ end;
 destructor TDetachedSession.Destroy;
 var
   I: integer;
+  LockResult: TSessionNameLockResult;
+  RemoveOwnedFiles: boolean;
 begin
+  // Serialize the close/unlink edge with a creator of the same name. If an
+  // exceptional startup still owns the parent-side lock, fail safe by
+  // leaving a stale path for enumeration instead of blocking or deleting a
+  // socket which might already belong to somebody else.
+  RemoveOwnedFiles := False;
+  if FSocketIdentityValid and (FName <> '') then
+  begin
+    LockResult := TryHoldSessionNameLock(FName);
+    RemoveOwnedFiles := (LockResult = snlAcquired) and OwnsSocketPath;
+  end;
   StopPaneWorkers;
   for I := 0 to MAX_CLIENTS - 1 do
     if FClients[I].Fd >= 0 then
@@ -2701,23 +3265,35 @@ begin
       FPending[I].Fd := -1;
     end;
   if FListener >= 0 then
+  begin
     FpClose(FListener);
-  if FileExists(FSocketPath) then
-    DeleteFile(FSocketPath);
-  if (FMetaPath <> '') and FileExists(FMetaPath) then
-    DeleteFile(FMetaPath);
+    FListener := -1;
+  end;
+  if RemoveOwnedFiles then
+  begin
+    FpUnlink(PAnsiChar(FSocketPath));
+    if FMetaPath <> '' then
+      FpUnlink(PAnsiChar(FMetaPath));
+  end;
+  ReleaseHeldSessionNameLock;
   for I := 0 to FPaneCount - 1 do
   begin
-    if FPanes[I] <> nil then
+    if FOwnsPanes and (FPanes[I] <> nil) then
     begin
-      FPanes[I].KillPane;
+      // Final daemon teardown must not spend up to two seconds per pane. The
+      // process is exiting immediately after signalling; orphan reaping is
+      // then owned by the OS subreaper/init.
+      FPanes[I].TerminateNoWait;
       FPanes[I].Free;
-      FPanes[I] := nil;
     end;
-    FScreens[I].Free;
+    FPanes[I] := nil;
+    if FOwnsPanes then
+      FScreens[I].Free;
     FScreens[I] := nil;
   end;
-  FLayout.Free;
+  if FOwnsPanes then
+    FLayout.Free;
+  FLayout := nil;
   if FWorkerResultPipe[0] >= 0 then
     FpClose(FWorkerResultPipe[0]);
   if FWorkerResultPipe[1] >= 0 then
@@ -2728,22 +3304,49 @@ begin
     FCommandQueue[I].Data := nil;
   if FWorkerResultSpace <> nil then
     RTLEventDestroy(FWorkerResultSpace);
-  DoneCriticalSection(FWorkerResultLock);
-  for I := 0 to MAX_PANES - 1 do
+  if FWorkerResultLockInitialized then
+  begin
+    DoneCriticalSection(FWorkerResultLock);
+    FWorkerResultLockInitialized := False;
+  end;
+  for I := 0 to FPaneLocksInitialized - 1 do
     DoneCriticalSection(FPaneLocks[I]);
+  FPaneLocksInitialized := 0;
   inherited Destroy;
+end;
+
+function TDetachedSession.OwnsSocketPath: boolean;
+var
+  St: Stat;
+begin
+  St := Default(Stat);
+  Result := FSocketIdentityValid and
+    (FpLStat(RawByteString(FSocketPath), St) = 0) and FpS_ISSOCK(St.st_mode) and
+    (QWord(St.st_dev) = FSocketDev) and (QWord(St.st_ino) = FSocketIno);
 end;
 
 function TDetachedSession.CreateListener: boolean;
 var
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
+  Probe: TSocketProbe;
+  St: Stat;
 begin
   Result := False;
-  if SessionIsLive(FSocketPath) then
+  Probe := ProbeSocket(FSocketPath);
+  // A timeout means a saturated/hung but existing listener, never a stale
+  // inode. A recent refusal may be another creator between bind and listen.
+  if (Probe <> spDead) or SocketIsRecent(FSocketPath) then
     Exit;
-  if FileExists(FSocketPath) then
-    DeleteFile(FSocketPath);
+  St := Default(Stat);
+  if FpLStat(RawByteString(FSocketPath), St) = 0 then
+  begin
+    if (not FpS_ISSOCK(St.st_mode)) or
+       (FpUnlink(PAnsiChar(FSocketPath)) <> 0) then
+      Exit;
+  end
+  else if FpGetErrNo <> ESysENOENT then
+    Exit;
   if not SocketAddress(FSocketPath, Addr, AddrLen) then
     Exit;
   FListener := fpSocket(AF_UNIX, SOCK_STREAM, 0);
@@ -2756,15 +3359,65 @@ begin
     FListener := -1;
     Exit;
   end;
+  St := Default(Stat);
+  if (FpLStat(RawByteString(FSocketPath), St) <> 0) or
+     (not FpS_ISSOCK(St.st_mode)) then
+  begin
+    FpClose(FListener);
+    FListener := -1;
+    Exit;
+  end;
+  FSocketDev := QWord(St.st_dev);
+  FSocketIno := QWord(St.st_ino);
+  FSocketIdentityValid := True;
   if fpListen(FListener, MAX_PENDING_CONNECTIONS) <> 0 then
   begin
     FpClose(FListener);
     FListener := -1;
-    DeleteFile(FSocketPath);
+    if OwnsSocketPath then
+      FpUnlink(PAnsiChar(FSocketPath));
+    FSocketDev := 0;
+    FSocketIno := 0;
+    FSocketIdentityValid := False;
     Exit;
   end;
   SetNonBlocking(FListener);
   FpChmod(PAnsiChar(FSocketPath), &600);
+  Result := True;
+end;
+
+function TDetachedSession.PrepareListener: boolean;
+begin
+  Result := (FListener >= 0) or CreateListener;
+end;
+
+procedure TDetachedSession.AdoptPanes;
+begin
+  FOwnsPanes := True;
+end;
+
+function TDetachedSession.SpawnInitialPanes: boolean;
+var
+  I: integer;
+  UsedFallback: boolean;
+begin
+  Result := False;
+  for I := 0 to FPaneCount - 1 do
+  begin
+    if (FPanes[I] = nil) or (FScreens[I] = nil) then
+      Exit;
+    if FPanes[I].Alive then
+      Continue;  // classic detach: an already-running PTY was inherited
+    if (not FPanes[I].LaunchPending) or
+       (not FPanes[I].SpawnConfigured(UsedFallback)) then
+      Exit;
+    if UsedFallback then
+    begin
+      FTitles[I] := UiText('FAILED ', 'FALLO ') + FTitles[I];
+      FTerms[I] := '';
+      FTitleFixed[I] := True;
+    end;
+  end;
   Result := True;
 end;
 
@@ -2863,7 +3516,7 @@ begin
     SafeDeskH := ADeskH;
     // Normal maximize must fit the smallest current viewer even when that is
     // now the sole viewer or all remaining viewers have the same small size.
-    // HostSizesMatch is relevant to raw F5 passthrough, not to this bound.
+    // HostSizesMatch is relevant to raw fullscreen passthrough, not to this bound.
     if MinHostW > 0 then
     begin
       if SafeDeskW > MinHostW then
@@ -4169,7 +4822,7 @@ begin
     FLayout.ClosePane(APane);
     if FPanes[APane] <> nil then
     begin
-      FPanes[APane].KillPane;
+      TrackRetiredChild(FPanes[APane].TerminateNoWait);
       FPanes[APane].Free;
       FPanes[APane] := nil;
     end;
@@ -4227,7 +4880,7 @@ begin
     begin
       if FPanes[I] <> nil then
       begin
-        FPanes[I].KillPane;
+        TrackRetiredChild(FPanes[I].TerminateNoWait);
         FPanes[I].Free;
         FPanes[I] := nil;
       end;
@@ -4343,7 +4996,7 @@ begin
           ((Geom[I].BW <= 0) or (Geom[I].BH <= 0))) or
          (Geom[I].FullScreen and (not Geom[I].Zoomed)) then
         Exit;
-  // Exactly one window may own normal maximize/F5.  Validate the merged
+  // Exactly one window may own normal maximize/fullscreen. Validate the merged
   // canonical result, not merely this frame's changed subset. If two clients
   // acquired different panes from the same base and both enter zoom, their
   // FIFO commits are still meaningful: the later commit atomically restores
@@ -4434,7 +5087,7 @@ begin
       begin
         FGeom[I] := Geom[I];
         // The daemon, not the actor's possibly stale host summary, owns the
-        // definitive grid for both normal maximize and F5.
+        // definitive grid for both normal maximize and fullscreen.
         if FGeom[I].Zoomed then
         begin
           SharedZoomedPaneSize(FDeskW, FDeskH, FGeom[I].FullScreen,
@@ -4533,14 +5186,85 @@ begin
     QueuePending(Idx, FRAME_CTL_OK, -1, Data);
 end;
 
-// reaps daemon children (panes created daemon-side) without blocking
+procedure TDetachedSession.TrackRetiredChild(APid: TPid);
+var
+  I: integer;
+  St: cint;
+  Waited: TPid;
+begin
+  if APid <= 0 then
+    Exit;
+  St := 0;
+  repeat
+    Waited := FpWaitPid(APid, St, WNOHANG);
+  until (Waited >= 0) or (FpGetErrNo <> ESysEINTR);
+  if (Waited = APid) or
+     ((Waited < 0) and (FpGetErrNo = ESysECHILD)) then
+    Exit;
+  for I := 0 to FRetiredChildCount - 1 do
+    if FRetiredChildren[I] = APid then
+      Exit;
+  if FRetiredChildCount >= MAX_RETIRED_CHILDREN then
+  begin
+    // This requires hundreds of SIGKILLed children to resist scheduling for
+    // several reactor passes. Fail the owned daemon closed instead of leaking
+    // an unbounded PID list or returning to a potentially unsafe state.
+    if DebugActive then
+      DebugLog('daemon: retired child reap set exhausted');
+    FStop := True;
+    Exit;
+  end;
+  FRetiredChildren[FRetiredChildCount] := APid;
+  Inc(FRetiredChildCount);
+end;
+
+// Observe each known child without reaping it first.  waitid(WNOWAIT) in
+// TPty keeps the leader PID/PGID reserved while descendants are sealed; only
+// then may this sole reactor call waitpid. Explicitly closed panes have
+// already been removed from FPanes and are collected from the retired set.
 procedure TDetachedSession.ReapChildren;
 var
   St: cint;
+  P, Waited: TPid;
+  I, Last: integer;
 begin
   St := 0;
-  while fpWaitPid(-1, St, WNOHANG) > 0 do
-    ;
+  for I := 0 to FPaneCount - 1 do
+  begin
+    LockPane(I);
+    try
+      if (FPanes[I] <> nil) and
+         FPanes[I].ExitPendingNoReap(P) then
+      begin
+        repeat
+          Waited := FpWaitPid(P, St, WNOHANG);
+        until (Waited >= 0) or (FpGetErrNo <> ESysEINTR);
+        if (Waited = P) and (FPanes[I] <> nil) and
+           (FPanes[I].Pid = P) then
+          FPanes[I].MarkReaped;
+      end;
+    finally
+      UnlockPane(I);
+    end;
+  end;
+  I := 0;
+  while I < FRetiredChildCount do
+  begin
+    P := FRetiredChildren[I];
+    repeat
+      Waited := FpWaitPid(P, St, WNOHANG);
+    until (Waited >= 0) or (FpGetErrNo <> ESysEINTR);
+    if (Waited = P) or
+       ((Waited < 0) and (FpGetErrNo = ESysECHILD)) then
+    begin
+      Last := FRetiredChildCount - 1;
+      FRetiredChildren[I] := FRetiredChildren[Last];
+      FRetiredChildren[Last] := 0;
+      Dec(FRetiredChildCount);
+    end
+    else
+      Inc(I);
+  end;
 end;
 
 // creates a PTY for a window class or a command, like StartPaneEx but
@@ -6303,6 +7027,7 @@ begin
       Ini.WriteInteger('session', 'panes', FPaneCount);
       Ini.WriteInteger('session', 'attached', AttachedCount);
       Ini.WriteInteger('session', 'pid', fpGetPid);
+      Ini.WriteString('session', 'pid_identity', FPidIdentity);
       Ini.WriteInteger('session', 'cpus', FAvailableCPUs);
       Ini.WriteInteger('session', 'thread_limit', FThreadLimit);
       Ini.WriteInteger('session', 'threads', 1 + FWorkerCount);
@@ -6550,11 +7275,16 @@ begin
     DebugLog('daemon: session server starting (pid ' + IntToStr(FpGetPid) + ')');
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
-  if not CreateListener then
-  begin
-    SignalReady(AReadyFd, False);
-    Exit;
-  end;
+  if (FListener < 0) or not FOwnsPanes then
+    raise EInOutError.Create(
+      'detached session run started before listener/ownership commit');
+  // For a new persistent workspace the inherited TPty objects contain only
+  // resolved launch data. Fork the pane processes here, in the daemon, before
+  // READY: this process is then their real parent and ReapChildren is the one
+  // and only waitpid owner. Classic detach reaches this point with live PTYs
+  // and is deliberately left unchanged.
+  if not SpawnInitialPanes then
+    raise EInOutError.Create('could not start every initial session pane');
   StartPaneWorkers;
   WriteSidecar;
   SignalReady(AReadyFd, True);
@@ -6835,7 +7565,11 @@ begin
             Break;
           end;
         end;
-        if AliveFound or (AttachedCount > 0) then
+        // Zero panes is a deliberately persistent shared desktop: users can
+        // detach from it and later create its first pane again.  The legacy
+        // grace reap remains only for sessions whose pane slots exist but all
+        // their child programs have died.
+        if (FPaneCount = 0) or AliveFound or (AttachedCount > 0) then
           FEmptySince := 0
         else if FEmptySince = 0 then
           FEmptySince := GetTickCount64
@@ -6878,132 +7612,329 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   AChildHook: TDetachedServerChildHook): TDetachedServerStartResult;
 var
   ReadyPipe: TFilDes;
-  Pid: TPid;
+  Pid, Waited: TPid;
+  WaitStatus: cint;
   B: byte;
   Server: TDetachedSession;
   NullFd: cint;
+  LockResult: TSessionNameLockResult;
+  Attempt, N, Flags: integer;
+  Probe: TSocketProbe;
+  OwnershipTransferred: boolean;
 
   procedure SignalChildFailure;
   begin
     if ReadyPipe[1] < 0 then
       Exit;
-    B := 0;
+    if OwnershipTransferred then
+      B := 2
+    else
+      B := 0;
     WriteFull(ReadyPipe[1], B, SizeOf(B));
     FpClose(ReadyPipe[1]);
     ReadyPipe[1] := -1;
   end;
 
+  procedure ReapIntermediate;
+  var
+    I: integer;
+  begin
+    if Pid <= 1 then
+      Exit;
+    // The first child should have raw-exited immediately after the second
+    // fork. Never block on it: a stopped or damaged intermediate must not
+    // freeze the launching client.
+    for I := 1 to 200 do
+    begin
+      Waited := FpWaitPid(Pid, WaitStatus, WNOHANG);
+      if Waited = Pid then
+        Exit;
+      if (Waited < 0) and (FpGetErrNo <> ESysEINTR) then
+        Exit;
+      Sleep(1);
+    end;
+    // Killing the exact intermediate is safe after READY: the daemon is a
+    // distinct process. Do not kill its process group on this success path.
+    FpKill(Pid, SIGKILL);
+    for I := 1 to 2000 do
+    begin
+      Waited := FpWaitPid(Pid, WaitStatus, WNOHANG);
+      if Waited = Pid then
+        Exit;
+      if (Waited < 0) and (FpGetErrNo <> ESysEINTR) then
+        Exit;
+      Sleep(1);
+    end;
+  end;
+
+  function CancelStartupAndConfirmClosed: boolean;
+  var
+    I, R: integer;
+    Scratch: byte;
+  begin
+    Result := False;
+    // The intermediate called setsid before it could fork. Consequently
+    // every possible grandchild remains in the one private process group
+    // whose id is Pid. Keep Pid unreaped while cancelling so that identifier
+    // cannot be recycled underneath a negative-PID kill.
+    for I := 1 to 200 do
+    begin
+      FpKill(Pid, SIGKILL);
+      FpKill(-Pid, SIGKILL);
+      repeat
+        R := FileRead(ReadyPipe[0], Scratch, SizeOf(Scratch));
+        if R = 0 then
+          Exit(True);
+        if R > 0 then
+          Continue;
+        if FpGetErrNo = ESysEINTR then
+          Continue;
+        Break;
+      until False;
+      PollFd(ReadyPipe[0], POLLIN, 10);
+    end;
+  end;
+
+  procedure RemoveCancelledPublication;
+  var
+    Path: string;
+    St: Stat;
+  begin
+    // SIGKILL cannot run the daemon destructor. Once the ready-pipe EOF has
+    // proved the private process group dead, the still-held per-name lock
+    // makes it safe to remove only the exact socket/sidecar types this
+    // cancelled creator could have published.
+    Path := SessionSocketPathFor(AName);
+    St := Default(Stat);
+    if (ProbeSocket(Path) = spDead) and
+       (FpLStat(RawByteString(Path), St) = 0) and FpS_ISSOCK(St.st_mode) then
+      FpUnlink(RawByteString(Path));
+    Path := SessionMetaPathFor(AName);
+    St := Default(Stat);
+    if (FpLStat(RawByteString(Path), St) = 0) and FpS_ISREG(St.st_mode) and
+       (St.st_uid = FpGetEUid) then
+      FpUnlink(RawByteString(Path));
+  end;
+
 begin
   Result := dssFailed;
   DetachedServerChildFinished := False;
-  if (ALay = nil) or (Length(APanes) < 1) or
-     (not Assigned(AChildHook)) or
-     SessionIsLive(SessionSocketPathFor(AName)) then
+  OwnershipTransferred := False;
+  if (ALay = nil) or (Length(APanes) > MAX_PANES) or
+     (ALay.PaneCount <> Length(APanes)) or
+     (not Assigned(AChildHook)) then
     Exit;
-  ReadyPipe := Default(TFilDes);
-  if FpPipe(ReadyPipe) <> 0 then
+  Probe := ProbeSocket(SessionSocketPathFor(AName));
+  if Probe <> spDead then
     Exit;
-  Pid := FpFork;
-  if Pid = 0 then
+  for Attempt := 1 to
+    (SESSION_CREATE_WAIT_MS div SESSION_CREATE_RETRY_MS) do
   begin
-    FpClose(ReadyPipe[0]);
-    if FpSetsid < 0 then
+    LockResult := TryHoldSessionNameLock(AName);
+    if LockResult = snlAcquired then
+      Break;
+    if LockResult = snlError then
+      Exit;
+    Probe := ProbeSocket(SessionSocketPathFor(AName));
+    if Probe <> spDead then
+      Exit;
+    Sleep(SESSION_CREATE_RETRY_MS);
+  end;
+  if LockResult <> snlAcquired then
+    Exit;
+  try
+    // The first probe was only a fast path. This one is protected from every
+    // other cooperative creator and closes the validation/publication race.
+    if ProbeSocket(SessionSocketPathFor(AName)) <> spDead then
+      Exit;
+    ReadyPipe := Default(TFilDes);
+    if FpPipe(ReadyPipe) <> 0 then
+      Exit;
+    Pid := FpFork;
+    if Pid = 0 then
     begin
-      SignalChildFailure;
-      FpExit(1);
-    end;
-    // The detached server has no terminal UI, so the inherited client
-    // descriptors must go for the launching shell to regain the terminal.
-    // But they must NOT be left FREE. Descriptors are handed out lowest-first,
-    // so the next socket the daemon opens -- the listener, or an accepted
-    // client -- lands on fd 1 or 2. From then on the RTL's unhandled-exception
-    // reporter, which unconditionally writes the message to stderr, is writing
-    // into a client's frame stream; and when that write fails (EPIPE once the
-    // client is gone), the compiler-emitted I/O check promotes the failure to
-    // an EInOutError, which is itself unhandled, which reports to stderr
-    // again, which fails again: an infinite recursion that eats the stack and
-    // kills the daemon with SIGSEGV. That is precisely the crash captured on
-    // 2026-08-23, whose backtrace was TObject.NewInstance / Exception.CreateRes
-    // / SDiskFull with CatchUnhandledException repeating -- SDiskFull being
-    // FPC's message for run-time error 101, which on GNU/Linux means EPIPE,
-    // not a full disk.
-    //
-    // Reopening them on /dev/null costs nothing and makes that write a no-op,
-    // so the reporter can finish and the process dies cleanly instead of
-    // recursing. dup2 closes the old descriptor atomically, so there is no
-    // window in which they are free.
-    NullFd := FpOpen('/dev/null', O_RDWR, 0);
-    if NullFd >= 0 then
-    begin
-      FpDup2(NullFd, 0);
-      FpDup2(NullFd, 1);
-      FpDup2(NullFd, 2);
-      if NullFd > 2 then
-        FpClose(NullFd);
-    end
-    else
-    begin
-      FpClose(0);
-      FpClose(1);
-      FpClose(2);
-    end;
-    // Do this before the ownership hook.  Any failure while the inherited UI
-    // still owns the objects must take the raw exit path; once the hook has
-    // begun, normal unwinding is safe and gives HeapTrc its child-PID file.
-    try
-      DebugSetRole('daemon');
-    except
-      SignalChildFailure;
-      FpExit(1);
-    end;
-
-    Server := nil;
-    try
-      try
-        // The child alone relinquishes the inherited FreeVision references.
-        // APanes/AScreens/ALay above are independent copies and become the
-        // daemon's sole owners when its constructor succeeds.
-        AChildHook;
-        Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
-          AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
-          ATitleFixed);
-        Server.Run(ReadyPipe[1]);
-      finally
-        Server.Free;
-      end;
-    except
-      on E: Exception do
+      FpClose(ReadyPipe[0]);
+      // Become a private session/process-group leader BEFORE the second fork.
+      // The grandchild inherits this known group and cannot reacquire a
+      // controlling terminal because it is not a session leader. On a hung
+      // startup the parent can therefore terminate the complete startup tree
+      // using only this first, known PID on both GNU/Linux and Darwin.
+      if FpSetsid < 0 then
       begin
-        // SignalReady changes the descriptor to -1.  Therefore this sends a
-        // failure only when Run did not already publish success/failure, and
-        // can never close a descriptor number recycled later by the daemon.
         SignalChildFailure;
-        System.ExitCode := 1;
+        FpExit(1);
+      end;
+      if SessionStartupTestStage('intermediate-hang') then
+        while True do
+          Sleep(1000);
+      Pid := FpFork;
+      if Pid < 0 then
+      begin
+        SignalChildFailure;
+        FpExit(1);
+      end;
+      if Pid > 0 then
+        FpExit(0);
+      // Classic double-fork: deliberately no second setsid here. The actual
+      // daemon stays in the private session/group created above while its
+      // intermediate parent is reaped by the launcher.
+      // Record locks are not inherited as locks, and the parent intentionally
+      // keeps its descriptor until publication. Close the daemon's duplicate
+      // immediately so it cannot retain or later interfere with that lock.
+      ReleaseHeldSessionNameLock;
+      if SessionStartupTestStage('daemon-hang-pre') then
+        while True do
+          Sleep(1000);
+      // The detached server has no terminal UI, so the inherited client
+      // descriptors must go for the launching shell to regain the terminal.
+      // But they must NOT be left FREE. Descriptors are handed out lowest-first,
+      // so the next socket the daemon opens -- the listener, or an accepted
+      // client -- lands on fd 1 or 2. From then on the RTL's unhandled-exception
+      // reporter, which unconditionally writes the message to stderr, is writing
+      // into a client's frame stream; and when that write fails (EPIPE once the
+      // client is gone), the compiler-emitted I/O check promotes the failure to
+      // an EInOutError, which is itself unhandled, which reports to stderr
+      // again, which fails again: an infinite recursion that eats the stack and
+      // kills the daemon with SIGSEGV. That is precisely the crash captured on
+      // 2026-08-23, whose backtrace was TObject.NewInstance / Exception.CreateRes
+      // / SDiskFull with CatchUnhandledException repeating -- SDiskFull being
+      // FPC's message for run-time error 101, which on GNU/Linux means EPIPE,
+      // not a full disk.
+      //
+      // Reopening them on /dev/null costs nothing and makes that write a no-op,
+      // so the reporter can finish and the process dies cleanly instead of
+      // recursing. dup2 closes the old descriptor atomically, so there is no
+      // window in which they are free.
+      NullFd := FpOpen('/dev/null', O_RDWR, 0);
+      if NullFd >= 0 then
+      begin
+        FpDup2(NullFd, 0);
+        FpDup2(NullFd, 1);
+        FpDup2(NullFd, 2);
+        if NullFd > 2 then
+          FpClose(NullFd);
+      end
+      else
+      begin
+        FpClose(0);
+        FpClose(1);
+        FpClose(2);
+      end;
+      // Do this before the ownership hook.  Any failure while the inherited UI
+      // still owns the objects must take the raw exit path; once the hook has
+      // begun, normal unwinding is safe and gives HeapTrc its child-PID file.
+      try
+        DebugSetRole('daemon');
+      except
+        SignalChildFailure;
+        FpExit(1);
+      end;
+
+      Server := nil;
+      try
         try
-          if DebugActive then
-            DebugLog('daemon: startup/run unwind: ' + E.ClassName + ': ' +
-              E.Message);
-        except
+          // The child alone relinquishes the inherited FreeVision references.
+          Server := TDetachedSession.Create(AName, AProfile, ALay, APanes,
+            AScreens, ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH,
+            ATitleFixed);
+          // Listener preparation is the reversible phase: destructor is not
+          // yet allowed to touch the parent's panes. Only after it succeeds
+          // does the hook relinquish this fork's UI and commit ownership.
+          if not Server.PrepareListener then
+            SignalChildFailure
+          else
+          begin
+            AChildHook;
+            Server.AdoptPanes;
+            OwnershipTransferred := True;
+            if SessionStartupTestStage('daemon-hang-post') then
+              while True do
+                Sleep(1000);
+            Server.Run(ReadyPipe[1]);
+          end;
+        finally
+          Server.Free;
+        end;
+      except
+        on E: Exception do
+        begin
+          // SignalReady changes the descriptor to -1.  Therefore this sends a
+          // failure only when Run did not already publish success/failure, and
+          // can never close a descriptor number recycled later by the daemon.
+          SignalChildFailure;
+          System.ExitCode := 1;
+          try
+            if DebugActive then
+              DebugLog('daemon: startup/run unwind: ' + E.ClassName + ': ' +
+                E.Message);
+          except
+          end;
         end;
       end;
+      // Return through RequestDetach/PromoteToServer, Main and TSuperApp.Done.
+      // The program block observes this fork-private flag, finalizes Pascal
+      // units exactly once (including HeapTrc), then uses the raw Unix exit.
+      DetachedServerChildFinished := True;
+      Result := dssChildFinished;
+      Exit;
     end;
-    // Return through RequestDetach/PromoteToServer, Main and TSuperApp.Done.
-    // The program block observes this fork-private flag, finalizes Pascal
-    // units exactly once (including HeapTrc), then uses the raw Unix exit.
-    DetachedServerChildFinished := True;
-    Result := dssChildFinished;
-    Exit;
-  end;
-  FpClose(ReadyPipe[1]);
-  if Pid < 0 then
-  begin
+    FpClose(ReadyPipe[1]);
+    if Pid < 0 then
+    begin
+      FpClose(ReadyPipe[0]);
+      Exit;
+    end;
+    // A nonblocking reader lets cancellation drain any raced status byte and
+    // prove EOF without ever waiting on a damaged descendant.
+    Flags := FpFcntl(ReadyPipe[0], F_GETFL, 0);
+    if Flags >= 0 then
+      FpFcntl(ReadyPipe[0], F_SETFL, Flags or O_NONBLOCK);
+    B := 0;
+    N := -1;
+    // Fixed poll quanta provide a hard bound even on Darwin, where FPC
+    // 3.2.2 implements GetTickCount64 with wall-clock gettimeofday.
+    for Attempt := 1 to SessionStartupPollAttempts do
+    begin
+      N := PollFd(ReadyPipe[0], POLLIN, 100);
+      if N > 0 then
+      begin
+        N := FileRead(ReadyPipe[0], B, SizeOf(B));
+        if (N >= 0) or (FpGetErrNo <> ESysEINTR) then
+          Break;
+      end
+      else if (N < 0) and (FpGetErrNo <> ESysEINTR) then
+        Break;
+    end;
+    if N = SizeOf(B) then
+      case B of
+        1: Result := dssParentStarted;
+        2:
+          begin
+            // The daemon reports this only after Server.Free closed its
+            // listener. Its destructor deliberately cannot unlink while the
+            // launcher still owns the name lock, so finish that exact cleanup here
+            // before exposing an unattachable ghost session to enumeration.
+            RemoveCancelledPublication;
+            Result := dssOwnershipLost;
+          end;
+      end;
+    if (Result <> dssParentStarted) and (Result <> dssOwnershipLost) then
+    begin
+      // Failure/EOF/timeout is safe for local continuation only after every
+      // possible fork is dead and the daemon-only writer proves closure.
+      if CancelStartupAndConfirmClosed then
+      begin
+        RemoveCancelledPublication;
+        Result := dssFailed
+      end
+      else
+        Result := dssOwnershipLost;
+    end;
+    ReapIntermediate;
     FpClose(ReadyPipe[0]);
-    Exit;
+  finally
+    ReleaseHeldSessionNameLock;
   end;
-  B := 0;
-  if (FileRead(ReadyPipe[0], B, SizeOf(B)) = SizeOf(B)) and (B <> 0) then
-    Result := dssParentStarted;
-  FpClose(ReadyPipe[0]);
 end;
 
 {$ELSE}
@@ -7011,6 +7942,15 @@ end;
 // Native Windows Phase 1 deliberately runs panes in this process through
 // ConPTY. The detached daemon is a fork/AF_UNIX design, so keep its public
 // surface available to the shared UI while reporting the feature unavailable.
+
+function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
+begin
+  Result := snlError;
+end;
+
+procedure ReleaseHeldSessionNameLock;
+begin
+end;
 
 function NestingGuardActive: boolean;
 begin
@@ -7127,6 +8067,22 @@ end;
 
 function TSessionClient.SendFrame(AKind: byte; APane: integer;
   const Data: TByteArray): boolean;
+begin
+  Result := False;
+end;
+
+function TSessionClient.OutputPending: boolean;
+begin
+  Result := False;
+end;
+
+function TSessionClient.FlushOutgoing: boolean;
+begin
+  Result := False;
+end;
+
+function TSessionClient.FlushOutgoingBounded(
+  var AWaitPolls: integer): boolean;
 begin
   Result := False;
 end;

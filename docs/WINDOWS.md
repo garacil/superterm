@@ -118,7 +118,7 @@ checking prerequisites or starting FPC. The release target compiles with
 should report:
 
 ```text
-target: D:/sources/superterm/bin/superterm.exe
+Target:    D:/sources/superterm/bin/superterm.exe
 ```
 
 Always invoke the bundled Make by absolute path. Bare `make` on this machine
@@ -161,12 +161,14 @@ accepting stale `.ppu` files.
 
 The current checkout completes a clean FPC `-B` Win64 build and produces the
 native PE x86-64 executable `D:\sources\superterm\bin\superterm.exe`.
-The binary reports `superterm 3.5.2`.
+The binary reports `superterm 4.2.1`.
 
-The full program compiles 22 of the 23 `src/st_*.pas` units. `st_poll.pas` is
-the only excluded unit; it is the Unix daemon's `poll(2)` registry and is
-referenced by `st_server.pas` only under `{$IFDEF UNIX}`. The following native
-CLI smoke checks return successfully:
+The native dependency graph compiles 23 of the 26 `src/st_*.pas` units.
+`st_poll.pas` is the Unix daemon's `poll(2)` registry; `st_ssh_server.pas` and
+`st_ssh_entry.pas` implement the POSIX dedicated-SSH service and
+`ForceCommand` adapter. All three are excluded from the native Windows program
+under `{$IFDEF UNIX}`. The portable `st_cli_help.pas` is included. The
+following native CLI smoke checks return successfully:
 
 ```powershell
 & .\bin\superterm.exe --version
@@ -189,6 +191,7 @@ described below.
 | Pane processes | `TPty` wraps `TConPty` for interactive shells, `cmd.exe /d /k` commands, PowerShell/`pwsh` commands, arbitrary argv, resize, buffered input, and kill-on-close. |
 | Child environment | The child receives an inherited Unicode environment overlaid with pane values including `TERM=xterm-256color`, `COLORTERM=truecolor`, `SUPERTERM=1`, and `SUPERTERM_SESSION_CHAIN`. |
 | Local UI | The native `st_fvui` idle path polls ConPTY output, feeds the terminal screen, flushes pending input, detects exit, and resizes panes. |
+| CLI help | Version and contextual `--help` pages run locally. Session-control commands remain unavailable because they require the detached Unix server. |
 | Detached sessions | `st_server` compiles Windows Phase-1 stubs. The local single-process terminal is the Phase-1 path; detach, reattach, daemon control, and multi-client sharing deliberately report unavailable. |
 | SSH panes | Structured OpenSSH argv is used. Keys or `ssh-agent` are preferred; a configured secret is retained for the native password-prompt detector, but that path still needs real-host runtime validation. |
 
@@ -250,6 +253,13 @@ also created and atomically saved `session.ini` there.
   channel, or multi-client sharing. The Unix server depends on `fork` and
   inherited live PTY masters; Phase 2 needs a spawned-server and explicit
   handle/ownership design rather than a direct port of that lifecycle.
+- The new dedicated incoming OpenSSH service administrator and
+  `--ssh-entry` adapter are POSIX-only. Windows supports outgoing SSH panes,
+  but does not install or administer the isolated SuperTerm `sshd` service.
+- Contextual help is portable and its index has a Windows-specific tagline,
+  but the complete cross-platform reference still includes detached-session
+  and `ssh-server` pages. The Windows executable rejects those POSIX-only
+  operations as unavailable.
 - `st_poll.pas` remains Unix-only. Phase 1 does not need it because the local
   Windows UI polls each ConPTY output pipe with `PeekNamedPipe`.
 - Process exit and final pipe output are separate events. The current

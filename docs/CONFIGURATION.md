@@ -24,6 +24,12 @@ with mode `700` automatically and rewrites its configuration, session, and
 profile files atomically with mode `600`, because they may contain
 credentials and commands.
 
+The optional incoming OpenSSH service has a third, deliberately separate
+configuration: `/etc/superterm/sshd/server.ini`. It is root-owned, controls
+only the dedicated listener and is never merged into the user INI or written
+to `/etc/ssh/sshd_config`. It is also unrelated to `[class.*]` definitions
+that launch outgoing SSH panes.
+
 ## User settings
 
 ```ini
@@ -60,7 +66,8 @@ default_profile=daily
 ### [keymap]
 
 `prefix` selects the prefix key for tmux-style chords (`Ctrl-Q d` detach,
-`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q t` tile the
+`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q f` fullscreen,
+`Ctrl-Q t` tile the
 windows, `Ctrl-Q 1..9` go to window, `Ctrl-Q n`/`p` next/previous window,
 `Ctrl-Q` arrows resize the pane, prefix twice sends one literal prefix
 byte). Accepted values:
@@ -72,7 +79,10 @@ byte). Accepted values:
 The default is `Ctrl-Q`. Migration note: the numeric value `2` was the old
 default (Ctrl-B) and is migrated to Ctrl-Q so the prefix does not collide
 with a remote tmux. To really use Ctrl-B, write `prefix=ctrl-b` explicitly.
-The application saves the setting back in the `ctrl-x` form.
+The application saves the setting back in the `ctrl-x` form. For a SuperTerm
+nested inside a pane, double the outer prefix and then press `f`; with the
+default this is `Ctrl-Q Ctrl-Q f`, which delivers `Ctrl-Q f` to the inner
+instance.
 
 ### [ui]
 
@@ -119,6 +129,7 @@ A picture file is a palette plus three parallel lines per row:
 name: City at night
 name.es: Ciudad de noche
 mode: tile
+width: 128
 palette: 0E1430 1B2450 26325F FFD866
 >    333   33333
 :    111   22222
@@ -131,7 +142,10 @@ the light, medium and dark shades, and anything else is drawn literally. `:`
 and `.` give the foreground and background palette index of each cell, as
 `0`-`9`, then `a`-`z`, then `A`-`Z`. Because a cell can carry two colours
 through a half block, a picture has twice the vertical resolution of the
-character grid.
+character grid. Optional `width` declares a logical width of `1..4096` cells
+when empty right-edge columns must survive without trailing spaces; it can
+enlarge but never crop the longest glyph row. Files without it retain the
+original format.
 
 ### [session]
 
@@ -163,8 +177,8 @@ character grid.
   A new normal IDE maximize is a shared exception to clipping: its complete
   frame and PTY fit the smallest host connected when the action commits while
   the larger canonical desktop remains intact for restore. A later attach does
-  not recalculate that committed geometry. F5 uses the smallest host's complete
-  terminal instead because it removes the IDE chrome.
+  not recalculate that committed geometry. Fullscreen (`prefix f`) uses the
+  smallest host's complete terminal instead because it removes the IDE chrome.
   Detach performs no save/reload; the daemon keeps the live object untouched.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
@@ -184,7 +198,7 @@ character grid.
   Different clients may hold and move different panes concurrently. Each
   viewer applies peer commits while preserving only its own in-flight pane,
   so releasing either mouse cannot roll the other gesture back.
-- `zoomanim=0` (default) makes IDE maximize and `F5` switch instantly. Set it
+- `zoomanim=0` (default) makes IDE maximize and fullscreen switch instantly. Set it
   to `1` for a short expanding and contracting outline between the pane and
   its target (about 350 ms). The eight outline frames are relayed to every
   viewer and use that viewer's active theme. They are purely cosmetic: the
@@ -196,6 +210,17 @@ character grid.
   terminal interiors keep identical colors and attributes. Only the window
   border/title and cursor change, so unchanged pane cells are not sent again.
 - `default_profile` names the profile activated at startup.
+- `default_session` is also the canonical session name used by the dedicated
+  OpenSSH TCP entry when its route needs a default. If it is empty, that entry
+  uses `default_profile`, then `session`. See
+  [SSH_SERVER.md](SSH_SERVER.md). Its older template-flattening meaning remains
+  compatible for ordinary local startup.
+- `ssh_session=last` (default) makes the dedicated SSH entry return to the
+  last live session successfully attached through that account.
+  `ssh_session=default` always uses the `default_session` fallback chain.
+  SuperTerm writes `ssh_last_session` atomically after a successful SSH
+  attach; it is only a routing pointer, not a saved workspace, and normally
+  should not be edited by hand.
 - The legacy keys `default_template`, `default_session`, and
   `default_window` are still read. The startup profile is resolved as
   `default_profile`, then `default_template`, then
@@ -203,15 +228,49 @@ character grid.
   flattening). `default_window` selects the starting window of the profile
   by name.
 
+### Dedicated incoming SSH routing and service
+
+The user `[session]` keys above decide **where** an authenticated SSH entry
+attaches: `default_session` gives the session name, `default_profile` gives the
+initial contents when that session does not yet exist, and `ssh_session`
+chooses the `last` or `default` route. A missing/empty profile creates a valid
+empty desktop. `ssh_last_session` is only an atomically updated pointer to a
+live daemon; it is not a saved copy of the desktop.
+
+The root-owned `/etc/superterm/sshd/server.ini` instead decides **how** the
+dedicated OpenSSH process listens and authenticates:
+
+```ini
+[server]
+config_version=1
+listen=127.0.0.1:8022,[::1]:8022
+allow_root=0
+password_authentication=1
+managed_authorized_keys=1
+user_authorized_keys=1
+```
+
+`listen` accepts one to 32 explicit TCP `host:port` endpoints; IPv6 addresses
+use brackets. The other switches control PAM passwords, the root-only
+public-key exception and the central/per-user public-key stores. They do not
+form an account allowlist. SuperTerm validates this file and the effective
+`sshd -T` policy before publishing a generated configuration. See
+[SSH_SERVER.md](SSH_SERVER.md) for the authentication matrix, safe service
+commands and network exposure procedure; do not edit the generated
+`sshd_config` directly.
+
 ## Full-screen passthrough
 
-Maximizing a pane (F5) makes it own the whole terminal and streams its raw
+Fullscreen (`prefix f`, `Ctrl-Q f` by default) makes a pane own the whole
+terminal and streams its raw
 output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
 at full fidelity instead of being approximated to the CP437 grid. This raw
 path is also valid with several clients when all physical host geometries are
-equal. If they differ, F5 stays in the synchronized IDE renderer and uses one
-shared fullscreen area sized to the smallest host. Press F5 again to restore
-the normal canonical desktop and the window's previous bounds.
+equal. If they differ, fullscreen stays in the synchronized IDE renderer and
+uses one shared area sized to the smallest host. Press the same prefix chord
+again to restore the normal canonical desktop and the window's previous
+bounds. During normal pane input, physical `F5` is passed to the focused pane
+and is not a SuperTerm window-management shortcut.
 
 ## Clipboard and SSH
 

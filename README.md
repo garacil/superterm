@@ -1,4 +1,4 @@
-# superterm 3
+# superterm 4
 
 **Project site: [www.superterm.org](https://www.superterm.org)**
 
@@ -15,7 +15,8 @@ On GNU/Linux and macOS, **every session is a client/server pair from the
 moment it starts**: the terminal you see is just the first attached client.
 That makes superterm far more than a window manager for shells — the entire workspace
 can be driven from any other shell, script, cron job or automation tool,
-with commands and flags accepted **in English and in Spanish**:
+with control commands and their command-local options accepted **in English
+and in Spanish**:
 
 ```sh
 superterm send prod:2 tail -f /var/log/syslog   # type into any pane
@@ -39,8 +40,8 @@ available.
 
 Four independent PTY/ConPTY-backed panes in a normal GNU/Linux, macOS, or
 Windows terminal window: a process list, disk usage, a coloured application
-log and a git history. Each pane keeps its own process, terminal state, focus
-and size.
+log and a git history. Each pane keeps its own process, terminal state and
+size; the session has one shared focus.
 
 ## Features
 
@@ -61,20 +62,23 @@ and size.
   multiple CPU cores. `[session] multithread=1` preserves the original
   single-threaded daemon; `auto` or a total thread limit enables dynamic
   workers, each with its own `fpPoll`, on GNU/Linux and macOS.
-- On GNU/Linux and macOS, a bilingual control CLI (commands and flags accepted
-  in English AND Spanish, output in the configured UI language): `list/listar`,
+- On GNU/Linux and macOS, a bilingual control CLI (commands and documented
+  long options accept English and Spanish without case/accent distinctions;
+  short options stay exact and
+  case-sensitive; output uses the configured UI language): `list/listar`,
   `send/enviar`, `capture/capturar` (visible screen, last N lines or the
   whole scrollback), `kill/matar`, plus full window management from the
   command line — `new/nueva`, `close/cerrar`, `focus/foco`,
   `rename/renombrar`, `resize/tamano`, `minimize/minimizar`,
   `restore/restaurar`, `zoom/ampliar` and `organize/organizar`. See
-  [`docs/CLI.md`](docs/CLI.md).
+  [`docs/CLI.md`](docs/CLI.md). The built-in `--help` index links to a complete
+  page for every command and option.
 - On GNU/Linux and macOS, true multi-user sessions: up to 8 clients attached
   to the same session at once, with one daemon-owned desktop -- positions,
   sizes, minimize, zoom and
   fullscreen are identical for everyone, including the focused pane. Input
   from every client is delivered in arrival order. Window moves, incremental
-  resizes and optional maximize/F5 outlines are also shown live in every
+  resizes and optional maximize/fullscreen outlines are also shown live in every
   viewer, not just in the client performing the action; minimize and restore
   are one atomic shared transition. Per-pane leases let different clients
   manipulate different panes concurrently without either pane jumping back,
@@ -87,20 +91,31 @@ and size.
   under `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
   remote PTYs stay alive on the session server.
-- A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
+- On GNU/Linux and macOS, optional encrypted TCP entry through a dedicated
+  system OpenSSH instance: isolated host keys/configuration under
+  `/etc/superterm/sshd`, configurable Unix-account passwords and central or
+  per-user authorized keys, a forced SuperTerm UI, and no changes to
+  `/etc/ssh`. Standard interactive `ssh` clients attach to the same
+  Unix-socket session engine.
+  See [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
+- A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`), with
+  `prefix f` (`Ctrl-Q f` by default) reserved for fullscreen/restore. During
+  normal pane input, physical `F5` remains input for the focused pane instead
+  of being a fullscreen shortcut.
 - **ASCII art desktop backgrounds.** A picture behind the windows, in real RGB
   colour, chosen from `Options`. Pictures are plain text files read at run time
-  -- eight ship, including the 7kas phoenix, the London skyline and three
+  -- nine ship, including the 7kas phoenix, the London skyline and three
   seamless patterns for the tiled layout -- so your own drops into
   `~/.superterm/backgrounds/` without rebuilding. Centred, tiled, stretched or
   fitted.
 - Two per-profile display options in the Options menu: **show contents while
   dragging** (off gives a wireframe drag, where only the window outline moves
   and everything behind it stays visible -- much less traffic on a slow link)
-  and an optional **zoom transition** for IDE maximize and `F5`. Every attached
+  and an optional **zoom transition** for IDE maximize and fullscreen. Every attached
   viewer sees the same live path in its own active palette.
 - Automatic local fallback save and restore through
-  `~/.superterm/session.ini`.
+  `~/.superterm/session.ini` on POSIX or
+  `%APPDATA%\superterm\session.ini` on Windows.
 - A quick session wizard for one to four panes. Each pane accepts a connection
   command and an optional command to feed to the connection after it starts.
 - A custom keyboard driver: a lone `Esc` reaches the pane (timeout-based, not
@@ -112,11 +127,11 @@ and size.
   one CP437 byte and 16 colors per cell, whether it is tiled, windowed or
   maximized. The vendored FreeVision is not modified: its grid is still drawn
   and decides what is visible.
-- **Maximize (`F5`) hands the pane the whole terminal** and writes its raw PTY
+- **Fullscreen (`Ctrl-Q f` by default) hands the pane the whole terminal** and writes its raw PTY
   bytes straight through when every attached host has the same geometry. With
   different geometries, every client instead gets the same IDE-rendered
-  fullscreen area sized to the smallest host. `F5` again restores the window
-  at the size it had.
+  fullscreen area sized to the smallest host. The same prefix chord restores
+  the window at the size it had.
 - Normal window maximize (title button or double-click) keeps the IDE visible.
   At commit time its one shared frame and PTY fit the smallest connected host,
   even when a larger client previously grew the canonical desktop; restore
@@ -126,6 +141,46 @@ and size.
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux
   mouse fixes. The system FreeVision installation is not modified.
+
+## Encrypted TCP access with a standard SSH client
+
+Release 4.2.1 can expose the same SuperTerm session engine through a dedicated
+instance of the operating system's OpenSSH server. From a normal interactive
+terminal, the client command stays familiar:
+
+```sh
+ssh -p 8022 user@server
+```
+
+No SuperTerm-specific client, private-key transfer or long list of SSH options
+is required. OpenSSH discovers the client's usual keys and can fall back to a
+PAM-approved Unix-account password when that policy is enabled. `-tt` is only
+needed when `ssh` is launched without an interactive terminal and must be
+forced to allocate a PTY.
+
+This does **not** replace or reconfigure the host's ordinary `sshd`. Both
+listeners can run at the same time:
+
+| | Ordinary host SSH | Dedicated SuperTerm SSH |
+|---|---|---|
+| Typical endpoint | `server:22` | `server:8022` (configurable) |
+| Configuration and host keys | `/etc/ssh` | `/etc/superterm/sshd` |
+| Result after login | Normal shell/service | Forced SuperTerm UI |
+| Intended facilities | Shell, commands, SCP/SFTP, tunnels | Interactive SuperTerm sessions |
+
+`superterm ssh-server setup` creates a separate service, configuration, PID
+and host identity and never edits, stops or restarts the normal SSH service.
+It reuses the installed OpenSSH implementation for TCP, encryption,
+authentication and PTY handling, then routes the authenticated client through
+the existing private Unix socket. Detach, a dropped network connection or
+closing the SSH terminal leaves the session daemon and its panes alive.
+
+Listening interfaces and ports, password/key policy, root's public-key-only
+exception, service installation, authorization and diagnostics are all
+explicitly configurable. The entry accepts only an interactive PTY and rejects
+remote commands, SCP/SFTP and forwarding; keep ordinary SSH for those uses.
+See the complete, auditable procedure in
+[`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
 
 ## Screenshots
 
@@ -156,10 +211,10 @@ either client can create the first pane again. The per-window entries stay in
 
 **A picture on the desktop, behind the windows.** Nine ship, and your own drop
 into `~/.superterm/backgrounds/` without rebuilding. The colours are real RGB,
-not the 16-colour grid, and every picture is drawn with one glyph only -- the
-full block -- so nothing comes apart when the terminal font is stretched.
+not the 16-colour grid, and every generated picture is drawn with one stable
+dark-shade glyph; its shape and colour survive terminal-font stretching.
 
-![Goody on the desktop, with a window over it](screenshots/desktop-goody.png)
+![Alien hacker on the desktop, with a minimized pane](screenshots/desktop-goody.png)
 
 They are picked from `Options > Desktop background`, and the desktop follows
 the choice straight away:
@@ -168,7 +223,7 @@ the choice straight away:
 
 | | |
 | --- | --- |
-| ![Goody](screenshots/bg-goody.png) | ![7kas phoenix](screenshots/bg-phoenix.png) |
+| ![Alien hacker](screenshots/bg-goody.png) | ![7kas phoenix](screenshots/bg-phoenix.png) |
 | ![London skyline](screenshots/bg-london.png) | ![Alaska range](screenshots/bg-alaska.png) |
 | ![Open field](screenshots/bg-field.png) | ![Sea at sunset](screenshots/bg-sea.png) |
 | ![Stone wall, tiled](screenshots/bg-wall.png) | ![Truchet weave, tiled](screenshots/bg-weave.png) |
@@ -200,16 +255,16 @@ column, the wheel, and `Alt-PgUp`/`PgDn`:
 
 ![Scrolling back through a pane's history](screenshots/scrollback.png)
 
-**A workspace, and `F5` giving one pane the whole terminal.**
+**A workspace, and `Ctrl-Q f` giving one pane the whole terminal.**
 Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
-in the centre, and a fourth minimized to a title bar at the bottom. `F5`
+in the centre, and a fourth minimized to a title bar at the bottom. `Ctrl-Q f`
 maximizes the focused pane and hands it the entire terminal, so `top` reflows
-into the full screen; `F5` again brings the desktop back with every window
+into the full screen; the same chord brings the desktop back with every window
 where it was. Every attached viewer sees the expanding or contracting outline,
 not only the client which pressed the key. It is the optional zoom transition
 (`[session] zoomanim`, off by default — the instant switch is the fast one):
 
-![The F5 zoom transition](screenshots/zoom-transition.gif)
+![The fullscreen zoom transition](screenshots/zoom-transition.gif)
 
 **superterm in action — one capture per feature.**
 
@@ -256,9 +311,10 @@ More captures are on the [Screenshots wiki page](https://github.com/garacil/supe
 ## Platform Support
 
 `superterm` is a single cross-platform codebase that builds and runs natively on
-**GNU/Linux, macOS, and Windows 10 version 1809 or newer**. The UI, VT engine,
-layout, and configuration are shared; compiler directives select the terminal,
-process, input, console, and path implementations.
+**GNU/Linux, macOS (Apple Silicon and Intel), and Windows 10 version 1809 or
+newer**. The UI, VT engine, layout, and configuration are shared; compiler
+directives select the terminal, process, input, console, and path
+implementations.
 
 - **GNU/Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
   and reads process titles from `/proc`.
@@ -268,6 +324,12 @@ process, input, console, and path implementations.
 - **Windows** uses ConPTY, native console VT input/output, Windows process
   management, `%COMSPEC%` (normally `cmd.exe`) as the default shell, and
   `%APPDATA%\superterm` for configuration.
+
+On GNU/Linux and macOS, the optional dedicated SSH administrator selects the
+native service manager in `src/st_ssh_server.pas`: systemd on GNU/Linux and
+launchd on macOS. Its session, UI, and SSH-entry protocol code is shared
+between those platforms; native Windows Phase 1 does not provide the dedicated
+SSH service.
 
 See [`docs/MACOS.md`](docs/MACOS.md) and [`docs/WINDOWS.md`](docs/WINDOWS.md)
 for platform-specific build and terminal setup.
@@ -310,13 +372,20 @@ Build requirements:
 Test requirements:
 
 - Python 3.
-- Python package `pyte`.
+- Python packages `pyte` and Pillow.
+- `rsvg-convert` (`librsvg2-bin` on Debian/Ubuntu, `librsvg` with Homebrew)
+  for the reproducible artwork check.
 
 Remote requirements:
 
 - `openssh-client` for SSH connections.
-- `sshpass` only when password authentication is explicitly configured. SSH
-  keys or an SSH agent are safer and preferred.
+- On GNU/Linux and macOS, the operating system's OpenSSH server for the
+  optional dedicated encrypted TCP entry (`openssh-server` on Debian/Ubuntu;
+  included with macOS). See [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
+- `sshpass` only for an outgoing SSH pane explicitly configured with a
+  password. On GNU/Linux and macOS, incoming passwords for the dedicated
+  SuperTerm service are handled by the system OpenSSH/PAM stack; SSH keys
+  remain preferred.
 
 ## Build
 
@@ -359,15 +428,15 @@ Useful configure options:
 ./configure --with-python=/usr/bin/python3
 ```
 
-On Debian or Ubuntu, dependencies can be installed explicitly:
+On Debian/Ubuntu or macOS, dependencies can be installed explicitly:
 
 ```sh
 ./configure --install-deps
 ```
 
-On macOS, install Free Pascal with Homebrew (`brew install fpc`); `libsqlite3`
-ships with the system and the build commands above are identical. `make
-install-deps` detects macOS and uses Homebrew automatically.
+On macOS, this uses Homebrew for missing Free Pascal/Python tools;
+`libsqlite3` and the system OpenSSH server already ship with macOS. The build
+commands remain identical on both platforms.
 
 The compatibility wrapper remains available:
 
@@ -396,8 +465,10 @@ The suite covers pane operations, large terminal sizes, xterm and tmux mouse
 input, focus routing, session restore, configured terminals, templates,
 SQLite templates, the session wizard, language switching, window controls, and
 the nonblocking session daemon under partial frames, stalled readers and file
-descriptors above 1023. GitHub Actions runs it on GNU/Linux, macOS Apple Silicon
-and macOS Intel.
+descriptors above 1023. It also checks the isolated SSH configuration,
+administration boundary, package removal and standard-client transport.
+GitHub Actions runs it on GNU/Linux, macOS Apple Silicon and macOS Intel; the
+real encrypted listener is repeated in an isolated privileged step on each.
 
 The Python harness imports POSIX `pty`, `fcntl`, and `termios`, so it does not
 run in native Windows Python. Use the release build plus `--version`, `--help`,
@@ -421,6 +492,41 @@ python3 test/window_test.py
 python3 test/detach_test.py
 python3 test/nonblocking_server_test.py
 ```
+
+The contextual-help test compares the release binary with the isolated
+test-only runtime, so build and identify both when running it alone:
+
+```sh
+make release test-runtime
+SUPERTERM_RELEASE_BIN="$PWD/bin/superterm" \
+SUPERTERM_TEST_BIN="$PWD/bin/superterm-test" \
+python3 test/cli_help_test.py
+```
+
+## Command-line help
+
+The executable contains a structured, navigable reference. Its deterministic
+plain-text output is suitable for terminals, scripts and AI agents, needs no
+live session or privileges, and does not open the IDE or modify user/service
+state:
+
+```sh
+./bin/superterm --help             # topic index
+./bin/superterm --help sessions    # one functional area
+./bin/superterm send --help        # one command, every option and example
+./bin/superterm --help ssh         # standard SSH client entry
+./bin/superterm --help ssh-server  # isolated OpenSSH administration
+./bin/superterm --help all         # complete reference in one output
+```
+
+`help TOPIC`, `--help TOPIC`, `-h TOPIC`, the quoted `'-?' TOPIC` form and
+`COMMAND --help` share the same pages.
+Commands, topics and documented long control options have English and Spanish
+aliases (`--ayuda sesiones`, `enviar --ayuda`), matched without case or accent
+sensitivity. Short options remain exact (`-H` is history, while `-h` is help).
+An unknown topic exits with status 2 instead of silently showing
+an unrelated page. The longer narrative reference is
+[`docs/CLI.md`](docs/CLI.md).
 
 ## Run
 
@@ -481,7 +587,8 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `F6` / `F7` | Next / previous pane |
 | `Alt-1..9` | Go to pane N |
 | `Alt-0` | Pane list: pick a pane, restoring it if minimized |
-| `F5` | Maximize or restore the focused pane |
+| `Ctrl-Q f` | Give the focused pane the whole terminal, or restore the IDE |
+| `F5` | Send physical F5 to the focused pane (when the host/browser forwards it) |
 | `Ctrl-F5` | Move or resize the focused pane |
 | `Alt-F9` | Minimize the focused pane |
 | `F8` / `F9` | Next / previous profile window |
@@ -498,6 +605,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | Host terminal Paste | Add the pasted UTF-8 text to history and send it atomically to the focused local or SSH pane |
 | `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
+| `Ctrl-Q Ctrl-Q f` | Toggle fullscreen in a SuperTerm nested inside the focused pane |
 | Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
 | Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
 | Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
@@ -594,6 +702,8 @@ palette=color               ; color (default), bw, or mono
 autosave=1
 autorestore=1               ; use 0 for a fresh profile startup
 default_profile=daily
+default_session=daily-ssh   ; optional dedicated SSH-entry session name
+ssh_session=last            ; resume last SSH session; or default
 ```
 
 The language value accepts `en`, `english`, `es`, `spanish`, or `espanol`.
@@ -680,7 +790,7 @@ default profile must create fresh daily connections.
 
 ```text
 src/
-├── superterm.lpr   Program entry point and CLI (--attach, --list-sessions).
+├── superterm.lpr   Program entry point and early SSH/TUI dispatch.
 ├── st_fvui.pas     FreeVision application, menus, panes, focus, and polling.
 ├── st_dialogs.pas  Class/profile managers, session picker, pane list.
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
@@ -688,7 +798,11 @@ src/
 ├── st_conpty.pas   Native Windows ConPTY and child-process backend.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
 ├── st_clipboard.pas Ten-item client clipboard history and OSC 52 helpers.
+├── st_cli.pas      Bilingual control-command parser and daemon client.
+├── st_cli_help.pas Structured contextual CLI help and examples.
 ├── st_server.pas   Detached session daemon, protocol and enumeration.
+├── st_ssh_entry.pas Restricted OpenSSH ForceCommand session adapter.
+├── st_ssh_server.pas Dedicated sshd configuration and service administration.
 ├── st_session.pas  Session serialization and restore.
 ├── st_wclass.pas   Window classes ([class.*], legacy [t-*] reader).
 ├── st_profiles.pas Profiles ([profile.*], legacy template flattening).
@@ -722,6 +836,9 @@ sudo make install
 
 The install contains the executable, README, all files under `docs/`, and an
 example configuration. An existing configuration is never overwritten.
+The optional TCP service is never enabled merely by copying files; prepare or
+refresh it explicitly with `sudo superterm ssh-server setup` as described in
+[`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
 
 For a user-local install:
 
@@ -739,6 +856,9 @@ Current limitations:
 
 - Native Windows is currently single-process: detached sessions, multi-client
   attach, session enumeration, and the control CLI remain POSIX-only.
+- The dedicated SSH entry is an interactive SuperTerm UI, not a general SSH
+  shell: it deliberately rejects remote commands, SCP/SFTP and forwarding.
+  Run the ordinary host `sshd` alongside it for those facilities.
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.

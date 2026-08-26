@@ -15,8 +15,15 @@
 - `src/st_screen.pas` interprets terminal output for each pane.
 - `src/st_clipboard.pas` keeps the ten-item client history and OSC 52 helpers.
 - `src/st_kbd.pas` decodes keyboard, mouse, and bracketed-paste input.
+- `src/st_cli.pas` parses the bilingual control CLI and talks to session daemons.
+- `src/st_cli_help.pas` is the single structured presentation source for the
+  contextual command-line reference.
 - `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol on
   POSIX; native Windows currently uses its single-process stubs.
+- `src/st_ssh_server.pas` builds and administers the isolated OpenSSH service
+  on GNU/Linux and macOS.
+- `src/st_ssh_entry.pas` is the restricted `ForceCommand` adapter into the
+  ordinary Unix-socket session client.
 
 `vendor/fv322/` is the local FreeVision source used by the build. It is not a
 copy of application code. It provides the `Objects`, `Drivers`, `Views`,
@@ -42,13 +49,23 @@ Required:
 Required only for the regression suite:
 
 - Python 3.
-- Python package `pyte`.
+- Python packages `pyte` and Pillow.
+- `rsvg-convert` (`librsvg2-bin` on Debian/Ubuntu, `librsvg` with Homebrew),
+  used to prove that the checked-in artwork reproduces from its sources.
 
 Needed for remote features:
 
 - `openssh-client` for SSH terminals.
-- `sshpass` only when password authentication is explicitly configured. SSH keys
-  or an SSH agent are safer and preferred.
+- On GNU/Linux and macOS, the operating system's OpenSSH server for the
+  optional dedicated encrypted TCP entry described in
+  [SSH_SERVER.md](SSH_SERVER.md): `openssh-server` on Debian/Ubuntu and the
+  `/usr/sbin/sshd` included with macOS. It uses isolated state under
+  `/etc/superterm/sshd` and does not modify the host's ordinary `/etc/ssh`
+  configuration.
+- `sshpass` only for an outgoing SSH pane explicitly configured with a
+  password. SSH keys or an SSH agent are safer and preferred. Incoming
+  password authentication through the dedicated SuperTerm service is handled
+  by system OpenSSH/PAM and does not use `sshpass`.
 
 On Debian or Ubuntu (apt) or macOS (Homebrew), the project can install the
 common packages explicitly:
@@ -119,6 +136,12 @@ make release
 
 The release executable is `bin/superterm` (`bin/superterm.exe` on Windows).
 
+`make test` also builds `bin/superterm-test` (`.exe` on Windows) in a separate
+unit directory. Only that non-installed executable contains the compile-time
+hooks used to redirect SSH paths and service-manager programs into isolated
+test fixtures; the release binary rejects those overrides even when invoked
+as root. Never install or use `superterm-test` as a service binary.
+
 The debug build uses level-1 optimization, debug symbols, line information,
 and the `DEBUG` define:
 
@@ -152,7 +175,7 @@ selecting a build mode or installation path.
 
 ## Tests
 
-Build the release binary and run every Python/pyte regression test:
+Build the release binary and run every Python regression test:
 
 ```sh
 make test
@@ -166,7 +189,7 @@ summary lists every failure. Override the per-suite deadline when required:
 SUPERTERM_TEST_TIMEOUT=1200 make test
 ```
 
-The runner is implemented in Python and works on Linux and macOS; it does not
+The runner is implemented in Python and works on GNU/Linux and macOS; it does not
 depend on the GNU `timeout` utility.
 
 The regression harness uses POSIX `pty`, `fcntl`, and `termios` modules, so it
@@ -174,11 +197,37 @@ does not run in native Windows Python. On Windows, use `make release`, check
 `bin/superterm.exe --version` or `--help`, and launch it for an interactive
 ConPTY smoke test.
 
+The ordinary suite uses `bin/superterm-test` for isolated administrative path
+overrides, but passes `bin/superterm` separately to an unprivileged boundary
+test which proves that the release cannot enable those hooks. A real OpenSSH
+listener needs root for account/session setup, so an unprivileged local run
+reports that integration as skipped rather than claiming partial coverage. CI
+repeats only that listener test under `sudo`, with disposable keys,
+configuration and a non-root target account on every platform.
+
 The tests launch isolated PTYs. They do not attach to, restart, or modify a
 user's tmux server. The detach test starts superterm's own per-user server,
 checks that a pane survives the client exit, reattaches it, and then closes it
 permanently. The mouse tests cover both normal xterm `TERM` values and
 `tmux-256color`.
+
+The contextual help contract has its own black-box test. It crawls every topic
+from the printed index, checks all English/Spanish command aliases and required
+options, compares release and test binaries, verifies side-effect-free SSH help
+and exercises `--no-enter`, `--sin-intro`, their compatibility spellings and
+literal `--help` against a real isolated session:
+
+```sh
+make release test-runtime
+SUPERTERM_RELEASE_BIN="$PWD/bin/superterm" \
+SUPERTERM_TEST_BIN="$PWD/bin/superterm-test" \
+python3 test/cli_help_test.py
+```
+
+`make test` performs both builds automatically. When this test is invoked
+directly, naming both binaries is important: it verifies that release help and
+the test-only runtime publish byte-identical public help while retaining their
+different privileged-feature boundaries.
 
 ## Install
 
@@ -194,12 +243,12 @@ The installation contains:
 
 - `PREFIX/bin/superterm` (`superterm.exe` on Windows).
 - `PREFIX/share/doc/superterm/README.md`.
-- `PREFIX/share/doc/superterm/BUILDING.md`.
-- `PREFIX/share/doc/superterm/CONFIGURATION.md`.
-- `PREFIX/share/doc/superterm/WIZARD.md`.
+- Every Markdown file under `docs/`, including `SSH_SERVER.md`.
 - `SYSCONFDIR/superterm/superterm.ini.example`, only when no example exists.
 
 An existing configuration is never overwritten by `make install`.
+Copying the binary does not silently enable the optional root SSH service;
+`sudo superterm ssh-server setup` prepares or refreshes it explicitly.
 
 For a user-local install:
 
@@ -210,6 +259,12 @@ make install
 ```
 
 Then ensure `$HOME/.local/bin` is in `PATH`.
+
+`make uninstall` first removes a recognized root SSH service when it is run as
+root, then removes the package files while preserving `/etc/superterm/sshd`
+keys and configuration. A user-local, unprivileged uninstall cannot own such a
+service and therefore touches no host service. A `DESTDIR` uninstall only
+changes the staging tree.
 
 ## Debugging
 
@@ -238,6 +293,11 @@ GNU/Linux, macOS, and Windows 10 1809 or newer. The FreeVision UI, VT engine,
 layout, and configuration are shared, while compiler directives select the
 terminal, process, input, console, and path implementations.
 
+GNU/Linux and macOS use `fork/exec`, `poll`, POSIX PTYs, and the bundled
+FreeVision text UI. Their detached server registers its listener, handshakes,
+clients, and PTY masters through `BaseUnix.fpPoll`, with no external
+event-library dependency and no `FD_SETSIZE` ceiling.
+
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
   Pascal auto-defines `DARWIN`, so the compile line, `configure`, and `make` are
@@ -247,7 +307,14 @@ terminal, process, input, console, and path implementations.
   `%COMSPEC%` (normally `cmd.exe`) as the default shell, and configuration under
   `%APPDATA%\superterm`. See [`WINDOWS.md`](WINDOWS.md).
 
-GNU/Linux and macOS provide the detached session daemon, multi-client attach,
-session enumeration, and control CLI. Native Windows currently runs interactive
-workspaces in one process; those detached-session features are not available
-there yet.
+- CPU limits come from GNU/Linux affinity, macOS `hw.activecpu`, or
+  `GetActiveProcessorCount` on Windows.
+- The optional `src/st_ssh_server.pas` administrator uses systemd on GNU/Linux
+  or launchd on macOS. Native Windows Phase 1 does not install or administer
+  the dedicated OpenSSH service.
+
+The session engine, UI, and configuration remain shared. GNU/Linux and macOS
+also share the detached-session and SSH-entry protocols. Native Windows
+currently runs interactive workspaces in one process; detached sessions,
+multi-client attach, session enumeration, the control CLI, and dedicated SSH
+service administration are not available there yet.

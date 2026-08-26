@@ -121,19 +121,19 @@ s = Session()
 try:
     s.drain(1.5)
     check('window shortcuts visible',
-          'F5 Full screen' in s.text() and 'F8 Window' in s.text())
+          'Ctrl-Q f Full screen' in s.text() and 'F8 Window' in s.text())
 
     s.send(b'\x1bOQ')                  # F2: vertical split
     s.send(b'echo WINDOW_TWO_VISIBLE\r')
     check('split window created', 'WINDOW_TWO_VISIBLE' in s.text())
 
-    # F5 maximize: a full-screen pane now enters passthrough (its raw bytes
+    # Fullscreen: the pane enters passthrough (its raw bytes
     # own the terminal), so superterm's chrome disappears
-    s.send(b'\x1b[15~', 1.3)           # F5: maximize -> passthrough
+    s.send(stlib.FULLSCREEN_CHORD, 1.3)
     check('maximize enters passthrough', 'Detach' not in s.text())
 
-    # F5 again un-maximizes and reclaims the screen for the window manager
-    s.send(b'\x1b[15~', 1.3)           # F5: restore -> back to windows
+    # The same chord restores the window manager.
+    s.send(stlib.FULLSCREEN_CHORD, 1.3)
     check('restore leaves passthrough',
           'Detach' in s.text() and '┌' in s.screen.display[1])
 

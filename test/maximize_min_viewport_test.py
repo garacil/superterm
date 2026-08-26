@@ -8,8 +8,9 @@ pane inside it must use the smallest host's IDE area.  Otherwise the small
 creator loses the right and bottom frame even though the daemon already knows
 its host dimensions.
 
-This exercises the native title-button ``cmZoom`` path.  F5 has a different
-fullscreen/raw-passthrough path and cannot prove normal window maximize.
+This exercises the native title-button ``cmZoom`` path. The prefix+f command
+has a different fullscreen/raw-passthrough path and cannot prove normal
+window maximize.
 """
 import fcntl
 import os

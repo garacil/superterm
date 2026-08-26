@@ -14,7 +14,7 @@ unit st_profiles;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, st_os, st_config, st_wclass, st_templates;
+  Classes, SysUtils, IniFiles, ctypes, st_config, st_wclass, st_templates;
 
 type
   TProfilePaneSpec = record
@@ -64,10 +64,55 @@ function LoadProfiles(const UserFile, SystemFile: string;
 // unrelated sections; absorbs the user's [template.*] on save
 procedure SaveProfiles(const FileName: string; const AProfiles: TProfileArray);
 
+// Atomically reloads, checks and adds one empty user profile while holding the
+// same inter-process lock used by SaveProfiles. False means the name appeared
+// concurrently; AProfiles is refreshed in either case.
+function CreateEmptyProfileAtomic(const UserFile, SystemFile, AName: string;
+  var AProfiles: TProfileArray): boolean;
+
+// Conflict-safe profile mutations for independent attached clients. AProfiles
+// is both the caller's expected snapshot and the authoritative refreshed
+// result. They reload and compare the complete target object under the common
+// config lock before an atomic file replacement.
+// Rename/delete also remap an on-disk default which still names their target
+// inside that same replacement, so a crash cannot publish half a generation.
+function RenameUserProfileAtomic(const UserFile, SystemFile, OldName,
+  NewName: string; var AProfiles: TProfileArray): boolean;
+function DeleteUserProfileAtomic(const UserFile, SystemFile, AName: string;
+  var AProfiles: TProfileArray): boolean;
+function UpsertUserProfileAtomic(const UserFile, SystemFile: string;
+  const AProfile: TProfileSpec; var AProfiles: TProfileArray): boolean;
+
+// Select a default by stable name while holding the same lock as profile
+// rename/delete. The preferred window is accepted only if it still exists
+// and is enabled in that exact generation; otherwise the fresh profile's
+// focused/first enabled window is used. AProfiles is refreshed either way.
+function SetDefaultProfileAtomic(const UserFile, SystemFile, AName,
+  PreferredWindow: string; var AProfiles: TProfileArray;
+  out SelectedWindow: string): boolean;
+
+// A profile name is embedded in an INI section. Keep it round-trippable and
+// reject section delimiters/control bytes instead of appearing to save a
+// profile that the next process cannot load.
+function ValidProfileName(const AName: string): boolean;
+
 // searches by name (case-insensitive); -1 if not found
 function FindProfileByName(const A: TProfileArray; const AName: string): integer;
 
 implementation
+
+function ValidProfileName(const AName: string): boolean;
+var
+  I: integer;
+begin
+  Result := (AName <> '') and (AName = Trim(AName));
+  if not Result then
+    Exit;
+  for I := 1 to Length(AName) do
+    if (byte(AName[I]) < 32) or (byte(AName[I]) = 127) or
+       (AName[I] in ['.', '[', ']']) then
+      Exit(False);
+end;
 
 function FindProfileByName(const A: TProfileArray; const AName: string): integer;
 var
@@ -77,6 +122,57 @@ begin
   for i := 0 to High(A) do
     if SameText(A[i].Name, AName) then
       Exit(i);
+end;
+
+function SameStoredProfilePane(const A, B: TProfilePaneSpec): boolean;
+begin
+  Result := (A.Name = B.Name) and
+    (A.Enabled = B.Enabled) and
+    (A.WClass = B.WClass) and
+    (A.Title = B.Title) and
+    (A.Cmd = B.Cmd) and
+    (A.Cwd = B.Cwd) and
+    (A.Connect = B.Connect) and
+    (A.PostConnect = B.PostConnect) and
+    (A.ScrollBack = B.ScrollBack) and
+    (A.BX = B.BX) and (A.BY = B.BY) and
+    (A.BW = B.BW) and (A.BH = B.BH) and
+    (A.Minimized = B.Minimized) and (A.Zoomed = B.Zoomed);
+end;
+
+function SameStoredProfileWindow(const A, B: TProfileWindowSpec): boolean;
+var
+  I: integer;
+begin
+  Result := (A.Name = B.Name) and
+    (A.Enabled = B.Enabled) and
+    (A.Layout = B.Layout) and
+    (A.FocusedPane = B.FocusedPane) and
+    (A.DeskW = B.DeskW) and (A.DeskH = B.DeskH) and
+    (Length(A.Panes) = Length(B.Panes));
+  if not Result then
+    Exit;
+  for I := 0 to High(A.Panes) do
+    if not SameStoredProfilePane(A.Panes[I], B.Panes[I]) then
+      Exit(False);
+end;
+
+// A complete canonical snapshot is the profile's optimistic revision. This
+// avoids an extra revision file/key while still detecting every persisted
+// same-object edit made after a client opened its editor.
+function SameStoredProfile(const A, B: TProfileSpec): boolean;
+var
+  I: integer;
+begin
+  Result := (A.Name = B.Name) and
+    (A.Enabled = B.Enabled) and
+    (A.FocusedWindow = B.FocusedWindow) and
+    (Length(A.Windows) = Length(B.Windows));
+  if not Result then
+    Exit;
+  for I := 0 to High(A.Windows) do
+    if not SameStoredProfileWindow(A.Windows[I], B.Windows[I]) then
+      Exit(False);
 end;
 
 // TIniFile strips one pair of outer quotes when reading: if the value
@@ -152,7 +248,7 @@ begin
       Prof.Origin := AOrigin;
       Prof.Name := Ini.ReadString(Sec, 'name',
         Copy(Sec, Length('profile.') + 1, MaxInt));
-      if Trim(Prof.Name) = '' then
+      if not ValidProfileName(Prof.Name) then
         continue;
       // the first one wins within the combined load (user before system)
       if FindProfileByName(Profiles, Prof.Name) >= 0 then
@@ -247,6 +343,8 @@ begin
         Prof.Name := Templates[t].Name
       else
         Prof.Name := Templates[t].Name + '/' + Templates[t].Sessions[s].Name;
+      if not ValidProfileName(Prof.Name) then
+        continue;
       if FindProfileByName(Profiles, Prof.Name) >= 0 then
         continue;   // an explicit [profile.*] beats the flattened template
       Prof.Enabled := True;
@@ -305,29 +403,22 @@ begin
   Result := Length(Profiles) > 0;
 end;
 
-procedure SaveProfiles(const FileName: string; const AProfiles: TProfileArray);
+procedure SaveProfilesUnlocked(const FileName: string;
+  const AProfiles: TProfileArray; const DefaultOld, DefaultNew: string;
+  ClearDefaultWindow: boolean);
 var
   Ini: TIniFile;
   SL, Names: TStringList;
   i, w, p: integer;
-  Sec, WSec, PSec, TempName: string;
+  Sec, WSec, PSec, TempName, CurrentDefault: string;
 begin
-  TempName := FileName + '.tmp.' + IntToStr(OsGetPid);
-  if FileExists(TempName) then
-    DeleteFile(TempName);
-  // copy of the current content to preserve unrelated sections
-  SL := TStringList.Create;
+  TempName := BeginConfigRewriteLocked(FileName, 'profiles');
   try
-    if FileExists(FileName) then
-      SL.LoadFromFile(FileName);
-    SL.SaveToFile(TempName);
-  finally
-    SL.Free;
-  end;
-  Ini := TIniFile.Create(TempName);
-  SL := TStringList.Create;
-  Names := TStringList.Create;
-  try
+    Ini := TIniFile.Create(TempName);
+    SL := TStringList.Create;
+    Names := TStringList.Create;
+    try
+    Ini.CacheUpdates := True;
     // delete what is ours: [profile.*] (all subsections) and the
     // legacy [template.*] (absorbed at the first save)
     Ini.ReadSections(SL);
@@ -339,6 +430,9 @@ begin
     begin
       if AProfiles[i].Origin <> coUser then
         continue;
+      if not ValidProfileName(AProfiles[i].Name) then
+        raise EConfigWriteError.CreateFmt('Invalid profile name: %s',
+          [AProfiles[i].Name]);
       Sec := 'profile.' + AProfiles[i].Name;
       Ini.WriteString(Sec, 'name', AProfiles[i].Name);
       Ini.WriteInteger(Sec, 'enabled', Ord(AProfiles[i].Enabled));
@@ -406,15 +500,273 @@ begin
         end;
       end;
     end;
-    Ini.UpdateFile;
-    OsRestrictFile(TempName);
+      if DefaultOld <> '' then
+      begin
+        CurrentDefault := Ini.ReadString('session', 'default_profile', '');
+        if SameText(CurrentDefault, DefaultOld) then
+        begin
+          Ini.WriteString('session', 'default_profile', DefaultNew);
+          if ClearDefaultWindow then
+            Ini.WriteString('session', 'default_window', '');
+        end;
+      end;
+      Ini.UpdateFile;
+    finally
+      Names.Free;
+      SL.Free;
+      Ini.Free;
+    end;
+    CommitConfigRewriteLocked(TempName, FileName);
   finally
-    Names.Free;
-    SL.Free;
-    Ini.Free;
+    if TempName <> '' then
+      DeleteFile(TempName);
   end;
-  if not RenameFile(TempName, FileName) then
-    DeleteFile(TempName);
+end;
+
+procedure SaveProfiles(const FileName: string; const AProfiles: TProfileArray);
+var
+  LockFd: cint;
+begin
+  LockFd := AcquireConfigFileLock(FileName);
+  try
+    SaveProfilesUnlocked(FileName, AProfiles, '', '', False);
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function CreateEmptyProfileAtomic(const UserFile, SystemFile, AName: string;
+  var AProfiles: TProfileArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TProfileArray;
+  P: TProfileSpec;
+begin
+  Result := False;
+  if not ValidProfileName(AName) then
+    Exit;
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    Fresh := nil;
+    LoadProfiles(UserFile, SystemFile, Fresh);
+    if FindProfileByName(Fresh, AName) < 0 then
+    begin
+      P := Default(TProfileSpec);
+      P.Name := AName;
+      P.Enabled := True;
+      P.Origin := coUser;
+      P.FocusedWindow := -1;
+      SetLength(Fresh, Length(Fresh) + 1);
+      Fresh[High(Fresh)] := P;
+      SaveProfilesUnlocked(UserFile, Fresh, '', '', False);
+      Result := True;
+    end;
+    AProfiles := Fresh;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function RenameUserProfileAtomic(const UserFile, SystemFile, OldName,
+  NewName: string; var AProfiles: TProfileArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TProfileArray;
+  OldIdx, NewIdx, ExpectedIdx: integer;
+  Expected: TProfileSpec;
+  HaveExpected: boolean;
+begin
+  Result := False;
+  if not ValidProfileName(NewName) then
+    Exit;
+  Expected := Default(TProfileSpec);
+  ExpectedIdx := FindProfileByName(AProfiles, OldName);
+  HaveExpected := ExpectedIdx >= 0;
+  if HaveExpected then
+  begin
+    Expected := AProfiles[ExpectedIdx];
+    HaveExpected := Expected.Origin = coUser;
+  end;
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    Fresh := nil;
+    LoadProfiles(UserFile, SystemFile, Fresh);
+    OldIdx := FindProfileByName(Fresh, OldName);
+    NewIdx := FindProfileByName(Fresh, NewName);
+    if HaveExpected and (OldIdx >= 0) and
+       (Fresh[OldIdx].Origin = coUser) and
+       SameStoredProfile(Fresh[OldIdx], Expected) and
+       ((NewIdx < 0) or (NewIdx = OldIdx)) then
+    begin
+      Fresh[OldIdx].Name := NewName;
+      SaveProfilesUnlocked(UserFile, Fresh, OldName, NewName, False);
+      Result := True;
+    end;
+    AProfiles := Fresh;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function DeleteUserProfileAtomic(const UserFile, SystemFile, AName: string;
+  var AProfiles: TProfileArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TProfileArray;
+  Idx, ExpectedIdx: integer;
+  Expected: TProfileSpec;
+  HaveExpected: boolean;
+begin
+  Result := False;
+  Expected := Default(TProfileSpec);
+  ExpectedIdx := FindProfileByName(AProfiles, AName);
+  HaveExpected := ExpectedIdx >= 0;
+  if HaveExpected then
+  begin
+    Expected := AProfiles[ExpectedIdx];
+    HaveExpected := Expected.Origin = coUser;
+  end;
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    Fresh := nil;
+    LoadProfiles(UserFile, SystemFile, Fresh);
+    Idx := FindProfileByName(Fresh, AName);
+    if HaveExpected and (Idx >= 0) and (Fresh[Idx].Origin = coUser) and
+       SameStoredProfile(Fresh[Idx], Expected) then
+    begin
+      Delete(Fresh, Idx, 1);
+      SaveProfilesUnlocked(UserFile, Fresh, AName, '', True);
+      Result := True;
+    end;
+    AProfiles := Fresh;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function UpsertUserProfileAtomic(const UserFile, SystemFile: string;
+  const AProfile: TProfileSpec; var AProfiles: TProfileArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TProfileArray;
+  P, Expected: TProfileSpec;
+  Idx, ExpectedIdx: integer;
+  HaveExpected: boolean;
+begin
+  Result := False;
+  if not ValidProfileName(AProfile.Name) then
+    Exit;
+  Expected := Default(TProfileSpec);
+  ExpectedIdx := FindProfileByName(AProfiles, AProfile.Name);
+  HaveExpected := ExpectedIdx >= 0;
+  if HaveExpected then
+    Expected := AProfiles[ExpectedIdx];
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    Fresh := nil;
+    LoadProfiles(UserFile, SystemFile, Fresh);
+    P := AProfile;
+    P.Origin := coUser;
+    Idx := FindProfileByName(Fresh, P.Name);
+    if HaveExpected then
+    begin
+      if (Expected.Origin <> coUser) or (Idx < 0) or
+         (Fresh[Idx].Origin <> coUser) or
+         (not SameStoredProfile(Fresh[Idx], Expected)) then
+      begin
+        AProfiles := Fresh;
+        Exit;
+      end;
+      Fresh[Idx] := P
+    end
+    else if Idx < 0 then
+    begin
+      SetLength(Fresh, Length(Fresh) + 1);
+      Fresh[High(Fresh)] := P;
+    end
+    else
+    begin
+      // It appeared after this client's catalogue snapshot.
+      AProfiles := Fresh;
+      Exit;
+    end;
+    SaveProfilesUnlocked(UserFile, Fresh, '', '', False);
+    AProfiles := Fresh;
+    Result := True;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function SetDefaultProfileAtomic(const UserFile, SystemFile, AName,
+  PreferredWindow: string; var AProfiles: TProfileArray;
+  out SelectedWindow: string): boolean;
+var
+  LockFd: cint;
+  Fresh: TProfileArray;
+  Ini: TIniFile;
+  TempName: string;
+  Idx, WindowIdx, I: integer;
+begin
+  Result := False;
+  SelectedWindow := '';
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    Fresh := nil;
+    LoadProfiles(UserFile, SystemFile, Fresh);
+    Idx := FindProfileByName(Fresh, AName);
+    if (Idx < 0) or (not Fresh[Idx].Enabled) then
+    begin
+      AProfiles := Fresh;
+      Exit;
+    end;
+    WindowIdx := -1;
+    if PreferredWindow <> '' then
+      for I := 0 to High(Fresh[Idx].Windows) do
+        if Fresh[Idx].Windows[I].Enabled and
+           SameText(Fresh[Idx].Windows[I].Name, PreferredWindow) then
+        begin
+          WindowIdx := I;
+          Break;
+        end;
+    if WindowIdx < 0 then
+    begin
+      I := Fresh[Idx].FocusedWindow;
+      if (I >= 0) and (I < Length(Fresh[Idx].Windows)) and
+         Fresh[Idx].Windows[I].Enabled then
+        WindowIdx := I
+      else
+        for I := 0 to High(Fresh[Idx].Windows) do
+          if Fresh[Idx].Windows[I].Enabled then
+          begin
+            WindowIdx := I;
+            Break;
+          end;
+    end;
+    if WindowIdx >= 0 then
+      SelectedWindow := Fresh[Idx].Windows[WindowIdx].Name;
+
+    TempName := BeginConfigRewriteLocked(UserFile, 'default-profile');
+    try
+      Ini := TIniFile.Create(TempName);
+      try
+        Ini.CacheUpdates := True;
+        Ini.WriteString('session', 'default_profile', Fresh[Idx].Name);
+        Ini.WriteString('session', 'default_window', SelectedWindow);
+        Ini.UpdateFile;
+      finally
+        Ini.Free;
+      end;
+      CommitConfigRewriteLocked(TempName, UserFile);
+    finally
+      if TempName <> '' then
+        DeleteFile(TempName);
+    end;
+    AProfiles := Fresh;
+    Result := True;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
 end;
 
 end.

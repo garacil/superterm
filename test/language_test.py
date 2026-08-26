@@ -86,6 +86,10 @@ try:
     s.drain(1.2)
     check('Spanish config selects Spanish UI',
           'Paneles' in s.text() and 'Opciones' in s.text())
+    status = ''.join(s.screen.display[-1])
+    check('Spanish status prefers Detach',
+          'Separar' in status and 'Salir' not in status and
+          'Ctrl-Q f Pantalla' in status and 'F5 Pantalla' not in status)
 
     s.send(b'\x1bv', 0.5)  # "Ventanas" menu
     check('Spanish window-wide actions fit',
@@ -105,6 +109,11 @@ try:
     s.send(b'e')
     check('English switch updates the UI',
           'Panes' in s.text() and 'Options' in s.text())
+    status = ''.join(s.screen.display[-1])
+    check('English status prefers Detach',
+          'Detach' in status and 'Exit' not in status and
+          'Ctrl-Q f Full screen' in status and
+          'F5 Full screen' not in status)
     check('English switch persists', 'language=en' in open(CONFIG).read())
 
     s.send(b'\x1bo', 0.5)  # Options
@@ -114,6 +123,8 @@ try:
           'Paneles' in s.text() and 'Opciones' in s.text())
     s.send(b'\x1ba\r')  # "Ayuda" -> "Ayuda y atajos" (Help -> Help and shortcuts)
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
+    check('Spanish help shows fullscreen chord',
+          'Ctrl-Q f pantalla' in s.text() and 'Alt-F3 cierra' in s.text())
     s.send(b'\x1b', 0.5)  # close the help dialog
     s.send(b'\x1b', 0.5)  # and any menu still left open
     s.send(b'\x1bx', 1.5)  # Alt-X: the single Exit command

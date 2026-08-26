@@ -13,7 +13,7 @@ unit st_wclass;
 interface
 
 uses
-  Classes, SysUtils, StrUtils, IniFiles, st_os, st_config;
+  Classes, SysUtils, StrUtils, IniFiles, ctypes, st_config;
 
 type
   // the kind is derived on load and never persisted:
@@ -62,11 +62,21 @@ procedure MergeWindowClasses(var Target: TWindowClassArray;
 // finds a class by name (case-insensitive); -1 if not present
 function FindClassByName(const A: TWindowClassArray;
   const AName: string): integer;
+function ValidWindowClassName(const AName: string): boolean;
 
 // writes the user-origin classes to FileName atomically,
 // preserving foreign sections; absorbs legacy [t-*] on save
 procedure SaveWindowClasses(const FileName: string;
   const AClasses: TWindowClassArray);
+
+// Conflict-safe mutations for independent attached clients. AClasses is both
+// the caller's expected snapshot and the authoritative refreshed result.
+// OldName is empty for an insertion; otherwise it names the exact user-class
+// generation being replaced.
+function UpsertUserWindowClassAtomic(const UserFile, SystemFile, OldName: string;
+  const Candidate: TWindowClass; var AClasses: TWindowClassArray): boolean;
+function DeleteUserWindowClassAtomic(const UserFile, SystemFile, AName: string;
+  var AClasses: TWindowClassArray): boolean;
 
 // structured argv for ssh (wcSSH); with sshpass if there is a password
 procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;
@@ -91,6 +101,43 @@ implementation
 
 uses
   base64;
+
+function ValidWindowClassName(const AName: string): boolean;
+var
+  I: integer;
+begin
+  Result := (AName <> '') and (AName = Trim(AName));
+  if not Result then
+    Exit;
+  for I := 1 to Length(AName) do
+    if (byte(AName[I]) < 32) or (byte(AName[I]) = 127) or
+       (AName[I] in ['[', ']']) then
+      Exit(False);
+end;
+
+// The in-memory record is the optimistic revision presented to an editor.
+// Compare every persisted field (Kind is derived and Origin is metadata), so
+// a later writer can distinguish "the same named object" from the exact
+// generation which the user actually edited.
+function SameStoredWindowClass(const A, B: TWindowClass): boolean;
+begin
+  Result := (A.Name = B.Name) and
+    (A.Enabled = B.Enabled) and
+    (A.Title = B.Title) and
+    (A.Shell = B.Shell) and
+    (A.Cmd = B.Cmd) and
+    (A.Cwd = B.Cwd) and
+    (A.Host = B.Host) and
+    (A.User = B.User) and
+    (A.Port = B.Port) and
+    (A.KeyFile = B.KeyFile) and
+    (A.Password = B.Password) and
+    (A.Connect = B.Connect) and
+    (A.PostConnect = B.PostConnect) and
+    (A.ScrollBack = B.ScrollBack) and
+    (A.Cols = B.Cols) and
+    (A.Rows = B.Rows);
+end;
 
 function DefaultWindowClass: TWindowClass;
 begin
@@ -168,7 +215,7 @@ begin
           MaxInt))
       else
         C.Name := Ini.ReadString(Sec, 'name', Copy(Sec, 2, MaxInt));
-      if Trim(C.Name) = '' then
+      if not ValidWindowClassName(C.Name) then
         continue;
       C.Enabled := ParseBoolStr(Ini.ReadString(Sec, 'enabled', '1'), True);
       C.Title := Ini.ReadString(Sec, 'title', '');
@@ -234,7 +281,7 @@ begin
     end;
 end;
 
-procedure SaveWindowClasses(const FileName: string;
+procedure SaveWindowClassesUnlocked(const FileName: string;
   const AClasses: TWindowClassArray);
 var
   Ini: TIniFile;
@@ -242,76 +289,192 @@ var
   i: integer;
   Sec, TempName: string;
 begin
-  TempName := FileName + '.tmp.' + IntToStr(OsGetPid);
-  if FileExists(TempName) then
-    DeleteFile(TempName);
-  // copy of the current content to preserve foreign sections
-  SL := TStringList.Create;
+  TempName := BeginConfigRewriteLocked(FileName, 'classes');
   try
-    if FileExists(FileName) then
-      SL.LoadFromFile(FileName);
-    SL.SaveToFile(TempName);
-  finally
-    SL.Free;
-  end;
-  Ini := TIniFile.Create(TempName);
-  SL := TStringList.Create;
-  try
-    // erase everything of ours: [class.*] and the legacy [t-*]
-    // (so the first save absorbs and migrates the user's [t-*])
-    Ini.ReadSections(SL);
-    for i := 0 to SL.Count - 1 do
-      if IsLegacyTermSection(SL[i]) or
-         (LowerCase(Copy(SL[i], 1, Length('class.'))) = 'class.') then
-        Ini.EraseSection(SL[i]);
-    for i := 0 to High(AClasses) do
-    begin
-      if AClasses[i].Origin <> coUser then
-        continue;
-      Sec := 'class.' + AClasses[i].Name;
-      Ini.WriteString(Sec, 'name', AClasses[i].Name);
-      Ini.WriteInteger(Sec, 'enabled', Ord(AClasses[i].Enabled));
-      if AClasses[i].Title <> '' then
-        Ini.WriteString(Sec, 'title', IniQuoteGuard(AClasses[i].Title));
-      if AClasses[i].Shell <> '' then
-        Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
-      if AClasses[i].Cmd <> '' then
-        Ini.WriteString(Sec, 'cmd', IniQuoteGuard(AClasses[i].Cmd));
-      if AClasses[i].Cwd <> '' then
-        Ini.WriteString(Sec, 'cwd', IniQuoteGuard(AClasses[i].Cwd));
-      if AClasses[i].Host <> '' then
-        Ini.WriteString(Sec, 'host', AClasses[i].Host);
-      if AClasses[i].User <> '' then
-        Ini.WriteString(Sec, 'user', AClasses[i].User);
-      if AClasses[i].Port > 0 then
-        Ini.WriteInteger(Sec, 'port', AClasses[i].Port);
-      if AClasses[i].KeyFile <> '' then
-        Ini.WriteString(Sec, 'key', AClasses[i].KeyFile);
-      if AClasses[i].Password <> '' then
-        Ini.WriteString(Sec, 'password',
-          EncodeStringBase64(AClasses[i].Password));
-      if AClasses[i].Connect <> '' then
-        Ini.WriteString(Sec, 'connect', IniQuoteGuard(AClasses[i].Connect));
-      if AClasses[i].PostConnect <> '' then
-        Ini.WriteString(Sec, 'postconnect',
-          IniQuoteGuard(AClasses[i].PostConnect));
-      if (AClasses[i].ScrollBack > 0) and
-         (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
-        Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
-      if AClasses[i].Cols > 0 then
-        Ini.WriteInteger(Sec, 'cols', AClasses[i].Cols);
-      if AClasses[i].Rows > 0 then
-        Ini.WriteInteger(Sec, 'rows', AClasses[i].Rows);
+    Ini := TIniFile.Create(TempName);
+    SL := TStringList.Create;
+    try
+      Ini.CacheUpdates := True;
+      // erase everything of ours: [class.*] and the legacy [t-*]
+      // (so the first save absorbs and migrates the user's [t-*])
+      Ini.ReadSections(SL);
+      for i := 0 to SL.Count - 1 do
+        if IsLegacyTermSection(SL[i]) or
+           (LowerCase(Copy(SL[i], 1, Length('class.'))) = 'class.') then
+          Ini.EraseSection(SL[i]);
+      for i := 0 to High(AClasses) do
+      begin
+        if AClasses[i].Origin <> coUser then
+          continue;
+        if not ValidWindowClassName(AClasses[i].Name) then
+          raise EConfigWriteError.CreateFmt('Invalid window class name: %s',
+            [AClasses[i].Name]);
+        Sec := 'class.' + AClasses[i].Name;
+        Ini.WriteString(Sec, 'name', AClasses[i].Name);
+        Ini.WriteInteger(Sec, 'enabled', Ord(AClasses[i].Enabled));
+        if AClasses[i].Title <> '' then
+          Ini.WriteString(Sec, 'title', IniQuoteGuard(AClasses[i].Title));
+        if AClasses[i].Shell <> '' then
+          Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
+        if AClasses[i].Cmd <> '' then
+          Ini.WriteString(Sec, 'cmd', IniQuoteGuard(AClasses[i].Cmd));
+        if AClasses[i].Cwd <> '' then
+          Ini.WriteString(Sec, 'cwd', IniQuoteGuard(AClasses[i].Cwd));
+        if AClasses[i].Host <> '' then
+          Ini.WriteString(Sec, 'host', AClasses[i].Host);
+        if AClasses[i].User <> '' then
+          Ini.WriteString(Sec, 'user', AClasses[i].User);
+        if AClasses[i].Port > 0 then
+          Ini.WriteInteger(Sec, 'port', AClasses[i].Port);
+        if AClasses[i].KeyFile <> '' then
+          Ini.WriteString(Sec, 'key', AClasses[i].KeyFile);
+        if AClasses[i].Password <> '' then
+          Ini.WriteString(Sec, 'password',
+            EncodeStringBase64(AClasses[i].Password));
+        if AClasses[i].Connect <> '' then
+          Ini.WriteString(Sec, 'connect', IniQuoteGuard(AClasses[i].Connect));
+        if AClasses[i].PostConnect <> '' then
+          Ini.WriteString(Sec, 'postconnect',
+            IniQuoteGuard(AClasses[i].PostConnect));
+        if (AClasses[i].ScrollBack > 0) and
+           (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
+          Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
+        if AClasses[i].Cols > 0 then
+          Ini.WriteInteger(Sec, 'cols', AClasses[i].Cols);
+        if AClasses[i].Rows > 0 then
+          Ini.WriteInteger(Sec, 'rows', AClasses[i].Rows);
+      end;
+      Ini.UpdateFile;
+    finally
+      SL.Free;
+      Ini.Free;
     end;
-    Ini.UpdateFile;
-    // the file may contain passwords
-    OsRestrictFile(TempName);
+    CommitConfigRewriteLocked(TempName, FileName);
   finally
-    SL.Free;
-    Ini.Free;
+    if TempName <> '' then
+      DeleteFile(TempName);
   end;
-  if not RenameFile(TempName, FileName) then
-    DeleteFile(TempName);
+end;
+
+procedure SaveWindowClasses(const FileName: string;
+  const AClasses: TWindowClassArray);
+var
+  LockFd: cint;
+begin
+  LockFd := AcquireConfigFileLock(FileName);
+  try
+    SaveWindowClassesUnlocked(FileName, AClasses);
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+procedure LoadCombinedWindowClasses(const UserFile, SystemFile: string;
+  out AClasses: TWindowClassArray);
+var
+  SystemClasses: TWindowClassArray;
+begin
+  LoadWindowClasses(UserFile, coUser, AClasses);
+  if not SameFileName(UserFile, SystemFile) then
+  begin
+    LoadWindowClasses(SystemFile, coSystem, SystemClasses);
+    MergeWindowClasses(AClasses, SystemClasses);
+  end;
+end;
+
+function UpsertUserWindowClassAtomic(const UserFile, SystemFile, OldName: string;
+  const Candidate: TWindowClass; var AClasses: TWindowClassArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TWindowClassArray;
+  OldIdx, NewIdx, ExpectedIdx: integer;
+  C, Expected: TWindowClass;
+  HaveExpected: boolean;
+begin
+  Result := False;
+  if not ValidWindowClassName(Candidate.Name) then
+    Exit;
+  HaveExpected := False;
+  Expected := Default(TWindowClass);
+  if OldName <> '' then
+  begin
+    ExpectedIdx := FindClassByName(AClasses, OldName);
+    if ExpectedIdx >= 0 then
+    begin
+      Expected := AClasses[ExpectedIdx];
+      HaveExpected := Expected.Origin = coUser;
+    end;
+  end;
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    LoadCombinedWindowClasses(UserFile, SystemFile, Fresh);
+    NewIdx := FindClassByName(Fresh, Candidate.Name);
+    if OldName = '' then
+    begin
+      if NewIdx >= 0 then
+      begin
+        AClasses := Fresh;
+        Exit;
+      end;
+      OldIdx := Length(Fresh);
+      SetLength(Fresh, OldIdx + 1);
+    end
+    else
+    begin
+      OldIdx := FindClassByName(Fresh, OldName);
+      if (not HaveExpected) or (OldIdx < 0) or
+         (Fresh[OldIdx].Origin <> coUser) or
+         (not SameStoredWindowClass(Fresh[OldIdx], Expected)) or
+         ((NewIdx >= 0) and (NewIdx <> OldIdx)) then
+      begin
+        AClasses := Fresh;
+        Exit;
+      end;
+    end;
+    C := Candidate;
+    C.Origin := coUser;
+    Fresh[OldIdx] := C;
+    SaveWindowClassesUnlocked(UserFile, Fresh);
+    AClasses := Fresh;
+    Result := True;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
+end;
+
+function DeleteUserWindowClassAtomic(const UserFile, SystemFile, AName: string;
+  var AClasses: TWindowClassArray): boolean;
+var
+  LockFd: cint;
+  Fresh: TWindowClassArray;
+  Idx, ExpectedIdx: integer;
+  Expected: TWindowClass;
+  HaveExpected: boolean;
+begin
+  Result := False;
+  Expected := Default(TWindowClass);
+  ExpectedIdx := FindClassByName(AClasses, AName);
+  HaveExpected := ExpectedIdx >= 0;
+  if HaveExpected then
+  begin
+    Expected := AClasses[ExpectedIdx];
+    HaveExpected := Expected.Origin = coUser;
+  end;
+  LockFd := AcquireConfigFileLock(UserFile);
+  try
+    LoadCombinedWindowClasses(UserFile, SystemFile, Fresh);
+    Idx := FindClassByName(Fresh, AName);
+    if HaveExpected and (Idx >= 0) and (Fresh[Idx].Origin = coUser) and
+       SameStoredWindowClass(Fresh[Idx], Expected) then
+    begin
+      Delete(Fresh, Idx, 1);
+      SaveWindowClassesUnlocked(UserFile, Fresh);
+      Result := True;
+    end;
+    AClasses := Fresh;
+  finally
+    ReleaseConfigFileLock(LockFd);
+  end;
 end;
 
 procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;

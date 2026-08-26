@@ -165,7 +165,8 @@ complete DEC synchronized renderer update separately. This matters because a
 single PTY read can contain both the wrong intermediate frame and its final
 correction; inspecting only the settled `pyte` screen would make that test
 lie. The focused regression exercises two clients and checks minimize,
-restore, maximize, character-by-character resize and both directions of F5:
+restore, maximize, character-by-character resize and both directions of
+fullscreen (`Ctrl-Q f` with the default prefix):
 
 ```sh
 SUPERTERM_TEST_BIN="$PWD/bin/superterm-debug" \
@@ -175,7 +176,8 @@ SUPERTERM_TEST_BIN="$PWD/bin/superterm-debug" \
 python3 test/f5_output_layout_order_test.py
 ```
 
-The F5 ordering test uses two equal-size viewers plus cursor-positioned output
+The fullscreen ordering test (kept in the legacy-named
+`f5_output_layout_order_test.py`) uses two equal-size viewers plus cursor-positioned output
 during both animation directions. It checks the daemon screen, both client
 mirrors and both physical cursors, so a client cannot resize optimistically
 or parse queued output at a width different from the canonical PTY.
@@ -270,8 +272,10 @@ The close-all test starts 16 panes with two attached clients and requires one
 atomic 16-to-0 presentation in each, then proves that either client can create
 and use the first pane again.
 
-Useful keys: `\x1b[15~` F5, `\x1bOQ` F2, `\x1b[17~` F6, `\x1b[20;3~` Alt-F9,
-`\x1b1` Alt-1, `\x11` the prefix key (Ctrl-Q by default), `\x1bx` Alt-X. Mouse
+Useful keys: `\x11f` fullscreen with the default prefix, `\x1b[15~` physical
+F5 passed to the pane, `\x1bOQ` F2, `\x1b[17~` F6,
+`\x1b[20;3~` Alt-F9, `\x1b1` Alt-1, `\x11` the prefix key (Ctrl-Q by
+default), `\x1bx` Alt-X. Mouse
 reports are SGR 1006: `\x1b[<0;COL;ROWM` presses and `...m` releases. Row 1 is
 the menu bar — a click there opens a menu and swallows the keys that follow.
 

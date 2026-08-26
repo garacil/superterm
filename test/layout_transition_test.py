@@ -78,7 +78,7 @@ check('rename other pane',
       control(['rename', SESSION + ':2', 'OTHERPANE']).returncode == 0)
 
 # One extra physical column deliberately keeps this temporal renderer test on
-# the mixed-geometry fallback path. Equal-size raw F5 is covered byte-for-byte
+# the mixed-geometry fallback path. Equal-size raw fullscreen is covered byte-for-byte
 # by passthrough_multiclient_test; here we need the rendered final frame in
 # order to audit every animation/lock presentation around it.
 b = stlib.Client(HOME, args=['--attach'], w=111, h=34, lang='en', env=ENV)
@@ -608,7 +608,7 @@ check('resize observer renders every exact one-cell step',
 check('layout commit sends no RESIZE_EV',
       'daemon says' not in resize_log)
 
-# ---------------------------------------------------------- F5 animation
+# -------------------------------------------------- fullscreen animation
 
 def pascal_div(value, divisor):
     """Integer division with Pascal's truncation toward zero."""
@@ -732,31 +732,31 @@ before_f5 = frame_rect(a)
 f5_in_frame_attr_a = frame_attr(a, before_f5)
 f5_in_frame_attr_b = frame_attr(b, before_f5)
 begin_capture()
-os.write(a.fd, b'\x1b[15~')
+os.write(a.fd, stlib.FULLSCREEN_CHORD)
 drain_all(1.8)
 f5_in_a, f5_in_b = end_capture()
 after_f5 = frame_rect(a)
 f5_path_a = rect_path(f5_in_a, before_f5)
 f5_path_b = rect_path(f5_in_b, before_f5)
-check('F5 geometry has no stale rollback',
+check('fullscreen geometry has no stale rollback',
       after_f5 is not None and after_f5 != before_f5 and
       f5_path_a == [before_f5, after_f5] and
       f5_path_b == [before_f5, after_f5] and
       frame_rect(b) == after_f5)
 
-# F5 out deliberately restores the window first and then contracts its ring.
+# Fullscreen out deliberately restores the window first, then contracts its ring.
 # That order is valid animation, but the actual pane rectangle still changes
 # exactly once and every one of the eight visible rings must shrink.
 f5_out_frame_attr_a = frame_attr(a, after_f5)
 f5_out_frame_attr_b = frame_attr(b, after_f5)
 begin_capture()
-os.write(a.fd, b'\x1b[15~')
+os.write(a.fd, stlib.FULLSCREEN_CHORD)
 drain_all(1.8)
 f5_out_a, f5_out_b = end_capture()
 after_f5_out = frame_rect(a)
 f5_out_path_a = rect_path(f5_out_a, after_f5)
 f5_out_path_b = rect_path(f5_out_b, after_f5)
-check('F5 return has no stale rollback',
+check('fullscreen return has no stale rollback',
       after_f5_out == before_f5 and frame_rect(b) == before_f5 and
       f5_out_path_a == [after_f5, before_f5] and
       f5_out_path_b == [after_f5, before_f5])
@@ -916,9 +916,9 @@ animation_specs = [
      zoom_frame_attr_a, zoom_frame_attr_b, 'old', True),
     ('unzoom', unzoom_a, unzoom_b, after_zoom, after_unzoom,
      unzoom_frame_attr_a, unzoom_frame_attr_b, 'new', False),
-    ('F5 in', f5_in_a, f5_in_b, before_f5, after_f5,
+    ('fullscreen in', f5_in_a, f5_in_b, before_f5, after_f5,
      f5_in_frame_attr_a, f5_in_frame_attr_b, 'old', True),
-    ('F5 out', f5_out_a, f5_out_b, after_f5, after_f5_out,
+    ('fullscreen out', f5_out_a, f5_out_b, after_f5, after_f5_out,
      f5_out_frame_attr_a, f5_out_frame_attr_b, 'new', False),
 ]
 
@@ -986,10 +986,10 @@ all_captures = {
     'move observer': move_b,
     'resize actor': resize_a,
     'resize observer': resize_b,
-    'F5 in actor': f5_in_a,
-    'F5 in observer': f5_in_b,
-    'F5 out actor': f5_out_a,
-    'F5 out observer': f5_out_b,
+    'fullscreen in actor': f5_in_a,
+    'fullscreen in observer': f5_in_b,
+    'fullscreen out actor': f5_out_a,
+    'fullscreen out observer': f5_out_b,
 }
 
 surfaces_ok = True
@@ -1063,13 +1063,13 @@ check('unzoom native zoom feedback is exact',
 # exactly the same synchronized presentations.
 expanding = ['ring-show-old', 'ring-hide-old'] * 8 + ['sync-new']
 contracting = ['sync-new'] + ['ring-show-new', 'ring-hide-new'] * 8
-for name in ('maximize', 'F5 in'):
+for name in ('maximize', 'fullscreen in'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',
                    actor_result[0], expanding)
     sequence_check(name + ' observer exact physical sequence',
                    observer_result[0], expanding)
-for name in ('unzoom', 'F5 out'):
+for name in ('unzoom', 'fullscreen out'):
     actor_result, observer_result = animation_results[name]
     sequence_check(name + ' actor exact physical sequence',
                    actor_result[0], contracting)
