@@ -146,7 +146,7 @@ def session_daemon_claim():
 
 
 def prepare_application_home():
-    """Give only the selected login account the complete isolated HOME."""
+    """Give the selected login UID the complete private isolated HOME."""
     target_uid = ACCOUNT.pw_uid
     target_gid = ACCOUNT.pw_gid
     paths = []
@@ -163,8 +163,22 @@ def prepare_application_home():
             os.chown(path, target_uid, target_gid)
     os.chmod(HOME, 0o700)
     os.chmod(os.path.join(HOME, '.superterm'), 0o700)
-    return all((info.st_uid, info.st_gid) == (target_uid, target_gid)
-               for info in map(os.lstat, paths))
+    ownership = [(path, os.lstat(path)) for path in paths]
+    wrong_uid = [(path, info.st_uid) for path, info in ownership
+                 if info.st_uid != target_uid]
+    wrong_gid = [(path, info.st_gid) for path, info in ownership
+                 if info.st_gid != target_gid]
+    if wrong_uid:
+        print('isolated HOME UID mismatches: ' + repr(wrong_uid))
+    if wrong_gid:
+        # A hosted Darwin runner may start the ordinary account with an
+        # effective group different from pwd.pw_gid.  OpenSSH 10.5p1
+        # misc.c:safe_path validates owner UID plus mode 022, not the group
+        # number; HOME/.superterm are 0700, so a different group gains no
+        # access and is not an authentication failure.
+        print('isolated HOME non-primary groups (safe under mode 0700): ' +
+              repr(wrong_gid))
+    return not wrong_uid
 
 
 def process_table():

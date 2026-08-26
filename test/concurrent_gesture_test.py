@@ -872,15 +872,15 @@ def daemon_state(path):
 
 
 def mouse_down(client, x, y):
-    os.write(client.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_drag(client, x, y):
-    os.write(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_up(client, x, y):
-    os.write(client.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
 
 
 def physical_preview_ok(value, pane, rect, own, wireframe):
@@ -890,6 +890,31 @@ def physical_preview_ok(value, pane, rect, own, wireframe):
                 complete_ring(value, rect, locked=not own))
     bounds = title_top(value, title)
     return (bounds == rect[:3] and pane_locked(value, title) == (not own))
+
+
+def wait_physical_previews(clients, rects, wireframe, timeout=5.0):
+    """Wait for the exact viewer-relative previews on every real PTY."""
+    deadline = time.monotonic() + timeout
+    values = [snapshot(client) for client in clients]
+    while time.monotonic() < deadline:
+        if all(physical_preview_ok(value, pane, rects[pane], viewer == pane,
+                                   wireframe)
+               for viewer, value in enumerate(values)
+               for pane in range(2)):
+            return values, True
+        drain_all(clients, 0.04)
+        values = [snapshot(client) for client in clients]
+    for viewer, value in enumerate(values):
+        for pane, rect in enumerate(rects):
+            if not physical_preview_ok(
+                    value, pane, rect, viewer == pane, wireframe):
+                print('  physical preview timeout:',
+                      f'viewer={viewer} pane={pane} own={viewer == pane}',
+                      f'wireframe={wireframe} rect={rect}',
+                      f'title_top={title_top(value, TITLES[pane])}',
+                      f'locked={pane_locked(value, TITLES[pane])}',
+                      f'ring={complete_ring(value, rect, viewer != pane)}')
+    return values, False
 
 
 def no_release_rollback(records, committed_pane, committed_rect,
@@ -993,15 +1018,11 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
     for step in (1, 2):
         for pane, actor in enumerate(actors):
             mouse_drag(actor, starts[pane][0] - step, starts[pane][1])
-            drain_all(clients, 0.12)
+            drain_all(clients, 0.02)
     held_rects = tuple((left, top, right - 2, bottom)
                        for left, top, right, bottom in rects)
-    held = [snapshot(client) for client in clients]
-    held_ok = True
-    for viewer, value in enumerate(held):
-        for pane in range(2):
-            held_ok = held_ok and physical_preview_ok(
-                value, pane, held_rects[pane], viewer == pane, wireframe)
+    held, held_ok = wait_physical_previews(
+        clients, held_rects, wireframe)
     check(label + ' viewer-relative two-pane lock presentation', held_ok)
     held_daemon = daemon_state(sock_path)
     check(label + ' previews leave canonical geometry and PTYs unchanged',
@@ -1015,12 +1036,6 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
     # first release.  Every record after it is cumulative terminal state.
     drain_all(clients, 0.12)
     marks = [len(client.transitions()) for client in clients]
-    mouse_up(actors[first], starts[first][0] - 2, starts[first][1])
-    drain_all(clients, 0.75)
-    released_records = [client.transitions()[mark:]
-                        for client, mark in zip(clients, marks)]
-    released = [snapshot(client) for client in clients]
-    intermediate = daemon_state(sock_path)
     expected_geom = list(pane['geom'] for pane in baseline['panes'])
     first_geom = list(expected_geom[first])
     first_geom[2] -= 2
@@ -1029,18 +1044,55 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
     expected_intermediate_ptys[first] = (
         expected_intermediate_ptys[first][0] - 2,
         expected_intermediate_ptys[first][1])
+    mouse_up(actors[first], starts[first][0] - 2, starts[first][1])
+    release_deadline = time.monotonic() + 2.5
+    released = [snapshot(client) for client in clients]
+    intermediate = daemon_state(sock_path)
+    released_ok = False
+    release_presented = False
+    while time.monotonic() < release_deadline:
+        released_ok = all(
+            title_top(value, TITLES[first]) == held_rects[first][:3] and
+            physical_preview_ok(value, other, held_rects[other],
+                                viewer == other, wireframe)
+            for viewer, value in enumerate(released))
+        state_ok = (
+            intermediate is not None and
+            [pane['geom'] for pane in intermediate['panes']] ==
+            expected_geom and
+            [pane['pty'] for pane in intermediate['panes']] ==
+            expected_intermediate_ptys)
+        # snapshot() can already contain bytes from a DEC-2026 frame whose
+        # closing ?2026l has not arrived in the same PTY read.  The temporal
+        # oracle may inspect only complete presentations. Every viewer that
+        # needs a changed frame must record the exact committed+held state;
+        # the bounds actor already renders that identical rectangle as its
+        # own live preview, so its release can correctly be paint-free.
+        current_records = [client.transitions()[mark:]
+                           for client, mark in zip(clients, marks)]
+        release_presented = all(
+            ((not wireframe and viewer == first) or
+             any(record['changed_cells'] > 0 and
+                 not stlib.cursor_only_transition(record) and
+                 title_top(record, TITLES[first]) == held_rects[first][:3] and
+                 physical_preview_ok(record, other, held_rects[other],
+                                     viewer == other, wireframe)
+                 for record in records))
+            for viewer, records in enumerate(current_records))
+        if released_ok and state_ok and release_presented:
+            break
+        drain_all(clients, 0.04)
+        released = [snapshot(client) for client in clients]
+        intermediate = daemon_state(sock_path)
+    released_records = [client.transitions()[mark:]
+                        for client, mark in zip(clients, marks)]
     check(label + ' first release commits only its pane',
           intermediate is not None and
           [pane['geom'] for pane in intermediate['panes']] == expected_geom and
           [pane['pty'] for pane in intermediate['panes']] ==
           expected_intermediate_ptys)
-    released_ok = True
-    for viewer, value in enumerate(released):
-        released_ok = released_ok and (
-            title_top(value, TITLES[first]) == held_rects[first][:3])
-        released_ok = released_ok and physical_preview_ok(
-            value, other, held_rects[other], viewer == other, wireframe)
-    check(label + ' first final and other held preview coexist', released_ok)
+    check(label + ' first final and other held preview coexist',
+          released_ok and release_presented)
 
     rollback = []
     for viewer, records in enumerate(released_records):
@@ -1058,10 +1110,19 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
     # One more mouse delta after the peer commit proves the surviving modal
     # DragView retained both its local rectangle and its old lease base.
     mouse_drag(actors[other], starts[other][0] - 3, starts[other][1])
-    drain_all(clients, 0.35)
     last_rect = (rects[other][0], rects[other][1],
                  rects[other][2] - 3, rects[other][3])
     continued = [snapshot(client) for client in clients]
+    continued_deadline = time.monotonic() + 2.5
+    while time.monotonic() < continued_deadline:
+        if (all(physical_preview_ok(value, other, last_rect,
+                                    viewer == other, wireframe)
+                for viewer, value in enumerate(continued)) and
+                all(title_top(value, TITLES[first]) == held_rects[first][:3]
+                    for value in continued)):
+            break
+        drain_all(clients, 0.04)
+        continued = [snapshot(client) for client in clients]
     check(label + ' remaining gesture relays another exact cell',
           all(physical_preview_ok(value, other, last_rect,
                                   viewer == other, wireframe)
@@ -1069,12 +1130,19 @@ def physical_scenario(clients, home, session, sock_path, env, log, first,
           all(title_top(value, TITLES[first]) == held_rects[first][:3]
               for value in continued))
 
-    mouse_up(actors[other], starts[other][0] - 3, starts[other][1])
-    drain_all(clients, 0.90)
-    records = [client.end_transition_capture() for client in clients]
-    final = daemon_state(sock_path)
     final_rects = list(held_rects)
     final_rects[other] = last_rect
+    mouse_up(actors[other], starts[other][0] - 3, starts[other][1])
+    final_deadline = time.monotonic() + 3.0
+    while time.monotonic() < final_deadline:
+        drain_all(clients, 0.05)
+        if (all([frame_rect(client, title) for title in TITLES] == final_rects
+                for client in clients) and
+                all(not pane_locked(client, title)
+                    for client in clients for title in TITLES)):
+            break
+    records = [client.end_transition_capture() for client in clients]
+    final = daemon_state(sock_path)
     expected_geom[other] = (
         expected_geom[other][0], expected_geom[other][1],
         expected_geom[other][2] - 3, expected_geom[other][3])
@@ -1110,11 +1178,7 @@ def run_physical_mode(dragcontent):
     mode = 'live' if dragcontent else 'wire'
     home = stlib.fresh_home('concurrent-gesture-' + mode)
     ini = home + '/.superterm/superterm.ini'
-    log = '/tmp/superterm-concurrent-gesture-' + mode + '.log'
-    try:
-        os.unlink(log)
-    except FileNotFoundError:
-        pass
+    log = os.path.join(home, 'concurrent-gesture-' + mode + '.log')
     with open(ini, 'w', encoding='utf-8') as stream:
         stream.write('[ui]\nlanguage=en\npalette=mono\nbackground=none\n'
                      '[session]\nserver=always\nautosave=0\n'
@@ -1152,7 +1216,7 @@ def run_physical_mode(dragcontent):
         # Esc unwinds a modal DragView if setup/assertion failed mid-gesture.
         for client in reversed(clients):
             try:
-                os.write(client.fd, b'\x1b')
+                stlib.write_all(client.fd, b'\x1b')
                 client.drain(0.12)
                 client.send(b'\x11', 0.05)
                 client.send(b'd', 0.25)

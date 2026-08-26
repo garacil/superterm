@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 INI = ('[ui]\nlanguage=en\nbackground=london\nbackground_mode=center\n'
        'palette=%s\n[session]\nautorestore=0\nautosave=0\n'
        '[class.demo]\nname=demo\nenabled=0\ntitle=demo\n'
@@ -38,23 +39,17 @@ def truecolor_inside(c, title, height=16):
         return None
     top = rows[0]
     line = c.screen.display[top]
-    # The dialog's extent is its FRAME, walked out from the title. Taking
-    # "everything that is not a space" was right only while a picture was
-    # made of spaces on coloured backgrounds; drawn with a shade character it
-    # covers the row, and the box became the whole screen.
-    FRAME = set('═─╔╗┌┐║│[]■ ')
+    # Find the real top corners nearest the title. A full-cell picture is also
+    # made of spaces on coloured backgrounds, so character runs outside the
+    # frame are not a reliable boundary and include one desktop column on each
+    # side of the dialog.
     mid = line.index(title)
-    x0 = mid
-    while x0 > 0 and (line[x0 - 1] in FRAME or line[x0 - 1] == title[0]):
-        x0 -= 1
-    x1 = mid + len(title) - 1
-    while x1 < len(line) - 1 and line[x1 + 1] in FRAME:
-        x1 += 1
-    # a run of blanks means we walked off the dialog and into the desktop
-    while x0 < mid and line[x0] == ' ' and line[x0 + 1] == ' ':
-        x0 += 1
-    while x1 > mid and line[x1] == ' ' and line[x1 - 1] == ' ':
-        x1 -= 1
+    x0 = max(line.rfind(corner, 0, mid + 1) for corner in ('╔', '┌'))
+    right = [line.find(corner, mid + len(title)) for corner in ('╗', '┐')]
+    right = [position for position in right if position >= 0]
+    if x0 < 0 or not right:
+        return None
+    x1 = min(right)
     n = 0
     for y in range(top, min(c.h, top + height)):
         for x in range(x0, x1 + 1):
@@ -75,7 +70,9 @@ for palette in ('color', 'mono'):
     with open(HOME + '/.superterm/superterm.ini', 'w') as f:
         f.write(INI % palette)
 
-    c = stlib.Client(HOME, w=128, h=48, lang='en')
+    c = stlib.Client(
+        HOME, w=128, h=48, lang='en',
+        env={'SUPERTERM_BACKGROUNDS': os.path.join(ROOT, 'backgrounds')})
     c.drain(3.0)
     c.send(b'\x1b[20;3~', 1.2)          # Alt-F9: minimise, the picture shows
     check('%s: the picture is on the desktop' % palette,
@@ -83,6 +80,12 @@ for palette in ('color', 'mono'):
               for y in range(4, 40) for cell in [c.screen.buffer[y][40]]) or
           any(len(c.screen.buffer[y][x].bg) == 6
               for y in range(4, 40) for x in range(0, 128, 7)))
+    painted = [(c.screen.display[y][x], c.screen.buffer[y][x].bg)
+               for y in range(2, c.h - 2) for x in range(c.w)
+               if len(c.screen.buffer[y][x].bg) == 6 and
+               c.screen.buffer[y][x].bg != '000000']
+    check('%s: filled art is emitted without font glyphs' % palette,
+          len(painted) > 500 and all(glyph == ' ' for glyph, _ in painted))
 
     # the class manager
     c.send(b'\x1b[<0;20;1M', 0.2)

@@ -147,6 +147,12 @@ when empty right-edge columns must survive without trailing spaces; it can
 enlarge but never crop the longest glyph row. Files without it retain the
 original format.
 
+The six generated scenes use `3` plus empty cells. For this full-cell token,
+the renderer sends a space with the foreground RGB promoted to the terminal
+background, so the terminal fills the entire rectangle and font metrics cannot
+leave seams between rows or columns. The three bundled tiled patterns keep
+their intentional half-block/quadrant foreground-background pairs.
+
 ### [session]
 
 - `server=always` (default) starts a session server on every launch: the

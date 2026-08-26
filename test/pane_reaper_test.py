@@ -99,6 +99,47 @@ def process_birth(pid):
     return stlib.process_identity(pid)
 
 
+def linux_sigchld_policy(pid):
+    """Return (default-disposition, unblocked) from one /proc snapshot."""
+    if not sys.platform.startswith('linux') or not pid or pid <= 1:
+        return None
+    try:
+        fields = {}
+        with open(f'/proc/{pid}/status', encoding='ascii') as stream:
+            for line in stream:
+                key, separator, value = line.partition(':')
+                if separator and key in ('SigIgn', 'SigCgt', 'SigBlk'):
+                    fields[key] = int(value.strip(), 16)
+        bit = 1 << (signal.SIGCHLD - 1)
+        if set(fields) != {'SigIgn', 'SigCgt', 'SigBlk'}:
+            return None
+        default = not bool((fields['SigIgn'] | fields['SigCgt']) & bit)
+        return default, not bool(fields['SigBlk'] & bit)
+    except (OSError, ValueError):
+        return None
+
+
+def poisoned_sigchld_probe():
+    """Exec the real test binary with both inherited SIGCHLD hazards."""
+    def poison():
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD})
+
+    env = dict(os.environ, HOME=HOME, TERM='xterm', LANG='C',
+               SUPERTERM_INI=HOME + '/no-sys.ini', SUPERTERM_TESTING='1',
+               SUPERTERM_TEST_SIGCHLD_POLICY='1')
+    try:
+        result = subprocess.run(
+            [stlib.BIN], capture_output=True, text=True, env=env,
+            preexec_fn=poison, timeout=5.0, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return (result.returncode == 0 and
+            result.stdout ==
+            'SIGCHLD_POLICY default=1 blocked=0 nocldwait=0\n' and
+            result.stderr == '')
+
+
 def session_daemon_pid(home, session):
     try:
         cp = configparser.ConfigParser()
@@ -281,7 +322,10 @@ creator = None
 creator_stopped = False
 owned = []
 try:
-    creator = stlib.Client(HOME, w=120, h=36, lang='en')
+    check('entry normalizes inherited SIGCHLD exactly',
+          poisoned_sigchld_probe())
+    creator = stlib.Client(HOME, w=120, h=36, lang='en',
+                           poison_sigchld=True)
     session = ''
     stable_pid = resistant_pid = short_pid = None
     orphan_pid = orphan_child_pid = None
@@ -307,6 +351,9 @@ try:
     check('orphan candidate publishes child PID', bool(orphan_child_pid))
 
     daemon_pid = session_daemon_pid(HOME, session) if session else None
+    if sys.platform.startswith('linux'):
+        check('daemon restores and unblocks inherited SIGCHLD',
+              linux_sigchld_policy(daemon_pid) == (True, True))
     initial = [(pid, process_info(pid)) for pid in
                (stable_pid, resistant_pid, short_pid, orphan_pid)]
     valid_children = bool(daemon_pid and len(initial) == 4 and all(

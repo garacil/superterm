@@ -376,6 +376,29 @@ check('held administration lock has bounded failure',
       lock_wait.returncode != 0 and lock_elapsed < 2.0 and
       'timed out' in lock_wait.stderr.lower())
 
+# Open_NoFollow is deliberately taken from each target's FPC RTL: Linux and
+# Darwin assign different numeric values to the same POSIX contract.  Exercise
+# this exact call site so a future platform port cannot silently follow an
+# attacker-controlled final component while still passing the other path
+# checks.
+lock_backup = admin_lock + '.regular'
+lock_target = os.path.join(HOME, 'admin-lock-symlink-target')
+with open(lock_target, 'w', encoding='ascii') as stream:
+    stream.write('must remain untouched\n')
+os.replace(admin_lock, lock_backup)
+try:
+    os.symlink(lock_target, admin_lock)
+    symlink_lock = admin('check')
+    check('symlinked administration lock is rejected',
+          symlink_lock.returncode != 0 and
+          'cannot open administration lock' in symlink_lock.stderr.lower() and
+          os.path.islink(admin_lock) and
+          read(lock_target) == 'must remain untouched\n')
+finally:
+    if os.path.lexists(admin_lock):
+        os.unlink(admin_lock)
+    os.replace(lock_backup, admin_lock)
+
 # A helper may exit after forking a descendant which still owns stdout.  The
 # leader must remain unreaped until that capture pipe closes: its zombie PID
 # reserves both the PID and private process-group number, so timeout cleanup

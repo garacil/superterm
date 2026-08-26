@@ -104,7 +104,7 @@ def has_vertical_lock(c):
 
 # Hold the left title border down: FreeVision remains in its modal DragView,
 # but the daemon and the other UI must remain completely live.
-os.write(a.fd, b'\x1b[<0;10;2M')
+stlib.write_all(a.fd, b'\x1b[<0;10;2M')
 time.sleep(0.25)
 b.drain(0.9)
 check('other client sees shaded lock border',
@@ -143,7 +143,7 @@ check('output stays live while locked', 'WRITE_WHILE_LOCKED' in b.text())
 
 # Release at the same coordinate (no geometry change), then verify that both
 # the transient word and shaded CP437 border disappear from the other viewer.
-os.write(a.fd, b'\x1b[<0;10;2m')
+stlib.write_all(a.fd, b'\x1b[<0;10;2m')
 drain_both(1.5)
 check('unlock removes vertical LOCK', not has_vertical_lock(b))
 check('unlock restores normal border',
@@ -179,7 +179,7 @@ if before is not None:
     title_x = a.screen.display[top].find('LOCKPANE')
     title_drag_x = title_x + len('LOCKPANE') // 2
     press = f'\x1b[<0;{title_drag_x + 1};{top + 1}M'.encode()
-    os.write(a.fd, press)
+    stlib.write_all(a.fd, press)
     time.sleep(0.2)
     b.drain(0.4)
     busy = run_cli(['minimize', SES + ':1'], HOME, timeout=5)
@@ -187,10 +187,12 @@ if before is not None:
           busy.returncode != 0 and
           'busy' in (busy.stderr + busy.stdout).lower())
     for delta in range(1, 7):
-        os.write(a.fd, (f'\x1b[<32;{title_drag_x + delta + 1};'
-                        f'{top + 1}M').encode())
+        stlib.write_all(a.fd,
+                        (f'\x1b[<32;{title_drag_x + delta + 1};'
+                         f'{top + 1}M').encode())
         drain_both(0.06)
-    os.write(a.fd, (f'\x1b[<0;{title_drag_x + 7};{top + 1}m').encode())
+    stlib.write_all(
+        a.fd, (f'\x1b[<0;{title_drag_x + 7};{top + 1}m').encode())
     drain_both(1.2)
 after = frame_rect(a, 'LOCKPANE')
 check('title text drag moves window',

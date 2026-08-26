@@ -61,6 +61,34 @@ _process_identities = {}
 _reported_untrusted_sidecars = set()
 
 
+def write_all(fd, data, timeout=5.0):
+    """Write one complete test action to a PTY within a bounded deadline.
+
+    POSIX permits a successful write to consume only a prefix.  Treating that
+    prefix as the complete mouse/key action made high-load tests inject
+    truncated escape sequences, especially on Darwin runners.
+    """
+    view = memoryview(data)
+    offset = 0
+    deadline = time.monotonic() + timeout
+    while offset < len(view):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f'PTY write timed out after {offset}/{len(view)} bytes')
+        _, writable, _ = select.select([], [fd], [], remaining)
+        if not writable:
+            continue
+        try:
+            written = os.write(fd, view[offset:])
+        except (InterruptedError, BlockingIOError):
+            continue
+        if written <= 0:
+            raise OSError('PTY write made no progress')
+        offset += written
+    return offset
+
+
 class _DarwinProcBsdInfo(ctypes.Structure):
     """Exact public proc_bsdinfo prefix from Apple's sys/proc_info.h."""
     _fields_ = [
@@ -307,6 +335,12 @@ def fresh_home(testname, base=None):
         # the exact per-suite child as before.
         base = os.environ.get('SUPERTERM_TEST_HOME_BASE', '/tmp/opencode')
         os.makedirs(base, mode=0o700, exist_ok=True)
+    # Darwin exposes /tmp as the system symlink /tmp -> /private/tmp. Resolve
+    # the caller's parent once, then validate and use that exact directory;
+    # rejecting every symlink made the same isolated suite fail before launch
+    # on macOS, while continuing to use lstat on the resolved target retains
+    # the non-directory guard.
+    base = os.path.realpath(base)
     try:
         base_info = os.lstat(base)
     except OSError as exc:
@@ -820,7 +854,8 @@ class Client:
     """A pyte-rendered interactive superterm on a PTY."""
 
     def __init__(self, home, args=None, w=110, h=32, env=None, lang=None,
-                 dsr_row=5, dsr_col=1, start_gate_fd=None):
+                 dsr_row=5, dsr_col=1, start_gate_fd=None,
+                 poison_sigchld=False):
         self.w, self.h = w, h
         self.home = home
         self.screen = pyte.Screen(w, h)
@@ -854,6 +889,13 @@ class Client:
             if env:
                 e.update(env)
             os.environ.update(e)
+            if poison_sigchld:
+                # Exercise a hostile-but-valid exec environment.  Ignoring
+                # SIGCHLD may imply SA_NOCLDWAIT, while a blocked mask is
+                # inherited independently; the daemon must undo both before
+                # it becomes the sole waitpid owner of its initial panes.
+                signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+                signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD})
             os.execv(BIN, [BIN] + (args or []))
         if start_gate_fd is None:
             os.close(start_read)
@@ -911,6 +953,15 @@ class Client:
 
     def end_transition_capture(self):
         """Stop capturing and return the synchronized transition records."""
+        # A renderer frame can be split across arbitrary PTY reads.  If the
+        # action's closing marker is still in flight, give that exact frame a
+        # bounded chance to arrive; the assertion below still rejects a real
+        # truncated DEC synchronized update when the deadline expires.
+        if self._transition_capture and self._transition_in_frame:
+            deadline = time.monotonic() + 2.0
+            while (self._transition_in_frame and
+                   time.monotonic() < deadline):
+                self.drain(min(0.10, deadline - time.monotonic()))
         # Direct writes (notably the intentionally visible zoom outline and
         # passthrough hand-off) have no DEC 2026 delimiter.  At the end of an
         # action, commit their last buffered bytes as one observable state.
@@ -976,6 +1027,17 @@ class Client:
         finish = b'\x1b[?2026l'
         self._transition_pending += data
         while self._transition_pending:
+            if self._transition_in_frame:
+                finish_index = self._transition_pending.find(finish)
+                nested_start = self._transition_pending.find(start)
+                if (nested_start >= 0 and
+                        (finish_index < 0 or nested_start < finish_index)):
+                    # A later transaction must never be allowed to donate its
+                    # reset marker to an earlier truncated one: that would
+                    # merge two physical paints and hide the exact renderer
+                    # regression this capture exists to expose.
+                    raise AssertionError(
+                        'nested DEC synchronized update before prior reset')
             token = finish if self._transition_in_frame else start
             idx = self._transition_pending.find(token)
             if idx < 0:
@@ -1055,8 +1117,8 @@ class Client:
 
     def send(self, data, seconds=0.8):
         try:
-            os.write(self.fd, data)
-        except OSError:
+            write_all(self.fd, data)
+        except (OSError, TimeoutError):
             pass   # the client already exited (e.g. after an immediate detach)
         self.drain(seconds)
 

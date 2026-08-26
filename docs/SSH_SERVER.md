@@ -1,193 +1,201 @@
-# Servidor SSH dedicado de SuperTerm
+# SuperTerm dedicated SSH server
 
-SuperTerm puede publicar su interfaz por TCP usando el `sshd` OpenSSH del
-sistema. OpenSSH se ocupa del cifrado, la autenticacion de las cuentas, el PTY
-y los cambios de tamano; el proceso que abre despues es el mismo cliente
-SuperTerm que se usa localmente. Ese cliente se conecta al daemon de la sesion
-por su socket Unix privado, por lo que solo existe un escritorio canonico y
-un unico protocolo de sesiones.
+SuperTerm can publish its interface over TCP by using the system's OpenSSH
+`sshd`. OpenSSH handles encryption, account authentication, the PTY, and
+terminal resizing; the process that it starts afterwards is the same
+SuperTerm client used locally. That client connects to the session daemon
+through its private Unix socket, so there is only one canonical desktop and
+one session protocol.
 
-No entrega el *shell* SSH convencional: la instancia puede autenticar con una
-contrasena aceptada por la politica PAM de `sshd` o con claves publicas, pero
-rechaza comandos remotos,
-SFTP, forwarding, X11, agente SSH y sesiones sin PTY. Una vez autenticado, el
-usuario si puede abrir panes y ejecutar en ellos los comandos que permita su
-configuracion normal de SuperTerm; esos procesos se ejecutan con el UID de la
-cuenta autenticada (incluido root solo si se habilita explicitamente). Por
-tanto esta instancia puede sustituir el acceso SSH **interactivo** de un
-servidor compatible, pero no sustituye todavia los usos de `sshd` para `scp`,
-SFTP, automatizacion de comandos o tuneles. Tampoco es un sandbox de los
-programas que el propio usuario arranque dentro de SuperTerm.
+It does not provide a conventional SSH *shell*: the instance can authenticate
+with a password accepted by the `sshd` PAM policy or with public keys, but it
+rejects remote commands, SFTP, forwarding, X11, SSH agent forwarding, and
+sessions without a PTY. Once authenticated, the user can open panes and run
+the commands allowed by their normal SuperTerm configuration; those processes
+run under the UID of the authenticated account (including root only when it is
+explicitly enabled). This instance can therefore replace **interactive** SSH
+access on a compatible server, but it does not yet replace uses of `sshd` for
+`scp`, SFTP, command automation, or tunnels. Nor is it a sandbox for programs
+that the user starts inside SuperTerm.
 
-Perder la conexion cierra solamente el cliente: la sesion SuperTerm permanece
-viva y el siguiente cliente la recibe tal como quedo.
+Losing the connection closes only the client: the SuperTerm session remains
+alive, and the next client receives it exactly as it was left.
 
-Este documento es la referencia del conjunto completo: instalacion,
-arquitectura, autenticacion, ciclo de vida de procesos, sesiones, operacion,
-diagnostico y limites de seguridad. La configuracion que se edita es siempre
-`server.ini`; los demas ficheros generados se explican para poder auditarlos,
-no para modificarlos a mano.
+This document is the reference for the complete integration: installation,
+architecture, authentication, process lifecycle, sessions, operation,
+diagnostics, and security limits. The configuration file to edit is always
+`server.ini`; the other generated files are explained so that they can be
+audited, not so that they can be edited manually.
 
-## Resultado inmediato: `ssh` normal, servicio separado
+## Immediate result: standard `ssh`, separate service
 
-Una vez preparado el listener, un cliente OpenSSH estandar entra directamente
-en SuperTerm con una orden normal:
+Once the listener has been prepared, a standard OpenSSH client enters
+SuperTerm directly with a normal command:
 
 ```sh
 ssh -p 8022 german@192.168.0.214
 ```
 
-Desde una terminal interactiva no hace falta `-tt`: `ssh` ya solicita un PTY.
-Tampoco hace falta indicar `IdentityFile` si la clave es una identidad habitual
-del cliente; si no coincide ninguna y se ha habilitado la contrasena, OpenSSH
-la solicita y PAM decide si la cuenta puede entrar.
+An interactive terminal does not require `-tt`: `ssh` already requests a PTY.
+There is no need to specify `IdentityFile` either when the key is one of the
+client's usual identities; if no key matches and password authentication has
+been enabled, OpenSSH prompts for the password and PAM decides whether the
+account may log in.
 
-El `sshd` ordinario del host permanece intacto y puede seguir atendiendo en su
-puerto habitual. La separacion es concreta y comprobable:
+The host's regular `sshd` remains untouched and can continue listening on its
+usual port. The separation is concrete and verifiable:
 
-| Propiedad | SSH ordinario del host | SSH dedicado de SuperTerm |
+| Property | Host's regular SSH | SuperTerm dedicated SSH |
 |---|---|---|
-| Proceso y servicio | Servicio SSH existente | Servicio propio de SuperTerm |
-| Direcciones/puertos | Los ya configurados, normalmente puerto 22 | Lista `listen` explicita, por ejemplo puerto 8022 |
-| Configuracion y host keys | `/etc/ssh` | `/etc/superterm/sshd` |
-| Sesion resultante | Shell, comando o subsistema normal | Interfaz SuperTerm forzada |
-| SCP/SFTP/tuneles | Segun la politica normal | Rechazados deliberadamente |
+| Process and service | Existing SSH service | SuperTerm's own service |
+| Addresses/ports | Those already configured, normally port 22 | Explicit `listen` list, for example port 8022 |
+| Configuration and host keys | `/etc/ssh` | `/etc/superterm/sshd` |
+| Resulting session | Normal shell, command, or subsystem | Forced SuperTerm interface |
+| SCP/SFTP/tunnels | According to the regular policy | Deliberately rejected |
 
-`setup`, `restart`, `disable` y `uninstall-service` solo administran la
-instancia dedicada: no escriben `/etc/ssh/sshd_config`, no sustituyen las host
-keys ordinarias y no paran ni reinician el servicio normal. Ambas instancias
-reutilizan el mismo binario OpenSSH instalado, las cuentas NSS y la politica
-PAM de `sshd`; opcionalmente la dedicada tambien puede **leer** el
-`~/.ssh/authorized_keys` de cada cuenta, pero SuperTerm nunca lo modifica.
-Esa reutilizacion esta declarada para no confundir aislamiento operativo con
-una segunda base de cuentas o una segunda implementacion criptografica.
+`setup`, `restart`, `disable`, and `uninstall-service` manage only the
+dedicated instance: they do not write `/etc/ssh/sshd_config`, replace the
+regular host keys, or stop or restart the normal service. The dedicated
+instance reuses a protected `sshd` executable from the host's installed
+OpenSSH implementation, together with the same NSS accounts and `sshd` PAM
+policy; it can also optionally **read** each account's
+`~/.ssh/authorized_keys`, but SuperTerm never modifies it. This reuse is
+stated explicitly so that operational isolation is not mistaken for a second
+account database or a second cryptographic implementation.
 
-## Arquitectura: dos transportes, una sola sesion
+## Architecture: two transports, one session
 
-OpenSSH y SuperTerm no compiten ni implementan dos servidores de terminal.
-Cada uno resuelve una frontera distinta:
+OpenSSH and SuperTerm neither compete nor implement two terminal servers.
+Each one handles a different boundary:
 
 ```text
-equipo cliente
-  ssh(1) + terminal grafico
+client machine
+  ssh(1) + graphical terminal
           |
-          | TCP cifrado, autenticado y con PTY
+          | encrypted, authenticated TCP with a PTY
           v
-sshd dedicado de SuperTerm (root, puerto configurado)
+SuperTerm dedicated sshd (root, configured port)
           |
-          | ForceCommand, ya con la cuenta autenticada
+          | ForceCommand, now running as the authenticated account
           v
-superterm --ssh-entry (UID german, root u otra cuenta)
+superterm --ssh-entry (UID german, root, or another account)
           |
-          | AF_UNIX privado: ~/.superterm/sessions/NOMBRE.sock
+          | private AF_UNIX: ~/.superterm/sessions/NAME.sock
           v
-daemon de esa sesion SuperTerm (mismo UID)
+daemon for that SuperTerm session (same UID)
           |
-          +-- PTY/pane 1 -> proceso de la cuenta
-          +-- PTY/pane 2 -> proceso de la cuenta
-          `-- estado canonico -> todos los clientes adjuntos
+          +-- PTY/pane 1 -> account process
+          +-- PTY/pane 2 -> account process
+          `-- canonical state -> all attached clients
 ```
 
-Hay dos planos de transporte deliberadamente separados:
+There are two deliberately separate transport planes:
 
-- El plano exterior es SSH sobre TCP. OpenSSH implementa intercambio de
-  claves, cifrado, integridad, autenticacion, PAM, asignacion de PTY,
-  keepalive y cambios `SIGWINCH`.
-- El plano interior es el protocolo binario de sesiones de SuperTerm sobre un
-  socket Unix `0600`. Es el mismo protocolo que usa un cliente local; nunca se
-  encapsula directamente en TCP ni se expone a la LAN.
+- The outer plane is SSH over TCP. OpenSSH implements key exchange,
+  encryption, integrity, authentication, PAM, PTY allocation, keepalives,
+  and `SIGWINCH` changes.
+- The inner plane is SuperTerm's binary session protocol over a `0600` Unix
+  socket. It is the same protocol used by a local client; it is never exposed
+  directly over TCP or published to the LAN.
 
-Esta separacion deja un solo punto de verdad. El daemon de sesion es el unico
-propietario de panes, PTYs, geometria, foco compartido y revision del
-escritorio. Cada entrada SSH es solo otro visor/controlador del mismo objeto.
-No existe una copia de la sesion dentro de `sshd`.
+This separation leaves a single source of truth. The session daemon is the
+sole owner of panes, PTYs, geometry, shared focus, and the desktop revision.
+Each SSH entry is simply another viewer/controller of the same object. There
+is no copy of the session inside `sshd`.
 
-| Componente | Se ejecuta como | Responsabilidad | Persistencia |
+| Component | Runs as | Responsibility | Lifetime |
 |---|---|---|---|
-| `sshd` dedicado | root mientras escucha; OpenSSH reduce privilegios por conexion | TCP, criptografia, autenticacion, PAM y PTY exterior | Servicio del sistema |
-| `superterm --ssh-entry` | usuario autenticado | Validar que es una entrada interactiva, resolver la sesion y hacer attach o crearla | Dura lo que el cliente SSH |
-| daemon SuperTerm de sesion | mismo usuario | Poseer PTYs, procesos, escritorio y sockets de clientes | Sobrevive a cero visores |
-| procesos de los panes | mismo usuario | Shells y aplicaciones elegidas por el perfil/clase | Viven dentro de la sesion |
-| `ssh(1)` remoto | usuario del equipo cliente | Verificar la host key, aportar credenciales y transportar el terminal | Dura lo que la conexion |
+| Dedicated `sshd` | root while listening; OpenSSH drops privileges per connection | TCP, cryptography, authentication, PAM, and the outer PTY | System service |
+| `superterm --ssh-entry` | authenticated user | Validate that this is an interactive entry, resolve the session, and attach to or create it | Lasts as long as the SSH client |
+| SuperTerm session daemon | same user | Own PTYs, processes, desktop, and client sockets | Survives with zero viewers |
+| Pane processes | same user | Shells and applications selected by the profile/class | Live within the session |
+| Remote `ssh(1)` | user on the client machine | Verify the host key, provide credentials, and transport the terminal | Lasts as long as the connection |
 
-No debe confundirse el daemon `sshd` global con los daemons SuperTerm por
-usuario y sesion. Reiniciar el listener SSH no equivale a cerrar escritorios:
-systemd usa `KillMode=process` y launchd `AbandonProcessGroup`, y los daemons
-SuperTerm ya viven en sesiones/grupos de proceso independientes.
+The global `sshd` daemon must not be confused with the per-user, per-session
+SuperTerm daemons. Restarting the SSH listener is not the same as closing
+desktops: systemd uses `KillMode=process`, launchd uses
+`AbandonProcessGroup`, and SuperTerm daemons already live in independent
+process sessions/groups.
 
-Conceptualmente, cada conexion pasa del listener root a la separacion de
-privilegios de OpenSSH: monitor privilegiado, autenticacion y proceso de
-sesion reducido al UID/GID/grupos autenticados. La forma exacta y los nombres
-de esos procesos pueden variar entre versiones de OpenSSH. Al crear una
-sesion, SuperTerm usa `setsid` y doble `fork`; el daemon final queda separado
-del PTY SSH y reparentado al recolector del sistema, con entrada/salida estandar
-en `/dev/null`. Los procesos de pane quedan bajo ese daemon. Para una entrada
-root, naturalmente, el tramo SuperTerm y sus panes conservan UID 0.
+Conceptually, every connection proceeds from the root listener to OpenSSH's
+privilege separation: privileged monitor, authentication, and a session
+process reduced to the authenticated account's UID, GID, and groups. The
+exact arrangement and names of these processes may vary between OpenSSH
+versions. When creating a session, SuperTerm uses `setsid` and a double
+`fork`; the final daemon is detached from the SSH PTY and reparented to the
+system reaper, with standard input/output attached to `/dev/null`. Pane
+processes remain under that daemon. For a root login, the SuperTerm portion
+and its panes naturally retain UID 0.
 
-La instancia posee claves y `sshd_config` propios, pero reutiliza
-deliberadamente la politica PAM del servicio `sshd` del host —normalmente
-`/etc/pam.d/sshd`—, incluidos hooks de cuenta, credenciales y apertura/cierre
-de sesion. Separar `/etc/superterm/sshd` no aisla ni duplica PAM.
+The instance owns separate keys and an independent `sshd_config`, but it
+deliberately reuses the host's `sshd` PAM policy—normally
+`/etc/pam.d/sshd`—including account, credential, and session open/close hooks.
+Separating `/etc/superterm/sshd` neither isolates nor duplicates PAM.
 
-## Recorrido exacto de una conexion
+## Exact connection path
 
-1. `ssh` conecta a una direccion y puerto declarados en `listen`. El cliente
-   verifica la clave de **host** de esta instancia, independiente de la del
-   `sshd` ordinario del equipo.
-2. OpenSSH negocia el canal cifrado y autentica una cuenta conocida por NSS.
-   Segun `server.ini`, acepta una contrasena admitida por PAM, una clave
-   publica autorizada o cualquiera de las dos.
-3. OpenSSH exige que la cuenta tenga un shell existente y ejecutable. La
-   politica PAM configurada puede denegarla por bloqueo, caducidad, horario u
-   otra regla incluso despues de aceptar una clave. Despues abre la sesion
-   PAM, crea un PTY y baja el proceso al UID/GID y grupos de esa cuenta.
-4. `ForceCommand` sustituye cualquier shell solicitado por la ruta fija
-   `superterm --ssh-entry`. OpenSSH la entrega al shell de login de la cuenta
-   con `-c`; la ruta se valida como literal seguro y ningun texto remoto se
-   concatena a ella. La configuracion ya ha rechazado forwarding, X11, agente,
-   entorno de cliente, RC de usuario y subsistemas.
-5. La entrada comprueba `SSH_CONNECTION` y `SSH_TTY`. Tambien exige que
-   `SSH_ORIGINAL_COMMAND` no exista: incluso un comando remoto vacio se
-   considera una peticion `exec` y se rechaza.
-6. SuperTerm resuelve una sesion para **esa cuenta**, nunca para todo el
-   sistema. En modo `last` prueba la ultima sesion viva; despues usa
-   `default_session`, `default_profile` y finalmente `session`.
-7. Un bloqueo POSIX por usuario y nombre serializa la primera creacion. Dos
-   logins simultaneos pueden terminar adjuntos al mismo daemon, pero no
-   publicar dos sesiones con el mismo nombre.
-8. Si el socket ya esta vivo, se hace attach. Si no existe, el primer cliente
-   construye el perfil —o un escritorio vacio—, publica el daemon y se
-   reconecta a el por el mismo protocolo Unix.
-9. La salida de los panes llega al daemon, este actualiza el estado canonico y
-   transmite el resultado a todos los visores. La entrada por teclado se
-   procesa en orden; las operaciones estructurales usan las reglas de revision
-   y bloqueo de pane de la sesion compartida.
-10. Detach, cierre del emulador, timeout o perdida de red eliminan solo ese
-    visor. OpenSSH cierra el canal y su PTY exterior; el EOF del socket Unix
-    hace `DropClient`, no `FRAME_CLOSE`. Los panes y su daemon siguen vivos y
-    la siguiente conexion recibe un snapshot canonico.
+1. `ssh` connects to an address and port declared in `listen`. The client
+   verifies this instance's **host** key, which is independent of the
+   machine's regular `sshd` host key.
+2. OpenSSH negotiates the encrypted channel and authenticates an account
+   known to NSS. Depending on `server.ini`, it accepts a password allowed by
+   PAM, an authorized public key, or either one.
+3. OpenSSH requires the account to have an existing, executable shell. The
+   configured PAM policy can deny the account because it is locked or
+   expired, because of time restrictions, or for another reason even after a
+   key has been accepted. OpenSSH then opens the PAM session, creates a PTY,
+   and drops the process to that account's UID, GID, and groups.
+4. `ForceCommand` replaces any requested shell with the fixed
+   `superterm --ssh-entry` path. OpenSSH passes it to the account's login
+   shell with `-c`; the path is validated as a safe literal and no remote
+   text is concatenated to it. The configuration has already rejected
+   forwarding, X11, agent forwarding, client environment variables, user RC
+   files, and subsystems.
+5. The entry checks `SSH_CONNECTION` and `SSH_TTY`. It also requires
+   `SSH_ORIGINAL_COMMAND` not to exist: even an empty remote command is
+   treated as an `exec` request and rejected.
+6. SuperTerm resolves a session for **that account**, never for the whole
+   system. In `last` mode it first tries the most recent live session; it then
+   uses `default_session`, `default_profile`, and finally `session`.
+7. A POSIX lock keyed by user and name serializes initial creation. Two
+   simultaneous logins may both attach to the same daemon, but they cannot
+   publish two sessions with the same name.
+8. If the socket is already live, the client attaches. If it does not exist,
+   the first client builds the profile—or an empty desktop—publishes the
+   daemon, and reconnects to it through the same Unix protocol.
+9. Pane output reaches the daemon, which updates canonical state and
+   broadcasts the result to all viewers. Keyboard input is processed in
+   order; structural operations use the shared session's revision and pane
+   locking rules.
+10. Detach, closing the terminal emulator, timeout, or loss of network removes
+    only that viewer. OpenSSH closes the channel and its outer PTY; EOF on the
+    Unix socket invokes `DropClient`, not `FRAME_CLOSE`. The panes and daemon
+    remain alive, and the next connection receives a canonical snapshot.
 
-El cifrado termina en OpenSSH en el mismo host. Desde ahi hasta el daemon de
-sesion se usa un socket local protegido por permisos Unix. No hay doble
-cifrado, serializacion SSH propia ni claves privadas dentro de SuperTerm.
+Encryption terminates in OpenSSH on the same host. From there to the session
+daemon, communication uses a local socket protected by Unix permissions.
+There is no double encryption or custom SSH serialization. SuperTerm
+provisions and protects this dedicated service's host key, but OpenSSH performs
+all SSH cryptography; SuperTerm does not need, store, or use a user's private
+key.
 
-## Tres tipos de clave que no deben mezclarse
+## Three kinds of keys that must not be confused
 
-| Elemento | Donde esta | Quien posee el secreto | Para que sirve |
+| Item | Location | Who owns the secret | Purpose |
 |---|---|---|---|
-| Clave de host `ssh_host_ed25519_key` | servidor, `/etc/superterm/sshd` | root del servidor | Identifica el servicio ante los clientes |
-| Clave publica autorizada | servidor, almacen central o `~/.ssh/authorized_keys` | No contiene secreto | Autoriza una identidad de cliente para una cuenta |
-| Clave privada de usuario | equipo cliente, normalmente `~/.ssh/id_*` | Usuario del cliente | Demuestra que posee la clave publica autorizada |
+| Host key `ssh_host_ed25519_key` | server, `/etc/superterm/sshd` | server root | Identifies the service to clients |
+| Authorized public key | server, central store or `~/.ssh/authorized_keys` | Contains no secret | Authorizes a client identity for an account |
+| User private key | client machine, normally `~/.ssh/id_*` | client user | Proves ownership of the authorized public key |
 
-`authorize` recibe solamente el fichero `.pub`. Copiar una clave privada al
-servidor no es necesario y reduce la seguridad. La entrada que aparece en
-`known_hosts` tampoco autoriza al usuario: protege al cliente frente a un
-servidor falso.
+`authorize` accepts only a file containing one valid public key (commonly the
+`.pub` file). Copying a private key to the server is unnecessary and weakens
+security. The entry written to `known_hosts` does not authorize the user
+either: it protects the client from a counterfeit server.
 
-## Estado persistente
+## Persistent state
 
-La configuracion, la identidad de host y el almacen central de esta instancia
-estan separados del SSH normal del sistema:
+This instance's configuration, host identity, and central store are separate
+from the system's regular SSH service:
 
 ```text
 /etc/superterm/sshd/
@@ -201,68 +209,68 @@ estan separados del SSH normal del sistema:
     `-- root
 ```
 
-SuperTerm no modifica `/etc/ssh`. Segun `user_authorized_keys`, OpenSSH puede
-leer tambien el `~/.ssh/authorized_keys` normal de la cuenta, pero SuperTerm no
-lo escribe ni lo borra. Usa exclusivamente el `sshd` de sistema en
-`/usr/sbin/sshd` o `/usr/bin/sshd` y comprueba que `/etc/ssh` sea una ruta
-protegida. OpenSSH ejecutaria
-`/etc/ssh/sshrc` antes incluso del `ForceCommand` aunque se configure
-`PermitUserRC no`; como no existe una directiva que lo desactive, SuperTerm
-rechaza el arranque si ese fichero existe. Esta comprobacion explicita evita
-prometer un aislamiento que OpenSSH no puede proporcionar por configuracion.
-El directorio, la configuracion y los ficheros centrales de claves autorizadas
-pertenecen a root y no son escribibles por otros usuarios. La clave privada de
-host usa modo `0600`. Las claves autorizadas son publicas y cada fichero
-central se llama como un usuario real del sistema. Con `StrictModes yes`,
-OpenSSH comprueba igualmente propietario y permisos del home y del
-`authorized_keys` particular antes de aceptar una clave de usuario.
+SuperTerm does not modify `/etc/ssh`. Depending on `user_authorized_keys`,
+OpenSSH may also read the account's regular `~/.ssh/authorized_keys`, but
+SuperTerm neither writes nor deletes it. It uses only the system `sshd` at
+`/usr/sbin/sshd` or `/usr/bin/sshd` and verifies that `/etc/ssh` is a
+protected path. OpenSSH would run `/etc/ssh/sshrc` even before the
+`ForceCommand` despite `PermitUserRC no`; because there is no directive that
+disables it, SuperTerm refuses to start if that file exists. This explicit
+check avoids promising isolation that OpenSSH cannot provide through
+configuration. The directory, configuration, and central authorized-key
+files are owned by root and are not writable by other users. The private host
+key has mode `0600`. Authorized keys are public, and every central file is
+named after a real system user. With `StrictModes yes`, OpenSSH also checks
+the ownership and permissions of the user's home and private
+`authorized_keys` before accepting a user key.
 
-`sshd_config.generated` es un artefacto: no debe editarse. SuperTerm construye
-un candidato, lo comprueba con el mismo `sshd` que va a ejecutarlo y solo lo
-reemplaza si pasan `sshd -t` y `sshd -T`. Una actualizacion conserva
-`server.ini`, la identidad del servidor y todas las autorizaciones.
+`sshd_config.generated` is an artifact: do not edit it. SuperTerm builds a
+candidate, checks it with the same `sshd` that will run it, and replaces the
+artifact only after both `sshd -t` and `sshd -T` pass. An upgrade preserves
+`server.ini`, server identity, and every authorization.
 
-`server.ini` es el estado pendiente y `sshd_config.generated` es el ultimo
-estado aceptado. `check` valida el pendiente sin publicarlo. `restart` publica
-temporalmente un candidato ya validado, reinicia y comprueba salud; si algo
-falla intenta restaurar el artefacto, descriptor y estado de servicio
-anteriores. El wrapper vuelve a validar en cada arranque las directivas que
-SuperTerm fija como frontera de seguridad. No pretende fijar todos los
-cifrados, KEX, MAC, algoritmos de clave ni la politica PAM del OpenSSH
-instalado.
+`server.ini` is pending state, while `sshd_config.generated` is the latest
+accepted state. `check` validates the pending state without publishing it.
+`restart` temporarily publishes an already validated candidate, restarts the
+service, and checks its health; if anything fails, it attempts to restore the
+previous artifact, service descriptor, and service state. On every start, the
+wrapper revalidates the directives that SuperTerm sets as its security
+boundary. It does not attempt to pin every cipher, KEX, MAC, key algorithm, or
+the PAM policy of the installed OpenSSH.
 
-El estado de cada cuenta no se guarda en `/etc/superterm/sshd`:
+Each account's state is not stored in `/etc/superterm/sshd`:
 
 ```text
 ~/.superterm/
-|-- superterm.ini                 preferencias y ruta SSH de ese usuario
+|-- superterm.ini                 that user's preferences and SSH route
 `-- sessions/
-    |-- NOMBRE.ini               identidad/metadatos del daemon vivo
-    `-- NOMBRE.sock              transporte local privado, modo 0600
+    |-- NAME.ini                 live daemon identity/metadata
+    `-- NAME.sock                private local transport, mode 0600
 ```
 
-Los procesos y el contenido de pantalla estan vivos en memoria en el daemon,
-no serializados en `NOMBRE.ini`. El sidecar publica metadatos de descubrimiento,
-incluidos PID e identidad de nacimiento; la frontera real de conexion es el
-directorio privado, el socket `0600` y su listener vivo. Al retirar una sesion,
-el daemon comprueba que sigue poseyendo el inode del socket antes de borrarlo.
-Eliminar esos ficheros a mano mientras el daemon vive no es una forma valida
-de cerrar una sesion. Debe usarse el menu de SuperTerm o su CLI de sesiones.
+Processes and screen contents remain live in daemon memory; they are not
+serialized in `NAME.ini`. The sidecar publishes discovery metadata,
+including the PID and process birth identity; the actual connection boundary
+is the private directory, the `0600` socket, and its live listener. When
+removing a session, the daemon verifies that it still owns the socket inode
+before deleting it. Manually deleting these files while the daemon is alive
+is not a valid way to close a session. Use the SuperTerm menu or its session
+CLI.
 
-| Estado | Sobrevive a desconectar SSH | Sobrevive a reiniciar `sshd` | Sobrevive a reiniciar el host |
+| State | Survives SSH disconnection | Survives `sshd` restart | Survives host restart |
 |---|---|---|---|
-| Daemon, panes y procesos SuperTerm | Si | Si | No |
-| Preferencias/perfiles del usuario | Si | Si | Si |
-| Host key y claves autorizadas centrales | Si | Si | Si |
-| Ruta `ssh_last_session` | Si | Si | Si, pero solo se usa si la sesion sigue viva |
+| SuperTerm daemon, panes, and processes | Yes | Yes | No |
+| User preferences/profiles | Yes | Yes | Yes |
+| Host key and centrally authorized keys | Yes | Yes | Yes |
+| `ssh_last_session` route | Yes | Yes | Yes, but it is used only if the session remains live |
 
-Una sesion viva es su propia restauracion exacta: detach no guarda ni vuelve a
-cargar un escritorio. Tras reiniciar el host ya no existe ese proceso vivo;
-la siguiente entrada crea una sesion nueva desde el perfil configurado.
+A live session is its own exact restoration: detach neither saves nor reloads
+a desktop. After a host restart, that live process no longer exists; the next
+entry creates a new session from the configured profile.
 
-## Configuracion
+## Configuration
 
-El formato publico y estable es `/etc/superterm/sshd/server.ini`:
+The public, stable format is `/etc/superterm/sshd/server.ini`:
 
 ```ini
 [server]
@@ -274,70 +282,71 @@ managed_authorized_keys=1
 user_authorized_keys=1
 ```
 
-`listen` es una lista de uno a 32 endpoints TCP separados por comas. Cada
-elemento lleva su propio puerto, entre 1 y 65535, de modo que se pueden combinar
-interfaces y puertos distintos. Esta version no abre listeners UDP:
+`listen` is a comma-separated list of one to 32 TCP endpoints. Each entry has
+its own port, from 1 through 65535, so different interfaces and ports can be
+combined. This version does not open UDP listeners:
 
 ```ini
 listen=127.0.0.1:8022,[::1]:8022,192.0.2.20:2222,[2001:db8::20]:2222
 ```
 
-IPv6 siempre va entre corchetes. Para escuchar en todas las interfaces se
-usan explicitamente `0.0.0.0` y `[::]`. El valor inicial solo escucha en
-loopback; publicar el servicio en una red requiere cambiarlo deliberadamente.
+IPv6 addresses are always enclosed in brackets. To listen on every interface,
+use `0.0.0.0` and `[::]` explicitly. The initial value listens only on the
+loopback interfaces; publishing the service on a network requires a deliberate
+configuration change.
 
-`allow_root=0` rechaza a root aunque exista
-`authorized_keys/root`. Con `allow_root=1` root sigue limitado a clave publica
-y a la interfaz SuperTerm forzada: nunca se admite la contrasena de root.
+`allow_root=0` rejects root even if `authorized_keys/root` exists. With
+`allow_root=1`, root remains restricted to public-key authentication and the
+forced SuperTerm interface: the root password is never accepted.
 
-Las tres opciones de autenticacion son independientes:
+The three authentication options are independent:
 
-- `password_authentication=1` admite una contrasena a traves de la politica
-  PAM del servicio `sshd`. SuperTerm no recibe ni guarda esa contrasena.
-  `KbdInteractiveAuthentication` permanece
-  desactivado para no publicar dos caminos equivalentes de contrasena.
-- `managed_authorized_keys=1` lee las claves administradas por SuperTerm en
-  `/etc/superterm/sshd/authorized_keys/USUARIO`.
-- `user_authorized_keys=1` reutiliza las claves publicas normales de cada
-  cuenta en `.ssh/authorized_keys`. Las claves privadas nunca se copian al
-  servidor: permanecen en el cliente SSH.
+- `password_authentication=1` accepts a password through the `sshd` service's
+  PAM policy. SuperTerm neither receives nor stores that password.
+  `KbdInteractiveAuthentication` remains disabled so that two equivalent
+  password paths are not exposed.
+- `managed_authorized_keys=1` reads the keys managed by SuperTerm from
+  `/etc/superterm/sshd/authorized_keys/USER`.
+- `user_authorized_keys=1` reuses each account's regular public keys from
+  `.ssh/authorized_keys`. Private keys are never copied to the server: they
+  remain on the SSH client.
 
-La politica efectiva resultante es:
+The resulting effective policy is:
 
-| Contrasena | Alguna fuente de claves | Resultado para usuarios normales | Resultado para root |
+| Password | Any key source | Result for regular users | Result for root |
 |---|---|---|---|
-| `0` | si | Solo clave publica | Solo clave si `allow_root=1` |
-| `1` | no | Solo contrasena/PAM | Exige `allow_root=0`; con `allow_root=1` toda la configuracion es invalida |
-| `1` | si | Contrasena **o** clave publica | Solo clave si `allow_root=1` |
-| `0` | no | Configuracion invalida | Configuracion invalida |
+| `0` | yes | Public key only | Key only if `allow_root=1` |
+| `1` | no | Password/PAM only | Requires `allow_root=0`; with `allow_root=1` the entire configuration is invalid |
+| `1` | yes | Password **or** public key | Key only if `allow_root=1` |
+| `0` | no | Invalid configuration | Invalid configuration |
 
-Cuando ambos caminos estan activos, `AuthenticationMethods any` significa
-"cualquiera de los metodos habilitados", no "sin autenticacion". SuperTerm
-comprueba esa semantica en la salida efectiva de `sshd -T`. No configura una
-autenticacion de dos factores; para eso haria falta una politica distinta y
-pruebas especificas.
+When both paths are active, `AuthenticationMethods any` means "any of the
+enabled methods," not "without authentication." SuperTerm verifies this
+semantic in the effective output from `sshd -T`. It does not configure
+two-factor authentication; doing so would require a different policy and
+specific tests.
 
-Al menos uno de esos caminos debe quedar habilitado. `allow_root=1` exige
-ademas alguna fuente de claves porque la contrasena de root continua prohibida.
-Un `server.ini` nuevo escribe explicitamente `1/1/1`. Por seguridad, un
-fichero version 1 creado por una version anterior que no contenga estas tres
-claves conserva su antigua politica `0/1/0`; basta anadirlas explicitamente y
-ejecutar `check` y `restart` para adoptar la nueva politica.
+At least one of these paths must remain enabled. `allow_root=1` also requires
+a key source because root password authentication remains prohibited. A new
+`server.ini` explicitly writes `1/1/1`. For safety, a version 1 file created
+by an older version that lacks these three keys retains its old `0/1/0`
+policy; explicitly add them and run `check` and `restart` to adopt the new
+policy.
 
-Tras editar `server.ini`, validar antes de reiniciar:
+After editing `server.ini`, validate it before restarting:
 
 ```sh
 sudo superterm ssh-server check
 sudo superterm ssh-server restart
 ```
 
-Una configuracion invalida no sustituye la ultima configuracion generada ni
-detiene un servicio que ya funciona.
+An invalid configuration neither replaces the latest generated configuration
+nor stops an already working service.
 
-## Ejemplo aplicado: acceso de `german` y `root`
+## Applied example: access for `german` and `root`
 
-Las cuentas deben existir en la base de usuarios del sistema. Para que
-`german` entre con contrasena o clave y `root` solo con clave, la seccion es:
+The accounts must exist in the system user database. To let `german` log in
+with either a password or a key, and `root` with a key only, use this section:
 
 ```ini
 [server]
@@ -349,40 +358,39 @@ managed_authorized_keys=1
 user_authorized_keys=1
 ```
 
-Despues se autoriza, como minimo, una clave publica para root. Puede
-autorizarse otra para `german`; si no, `german` aun puede usar una contrasena
-que la politica PAM de `sshd` acepte para esa cuenta:
+Then authorize at least one public key for root. Another key can be authorized
+for `german`; without one, `german` can still use a password accepted for that
+account by the `sshd` PAM policy:
 
 ```sh
-sudo superterm ssh-server authorize german /ruta/cliente_superterm.pub
-sudo superterm ssh-server authorize root /ruta/cliente_superterm.pub
+sudo superterm ssh-server authorize german /path/to/superterm_client.pub
+sudo superterm ssh-server authorize root /path/to/superterm_client.pub
 sudo superterm ssh-server check
 sudo superterm ssh-server restart
 sudo superterm ssh-server list-keys german
 sudo superterm ssh-server list-keys root
 ```
 
-No se activa una contrasena especial de SuperTerm. OpenSSH consulta la
-politica PAM de `sshd`, que puede usar `pam_unix`, LDAP u otro backend del
-host. `PermitRootLogin`
-se genera como `prohibit-password`, por lo que una contrasena de root nunca
-funciona en este servicio aunque `password_authentication=1`.
+This does not enable a special SuperTerm password. OpenSSH consults the
+`sshd` PAM policy, which may use `pam_unix`, LDAP, or another host backend.
+`PermitRootLogin` is generated as `prohibit-password`, so a root password
+never works on this service even when `password_authentication=1`.
 
-Estas opciones no son una lista exclusiva de usuarios. Con contrasena y
-`user_authorized_keys` habilitados, cualquier otra cuenta NSS valida que pase
-PAM y tenga un shell ejecutable puede autenticarse bajo la misma politica.
-`allow_root` solo decide la excepcion de root. Limitar el servicio
-exclusivamente a `german` y `root` requeriria una allowlist explicita en una
-version futura o una restriccion equivalente en la politica PAM del host.
+These options are not an exclusive user list. With password authentication
+and `user_authorized_keys` enabled, any other valid NSS account that passes
+PAM and has an executable shell can authenticate under the same policy.
+`allow_root` controls only the root exception. Restricting the service
+exclusively to `german` and `root` would require an explicit allowlist in a
+future version or an equivalent restriction in the host's PAM policy.
 
-Comandos de conexion para ese ejemplo:
+Connection commands for this example:
 
 ```sh
 ssh -p 8022 german@192.168.0.214
 ssh -p 8022 root@192.168.0.214
 ```
 
-Si la clave privada tiene un nombre no estandar:
+If the private key has a nonstandard name:
 
 ```sh
 ssh -tt -o IdentitiesOnly=yes \
@@ -390,48 +398,47 @@ ssh -tt -o IdentitiesOnly=yes \
   -p 8022 german@192.168.0.214
 ```
 
-`-tt` fuerza el PTY; desde una terminal interactiva ordinaria suele bastar
-sin el. `IdentitiesOnly=yes` evita probar otras claves del agente y resulta
-util para diagnostico, pero tampoco es obligatorio cuando la clave esperada
-ya es una identidad normal del cliente.
+`-tt` forces PTY allocation; from a normal interactive terminal it is usually
+unnecessary. `IdentitiesOnly=yes` prevents the agent from trying other keys
+and is useful for diagnostics, but it is not required when the expected key
+is already a regular client identity.
 
-## Instalacion y servicio
+## Installation and service
 
-El binario `sshd` debe estar instalado. En Debian/Ubuntu lo aporta
-`openssh-server`; macOS incluye `/usr/sbin/sshd`. SuperTerm usa una instancia
-propia en primer plano, supervisada por systemd en GNU/Linux o por un
-LaunchDaemon en macOS.
+The `sshd` binary must be installed. On Debian/Ubuntu it is supplied by
+`openssh-server`; macOS includes `/usr/sbin/sshd`. SuperTerm runs a separate
+instance in the foreground, supervised by systemd on GNU/Linux or by a
+LaunchDaemon on macOS.
 
-La preparacion es idempotente:
+Setup is idempotent:
 
 ```sh
 sudo superterm ssh-server setup
 sudo superterm ssh-server status
 ```
 
-`setup` crea `server.ini` y la clave de host Ed25519 solo cuando faltan. En
-cada ejecucion vuelve a construir y validar el artefacto generado y el
-descriptor del servicio, y despues habilita el servicio al arranque. Nunca
-reemplaza la clave **privada**, las autorizaciones ni el `server.ini`
-existente; normaliza la privada a `0600` y puede regenerar su mitad publica si
-falta o no corresponde a ella.
+`setup` creates `server.ini` and the Ed25519 host key only when they are
+missing. On every invocation, it rebuilds and validates the generated artifact
+and the service descriptor, then enables the service at boot. It never
+replaces the existing **private** key, authorizations, or `server.ini`; it
+normalizes the private key to `0600` and can regenerate its public half if it
+is missing or does not match.
 
-En una instalacion real, la ruta absoluta de `superterm` y todos sus
-directorios antecesores deben pertenecer a root y no ser escribibles por grupo
-u otros usuarios. Esto evita que alguien sustituya el `ForceCommand`. En
-macOS conviene usar una jerarquia dedicada protegida por root, por ejemplo
-`/opt/superterm/bin`. `/usr/local/bin` solo sirve si ese directorio y todos sus
-antecesores tambien pertenecen a root y no son escribibles por otros; una ruta
-Homebrew escribible por un usuario sera rechazada deliberadamente para este
-servicio privilegiado.
+In a real installation, the absolute path to `superterm` and every ancestor
+directory must be owned by root and not writable by the group or other users.
+This prevents someone from replacing the `ForceCommand`. On macOS, use a
+dedicated root-protected hierarchy such as `/opt/superterm/bin`.
+`/usr/local/bin` is suitable only when that directory and all its ancestors
+are also owned by root and not writable by others; a user-writable Homebrew
+path is deliberately rejected for this privileged service.
 
-`make install` solo copia el programa y nunca habilita por sorpresa un servicio
-privilegiado. Tras una primera instalacion, o despues de actualizar el binario,
-se ejecuta `sudo superterm ssh-server setup` para construir y validar el
-descriptor correspondiente a esa version. La operacion conserva
-`server.ini`, las claves y las autorizaciones.
+`make install` only copies the program and never enables a privileged service
+unexpectedly. After the first installation, or after updating the binary,
+run `sudo superterm ssh-server setup` to build and validate the descriptor for
+that version. The operation preserves `server.ini`, the keys, and the
+authorizations.
 
-Administracion del servicio:
+Service administration:
 
 ```sh
 sudo superterm ssh-server enable
@@ -440,113 +447,117 @@ sudo superterm ssh-server restart
 sudo superterm ssh-server status
 ```
 
-Cada orden tiene un alcance deliberadamente distinto:
+Each command has a deliberately distinct scope:
 
-| Orden | Lee el pendiente | Publica configuracion | Cambia el gestor de servicios |
+| Command | Reads pending state | Publishes configuration | Changes service manager state |
 |---|---:|---:|---:|
-| `setup` | Si | Si, tras validar | Instala/actualiza y habilita el descriptor |
-| `check` | Si | No | No |
-| `restart` | Si | Si, tras validar | Reinicia y comprueba salud; revierte si falla |
-| `enable` | No; usa el artefacto aceptado | No | Habilita y arranca |
-| `disable` | No | No | Detiene y deshabilita el listener |
-| `status` | No | No | Solo consulta |
-| `uninstall-service` | No | No | Retira un descriptor reconocido como propio |
+| `setup` | Yes | Yes, after validation | Installs/updates and enables the descriptor |
+| `check` | Yes | No | No |
+| `restart` | Yes | Yes, after validation | Restarts and checks health; rolls back on failure |
+| `enable` | No; uses the accepted artifact | No | Enables and starts |
+| `disable` | No | No | Stops and disables the listener |
+| `status` | No | No | Query only |
+| `uninstall-service` | No | No | Removes a descriptor recognized as its own |
 
-La administracion toma un bloqueo exclusivo con espera acotada. Los cambios
-se escriben en ficheros temporales regulares con `O_EXCL`/`O_NOFOLLOW`, se
-validan y se renombran dentro del directorio protegido. `restart` captura el
-artefacto generado, el descriptor y el estado previo del servicio; si la
-activacion o la comprobacion de salud falla, intenta restaurar exactamente los
-tres. Las claves de host, las autorizaciones y `server.ini` nunca se borran
-como parte de ese rollback.
+Administration takes an exclusive lock with a bounded wait. Changes are
+written to regular temporary files using `O_EXCL`/`O_NOFOLLOW`, validated,
+and renamed within the protected directory. `restart` captures the generated
+artifact, service descriptor, and previous service state; if activation or
+the health check fails, it attempts to restore all three exactly. Host keys,
+authorizations, and `server.ini` are never deleted as part of that rollback.
 
-El bloqueo cubre las operaciones que validan o mutan estado, incluido
-`check`. `status` y la ayuda solo consultan sin tomarlo; `list-keys` asegura
-primero el arbol protegido y despues enumera, tambien sin ese bloqueo. El
-wrapper exclusivo `run` tampoco es una lectura ni una operacion administrativa:
-valida el artefacto publicado y arranca el listener. Todos ven generaciones
-completas porque la publicacion usa renombres atomicos.
+The lock covers operations that validate or mutate state, including `check`.
+`status` and help only query state and do not take it; `list-keys` first
+ensures the protected tree and then enumerates it, also without taking this
+lock. The internal, service-only `run` wrapper is neither a read nor an
+administrative operation: it validates the published artifact and starts the
+listener.
+Every process sees complete generations because publication uses atomic
+renames.
 
-El comando interno `ssh-server run` no es el camino de administracion. Es el
-wrapper usado por systemd/launchd: vuelve a validar el artefacto aceptado con
-el `sshd` instalado y finalmente hace `exec` de `sshd -D -e`. Por eso el PID
-principal del servicio termina siendo el propio OpenSSH y no queda un
-supervisor SuperTerm adicional.
+The internal `ssh-server run` command is not an administration path. It is
+the wrapper used by systemd/launchd: it revalidates the accepted artifact
+with the installed `sshd` and finally `exec`s `sshd -D -e`. The service's
+main PID therefore becomes OpenSSH itself, without an additional SuperTerm
+supervisor.
 
-Rutas del gestor y runtime:
+Service-manager and runtime paths:
 
-- GNU/Linux: `/etc/systemd/system/superterm-sshd.service` y
+- GNU/Linux: `/etc/systemd/system/superterm-sshd.service` and
   `/var/run/superterm-sshd.pid`.
-- macOS: `/Library/LaunchDaemons/org.superterm.sshd.plist` y el mismo PID file
-  privado bajo `/var/run`.
+- macOS: `/Library/LaunchDaemons/org.superterm.sshd.plist` and the same private
+  PID file under `/var/run`.
 
-`restart` no habilita un servicio que ya se deshabilito. Despues de `disable`
-se usa `enable`; `setup` tambien prepara y habilita una instalacion completa.
+`restart` does not enable a service that has already been disabled. After
+`disable`, use `enable`; `setup` also prepares and enables a complete
+installation.
 
-Para retirar solo la integracion con el gestor de servicios:
+To remove only the service-manager integration:
 
 ```sh
 sudo superterm ssh-server uninstall-service
 ```
 
-El comando detiene y deshabilita exclusivamente el descriptor que reconoce
-como propio. Conserva `server.ini`, las claves de host y todas las claves
-autorizadas en `/etc/superterm/sshd`, de modo que una reinstalacion mantiene la
-identidad. Un marcador de propiedad versionado y los campos invariantes del
-servicio permiten reconocer de forma estricta un descriptor de una version
-anterior aunque evolucione su contenido. `make uninstall` ejecuta primero esta
-misma operacion; con `DESTDIR`
-solo modifica el arbol de empaquetado y nunca el gestor del host. Una
-desinstalacion local sin privilegios tampoco toca el gestor: un servicio root
-valido no puede apuntar a ese binario propiedad del usuario.
+The command stops and disables only a descriptor that it recognizes as its
+own. It preserves `server.ini`, the host keys, and every authorized key in
+`/etc/superterm/sshd`, so a reinstall retains the identity. A versioned
+ownership marker and the service's invariant fields allow strict recognition
+of a descriptor from an earlier version even as its contents evolve.
+`make uninstall` first runs this same operation; with `DESTDIR`, it modifies
+only the packaging tree and never the host's service manager. An unprivileged
+local uninstall does not touch the service manager either: a valid root
+service cannot point to that user-owned binary.
 
-En GNU/Linux la salida de `sshd -e` queda en el journal de la unidad. El
-descriptor macOS no configura `StandardOutPath` ni `StandardErrorPath`, por lo
-que no promete un fichero persistente equivalente; `ssh-server status` muestra
-el estado y el ultimo resultado que conserva launchd. Los fallos del cliente y
-del daemon de sesion siguen usando `SUPERTERM_DEBUG`, `SUPERTERM_CRASH_DIR` y
-los mecanismos descritos en `DEBUGGING.md` y `HEAP_DEBUGGING.md`.
+On GNU/Linux, output from `sshd -e` goes to the unit journal. The macOS
+descriptor does not configure `StandardOutPath` or `StandardErrorPath`, so it
+does not promise an equivalent persistent file; `ssh-server status` shows the
+state and last result retained by launchd. Client and session-daemon failures
+continue to use `SUPERTERM_DEBUG`, `SUPERTERM_CRASH_DIR`, and the mechanisms
+described in `DEBUGGING.md` and `HEAP_DEBUGGING.md`.
 
-## Autorizar claves centrales
+## Authorizing central keys
 
-El almacen central se modifica solamente mediante el administrador de
-SuperTerm. Este valida el usuario, el fichero y la clave con las herramientas
-OpenSSH, rechaza opciones de `authorized_keys`, descarta los comentarios no
-autenticados, evita duplicados y reemplaza el fichero de forma atomica:
+Only the SuperTerm administrator modifies the central store. SuperTerm
+validates the account through NSS and validates the source file itself; it then
+uses OpenSSH tools to validate the key. It rejects `authorized_keys` options,
+discards unauthenticated comments, prevents duplicates, and replaces the file
+atomically:
 
 ```sh
-sudo superterm ssh-server authorize german /ruta/id_ed25519.pub
+sudo superterm ssh-server authorize german /path/to/id_ed25519.pub
 sudo superterm ssh-server list-keys german
-sudo superterm ssh-server revoke german SHA256:HUELLA
+sudo superterm ssh-server revoke german SHA256:FINGERPRINT
 ```
 
-Autorizar o revocar afecta a autenticaciones nuevas; no expulsa clientes que
-ya estan conectados. Los comandos tienen tambien sus alias espanoles indicados
-por `superterm ssh-server help`. Estos comandos no modifican el
-`.ssh/authorized_keys` particular; ese segundo almacen sigue bajo el control
-normal de su usuario y conserva toda la semantica de OpenSSH. Por ejemplo,
-puede contener opciones que restrinjan aun mas una entrada o una linea
-`cert-authority`. Ninguna opcion particular puede relajar el `ForceCommand` o
-las prohibiciones globales; una opcion `no-pty` puede autenticar la clave pero
-hace que la entrada SuperTerm se rechace por carecer de PTY.
+Authorizing or revoking affects new authentications; it does not disconnect
+clients that are already logged in. The commands also have the Spanish
+aliases shown by `superterm ssh-server help`. These commands do not modify the
+account's own `.ssh/authorized_keys`; that second store remains under the
+user's normal control and retains all OpenSSH semantics. For example, it may
+contain options that further restrict an entry or a `cert-authority` line.
+No per-key option can relax the global `ForceCommand` or prohibitions; a
+`no-pty` option may authenticate the key, but causes the SuperTerm entry to be
+rejected because it has no PTY.
 
-## Conexion y sesiones
+## Connections and sessions
 
-Conexion interactiva normal:
+Normal interactive connection:
 
 ```sh
 ssh -p 8022 german@192.168.0.214
 ```
 
-Un cliente interactivo solicita PTY automaticamente. `ssh -tt` solo es
-necesario al invocarlo desde un entorno sin terminal o que no quiera asignarlo.
-OpenSSH prueba sus claves habituales; si ninguna coincide y la contrasena esta
-habilitada, pide la contrasena que validara PAM para `german`. En la primera conexion muestra
-la huella de la clave de host y la conserva en el `known_hosts` del cliente.
-La opcion `-p` debe preceder al destino en la sintaxis portable de OpenSSH.
+An interactive client requests a PTY automatically. `ssh -tt` is necessary
+only when invoked from an environment without a terminal or from one that
+would not allocate it. OpenSSH tries its usual keys; if none matches and
+password authentication is enabled, it requests the password that PAM will
+validate for `german`. On the first connection, it displays the host-key
+fingerprint and, after the user accepts it under the client's normal host-key
+policy, stores it in the client's `known_hosts`. The `-p` option must precede
+the destination in portable OpenSSH syntax.
 
-Para reducirlo incluso a `ssh superterm`, puede guardarse esto en el cliente,
-sin reemplazar ninguna otra entrada de `~/.ssh/config`:
+To shorten the command to `ssh superterm`, save the following on the client
+without replacing any other entry in `~/.ssh/config`:
 
 ```sshconfig
 Host superterm
@@ -556,83 +567,82 @@ Host superterm
     RequestTTY force
 ```
 
-Si se usa una clave con un nombre no estandar, se anade tambien una linea
-`IdentityFile ~/.ssh/NOMBRE_DE_LA_CLAVE`.
+When using a key with a nonstandard name, also add an
+`IdentityFile ~/.ssh/KEY_NAME` line.
 
-La entrada SSH resuelve la sesion por usuario con estas opciones de
+The SSH entry resolves the per-user session through these options in
 `~/.superterm/superterm.ini`:
 
-- `ssh_session=last` (predeterminado) vuelve a la ultima sesion a la que ese
-  usuario entro correctamente por SSH. Si la pista no existe o el daemon ya
-  no vive, usa `default_session`, despues `default_profile` y por ultimo
-  `session`.
-- `ssh_session=default` ignora la ultima ruta y entra siempre en esa cadena
-  predeterminada.
-- `ssh_last_session` es una pista privada que SuperTerm actualiza
-  atomicamente solo despues de un attach correcto. No guarda escritorios,
-  panes, geometria ni procesos y no debe editarse normalmente.
+- `ssh_session=last` (default) returns to the latest session that the user
+  successfully entered through SSH. If the hint does not exist or the daemon
+  is no longer alive, it uses `default_session`, then `default_profile`, and
+  finally `session`.
+- `ssh_session=default` ignores the latest route and always enters that
+  default chain.
+- `ssh_last_session` is a private hint that SuperTerm updates atomically only
+  after a successful attach. It does not store desktops, panes, geometry, or
+  processes and normally should not be edited.
 
-Si esa sesion ya vive, se hace attach sin cambiar su geometria. Si no existe,
-la primera conexion la crea con `default_profile`; un perfil inexistente o no
-configurado produce un escritorio vacio. `default_session` decide el **nombre**
-de la sesion, no su contenido inicial. La geometria inicial procede de ese
-primer PTY. Un bloqueo por usuario y nombre impide que dos conexiones
-simultaneas creen dos daemons.
+If that session is already live, the client attaches without changing its
+geometry. If it does not exist, the first connection creates it using
+`default_profile`; a missing or unconfigured profile produces an empty
+desktop. `default_session` determines the session **name**, not its initial
+contents. Initial geometry comes from that first PTY. A per-user, per-name
+lock prevents two simultaneous connections from creating two daemons.
 
-Desde el menu `Sessions` se puede crear otra sesion en cualquier momento. El
-dialogo pide un nombre y el perfil de partida, e incluye
-`<Empty (no profile)>` para comenzar con un escritorio sin ventanas. El menu
-`Profiles` permite crear antes un perfil vacio o guardar el escritorio actual
-como perfil. Crear o cambiar de sesion solo separa el cliente de la anterior;
-no destruye el daemon anterior. Con `ssh_session=last`, al hacer detach y
-conectar de nuevo se recibe exactamente esa nueva sesion, no una sesion fija
-anterior.
+The `Sessions` menu can create another session at any time. The dialog asks
+for a name and a starting profile, and includes `<Empty (no profile)>` to
+start with a desktop containing no windows. The `Profiles` menu can first
+create an empty profile or save the current desktop as a profile. Creating or
+changing sessions only detaches the client from the previous session; it does
+not destroy the previous daemon. With `ssh_session=last`, detaching and
+reconnecting returns precisely to that new session, not to an earlier fixed
+session.
 
-Detach desde el menu, cierre de la ventana SSH o perdida de red conservan la
-sesion. `Exit` es distinto: envia un cierre explicito de sesion; si quedan
-otros visores solo sale ese cliente, y si era el ultimo detiene y elimina la
-sesion. Con cero visores, una sesion cuyos panes hayan muerto todos puede
-autorecolectarse tras su periodo de gracia; un escritorio deliberadamente
-vacio, con cero panes, permanece disponible para reattach.
+Detach from the menu, closing the SSH window, or losing the network preserves
+the session. `Exit` is different: it sends an explicit session close; if other
+viewers remain, only that client exits, and if it was the last viewer, it stops
+and removes the session. With zero viewers, a session whose panes have all
+exited may reap itself after its grace period; a deliberately empty desktop
+with zero panes remains available for reattach.
 
-### Varios clientes sobre la misma sesion
+### Multiple clients on the same session
 
-Attach no crea una geometria privada. Todos reciben el mismo arbol de panes,
-posiciones, tamanos, estado minimizado/maximizado/fullscreen, foco compartido,
-contenido y orden de salida. Un cliente que no quepa fisicamente muestra esa
-misma vista dentro de su terminal; no obliga al daemon a fabricar un segundo
-escritorio.
+Attach does not create private geometry. Everyone receives the same pane
+tree, positions, sizes, minimized/maximized/fullscreen state, shared focus,
+contents, and output order. A client on which the desktop does not physically
+fit displays that same view inside its terminal; it does not force the daemon
+to create a second desktop.
 
-La conexion de un visor por si sola no redimensiona los PTYs. Un cambio de
-tamano posterior que el programa acepta es una operacion canonica y se
-propaga a todos. Cuando las geometrías de los hosts difieren, las operaciones
-que necesitan un area comun —como fullscreen sincronizado— se limitan al
-viewport minimo compatible. El passthrough crudo de fullscreen (`prefijo f`,
-`Ctrl-Q f` por defecto) solo se usa cuando las
-geometrias fisicas coinciden; en caso contrario permanece el renderer IDE
-compartido.
+The connection of a viewer does not by itself resize the PTYs. A subsequent
+resize accepted by the program is a canonical operation and is propagated to
+everyone. When host geometries differ, operations that require a common area
+(such as synchronized fullscreen) are limited to the smallest compatible
+viewport. Raw fullscreen passthrough (`prefix f`, `Ctrl-Q f` by default) is
+used only when the physical geometries match; otherwise the shared IDE
+renderer remains active.
 
-La escritura de varios clientes se entrega en el orden en que el reactor la
-acepta. Los cambios estructurales de una ventana se serializan con revision y
-bloqueo por pane, de modo que dos usuarios pueden actuar a la vez sobre panes
-distintos sin mezclar commits. El portapapeles de SuperTerm es la excepcion
-intencionada: es memoria local del cliente y no viaja por la sesion.
+Input from multiple clients is delivered in the order in which the reactor
+accepts it. Structural changes to a window are serialized with revision and
+per-pane locking, so two users can operate concurrently on different panes
+without mixing commits. The SuperTerm clipboard is the deliberate exception:
+it is client-local memory and does not travel through the session.
 
-Cada daemon admite como maximo ocho visores interactivos. Las conexiones
-efimeras del CLI de control se gestionan en slots separados y no consumen uno
-de esos ocho. La salida hacia cada visor tiene un buffer acotado: un cliente
-que deja de leer y supera el umbral de atasco se desconecta de forma
-independiente, sin bloquear los PTYs ni a los demas.
+Each daemon accepts no more than eight interactive viewers. Ephemeral control
+CLI connections use separate slots and do not consume any of those eight.
+Output to each viewer has a bounded buffer: a client that stops reading and
+exceeds the congestion threshold is disconnected independently, without
+blocking the PTYs or the other clients.
 
-Cliente y daemon deben hablar la misma version del protocolo de attach
-(`ATTACH_PROTO_VER`, actualmente 15). Tras actualizar el binario, un daemon
-antiguo puede rechazar un cliente nuevo —o al reves— en lugar de interpretar
-un snapshot incompatible. Se cierra de forma explicita esa sesion antigua o
-se usa temporalmente un cliente de su misma version; nunca se fuerza el attach.
+Client and daemon must speak the same attach protocol version
+(`ATTACH_PROTO_VER`, currently 15). After a binary update, an old daemon may
+reject a new client—or vice versa—instead of interpreting an incompatible
+snapshot. Explicitly close that old session or temporarily use a client from
+the same version; never force the attach.
 
-## Verificacion y diagnostico
+## Verification and diagnostics
 
-### Comprobacion despues de instalar o actualizar
+### Checks after installation or upgrade
 
 ```sh
 sudo superterm ssh-server check
@@ -641,61 +651,60 @@ sudo superterm ssh-server list-keys german
 ssh -vv -p 8022 german@192.168.0.214
 ```
 
-`check` solo valida el `server.ini` pendiente. Para verificar exactamente lo
-que esta ejecutando OpenSSH se puede inspeccionar el artefacto aceptado:
+`check` validates only the pending `server.ini`. To verify exactly what
+OpenSSH is running, inspect the accepted artifact:
 
 ```sh
 sudo /usr/sbin/sshd -T \
   -f /etc/superterm/sshd/sshd_config.generated
 ```
 
-En sistemas usrmerge el binario puede estar en `/usr/bin/sshd`; SuperTerm
-elige y valida una de esas dos rutas protegidas. En la salida efectiva deben
-aparecer, entre otros, el `listenaddress` deseado, el `forcecommand` absoluto,
-`disableforwarding yes`, las fuentes exactas de `authorizedkeysfile` y la
-combinacion esperada de `passwordauthentication`, `pubkeyauthentication` y
-`authenticationmethods`.
+On usrmerge systems the binary may be at `/usr/bin/sshd`; SuperTerm selects
+and validates one of these two protected paths. Effective output must include,
+among other settings, the desired `listenaddress`, the absolute
+`forcecommand`, `disableforwarding yes`, the exact `authorizedkeysfile`
+sources, and the expected combination of `passwordauthentication`,
+`pubkeyauthentication`, and `authenticationmethods`.
 
-En GNU/Linux, los eventos del listener se consultan con:
+On GNU/Linux, query listener events with:
 
 ```sh
 sudo journalctl -u superterm-sshd.service -b
 ```
 
-`LogLevel VERBOSE` permite ver cuenta, origen, metodo y huella de la clave
-aceptada sin registrar contrasenas ni claves privadas. En macOS se usa
-`superterm ssh-server status` y las herramientas de log de launchd; el
-descriptor no promete un fichero de texto privado.
+`LogLevel VERBOSE` records the account, source, method, and accepted-key
+fingerprint without logging passwords or private keys. On macOS, use
+`superterm ssh-server status` and the launchd logging tools; the descriptor
+does not promise a private text file.
 
-### Fallos frecuentes
+### Common failures
 
-| Sintoma | Causa probable | Comprobacion segura |
+| Symptom | Probable cause | Safe check |
 |---|---|---|
-| `Connection refused` | Servicio parado o direccion/puerto no publicado | `ssh-server status`, `server.ini`, listener del sistema |
-| `Address already in use` al activar | Otro proceso ocupa una direccion/puerto de `listen` | Identificar el listener; no matar procesos sin verificar su propietario |
-| Timeout antes de autenticar | Interfaz equivocada o firewall | Comparar IP de destino con cada entrada `listen` |
-| Aviso de host key desconocida | Primera conexion a esta instancia/puerto | Comparar con `ssh-keygen -lf /etc/superterm/sshd/ssh_host_ed25519_key.pub` en el servidor |
-| Host key cambiada | Se sustituyo la identidad o se conecta a otro equipo | No borrar `known_hosts` a ciegas; verificar primero la huella del servidor |
-| `Permission denied (publickey)` | Clave privada equivocada, publica no autorizada o permisos rechazados por `StrictModes` | `ssh -vv`, `list-keys`, propietario/modos de `~/.ssh` |
-| Pide contrasena aunque hay clave | Ninguna identidad ofrecida fue aceptada | Probar `IdentitiesOnly=yes -i RUTA` y revisar la huella, no copiar privadas al servidor |
-| `root` no entra por contrasena | Comportamiento obligatorio | Usar clave y comprobar `allow_root=1` |
-| `interactive SSH PTY is required` | `ssh -T`, tuberia sin PTY o cliente no interactivo | Solicitar PTY con `-t`/`-tt` |
-| `remote commands and subsystems are disabled` | Se envio comando, SCP o SFTP | Entrar sin comando; esas funciones no forman parte del servicio |
-| Vuelve a otra sesion | La ultima ya no vive, se usa modo `default`, o la pista pertenece a otro usuario | Revisar `[session]`, `superterm --list-sessions` bajo esa cuenta |
-| La conexion cae pero panes siguen | Detach por EOF/keepalive | Es el comportamiento esperado; reconectar |
-| `check` rechaza `/etc/ssh/sshrc` | OpenSSH lo ejecutaria fuera del control de `ForceCommand` | Auditar/retirar ese hook global; no omitir la validacion |
-| Rechazo de ruta no protegida | El binario o un directorio antecesor es escribible/no pertenece a root | Instalar en una jerarquia root y volver a ejecutar `setup` |
-| Clave publica de host ausente o distinta | El `.pub` no deriva de la privada conservada | `setup` puede reparar solo la mitad publica; verificar despues la huella |
-| `protocol version ... need ...` | Cliente y daemon pertenecen a builds incompatibles | Cerrar expresamente la sesion antigua o usar el binario coincidente |
+| `Connection refused` | Service stopped or address/port not published | `ssh-server status`, `server.ini`, system listener |
+| `Address already in use` during activation | Another process occupies an address/port from `listen` | Identify the listener; do not kill processes without verifying their owner |
+| Timeout before authentication | Wrong interface or firewall | Compare the destination IP with every `listen` entry |
+| Unknown host-key warning | First connection to this instance/port | Compare with `ssh-keygen -lf /etc/superterm/sshd/ssh_host_ed25519_key.pub` on the server |
+| Host key changed | The identity was replaced or the connection reaches another machine | Do not blindly delete `known_hosts`; first verify the server fingerprint |
+| `Permission denied (publickey)` | Wrong private key, unauthorized public key, or permissions rejected by `StrictModes` | `ssh -vv`, `list-keys`, ownership/modes of `~/.ssh` |
+| Password requested despite having a key | None of the offered identities was accepted | Try `IdentitiesOnly=yes -i PATH` and inspect the fingerprint; do not copy private keys to the server |
+| `root` cannot log in with a password | Mandatory behavior | Use a key and check `allow_root=1` |
+| `interactive SSH PTY is required` | `ssh -T`, pipeline without a PTY, or noninteractive client | Request a PTY with `-t`/`-tt` |
+| `remote commands and subsystems are disabled` | A command, SCP, or SFTP was requested | Connect without a command; these functions are not part of the service |
+| Returns to a different session | The latest one is no longer live, mode `default` is active, or the hint belongs to another user | Inspect `[session]` and `superterm --list-sessions` under that account |
+| Connection drops but panes remain | Detach through EOF/keepalive | This is expected behavior; reconnect |
+| `check` rejects `/etc/ssh/sshrc` | OpenSSH would run it outside `ForceCommand` control | Audit/remove that global hook; do not bypass validation |
+| Unprotected path rejected | The binary or an ancestor directory is writable/not owned by root | Install into a root-owned hierarchy and run `setup` again |
+| Public host key missing or mismatched | The `.pub` does not derive from the retained private key | `setup` can repair only the public half; verify the fingerprint afterwards |
+| `protocol version ... need ...` | Client and daemon come from incompatible builds | Explicitly close the old session or use the matching binary |
 
-Nunca se debe depurar pasando una contrasena en argv, en `server.ini`, en una
-URL o en un log. `sshpass` solo pertenece a clases de pane SSH **salientes**;
-no participa en la autenticacion entrante de este servicio.
+Never debug by passing a password in argv, `server.ini`, a URL, or a log.
+`sshpass` is used only by **outbound** SSH pane classes; it does not
+participate in this service's inbound authentication.
 
-### Pruebas automatizadas que cubren la integracion
+### Automated tests covering the integration
 
-Despues de construir el binario de pruebas, las comprobaciones principales
-son:
+After building the test binary, the main checks are:
 
 ```sh
 make test-runtime
@@ -709,80 +718,83 @@ SUPERTERM_TEST_BIN="$PWD/bin/superterm-test" \
   python3 test/ssh_service_uninstall_test.py
 ```
 
-- `ssh_server_config_test.py` usa un `sshd` real para validar la matriz de
-  autenticacion, `-t`, `-T`, publicacion atomica, rollback, permisos, claves y
-  politica fail-closed.
-- `ssh_entry_test.py` prueba creacion simultanea, seleccion `last/default`,
-  detach, reattach, perfil y escritorio vacio sobre el protocolo de sesion.
-- `ssh_transport_test.py` levanta un listener TCP OpenSSH aislado y entra con
-  el cliente `ssh` estandar; cubre dos visores, perdida abrupta, resize,
-  rechazo de exec/SFTP/forwarding y reattach.
-- `ssh_service_uninstall_test.py` prueba propiedad del descriptor, fallos del
-  gestor, rollback y que la desinstalacion preserve todo `/etc/superterm/sshd`.
+- `ssh_server_config_test.py` uses a real `sshd` to validate the
+  authentication matrix, `-t`, `-T`, atomic publication, rollback,
+  permissions, keys, and fail-closed policy.
+- `ssh_entry_test.py` tests simultaneous creation, `last/default` selection,
+  detach, reattach, profiles, and an empty desktop over the session protocol.
+- `ssh_transport_test.py` starts an isolated OpenSSH TCP listener and connects
+  with the standard `ssh` client; it covers two viewers, abrupt loss, resize,
+  rejection of exec/SFTP/forwarding, and reattach.
+- `ssh_service_uninstall_test.py` tests descriptor ownership, service-manager
+  failures, rollback, and preservation of all `/etc/superterm/sshd` state
+  during uninstall.
 
-La bateria completa se ejecuta con `make test`. Algunos caminos de privilegio
-se omiten de forma explicita si la cuenta de prueba no permite reproducirlos;
-un `SKIP` identificado no debe presentarse como una prueba ejecutada.
+The complete suite runs with `make test`. Some privileged paths are explicitly
+skipped when the test account cannot reproduce them; an identified `SKIP`
+must not be presented as an executed test.
 
-## Mapa de implementacion y fuentes auditadas
+## Implementation map and audited sources
 
-El flujo SuperTerm se puede seguir sin saltos en estas unidades:
+The SuperTerm flow can be followed without gaps through these units:
 
-| Fichero | Puntos principales |
+| File | Main points |
 |---|---|
-| [`src/st_ssh_server.pas`](../src/st_ssh_server.pas) | `BuildGeneratedConfig`, validacion efectiva `sshd -T`, activacion/rollback, systemd/launchd y administracion de claves |
-| [`src/st_ssh_entry.pas`](../src/st_ssh_entry.pas) | `PrepareSshEntry`, bloqueo de primera creacion, ruta `last/default` y actualizacion de `ssh_last_session` |
-| [`src/superterm.lpr`](../src/superterm.lpr) | Despacho temprano de `ssh-server` y del argumento reservado `--ssh-entry` |
-| [`src/st_fvui.pas`](../src/st_fvui.pas) | Construccion diferida del perfil, attach y promocion del workspace al daemon |
-| [`src/st_server.pas`](../src/st_server.pas) | Socket Unix, protocolo v15, snapshots, reactor, clientes, PTYs, `DropClient` y doble fork |
-| [`src/st_config.pas`](../src/st_config.pas) | Lectura y escritura atomica de la politica de ruta SSH por usuario |
+| [`src/st_ssh_server.pas`](../src/st_ssh_server.pas) | `BuildGeneratedConfig`, effective `sshd -T` validation, activation/rollback, systemd/launchd, and key administration |
+| [`src/st_ssh_entry.pas`](../src/st_ssh_entry.pas) | `PrepareSshEntry`, initial-creation lock, `last/default` route, and `ssh_last_session` update |
+| [`src/superterm.lpr`](../src/superterm.lpr) | Early dispatch of `ssh-server` and the reserved `--ssh-entry` argument |
+| [`src/st_fvui.pas`](../src/st_fvui.pas) | Deferred profile construction, attach, and promotion of the workspace to the daemon |
+| [`src/st_server.pas`](../src/st_server.pas) | Unix socket, v15 protocol, snapshots, reactor, clients, PTYs, `DropClient`, and double fork |
+| [`src/st_config.pas`](../src/st_config.pas) | Atomic reading and writing of the per-user SSH route policy |
 
-La referencia OpenSSH Portable auditada es `V_10_5_P1`, commit
+The audited OpenSSH Portable reference is `V_10_5_P1`, commit
 [`b3f7344209832eea8ece447d871ea748767c444b`](https://github.com/openssh/openssh-portable/commit/b3f7344209832eea8ece447d871ea748767c444b).
-En la copia de estudio `/opt/openssh-portable-10.5p1` se verificaron:
+The following were verified in the study copy at
+`/opt/openssh-portable-10.5p1`:
 
-- `sshd.c` para carga de host keys y listener;
-- `sshd-session.c` para separacion de privilegios pre/post-auth;
-- `auth.c`, `auth2-pubkey.c` y `auth2-pubkeyfile.c` para cuenta,
-  `AuthorizedKeysFile`, firma y `StrictModes`;
-- `auth-passwd.c` y `auth-pam.c` para password, control de cuenta,
-  credenciales y sesion PAM;
-- `session.c` para PTY, `SIGWINCH`, `ForceCommand`, entorno, RC y ejecucion
-  del shell con `-c`;
-- `serverloop.c` y `monitor.c` para cierre de canales, PTY y monitor.
+- `sshd.c` for host-key loading and the listener;
+- `sshd-session.c` for pre/post-auth privilege separation;
+- `auth.c`, `auth2-pubkey.c`, and `auth2-pubkeyfile.c` for accounts,
+  `AuthorizedKeysFile`, signatures, and `StrictModes`;
+- `auth-passwd.c` and `auth-pam.c` for passwords, account control,
+  credentials, and the PAM session;
+- `session.c` for PTYs, `SIGWINCH`, `ForceCommand`, the environment, RC files,
+  and execution of the shell with `-c`;
+- `serverloop.c` and `monitor.c` for channel, PTY, and monitor shutdown.
 
-La copia de `/opt` es solo material de auditoria y no es una dependencia del
-programa instalado. En ejecucion se usa exclusivamente el OpenSSH protegido
-del sistema y se vuelve a comprobar su configuracion efectiva.
+The `/opt` copy is audit material only and is not a dependency of the
+installed program. At runtime, SuperTerm exclusively uses the system's
+protected OpenSSH and rechecks its effective configuration.
 
-## Limites de seguridad y compatibilidad
+## Security and compatibility limits
 
-- Solo se aceptan cuentas conocidas por NSS cuyo shell exista y sea
-  ejecutable. La politica PAM de `sshd` puede aplicar bloqueo, caducidad,
-  horario y otras reglas; su control de cuenta tambien se ejecuta despues de
-  una clave publica valida.
-- La autenticacion efectiva es exactamente `password`, `publickey` o
-  cualquiera de ambos, segun `server.ini`. Keyboard-interactive, GSSAPI,
-  hostbased, `TrustedUserCAKeys` global y comandos externos de autorizacion
-  permanecen desactivados. Si se habilita el `authorized_keys` particular,
-  ese fichero conserva opciones OpenSSH como `cert-authority`; el almacen
-  central de SuperTerm solo admite claves simples sin opciones.
-- `ssh host comando`, `ssh -T`, SCP/SFTP y cualquier forwarding se rechazan.
-- El comando forzado usa una ruta absoluta de SuperTerm y no acepta texto del
-  cliente.
-- El wrapper rechaza `Match` e `Include`, comprueba la politica efectiva con
-  `sshd -T` y no permite fuentes distintas de las dos configuradas, variables
-  de entorno del cliente ni subsistemas.
-- Los nombres de usuario, direcciones, puertos y claves se validan antes de
-  llegar a un fichero de OpenSSH o a un proceso externo.
-- El daemon SSH no interpreta el protocolo binario de sesiones y nunca expone
-  el socket Unix por TCP.
-- Un equipo necesita el binario OpenSSH `sshd`, una compilacion con PAM
-  funcional para autenticar contrasenas y una plataforma soportada por
-  SuperTerm/FPC. Por eso esta arquitectura puede reemplazar el acceso
-  interactivo en servidores GNU/Linux y macOS compatibles, pero no literalmente
-  en cualquier dispositivo embebido que solo disponga de Dropbear, carezca de
-  PAM o no pueda ejecutar SuperTerm.
+- Only accounts known to NSS whose shell exists and is executable are
+  accepted. The `sshd` PAM policy can enforce locking, expiration, schedules,
+  and other rules; its account check also runs after a valid public key.
+- Effective authentication is exactly `password`, `publickey`, or either one,
+  according to `server.ini`. Keyboard-interactive, GSSAPI, hostbased,
+  global `TrustedUserCAKeys`, and external authorization commands remain
+  disabled. If the account's own `authorized_keys` is enabled, that file
+  retains OpenSSH options such as `cert-authority`; SuperTerm's central store
+  accepts only plain keys without options.
+- `ssh host command`, `ssh -T`, SCP/SFTP, and every kind of forwarding are
+  rejected.
+- The forced command uses an absolute SuperTerm path and accepts no client
+  text.
+- The wrapper rejects `Match` and `Include`, checks the effective policy with
+  `sshd -T`, and allows neither key sources other than the two configured
+  sources, client environment variables, nor subsystems.
+- User names, addresses, ports, and keys are validated before reaching an
+  OpenSSH file or an external process.
+- The SSH daemon does not interpret the binary session protocol and never
+  exposes the Unix socket over TCP.
+- A machine needs the OpenSSH `sshd` binary, a build with working PAM support
+  for password authentication, and a platform supported by SuperTerm/FPC.
+  This architecture can therefore replace interactive access on compatible
+  GNU/Linux and macOS servers, but not literally on every embedded device that
+  has only Dropbear, lacks PAM, or cannot run SuperTerm.
 
-La implementacion delega deliberadamente en OpenSSH sus bucles `poll`,
-autenticacion, PTY y recoleccion de hijos.
+For the outer SSH transport, the implementation deliberately delegates the
+network `poll` loops, authentication, outer PTY handling, and SSH child reaping
+to OpenSSH. The inner SuperTerm session continues to own its event reactor,
+pane PTYs, canonical screens, and pane-child lifecycle.

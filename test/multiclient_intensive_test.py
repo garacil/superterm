@@ -11,6 +11,10 @@ import os
 import math
 import random
 import re
+import shlex
+import socket
+import stat
+import struct
 import sys
 import tempfile
 import threading
@@ -180,6 +184,160 @@ def drain_all(clients, seconds):
 
 KNOWN_CLIENT_PIDS = set()
 TRACKED_CLIENTS = {}
+ACTIVE_TEST_FOREGROUNDS = {}
+FOREGROUND_QUERY_FAILED = object()
+os.makedirs('/tmp/opencode', exist_ok=True)
+FOREGROUND_CONTROL_DIR = tempfile.mkdtemp(
+    prefix='superterm-stress-foreground-', dir='/tmp/opencode')
+FOREGROUND_HELPER_FD, FOREGROUND_HELPER = tempfile.mkstemp(
+    prefix='wait-', suffix='.py', dir=FOREGROUND_CONTROL_DIR)
+try:
+    os.write(FOREGROUND_HELPER_FD,
+             b'import os, sys, time\n'
+             b'deadline = time.monotonic() + 60\n'
+             b'while time.monotonic() < deadline:\n'
+             b'    try:\n'
+             b'        os.lstat(sys.argv[1])\n'
+             b'        break\n'
+             b'    except FileNotFoundError:\n'
+             b'        time.sleep(0.02)\n')
+finally:
+    os.close(FOREGROUND_HELPER_FD)
+
+
+def daemon_claim(session):
+    """Return one sidecar-authenticated daemon generation."""
+    path = os.path.join(stlib.sessions_dir(HOME), session + '.ini')
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        parser = configparser.ConfigParser()
+        with open(path, encoding='utf-8') as stream:
+            parser.read_file(stream, source=path)
+        pid = parser.getint('session', 'pid')
+        identity = parser.get('session', 'pid_identity').strip()
+    except (OSError, UnicodeError, ValueError, configparser.Error):
+        return None
+    if pid <= 1 or not identity or stlib.process_identity(pid) != identity:
+        return None
+    return pid, identity
+
+
+def pane_foreground_command(session, pane):
+    """Read one live command from the daemon's untruncated CTL_LIST frame."""
+    socket_path = os.path.join(stlib.sessions_dir(HOME), session + '.sock')
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.settimeout(2.0)
+    try:
+        peer.connect(socket_path)
+        peer.sendall(stlib.raw_frame(11, -1))
+        payload = None
+        while True:
+            frame = stlib.read_frame(peer, timeout=2.0)
+            if frame is None or frame[0] == 43:
+                break
+            if frame[0] == 42:
+                payload = frame[2]
+        if payload is None:
+            return FOREGROUND_QUERY_FAILED
+        offset = 0
+        _name, offset = stlib.read_pas_string(payload, offset)
+        _profile, offset = stlib.read_pas_string(payload, offset)
+        count, _focused, _clients, _desk_w, _desk_h = struct.unpack_from(
+            '<iiiii', payload, offset)
+        offset += struct.calcsize('<iiiii')
+        if pane < 1 or pane > count:
+            return FOREGROUND_QUERY_FAILED
+        for pane_no in range(1, count + 1):
+            _title, offset = stlib.read_pas_string(payload, offset)
+            _term, offset = stlib.read_pas_string(payload, offset)
+            offset += 1
+            _host, offset = stlib.read_pas_string(payload, offset)
+            _user, offset = stlib.read_pas_string(payload, offset)
+            command, offset = stlib.read_pas_string(payload, offset)
+            _cwd, offset = stlib.read_pas_string(payload, offset)
+            offset += struct.calcsize('<iiiiiii') + 3
+            if pane_no == pane:
+                return command
+    except (OSError, ValueError, IndexError, struct.error):
+        return FOREGROUND_QUERY_FAILED
+    finally:
+        peer.close()
+    return FOREGROUND_QUERY_FAILED
+
+
+def acquire_test_foreground(session, pane, token, timeout=3.0):
+    """Claim authority only after the unique helper is the live foreground."""
+    claim = daemon_claim(session)
+    stop_path = os.path.join(FOREGROUND_CONTROL_DIR, token + '.stop')
+
+    def owned_helper(command):
+        """Accept Python's real post-exec path, but no weaker identity."""
+        if command is FOREGROUND_QUERY_FAILED:
+            return False
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+        if len(argv) != 4:
+            return False
+        executable = os.path.basename(argv[0]).lower()
+        return (re.fullmatch(r'python(?:3(?:\.\d+)?)?', executable) is not None
+                and argv[1:] == [FOREGROUND_HELPER, stop_path, token])
+
+    deadline = time.monotonic() + timeout
+    while claim is not None and time.monotonic() < deadline:
+        observed = pane_foreground_command(session, pane)
+        if (daemon_claim(session) == claim and
+                owned_helper(observed)):
+            ACTIVE_TEST_FOREGROUNDS[(session, pane)] = (
+                claim[0], claim[1], observed, stop_path)
+            return True
+        time.sleep(0.04)
+    return False
+
+
+def stop_test_foreground(session, pane, timeout=3.0):
+    """Stop only the exact helper through its private one-use file."""
+    key = (session, pane)
+    authority = ACTIVE_TEST_FOREGROUNDS.get(key)
+    if authority is None:
+        return False
+    pid, identity, expected, stop_path = authority
+    if daemon_claim(session) != (pid, identity):
+        return False
+    observed = pane_foreground_command(session, pane)
+    if observed is FOREGROUND_QUERY_FAILED or observed != expected:
+        return False
+    # This cannot race into a later foreground: no byte is sent to the PTY.
+    # Only the helper whose exact argv was authenticated polls this private,
+    # per-run path, and every invocation has its own one-use token.
+    try:
+        marker = os.open(stop_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         0o600)
+        os.close(marker)
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if daemon_claim(session) != (pid, identity):
+            return False
+        observed = pane_foreground_command(session, pane)
+        if observed is FOREGROUND_QUERY_FAILED:
+            time.sleep(0.04)
+            continue
+        if observed != expected:
+            del ACTIVE_TEST_FOREGROUNDS[key]
+            try:
+                os.unlink(stop_path)
+            except FileNotFoundError:
+                pass
+            return True
+        time.sleep(0.04)
+    return False
 
 
 def track_client(client):
@@ -194,6 +352,15 @@ def untrack_client(client):
 
 def cleanup_tracked_clients():
     """Bounded exception-path cleanup; never touch an external daemon."""
+    # exact_round deliberately holds one test-owned helper in each pane. If
+    # fail-fast aborts after acquisition, release only those helpers through
+    # their private files before detaching our UIs. No cleanup byte is ever
+    # written to an external session's PTY.
+    for session, pane in sorted(ACTIVE_TEST_FOREGROUNDS):
+        try:
+            stop_test_foreground(session, pane, timeout=2.0)
+        except Exception:
+            pass
     for client in list(TRACKED_CLIENTS.values()):
         try:
             if client.alive():
@@ -204,6 +371,18 @@ def cleanup_tracked_clients():
             pass
         client.close()
         untrack_client(client)
+    # Do not remove a stop marker which a still-running helper has not yet
+    # observed. The helper self-expires after 60 seconds; a failed test keeps
+    # its tiny private directory as evidence instead of risking interference.
+    if not ACTIVE_TEST_FOREGROUNDS:
+        try:
+            os.unlink(FOREGROUND_HELPER)
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(FOREGROUND_CONTROL_DIR)
+        except OSError:
+            pass
 
 
 atexit.register(cleanup_tracked_clients)
@@ -864,6 +1043,20 @@ def wait_shared_focus(clients, pane, timeout=3.0):
     return False
 
 
+def wait_shared_pane_state(clients, pane, predicate, timeout=3.0):
+    """Wait for one exact pane state and complete geometry on every PTY."""
+    deadline = time.monotonic() + timeout
+    rects = [pane_frame_rect(client, pane) for client in clients]
+    while time.monotonic() < deadline:
+        if (predicate(rects) and
+                all(geometry(client) == geometry(clients[0])
+                    for client in clients[1:])):
+            return rects
+        drain_all(clients, 0.05)
+        rects = [pane_frame_rect(client, pane) for client in clients]
+    return rects
+
+
 def unit_path(start, finish):
     """Every adjacent mouse point differs by at most one terminal cell."""
     x, y = start
@@ -899,12 +1092,12 @@ def mouse_drag(client, start, finish, steps=None, pause=0.025):
     ex, ey = points[-1]
     trace_action(f'MOUSE_DRAG pid={client.pid} from={start} to={finish} '
                  f'steps={len(points) - 1}')
-    os.write(client.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
     time.sleep(pause)
     for x, y in points[1:]:
-        os.write(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+        stlib.write_all(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
         time.sleep(pause)
-    os.write(client.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
 
 
 def slow_mouse_path(clients, actor, points, label, pane=1,
@@ -917,7 +1110,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
     trace_action(f'VISUAL_BEGIN label={label} actor={actor.pid} pane={pane} '
                  f'points={len(points)} step_pause={step_pause:.3f} '
                  f'from={points[0]} to={points[-1]}')
-    os.write(actor.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
+    stlib.write_all(actor.fd, f'\x1b[<0;{sx + 1};{sy + 1}M'.encode())
     lock_seen = False
     # The lease is acquired before FreeVision enters DragView. Sample that
     # real locked frame before the first motion: in wireframe mode motion then
@@ -929,7 +1122,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
     marker = f'K{label[0]}{pane}'
     marker_result = None
     for step, (x, y) in enumerate(points[1:], 1):
-        os.write(actor.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+        stlib.write_all(actor.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
         drain_all(clients, step_pause)
         for viewer in clients:
             if viewer is actor:
@@ -941,7 +1134,7 @@ def slow_mouse_path(clients, actor, points, label, pane=1,
                 ['send', f'{SESSION}:{pane}', split_marker_command(marker)],
                 attempts=8)
     ex, ey = points[-1]
-    os.write(actor.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
+    stlib.write_all(actor.fd, f'\x1b[<0;{ex + 1};{ey + 1}m'.encode())
     drain_all(clients, 0.45)
     unlocked = wait_unlocked(clients, timeout=3.0)
     trace_action(f'VISUAL_END label={label} lock_seen={int(lock_seen)} '
@@ -992,7 +1185,11 @@ def slow_visual_resize(clients, session, cycle):
     gesture_ok = slow_mouse_path(
         clients, clients[cycle % len(clients)],
         unit_path((right, bottom), target), f'RESIZE_{cycle}', pane=1)
-    final_rects = [pane_frame_rect(client, 1) for client in clients]
+    final_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(rect is not None and
+                           rect[0] == left and rect[1] == top and
+                           rect[2:] == target for rect in values))
     check(f'visual resize {cycle} reaches exact shared rectangle',
           all(rect is not None and
               rect[0] == left and rect[1] == top and
@@ -1041,7 +1238,9 @@ def slow_visual_circle(clients, session, cycle):
     expected = (points[-1][0] - grab, points[-1][1],
                 points[-1][0] - grab + width - 1,
                 points[-1][1] + height - 1)
-    final_rects = [pane_frame_rect(client, 1) for client in clients]
+    final_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(rect == expected for rect in values))
     check(f'visual circle {cycle} reaches exact shared rectangle',
           all(rect == expected for rect in final_rects))
     if not gesture_ok:
@@ -1068,7 +1267,7 @@ def held_fullscreen(clients, session, cycle):
     before = layout_rects(clients[0])
     trace_action(f'VISUAL_BEGIN label=F5_{cycle} actor={actor.pid} '
                  f'pane={pane} hold=0.8')
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.8)
     during = [layout_rects(client) for client in clients]
     # All stress viewers use CLIENT_W x CLIENT_H. Client count must not force
@@ -1080,7 +1279,7 @@ def held_fullscreen(clients, session, cycle):
           all(all(rect is None for rect in rects) for rects in during) and
           all('Detach' not in client.text() for client in clients))
     check(f'fullscreen {cycle} clients remain alive', all(c.alive() for c in clients))
-    os.write(actor.fd, stlib.FULLSCREEN_CHORD)
+    stlib.write_all(actor.fd, stlib.FULLSCREEN_CHORD)
     drain_all(clients, 0.6)
     check(f'fullscreen {cycle} restores exact shared geometry',
           all(layout_rects(client) == before for client in clients))
@@ -1103,11 +1302,19 @@ def circle_window(clients, session, cycles=1, step_pause=0.20):
     desired_bottom = min(clients[0].h - 3, top + 15)
     mouse_drag(clients[0], (right, bottom),
                (desired_right, desired_bottom), steps=7)
-    drain_all(clients, 0.8)
-    rect = pane_frame_rect(clients[0], 1)
-    check('circle pane resized for travel', rect is not None and
-          rect[2] - rect[0] + 1 <= 45 and rect[3] - rect[1] + 1 <= 17)
-    if rect is None:
+    resized_rects = wait_shared_pane_state(
+        clients, 1,
+        lambda values: all(value is not None and
+                           value[2] - value[0] + 1 <= 45 and
+                           value[3] - value[1] + 1 <= 17
+                           for value in values))
+    rect = resized_rects[0]
+    resized_ok = all(value is not None and
+                     value[2] - value[0] + 1 <= 45 and
+                     value[3] - value[1] + 1 <= 17
+                     for value in resized_rects)
+    check('circle pane resized for travel', resized_ok)
+    if not resized_ok:
         return
 
     width = rect[2] - rect[0] + 1
@@ -1142,10 +1349,11 @@ def circle_window(clients, session, cycles=1, step_pause=0.20):
             finish = (target[0] + grab_offset, target[1])
             mouse_drag(clients[cycle % len(clients)], start, finish,
                        steps=6, pause=max(0.015, step_pause / 4.0))
-            drain_all(clients, max(0.30, step_pause))
-
-            actual_rects = [pane_frame_rect(client, 1)
-                            for client in clients]
+            actual_rects = wait_shared_pane_state(
+                clients, 1,
+                lambda values, target=target: all(
+                    item is not None and item[:2] == target
+                    for item in values))
             at_target = all(item is not None and item[:2] == target
                             for item in actual_rects)
             check(f'circle {cycle}.{point_no} exact shared position',
@@ -1196,14 +1404,23 @@ def exact_round(clients, session, number, extra=None):
     cursor_row = 8 + number % 2
     cursor_col = 12 + number % 4
     tokens = []
+    foreground_tokens = []
     for pane, client in enumerate(clients, 1):
         # Seven cells: fits at the worst target column 8 in 14 PTY columns.
         token = f'R{round_code(number)}C{pane}P{pane}'
         tokens.append(token)
+        foreground_token = f'STFG_{SEED:X}_{number}_{pane}'
+        foreground_tokens.append(foreground_token)
         split = len(token) // 2
-        command = (f"S='{token[:split]}''{token[split:]}'; "
+        # Give every platform an unambiguous terminal foreground process
+        # group.  The stress oracle is about exact ownership and safe cleanup,
+        # not about Linux's optional procfs wait-state fallback.
+        command = (f"set -m; S='{token[:split]}''{token[split:]}'; "
                    f"printf '\\033[2J\\033[{target_row};{target_col}H%s"
-                   f"\\033[{cursor_row};{cursor_col}H' \"$S\"; sleep 8\r")
+                   f"\\033[{cursor_row};{cursor_col}H' \"$S\"; "
+                   f"'{sys.executable}' '{FOREGROUND_HELPER}' "
+                   f"'{os.path.join(FOREGROUND_CONTROL_DIR, foreground_token + '.stop')}' "
+                   f"'{foreground_token}'\r")
         # Focus is one shared channel. Let every viewer consume it before this
         # actor types; otherwise a focus event from a different client may
         # legitimately win between Alt-N and a later key. Different clients
@@ -1222,12 +1439,12 @@ def exact_round(clients, session, number, extra=None):
         # assignment as an exact-output oracle; otherwise ``rS=...`` executes
         # and prints the value of an older S variable, falsely reporting lost
         # input after a zero-viewer reattach.
-        os.write(actor.fd, b'\x03')
+        stlib.write_all(actor.fd, b'\x03')
         drain_all(viewers, 0.15)
         trace_action(f'EXACT round={number} pane={pane} actor={actor.pid} '
                      f'token={token} cell={target_row},{target_col} '
                      f'cursor={cursor_row},{cursor_col}')
-        os.write(actor.fd, command.encode())
+        stlib.write_all(actor.fd, command.encode())
         drain_all(viewers, 0.35)
     drain_all(viewers, 0.9)
     check(f'round {number} exact locks released', wait_unlocked(viewers))
@@ -1260,6 +1477,9 @@ def exact_round(clients, session, number, extra=None):
         for viewer_no, viewer in enumerate(viewers, 1):
             check(f'round {number} P{pane} visible C{viewer_no}',
                   token_at(viewer, pane, token))
+        check(f'round {number} owns exact foreground {pane}',
+              acquire_test_foreground(
+                  session, pane, foreground_tokens[pane - 1]))
     if extra is not None:
         check(f'round {number} churn renders every live exact token',
               all(token_at(extra, pane, token)
@@ -1287,8 +1507,10 @@ def exact_round(clients, session, number, extra=None):
                 check(f'round {number} churn cursor exact P{pane}',
                       actual == expected)
         require_clean(f'round {number} cursor pane {pane} placement')
-        # Stop this pane's foreground sleep before checking the next one.
-        os.write(clients[0].fd, b'\x03')
+        # Stop the exact helper through its private channel. No input is ever
+        # sent to the shared PTY, so a later foreground cannot be interrupted.
+        check(f'round {number} stops exact foreground {pane}',
+              stop_test_foreground(session, pane))
         drain_all(viewers, 0.15)
     drain_all(viewers, 0.45)
 
@@ -1327,7 +1549,7 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
     if (ready in reader_command or done in reader_command or
             done in done_command):
         raise AssertionError('reader sentinels must be split in the command')
-    os.write(actor.fd, reader_command.encode('ascii'))
+    stlib.write_all(actor.fd, reader_command.encode('ascii'))
     ready_capture = ''
     ready_rendered = False
     ready_deadline = time.monotonic() + 4.0
@@ -1356,7 +1578,7 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
     def concurrent_write(index):
         try:
             barrier.wait(timeout=3.0)
-            write_results[index] = os.write(
+            write_results[index] = stlib.write_all(
                 clients[index].fd, payloads[index])
         except Exception as exc:  # asserted by the coordinating thread
             write_results[index] = exc
@@ -1416,12 +1638,12 @@ def ordered_shared_input_burst(clients, session, number, extra=None):
         check(f'round {number} churn renders complete live FIFO output',
               all(text.count(symbol) == count
                   for alphabet in alphabets for symbol in alphabet))
-    os.write(actor.fd, b'\x03')
+    stlib.write_all(actor.fd, b'\x03')
     drain_all(viewers, 0.15)
     # Send restoration as a fresh shell command. If cat were still alive it
     # would only render the split literals; the complete sentinel can appear
     # at the exact cell only after the shell executes `stty sane`.
-    os.write(actor.fd, done_command.encode('ascii'))
+    stlib.write_all(actor.fd, done_command.encode('ascii'))
     done_capture = ''
     done_rendered = False
     done_deadline = time.monotonic() + 4.0
@@ -1596,7 +1818,7 @@ def live_stress(clients, session, seconds):
             writes = []
             for client, sequence in zip(clients, sequences):
                 try:
-                    writes.append(os.write(client.fd, sequence))
+                    writes.append(stlib.write_all(client.fd, sequence))
                 except OSError as exc:
                     writes.append(exc)
             check(label + ' writes complete',
@@ -1835,7 +2057,7 @@ for number in range(ROUNDS):
     def concurrent_geometry_write(index):
         try:
             geometry_barrier.wait(timeout=3.0)
-            geometry_results[index] = os.write(
+            geometry_results[index] = stlib.write_all(
                 clients[index].fd, seqs[index])
         except Exception as exc:  # asserted by the coordinating thread
             geometry_results[index] = exc
@@ -1847,7 +2069,7 @@ for number in range(ROUNDS):
         writer.start()
     geometry_barrier.wait(timeout=3.0)
     # Detach the churn client while locks/proposals and PTY output are active.
-    churn_detach_write = os.write(churn.fd, b'\x11d')
+    churn_detach_write = stlib.write_all(churn.fd, b'\x11d')
     for writer in geometry_writers:
         writer.join(timeout=3.0)
     check(f'round {number} concurrent geometry writers finish',

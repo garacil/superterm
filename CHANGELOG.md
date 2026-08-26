@@ -14,6 +14,10 @@ keep working because the installed filename and configuration identifier do
 not change. An optional bounded logical-width field preserves the full 128x46
 transparent canvas without trailing whitespace; regression coverage rebuilds
 all generated backgrounds and asks the real Pascal loader for that geometry.
+Generated scenes now use filled RGB cells that the terminal paints as
+backgrounds, rather than font-rendered shade glyphs. This removes the visible
+horizontal and vertical seams that some terminal fonts left between cells;
+the hand-built half-block tile patterns retain their intended detail.
 
 ### Standard SSH clients can open SuperTerm over encrypted TCP
 
@@ -30,20 +34,23 @@ This TCP listener is deliberately independent of the host's ordinary SSH
 service. It has its own process, service, addresses, ports and PID. Its
 configuration, host key and managed public-key store live under
 `/etc/superterm/sshd`; setup never edits `/etc/ssh/sshd_config`, replaces the
-normal host keys, restarts the normal `sshd` or takes port 22. The two
-listeners may run together, using the same installed and audited OpenSSH
-binary. The dedicated instance may accept PAM-backed passwords, centrally
-managed public keys and/or each account's existing `authorized_keys`; root is
-public-key-only and must be enabled explicitly.
+normal host keys or restarts the normal `sshd`. The generated listener uses
+loopback port 8022, and administrators explicitly choose any published,
+non-conflicting endpoints. The two listeners may run together using the
+trusted system-installed OpenSSH binary; this integration was audited against
+OpenSSH Portable 10.5p1. The dedicated instance may accept PAM-backed
+passwords, centrally managed public keys and/or each account's existing
+`authorized_keys`; root is public-key-only and must be enabled explicitly.
 
-The service is configured with an explicit list of TCP interfaces and ports
-and is administered through idempotent `ssh-server setup`, `check`, `enable`,
-`disable`, `restart`, `status`, `authorize`, `list-keys`, `revoke` and
-`uninstall-service` commands. Candidate configurations are published
+The service is configured with an explicit list of TCP interfaces and ports.
+Administration includes the idempotent `ssh-server setup` operation plus
+`check`, `enable`, `disable`, `restart`, `status`, `authorize`, `list-keys`,
+`revoke` and `uninstall-service`. Candidate configurations are published
 atomically only after both SuperTerm's checks and the installed `sshd -t/-T`
 accept them; failed service updates roll back. systemd and launchd use the
-same source-level policy and keep all persistent service state across package
-updates.
+same source-level policy. Packages do not replace `server.ini`, host keys or
+managed authorized keys; rerun `setup` after a binary upgrade to refresh the
+service descriptors without discarding that state.
 
 The entry is intentionally an interactive SuperTerm service, not a second
 general-purpose shell service: UDP, remote commands, sessions without a PTY,

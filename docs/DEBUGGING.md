@@ -61,7 +61,6 @@ c = stlib.Client('/root', w=120, h=40,
 c.drain(3.5)
 c.send(b'\x11', 0.5)      # the prefix key
 c.send(b'd', 1.6)         # detach
-c.send(b'\r', 2.0)
 c.wait_exit(timeout=10)
 c.close()
 print(stlib.run_cli(['list'], '/root').stdout)

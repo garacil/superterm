@@ -212,33 +212,41 @@ def wait_empty(label, clients):
 
 def open_local_shell(client):
     """Choose Classes -> Local shell through the actual UI."""
-    client.send(b'\x1bc', 0.35)       # Alt-C: Classes menu
-    menu_visible = 'Local shell' in client.text()
-    client.send(b'1', 0.05)
+    client.send(b'\x1bc', 0.05)       # Alt-C: Classes menu
+    menu_visible = client.wait_until(
+        lambda text: 'Local shell' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'1')
     return menu_visible
 
 
 def close_last_pane(client):
     """Choose Panes -> Close pane through the actual UI."""
-    client.send(b'\x1bp', 0.35)       # Alt-P: Panes menu
-    menu_visible = 'Close pane' in client.text()
-    client.send(b'c', 0.05)
+    client.send(b'\x1bp', 0.05)       # Alt-P: Panes menu
+    menu_visible = client.wait_until(
+        lambda text: 'Close pane' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'c')
     return menu_visible
 
 
-def choose_cycle_class(client, settle=0.10):
+def choose_cycle_class(client, settle=0.05):
     """Choose the enabled test class, entry 2 after Local shell."""
     client.send(b'\x1bc', settle)
-    menu_visible = 'cycle' in client.text()
-    client.send(b'2', 0.015)
+    menu_visible = client.wait_until(lambda text: 'cycle' in text, 2.0)
+    if menu_visible:
+        stlib.write_all(client.fd, b'2')
     return menu_visible
 
 
 def close_pane_fast(client):
-    client.send(b'\x1bp', 0.10)
-    menu_visible = 'Close pane' in client.text()
-    client.send(b'c', 0.015)
-    return menu_visible
+    """Use the public physical Alt-F3 command in the high-rate cycle."""
+    try:
+        stlib.write_all(client.fd, b'\x1b[13;3~')
+        client.drain(0.05)
+        return True
+    except (OSError, TimeoutError):
+        return False
 
 
 def detach(client):
@@ -304,7 +312,8 @@ check('temporal case baseline renamed', temporal_rename.returncode == 0 and
       wait_for(lambda: 'TEMPORAL_OLD_PANE' in a.text() and
                'TEMPORAL_OLD_PANE' in b.text(), (a, b)))
 try:
-    os.write(b.fd, b'\x1bpc\x1bc1')  # Alt-P,c then Alt-C,1; no drain here
+    stlib.write_all(
+        b.fd, b'\x1bpc\x1bc1')  # Alt-P,c then Alt-C,1; no drain here
     temporal_sent = True
 except OSError:
     temporal_sent = False
@@ -381,16 +390,17 @@ if not fresh_attach_ok:
 # never let both mutate pane zero simultaneously.
 def concurrent_first_pair(clients, cycle):
     left, right = clients
-    left.send(b'\x1bc', 0.12)
-    right.send(b'\x1bc', 0.12)
-    menus = 'cycle' in left.text() and 'cycle' in right.text()
+    left.send(b'\x1bc', 0.05)
+    right.send(b'\x1bc', 0.05)
+    menus = (left.wait_until(lambda text: 'cycle' in text, 2.0) and
+             right.wait_until(lambda text: 'cycle' in text, 2.0))
     barrier = threading.Barrier(3)
     send_errors = []
 
     def choose(client):
         try:
             barrier.wait(timeout=3.0)
-            os.write(client.fd, b'2')
+            stlib.write_all(client.fd, b'2')
         except Exception as exc:
             send_errors.append(repr(exc))
 
@@ -405,9 +415,33 @@ def concurrent_first_pair(clients, cycle):
                                         for thread in threads)
     check(f'cycle {cycle} concurrent menus opened', menus)
     check(f'cycle {cycle} concurrent requests delivered', delivered)
-    both_created = wait_for(lambda: pane_count() == 2, clients, timeout=6.0)
+    both_created = wait_created_count(clients, 2, cycle, timeout=6.0)
     check(f'cycle {cycle} FIFO creates both panes', both_created)
     return menus and delivered and both_created
+
+
+def wait_created_count(clients, expected, cycle, timeout=5.0):
+    """Prove daemon, sidecar and both UI mirrors consumed the same NEWPANE."""
+    canonical = wait_for(
+        lambda: (pane_count() == expected and
+                 sidecar_state().get('panes') == expected),
+        clients, timeout=timeout)
+    if not canonical:
+        return False
+    # Every new window is initially centred over its predecessor, so counting
+    # visible corners is not a valid creation oracle. Rename the new top pane;
+    # seeing that indexed TITLE event in both clients proves each first applied
+    # the preceding NEWPANE event from the same daemon FIFO.
+    marker = f'SYNC_C{cycle}_P{expected:02d}'
+    renamed = run_cli(['rename', f'{SESSION}:{expected}', marker], HOME)
+    visible = renamed.returncode == 0 and wait_for(
+        lambda: all(marker in client.text() for client in clients),
+        clients, timeout=timeout)
+    if not visible:
+        print(f'  creation sync failed expected={expected} '
+              f'state={sidecar_state()} rows={pane_rows()!r} '
+              f'frames={[frame_count(client) for client in clients]}')
+    return visible
 
 
 def fill_to_max(clients, cycle):
@@ -417,8 +451,7 @@ def fill_to_max(clients, cycle):
     for expected in range(3, 17):
         actor = clients[(expected + cycle) & 1]
         menu_ok = choose_cycle_class(actor)
-        created = wait_for(lambda expected=expected:
-                           pane_count() == expected, clients, timeout=5.0)
+        created = wait_created_count(clients, expected, cycle, timeout=5.0)
         ok = ok and menu_ok and created
         if not created:
             print(f'  creation stopped at expected={expected} '
@@ -496,8 +529,15 @@ def close_all_panes(clients, cycle):
         actor = clients[(before + cycle) & 1]
         menu_ok = close_pane_fast(actor)
         expected = before - 1
-        closed = wait_for(lambda expected=expected:
-                          pane_count() == expected, clients, timeout=5.0)
+        # expose_all_panes organized the workspace as a non-overlapping grid.
+        # Require the daemon, atomic sidecar and both physical UI mirrors to
+        # reach this exact count before another client is allowed to close.
+        closed = wait_for(
+            lambda expected=expected:
+                (pane_count() == expected and
+                 sidecar_state().get('panes') == expected and
+                 all(frame_count(client) == expected for client in clients)),
+            clients, timeout=5.0)
         ok = ok and menu_ok and closed
         if not closed:
             print(f'  close stopped at before={before} '

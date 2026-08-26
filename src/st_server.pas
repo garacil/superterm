@@ -197,9 +197,9 @@ const
     LAYOUT_LOCK_REPLY_TIMEOUT_MS div LAYOUT_LOCK_REPLY_POLL_MS;
   CONTROL_IDLE_TIMEOUT_MS = 5000;
   // A local listener must not be able to park an attaching UI forever after
-  // accept().  Handshake I/O uses non-blocking send/recv and spends one fixed
-  // poll attempt only when no byte can progress.  This deliberately avoids
-  // GetTickCount64: FPC 3.2.2 implements it with gettimeofday on Darwin.
+  // accept(). Handshake I/O uses non-blocking send/recv under one total
+  // deadline. GNU FPC supplies a monotonic tick; Darwin 3.2.2 uses wall time,
+  // whose backwards jumps are detected and fail closed by TWaitDeadline.
   ATTACH_IO_POLL_MS = 100;
   ATTACH_IO_WAIT_POLLS = 300;
   CONNECT_WAIT_POLLS = 30;
@@ -335,7 +335,7 @@ type
     procedure QueueEvent(const AEvent: TSessionEvent);
     function PopQueuedEvent(out AEvent: TSessionEvent): boolean;
     function FlushOutgoing: boolean;
-    function FlushOutgoingBounded(var AWaitPolls: integer): boolean;
+    function FlushOutgoingBounded(AWaitPolls: integer): boolean;
     function OutputPending: boolean;
     procedure CloseSocket;
   public
@@ -537,6 +537,14 @@ begin
 end;
 
 type
+  // One deadline is shared by every frame in a bounded handshake. GNU FPC
+  // obtains GetTickCount64 from CLOCK_MONOTONIC; Darwin FPC 3.2.2 falls back
+  // to gettimeofday, so LastTick also makes a wall-clock rollback fail closed.
+  TWaitDeadline = record
+    ExpiresAt: QWord;
+    LastTick: QWord;
+  end;
+
   TFrameHeader = packed record
     Kind: byte;
     Reserved: byte;
@@ -850,20 +858,74 @@ begin
     Result := V;
 end;
 
+function NewWaitDeadline(APolls, APollMs: integer): TWaitDeadline;
+var
+  NowTick, Span: QWord;
+begin
+  Result := Default(TWaitDeadline);
+  if (APolls <= 0) or (APollMs <= 0) then
+    Exit;
+  NowTick := GetTickCount64;
+  Span := QWord(APolls) * QWord(APollMs);
+  Result.LastTick := NowTick;
+  if Span > High(QWord) - NowTick then
+    Result.ExpiresAt := High(QWord)
+  else
+    Result.ExpiresAt := NowTick + Span;
+end;
+
+function DeadlinePollMs(var ADeadline: TWaitDeadline;
+  AMaximumMs: integer): integer;
+var
+  NowTick, Remaining: QWord;
+begin
+  Result := 0;
+  if (ADeadline.ExpiresAt = 0) or (AMaximumMs <= 0) then
+    Exit;
+  NowTick := GetTickCount64;
+  // A backwards wall-clock jump on Darwin must never extend a security
+  // boundary. A forward jump naturally reaches the deadline early.
+  if (NowTick < ADeadline.LastTick) or
+     (NowTick >= ADeadline.ExpiresAt) then
+  begin
+    ADeadline.ExpiresAt := 0;
+    Exit;
+  end;
+  ADeadline.LastTick := NowTick;
+  Remaining := ADeadline.ExpiresAt - NowTick;
+  if Remaining > QWord(AMaximumMs) then
+    Result := AMaximumMs
+  else
+    Result := integer(Remaining);
+end;
+
 function WaitSocketReady(AFd: cint; AEvents: cshort;
-  var AWaitPolls: integer): boolean;
+  var ADeadline: TWaitDeadline): boolean;
 var
   P: TPollFD;
-  N, E: cint;
+  N, E, PollMs: cint;
 begin
   Result := False;
-  while AWaitPolls > 0 do
+  while True do
   begin
-    Dec(AWaitPolls);
+    PollMs := DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS);
+    if PollMs <= 0 then
+      Exit;
     P := Default(TPollFD);
     P.fd := AFD;
     P.events := AEvents;
-    N := fpPoll(@P, 1, ATTACH_IO_POLL_MS);
+    N := fpPoll(@P, 1, PollMs);
+    // errno belongs to the failing syscall. Capture it before the clock query
+    // below (or any future diagnostic) can execute another libc operation.
+    if N < 0 then
+      E := FpGetErrNo
+    else
+      E := 0;
+    // The deadline is total, not an inactivity timer. This accepts hundreds
+    // of immediate Darwin readiness cycles for a large snapshot, yet a peer
+    // dripping one byte per poll can never keep the caller here indefinitely.
+    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+      Exit;
     if N > 0 then
     begin
       if (P.revents and POLLNVAL) <> 0 then
@@ -875,14 +937,13 @@ begin
     end;
     if N = 0 then
       Continue;
-    E := FpGetErrNo;
     if E <> ESysEINTR then
       Exit;
   end;
 end;
 
 function WriteFullTimed(AFd: cint; const Buffer; ASize: integer;
-  var AWaitPolls: integer): boolean;
+  var ADeadline: TWaitDeadline): boolean;
 var
   P: PByte;
   Left, N, E: integer;
@@ -896,6 +957,8 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
+    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+      Exit;
     N := fpSend(AFd, P, Left, ST_MSG_DONTWAIT);
     if N > 0 then
     begin
@@ -910,14 +973,14 @@ begin
       Continue;
     if (E <> ESysEAGAIN) and (E <> ESysEWOULDBLOCK) then
       Exit;
-    if not WaitSocketReady(AFd, POLLOUT, AWaitPolls) then
+    if not WaitSocketReady(AFd, POLLOUT, ADeadline) then
       Exit;
   end;
   Result := True;
 end;
 
 function ReadFullTimed(AFd: cint; var Buffer; ASize: integer;
-  var AWaitPolls: integer): boolean;
+  var ADeadline: TWaitDeadline): boolean;
 var
   P: PByte;
   Left, N, E: integer;
@@ -931,6 +994,8 @@ begin
   Left := ASize;
   while Left > 0 do
   begin
+    if DeadlinePollMs(ADeadline, ATTACH_IO_POLL_MS) <= 0 then
+      Exit;
     N := fpRecv(AFd, P, Left, ST_MSG_DONTWAIT);
     if N > 0 then
     begin
@@ -945,7 +1010,7 @@ begin
       Continue;
     if (E <> ESysEAGAIN) and (E <> ESysEWOULDBLOCK) then
       Exit;
-    if not WaitSocketReady(AFd, POLLIN, AWaitPolls) then
+    if not WaitSocketReady(AFd, POLLIN, ADeadline) then
       Exit;
   end;
   Result := True;
@@ -1262,7 +1327,7 @@ begin
 end;
 
 function WriteFrameToTimed(AFd: cint; AKind: byte; APane: integer;
-  const Data: TByteArray; var AWaitPolls: integer): boolean;
+  const Data: TByteArray; var ADeadline: TWaitDeadline): boolean;
 var
   H: TFrameHeader;
 begin
@@ -1272,13 +1337,13 @@ begin
   H.Kind := AKind;
   H.Pane := APane;
   H.Size := Length(Data);
-  Result := WriteFullTimed(AFd, H, SizeOf(H), AWaitPolls);
+  Result := WriteFullTimed(AFd, H, SizeOf(H), ADeadline);
   if Result and (Length(Data) > 0) then
-    Result := WriteFullTimed(AFd, Data[0], Length(Data), AWaitPolls);
+    Result := WriteFullTimed(AFd, Data[0], Length(Data), ADeadline);
 end;
 
 function ReadFrameFromTimed(AFd: cint; out AKind: byte; out APane: integer;
-  out Data: TByteArray; var AWaitPolls: integer): boolean;
+  out Data: TByteArray; var ADeadline: TWaitDeadline): boolean;
 var
   H: TFrameHeader;
 begin
@@ -1287,7 +1352,7 @@ begin
   APane := -1;
   Data := nil;
   H := Default(TFrameHeader);
-  if not ReadFullTimed(AFd, H, SizeOf(H), AWaitPolls) then
+  if not ReadFullTimed(AFd, H, SizeOf(H), ADeadline) then
     Exit;
   if H.Size > MAX_FRAME_SIZE then
     Exit;
@@ -1295,7 +1360,7 @@ begin
   APane := H.Pane;
   SetLength(Data, H.Size);
   if (H.Size > 0) and
-     (not ReadFullTimed(AFd, Data[0], H.Size, AWaitPolls)) then
+     (not ReadFullTimed(AFd, Data[0], H.Size, ADeadline)) then
   begin
     Data := nil;
     Exit;
@@ -1323,7 +1388,7 @@ var
   AddrLen: TSockLen;
   Flags, N, E, SocketError: cint;
   ErrorLen: TSockLen;
-  WaitPolls: integer;
+  Deadline: TWaitDeadline;
 begin
   Result := -1;
   if not SocketAddress(APath, Addr, AddrLen) then
@@ -1350,8 +1415,8 @@ begin
       Result := -1;
       Exit;
     end;
-    WaitPolls := CONNECT_WAIT_POLLS;
-    if not WaitSocketReady(Result, POLLOUT, WaitPolls) then
+    Deadline := NewWaitDeadline(CONNECT_WAIT_POLLS, ATTACH_IO_POLL_MS);
+    if not WaitSocketReady(Result, POLLOUT, Deadline) then
     begin
       FpClose(Result);
       Result := -1;
@@ -1731,7 +1796,8 @@ function CloseSessionAt(const APath: string): boolean;
 var
   Fd: cint;
   Data: TByteArray;
-  I, WaitPolls: integer;
+  I: integer;
+  Deadline: TWaitDeadline;
   Probe: TSocketProbe;
   St: Stat;
 begin
@@ -1740,8 +1806,8 @@ begin
   if Fd < 0 then
     Exit;
   Data := nil;
-  WaitPolls := AttachIoWaitPolls;
-  if not WriteFrameToTimed(Fd, FRAME_CLOSE, -1, Data, WaitPolls) then
+  Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
+  if not WriteFrameToTimed(Fd, FRAME_CLOSE, -1, Data, Deadline) then
   begin
     FpClose(Fd);
     Exit;
@@ -1767,7 +1833,7 @@ var
   RKind: byte;
   RPane: integer;
   RData: TByteArray;
-  WaitPolls: integer;
+  Deadline: TWaitDeadline;
 begin
   Result := False;
   AReply := '';
@@ -1775,12 +1841,12 @@ begin
   if Fd < 0 then
     Exit;
   try
-    WaitPolls := AttachIoWaitPolls;
+    Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
     if not WriteFrameToTimed(Fd, AKind, APane, APayload,
-       WaitPolls) then
+       Deadline) then
       Exit;
     if not ReadFrameFromTimed(Fd, RKind, RPane, RData,
-       WaitPolls) then
+       Deadline) then
       Exit;
     if RKind = FRAME_CTL_OK then
       Result := True
@@ -1798,20 +1864,20 @@ var
   RKind: byte;
   RPane: integer;
   RData: TByteArray;
-  WaitPolls: integer;
+  Deadline: TWaitDeadline;
 begin
   Result := False;
   Fd := ConnectSocket(ASocket);
   if Fd < 0 then
     Exit;
   try
-    WaitPolls := AttachIoWaitPolls;
+    Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
     if not WriteFrameToTimed(Fd, AKind, APane, APayload,
-       WaitPolls) then
+       Deadline) then
       Exit;
     repeat
       if not ReadFrameFromTimed(Fd, RKind, RPane, RData,
-         WaitPolls) then
+         Deadline) then
         Exit;   // old daemon closes without replying -> False
       case RKind of
         FRAME_CTL_DATA:
@@ -2077,10 +2143,9 @@ begin
   Result := False;
   if (not FConnected) or (Length(Data) > MAX_FRAME_SIZE) then
     Exit;
-  // First consume whatever the kernel accepts now.  MSG_DONTWAIT is per-call
-  // on Linux and Darwin (the FPC sockets unit forwards it directly to libc),
-  // so this remains non-blocking even though the attach handshake restored
-  // the descriptor's ordinary blocking mode.
+  // First consume whatever the kernel accepts now. GNU/Linux keeps the
+  // historical blocking descriptor and uses MSG_DONTWAIT for this call;
+  // Darwin also marks the interactive descriptor O_NONBLOCK after READY.
   if not FlushOutgoing then
     Exit;
   AddLen := SizeOf(H) + Length(Data);
@@ -2161,13 +2226,15 @@ begin
   Result := FConnected;
 end;
 
-function TSessionClient.FlushOutgoingBounded(
-  var AWaitPolls: integer): boolean;
+function TSessionClient.FlushOutgoingBounded(AWaitPolls: integer): boolean;
+var
+  Deadline: TWaitDeadline;
 begin
+  Deadline := NewWaitDeadline(AWaitPolls, CLIENT_CLOSE_POLL_MS);
   Result := FlushOutgoing;
   while Result and OutputPending do
   begin
-    if not WaitSocketReady(FSocket, POLLOUT, AWaitPolls) then
+    if not WaitSocketReady(FSocket, POLLOUT, Deadline) then
       Exit(False);
     Result := FlushOutgoing;
   end;
@@ -2314,7 +2381,8 @@ var
   Pane: integer;
   Data: TByteArray;
   Stream: TMemoryStream;
-  I, WaitPolls: integer;
+  I: integer;
+  Deadline: TWaitDeadline;
   L: Longint;
   SessionParsed: boolean;
 begin
@@ -2366,7 +2434,15 @@ begin
     Exit;
   end;
   FConnected := True;
-  WaitPolls := AttachIoWaitPolls;
+  {$IFDEF DARWIN}
+  // This descriptor belongs exclusively to the interactive client from this
+  // point onward.  Keep the complete timed handshake non-blocking as well as
+  // the later event loop: a large SCREEN frame can otherwise expose a short
+  // serialization/flush gap on Darwin while the descriptor is still in the
+  // blocking mode restored by the shared ConnectSocket helper.
+  SetNonBlocking(FSocket);
+  {$ENDIF}
+  Deadline := NewWaitDeadline(AttachIoWaitPolls, ATTACH_IO_POLL_MS);
   // tolerant tail of the ATTACH: version, desktop and capabilities; an
   // old daemon ignores the payload and serves the usual v1 protocol
   Data := nil;
@@ -2388,13 +2464,13 @@ begin
   if L > 0 then
     Move(ChainS[1], Data[5 * SizeOf(Longint)], L);
   if not WriteFrameToTimed(FSocket, FRAME_ATTACH, -1, Data,
-     WaitPolls) then
+     Deadline) then
   begin
     FAttachError := 'session attach request timed out';
     CloseSocket;
     Exit;
   end;
-  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
+  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, Deadline) or
      (Kind <> FRAME_SESSION) then
   begin
     FAttachError := 'session did not return a valid snapshot';
@@ -2509,16 +2585,23 @@ begin
   end;
   for I := 0 to Snapshot.PaneCount - 1 do
   begin
-    if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
-       (Kind <> FRAME_SCREEN) or (Pane <> I) then
+    if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, Deadline) then
     begin
       FAttachError := 'session screen snapshot timed out';
       CloseSocket;
       Exit;
     end;
+    if (Kind <> FRAME_SCREEN) or (Pane <> I) then
+    begin
+      FAttachError := Format(
+        'session returned snapshot frame kind %d pane %d; expected screen %d',
+        [Kind, Pane, I]);
+      CloseSocket;
+      Exit;
+    end;
     Snapshot.Panes[I].ScreenData := Copy(Data, 0, Length(Data));
   end;
-  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, WaitPolls) or
+  if not ReadFrameFromTimed(FSocket, Kind, Pane, Data, Deadline) or
      (Kind <> FRAME_READY) then
   begin
     FAttachError := 'session did not finish its snapshot';
@@ -2628,13 +2711,11 @@ end;
 function TSessionClient.Detach: boolean;
 var
   Data: TByteArray;
-  WaitPolls: integer;
 begin
   Data := nil;
   Result := SendFrame(FRAME_DETACH, -1, Data);
-  WaitPolls := CLIENT_CLOSE_WAIT_POLLS;
   if Result then
-    Result := FlushOutgoingBounded(WaitPolls);
+    Result := FlushOutgoingBounded(CLIENT_CLOSE_WAIT_POLLS);
   CloseSocket;
 end;
 
@@ -2643,13 +2724,12 @@ var
   Data: TByteArray;
   Buf: array[0..4095] of byte;
   N: ssize_t;
-  I, E, WaitPolls: integer;
+  I, E: integer;
 begin
   Data := nil;
   Result := SendFrame(FRAME_CLOSE, -1, Data);
-  WaitPolls := CLIENT_CLOSE_WAIT_POLLS;
   if Result then
-    Result := FlushOutgoingBounded(WaitPolls);
+    Result := FlushOutgoingBounded(CLIENT_CLOSE_WAIT_POLLS);
   if DebugActive then
     DebugLog(Format('client: exit sent=%d', [Ord(Result)]));
   if Result and (FSocket >= 0) then
@@ -7526,8 +7606,8 @@ begin
               begin
                 FPanes[I].QueryState;
                 if FPanes[I].TitleCmd <> '' then
-                  NewTitle := ' ' + Copy(FirstWordOf(FPanes[I].TitleCmd),
-                    1, 24)
+                  NewTitle := ' ' + Copy(ExtractFileName(
+                    FirstWordOf(FPanes[I].TitleCmd)), 1, 24)
                 else if FPanes[I].TitleCwd <> '' then
                   NewTitle := ' ' + Copy(ExtractFileName(FPanes[I].TitleCwd),
                     1, 24);
