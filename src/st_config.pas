@@ -452,7 +452,7 @@ begin
   LockName := RawByteString(FileName + '.lock');
   Flags := O_RDWR or O_CREAT;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   repeat
     Result := FpOpen(LockName, Flags, &600);
@@ -530,7 +530,7 @@ begin
       IntToStr(ConfigTempSerial) + '.' + Tag;
     Flags := O_WRONLY or O_CREAT or O_EXCL;
     {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-    Flags := Flags or O_NOFOLLOW;
+    Flags := Flags or Open_NoFollow;
     {$ENDIF}
     repeat
       Fd := FpOpen(RawByteString(Result), Flags, &600);
@@ -609,7 +609,7 @@ var
 begin
   Flags := O_RDONLY;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   repeat
     Fd := FpOpen(RawByteString(TempName), Flags, 0);
