@@ -46,8 +46,18 @@ class Session:
         self.height = height
         self.screen = pyte.Screen(width, height)
         self.stream = pyte.ByteStream(self.screen)
+        # Install the unusually wide PTY geometry before SuperTerm can inspect
+        # it.  Without this gate Darwin can schedule the child through exec
+        # first, so the session is born from the PTY's transient 0x0/default
+        # size and may exit before the parent's TIOCSWINSZ arrives.
+        start_read, start_write = os.pipe()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            os.close(start_write)
+            try:
+                os.read(start_read, 1)
+            finally:
+                os.close(start_read)
             os.environ.update({
                 'TERM': 'xterm',
                 'SHELL': '/bin/bash',
@@ -55,7 +65,12 @@ class Session:
                 'SUPERTERM_INI': HOME + '/no-sys.ini',
             })
             os.execv(BIN, [BIN])
-        self.set_size(width, height, reset_screen=False)
+        os.close(start_read)
+        try:
+            self.set_size(width, height, reset_screen=False)
+            os.write(start_write, b'1')
+        finally:
+            os.close(start_write)
 
     def set_size(self, width, height, reset_screen=True):
         self.width = width

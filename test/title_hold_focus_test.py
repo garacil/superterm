@@ -39,6 +39,22 @@ def drain_all(clients, seconds):
             client.drain(0.025)
 
 
+def wait_observer_lock(clients, actor, observer, timeout=3.0):
+    """Wait for the lease presentation which makes the hold observable.
+
+    The daemon can grant the lease before a slower viewer has consumed its
+    shaded-frame update.  Sampling that scheduling gap says nothing about the
+    held gesture.  Keep transition capture active while waiting so every
+    physical frame, including acquisition, remains part of the oracle.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        drain_all(clients, 0.06)
+        if not has_lock(actor) and has_lock(observer):
+            return True
+    return not has_lock(actor) and has_lock(observer)
+
+
 def control(args, home, env, attempts=20):
     """Retry a setup operation only while the prior layout is settling."""
     last = None
@@ -330,13 +346,13 @@ def run_mode(dragcontent):
 
             for client in clients:
                 client.begin_transition_capture()
-            os.write(actor.fd,
-                     f'\x1b[<0;{press_x + 1};{top + 1}M'.encode())
+            stlib.write_all(
+                actor.fd, f'\x1b[<0;{press_x + 1};{top + 1}M'.encode())
 
             # A stationary hold is sampled repeatedly.  A moving hold is
             # sampled after every one-character mouse event.  CTL_LIST is
             # served by the daemon while the actor remains inside DragView.
-            drain_all(clients, 0.16)
+            lock_acquired = wait_observer_lock(clients, actor, observer)
             for _sample in range(3):
                 actor_samples.append(snapshot(actor))
                 observer_samples.append(snapshot(observer))
@@ -350,9 +366,9 @@ def run_mode(dragcontent):
                 for step in range(1, 5):
                     end_x = press_x + direction * step
                     end_y = top + min(step, 2)
-                    os.write(actor.fd,
-                             (f'\x1b[<32;{end_x + 1};'
-                              f'{end_y + 1}M').encode())
+                    stlib.write_all(
+                        actor.fd, (f'\x1b[<32;{end_x + 1};'
+                                   f'{end_y + 1}M').encode())
                     drain_all(clients, 0.08)
                     actor_samples.append(snapshot(actor))
                     observer_samples.append(snapshot(observer))
@@ -365,8 +381,8 @@ def run_mode(dragcontent):
             actor_samples.append(snapshot(actor))
             observer_samples.append(snapshot(observer))
             daemon_samples.append(daemon_focus(sock_path))
-            os.write(actor.fd,
-                     f'\x1b[<0;{end_x + 1};{end_y + 1}m'.encode())
+            stlib.write_all(
+                actor.fd, f'\x1b[<0;{end_x + 1};{end_y + 1}m'.encode())
             drain_all(clients, 1.0)
             actor_records = actor.end_transition_capture()
             observer_records = observer.end_transition_capture()
@@ -392,7 +408,7 @@ def run_mode(dragcontent):
                   all(value == target for value in explicit_focus) and
                   all(value == target for value in layout_focus))
             check(label + ' lock stays observer-only',
-                  bool(held_locks) and
+                  lock_acquired and bool(held_locks) and
                   all(not actor_lock and observer_lock
                       for actor_lock, observer_lock in held_locks))
 
@@ -492,10 +508,10 @@ def run_mode(dragcontent):
         left, top, right, bottom = before_actor
         title_x = actor.screen.display[top].find(TITLES[target])
         press_x = title_x + len(TITLES[target]) // 2
-        os.write(actor.fd,
-                 f'\x1b[<0;{press_x + 1};{top + 1}M'.encode())
-        drain_all(clients, 0.18)
-        held_before_focus = (not has_lock(actor) and has_lock(observer))
+        stlib.write_all(
+            actor.fd, f'\x1b[<0;{press_x + 1};{top + 1}M'.encode())
+        held_before_focus = wait_observer_lock(
+            clients, actor, observer)
 
         # This must originate in the other attached UI, rather than in the
         # daemon-control helper: Alt-2 follows the ordinary client focus path
@@ -526,9 +542,9 @@ def run_mode(dragcontent):
         ]
         held_locks = [(not has_lock(actor), has_lock(observer))]
         for step in range(1, 5):
-            os.write(actor.fd,
-                     (f'\x1b[<32;{press_x + step + 1};'
-                      f'{top + 1}M').encode())
+            stlib.write_all(
+                actor.fd, (f'\x1b[<32;{press_x + step + 1};'
+                           f'{top + 1}M').encode())
             drain_all(clients, 0.09)
             focus_samples.append(daemon_focus(sock_path))
             visual_samples.append(
@@ -536,8 +552,8 @@ def run_mode(dragcontent):
                  visible_active_panes(observer)))
             held_locks.append((not has_lock(actor), has_lock(observer)))
 
-        os.write(actor.fd,
-                 f'\x1b[<0;{press_x + 5};{top + 1}m'.encode())
+        stlib.write_all(
+            actor.fd, f'\x1b[<0;{press_x + 5};{top + 1}m'.encode())
         drain_all(clients, 1.0)
         actor_records = actor.end_transition_capture()
         observer_records = observer.end_transition_capture()

@@ -14,6 +14,10 @@ keep working because the installed filename and configuration identifier do
 not change. An optional bounded logical-width field preserves the full 128x46
 transparent canvas without trailing whitespace; regression coverage rebuilds
 all generated backgrounds and asks the real Pascal loader for that geometry.
+Generated scenes now use filled RGB cells that the terminal paints as
+backgrounds, rather than font-rendered shade glyphs. This removes the visible
+horizontal and vertical seams that some terminal fonts left between cells;
+the hand-built half-block tile patterns retain their intended detail.
 
 ### Standard SSH clients can open SuperTerm over encrypted TCP
 

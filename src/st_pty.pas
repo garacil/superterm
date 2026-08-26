@@ -1459,7 +1459,9 @@ var
   argc, taken, p, lim, st: integer;
 begin
   Result := nil;
-  { the DFA cannot see that Move fills argc from the sysctl buffer }
+  { Keep Darwin's DFA diagnostics clean even when this unit is compiled by a
+    small standalone helper rather than through the normal project build. }
+  buf := nil;
   argc := 0;
   if Pid <= 0 then
     Exit;
@@ -1480,7 +1482,7 @@ begin
     Exit;
   if sz < SizeOf(cint) then
     Exit;
-  Move(buf[0], argc, SizeOf(cint));
+  argc := pcint(@buf[0])^;
   if argc <= 0 then
     Exit;
   lim := sz;

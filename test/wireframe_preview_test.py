@@ -21,7 +21,6 @@ from stlib import check, run_cli
 
 
 WIDTH, HEIGHT = 110, 34
-STEP_PAUSE = 0.20
 TITLE = 'WIRE_PREVIEW_TARGET'
 OTHER = 'WIRE_PREVIEW_OTHER'
 FRAME_CTL_LIST = 11
@@ -335,15 +334,15 @@ def target_daemon_state(sock_path):
 
 
 def mouse_down(client, x, y):
-    os.write(client.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_drag(client, x, y):
-    os.write(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
+    stlib.write_all(client.fd, f'\x1b[<32;{x + 1};{y + 1}M'.encode())
 
 
 def mouse_up(client, x, y):
-    os.write(client.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
+    stlib.write_all(client.fd, f'\x1b[<0;{x + 1};{y + 1}m'.encode())
 
 
 def compact(values):
@@ -352,6 +351,23 @@ def compact(values):
         if not result or result[-1] != value:
             result.append(value)
     return result
+
+
+def wait_exact_preview(actor, observer, expected, actor_attr, observer_attr,
+                       timeout=2.0):
+    """Wait until both real PTYs present this exact preview step."""
+    deadline = time.monotonic() + timeout
+    actor_sample = snapshot(actor)
+    observer_sample = snapshot(observer)
+    while time.monotonic() < deadline:
+        if (exact_ring(actor_sample, expected, actor_attr) and
+                exact_locked_ring(observer_sample, expected,
+                                  observer_attr)):
+            return actor_sample, observer_sample, True
+        drain_all((actor, observer), 0.04)
+        actor_sample = snapshot(actor)
+        observer_sample = snapshot(observer)
+    return actor_sample, observer_sample, False
 
 
 def temporal_integrity(records, baseline, final, valid_rings, expected_attr,
@@ -433,7 +449,10 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
     for client in clients:
         client.begin_transition_capture()
     mouse_down(actor, start_x, start_y)
-    drain_all(clients, 0.32)
+    lock_deadline = time.monotonic() + 2.0
+    while (time.monotonic() < lock_deadline and
+           not (has_lock(observer) and not has_lock(actor))):
+        drain_all(clients, 0.04)
     held_state = target_daemon_state(sock_path)
     held_lock_ok = has_lock(observer) and not has_lock(actor)
 
@@ -446,12 +465,11 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
         end_x = start_x + step
         end_y = start_y
         mouse_drag(actor, end_x, end_y)
-        drain_all(clients, STEP_PAUSE)
         expected = ((left, top, right + step, bottom) if resize else
                     (left + step, top, right + step, bottom))
         step_rects.append(expected)
-        actor_sample = snapshot(actor)
-        observer_sample = snapshot(observer)
+        actor_sample, observer_sample, step_waited = wait_exact_preview(
+            actor, observer, expected, actor_attr, observer_attr)
         lock_samples.append((not has_lock(actor_sample),
                              has_lock(observer_sample)))
         actor_ok = exact_ring(actor_sample, expected, actor_attr)
@@ -464,7 +482,7 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
             bc = locked_perimeter(expected) if br is not None else {}
             print(f'  {label} step {step}: expected={expected} '
                   f'actor={ar}/{len(ac)} observer={br}/{len(bc)}')
-        ring_ok = ring_ok and actor_ok and observer_ok
+        ring_ok = ring_ok and step_waited and actor_ok and observer_ok
         state = target_daemon_state(sock_path)
         canonical_samples.append(state)
         if state is not None:
@@ -565,20 +583,22 @@ def perform_keyboard_cancel(actor, observer, sock_path):
         client.begin_transition_capture()
     # xterm's standard Ctrl-F5 encoding selects FreeVision cmResize. Shift-
     # Right then chooses the grow branch of DragView.Change, one cell at time.
-    os.write(actor.fd, b'\x1b[15;5~')
-    drain_all(clients, 0.35)
+    stlib.write_all(actor.fd, b'\x1b[15;5~')
+    lock_deadline = time.monotonic() + 2.0
+    while (time.monotonic() < lock_deadline and
+           not (has_lock(observer) and not has_lock(actor))):
+        drain_all(clients, 0.04)
     held_lock_ok = has_lock(observer) and not has_lock(actor)
     step_rects = []
     ring_ok = True
     lock_samples = [(not has_lock(actor), has_lock(observer))]
     canonical_samples = [target_daemon_state(sock_path)]
     for step in range(1, 7):
-        os.write(actor.fd, b'\x1b[1;2C')
-        drain_all(clients, STEP_PAUSE)
+        stlib.write_all(actor.fd, b'\x1b[1;2C')
         expected = left, top, right + step, bottom
         step_rects.append(expected)
-        a_sample = snapshot(actor)
-        b_sample = snapshot(observer)
+        a_sample, b_sample, step_waited = wait_exact_preview(
+            actor, observer, expected, actor_attr, observer_attr)
         lock_samples.append((not has_lock(a_sample), has_lock(b_sample)))
         step_ok = (exact_ring(a_sample, expected, actor_attr) and
                    exact_locked_ring(b_sample, expected, observer_attr))
@@ -589,9 +609,9 @@ def perform_keyboard_cancel(actor, observer, sock_path):
             bc = locked_perimeter(expected) if br is not None else {}
             print(f'  {label} step {step}: expected={expected} '
                   f'actor={ar}/{len(ac)} observer={br}/{len(bc)}')
-        ring_ok = ring_ok and step_ok
+        ring_ok = ring_ok and step_waited and step_ok
         canonical_samples.append(target_daemon_state(sock_path))
-    os.write(actor.fd, b'\x1b')
+    stlib.write_all(actor.fd, b'\x1b')
     drain_all(clients, 1.1)
     actor_records = actor.end_transition_capture()
     observer_records = observer.end_transition_capture()
@@ -665,7 +685,7 @@ finally:
         if client is None:
             continue
         try:
-            os.write(client.fd, b'\x1b')
+            stlib.write_all(client.fd, b'\x1b')
             client.drain(0.15)
             client.send(b'\x11', 0.05)
             client.send(b'd', 0.25)

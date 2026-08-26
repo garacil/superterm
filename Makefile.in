@@ -80,7 +80,8 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   badclass_test.py passthrough_modes_test.py resize_keep_test.py \
   config_concurrency_test.py \
   pane_reaper_test.py pty_spawn_safety_test.py session_startup_atomic_test.py \
-  stlib_crash_audit_test.py daemon_identity_safety_test.py \
+  stlib_crash_audit_test.py stlib_transition_capture_test.py \
+  daemon_identity_safety_test.py \
   new_session_profile_test.py ssh_server_config_test.py \
   ssh_release_boundary_test.py \
   ssh_service_uninstall_test.py ssh_entry_test.py \
@@ -205,7 +206,7 @@ install-deps:
 		elif command -v sudo >/dev/null 2>&1; then SUDO=sudo; \
 		else printf '%s\n' 'sudo is required'; exit 1; fi; \
 		$$SUDO apt-get update && $$SUDO apt-get install -y \
-			fp-compiler fp-units-fv fp-units-fcl fp-units-db make \
+			fp-compiler fp-units-fv fp-units-fcl fp-units-db fp-units-misc make \
 			python3 python3-pyte python3-pil librsvg2-bin \
 			openssh-client openssh-server sshpass; \
 	else \

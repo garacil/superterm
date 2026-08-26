@@ -135,10 +135,12 @@ def allowed_menu_prefix(record, references):
 
     def menu_owned(x, y):
         # Selection changes are allowed within the exact captured menu and
-        # its FreeVision shadow.  The application menu/status rows also show
-        # the active mnemonic while a modal menu is being dispatched.
+        # its FreeVision shadow. TMenuBox.Draw owns a one-column left gutter
+        # before the first corner frame_rects can observe. The application
+        # menu/status rows also show the active mnemonic while a modal menu is
+        # being dispatched.
         return (y in (0, last_row) or any(
-            left <= x <= right + 2 and top <= y <= bottom + 1
+            left - 1 <= x <= right + 2 and top <= y <= bottom + 1
             for left, top, right, bottom in menu_only))
 
     for y, (baseline_row, menu_row, observed_row) in enumerate(zip(
@@ -380,7 +382,7 @@ try:
     remote_menu = presentation_signature(a)
     a.begin_transition_capture()
     b.begin_transition_capture()
-    os.write(a.fd, b'c')              # mnemonic: Close all windows
+    stlib.write_all(a.fd, b'c')       # mnemonic: Close all windows
     drain_all((a, b), 2.0)
     actor_records = a.end_transition_capture()
     observer_records = b.end_transition_capture()
@@ -444,7 +446,7 @@ try:
     check('local Windows menu exposes Close all', open_close_all_menu(local))
     local_menu = presentation_signature(local)
     local.begin_transition_capture()
-    os.write(local.fd, b'c')
+    stlib.write_all(local.fd, b'c')
     local.drain(1.2)
     local_records = local.end_transition_capture()
     check_single_empty_paint('local presents one 4-to-0 paint',

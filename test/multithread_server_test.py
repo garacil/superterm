@@ -92,10 +92,20 @@ check('numeric value caps total threads', bool(state) and
       state['thread_limit'] == expected_limit)
 check('one pane creates one pane worker', bool(state) and
       state['threads'] == expected_one)
+os_thread_overhead = None
 if state:
     actual = actual_os_threads(state['pid'])
-    check('sidecar matches OS thread count', actual is None or
-          actual == state['threads'])
+    # Linux /proc enumerates the process thread-for-thread. Darwin's ps -M
+    # can additionally report a stable runtime/process row; retain it as a
+    # baseline and require every later worker to increase the OS count by one.
+    if sys.platform == 'darwin':
+        if actual is not None and actual >= state['threads']:
+            os_thread_overhead = actual - state['threads']
+        check('sidecar establishes Darwin OS thread baseline',
+              actual is not None and os_thread_overhead is not None)
+    else:
+        check('sidecar matches OS thread count', actual is not None and
+              actual == state['threads'])
 
 # Create enough independent panes to reach the configured/CPU ceiling. New
 # pane insertion compacts indexes, so it also exercises the stop/drain/rebuild
@@ -109,8 +119,13 @@ check('workers grow up to configured cap', bool(state) and
       state['threads'] == expected_four)
 if state:
     actual = actual_os_threads(state['pid'])
-    check('grown pool matches OS threads', actual is None or
-          actual == state['threads'])
+    if sys.platform == 'darwin':
+        check('grown pool matches Darwin OS thread delta', actual is not None and
+              (os_thread_overhead is not None and
+               actual == state['threads'] + os_thread_overhead))
+    else:
+        check('grown pool matches OS threads', actual is not None and
+              actual == state['threads'])
 
 # All panes produce output at once. Each byte stream must stay ordered while
 # control sockets remain responsive and the server-side TScreen instances are
@@ -150,10 +165,14 @@ state = wait_state(HOME, lambda s: s['panes'] == 1)
 check('workers shrink with pane count', bool(state) and
       state['threads'] == expected_one)
 # The control CLI deliberately refuses to close a session's last pane; the
-# attached window manager can create the supported empty-desktop state.
-client.send(b'\x1b[<0;4;1M', 0.2)
-client.send(b'\x1b[<0;4;1m', 0.8)
-client.send(b'c', 1.5)
+# attached window manager can create the supported empty-desktop state. Open
+# the menu by keyboard and synchronize with its caption before selecting the
+# command, rather than racing a raw click against a pending repaint.
+client.send(b'\x1bp', 0.1)
+menu_open = client.wait_until(lambda text: 'Close pane' in text, 4.0)
+check('pane menu opens before last close', menu_open)
+if menu_open:
+    client.send(b'c', 1.5)
 state = wait_state(HOME, lambda s: s['panes'] == 0)
 check('zero panes leaves network reactor', bool(state) and
       state['threads'] == 1)
@@ -180,7 +199,13 @@ check('environment override selects single thread', bool(single_state) and
       single_state['thread_limit'] == 1)
 if single_state:
     actual = actual_os_threads(single_state['pid'])
-    check('single mode creates no hidden worker', actual is None or actual == 1)
+    if sys.platform == 'darwin':
+        check('single mode creates no hidden Darwin worker', actual is not None and
+              (os_thread_overhead is not None and
+               actual == 1 + os_thread_overhead))
+    else:
+        check('single mode creates no hidden worker',
+              actual is not None and actual == 1)
 single.send(b'echo SINGLE_REACTOR_OK\r', 1.0)
 check('single reactor remains functional',
       single.wait_until(lambda text: 'SINGLE_REACTOR_OK' in text, 5.0))

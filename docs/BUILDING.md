@@ -36,7 +36,8 @@ mode-specific Free Pascal units. Both are generated directories.
 Required:
 
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
-- Free Pascal FV, FCL, and DB units.
+- Free Pascal FV, FCL, DB, and POSIX thread units (`fp-units-misc` supplies
+  `PThreads` on Debian/Ubuntu).
 - GNU make.
 - A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
 
@@ -267,9 +268,10 @@ superterm is a single cross-platform codebase that builds and runs natively on
 GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `poll`, POSIX
 PTYs, and the bundled FreeVision text UI. The detached server registers its
 listener, handshakes, clients and PTY masters through `BaseUnix.fpPoll`, with no
-external event-library dependency and no `FD_SETSIZE` ceiling. Platform
-selection is confined to the PTY/process and CPU-count backends plus the
-optional SSH service-manager adapter:
+external event-library dependency and no `FD_SETSIZE` ceiling. The principal
+platform adapters are the PTY/process and CPU-count backends plus the optional
+SSH service manager; a few small POSIX type/constant branches remain beside
+their shared call sites:
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free

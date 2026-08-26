@@ -4,10 +4,10 @@
 The pictures are plain text (see src/st_artbg.pas): a row of glyphs and a row
 of palette indexes, one index per cell.
 
-One glyph is used and one only: '6', the dark shade block, in the cell's own
-colour -- plus the space where there is no picture. Every picture is drawn
-with the same character, so what tells them apart is the colour, and the
-grid it is made of is part of how it looks.
+One glyph is used and one only: '3', the full block, in the cell's own colour
+-- plus the space where there is no picture. The renderer emits these cells as
+spaces with exact RGB backgrounds, so the terminal fills every cell completely
+without depending on a font glyph or leaving seams between rows.
 
 Everything is drawn into a PIXEL canvas that may be finer than the character
 grid, and the emitter averages each cell's pixels into its single colour --
@@ -164,27 +164,15 @@ BAYER = [[(v + 0.5) / 16.0 for v in row] for row in
 
 
 class Picture:
-    # Characters for the ASCII variant, from the emptiest to the fullest.
-    # Chosen for how much ink each one puts on the cell in a console font,
-    # not for how they read as letters: this is a picture, not a word.
-
-    # The character every picture is drawn with: '6', which the format reads
-    # as the dark shade block. One character for every cell of every picture,
-    # always the same one -- what carries a picture is the colour, and the
-    # colour of a cell is its own. Choosing the character by how bright a cell
-    # is was tried and is not this: partial ink over black reads as the same
-    # picture in dimmer colours, which is a different picture.
-    ASCII_CHAR = '6'
+    # '3' is the file format's full-block token. st_fvui deliberately renders
+    # it as a space with the exact RGB background, making it a truly filled
+    # cell even when a terminal font leaves gaps around U+2588.
+    CELL_CHAR = '3'
 
     def __init__(self, canvas, name_en, name_es, mode=None, dither=False,
-                 ascii_art=True, logical_width=0):
+                 logical_width=0):
         self.c = canvas
         self.name_en, self.name_es, self.mode = name_en, name_es, mode
-        # ascii_art: a cell is a CHARACTER in one colour instead of a solid
-        # block of it. The character comes from how bright the cell is, so
-        # the picture keeps its shape through the ink as well as the colour.
-        # 'ascii' picks from RAMP, 'shade' from SHADES
-        self.ascii = ascii_art
         # Optional logical width for artwork whose transparent right edge is
         # significant. Text rows cannot retain that edge without trailing
         # spaces, so the file format carries it explicitly.
@@ -203,10 +191,8 @@ class Picture:
     def grid(self):
         """Collapse the drawing canvas onto the character grid.
 
-        Only two states are ever used: the one configured shade glyph and the
-        space. Half blocks and line-drawing combinations come apart when the
-        terminal font is stretched, so a cell is either painted or left
-        alone. Everything a cell covers is averaged into its one colour,
+        Only two states are ever used: a completely filled RGB cell and the
+        empty space. Everything a cell covers is averaged into its one colour,
         which is also what makes the edges of a drawn scene come out soft
         rather than stepped.
         """
@@ -343,18 +329,15 @@ class Picture:
             for cx, p in enumerate(row):
                 if p is None:
                     g.append(' '); f.append(' ')
-                elif self.ascii:
-                    g.append(self.ASCII_CHAR)
-                    f.append(ALPHABET[idx(p, cx, cy)])
                 else:
-                    g.append('3')          # a solid cell, if one is ever asked for
+                    g.append(self.CELL_CHAR)
                     f.append(ALPHABET[idx(p, cx, cy)])
             rows.append((''.join(g).rstrip(), ''.join(f).rstrip()))
 
         out = ['# superterm background picture.',
-               '#   >  glyph row   \' \'=empty  6=dark shade',
-               '#      Generated pictures use that one stable glyph; half-block',
-               '#      combinations fall apart when the terminal font stretches.',
+               '#   >  glyph row   \' \'=empty  3=filled RGB cell',
+               '#      The renderer paints filled cells as exact RGB backgrounds,',
+               '#      independent of terminal-font glyph metrics.',
                '#   :  foreground palette index per cell (\'0\'-\'9\',\'a\'-\'z\',\'A\'-\'Z\')',
                '# Drawn by tools/mkbackgrounds.py for a 128x46 desktop',
                '# (1024x768 with an 8x16 console cell, less the menu and status rows).',
@@ -786,7 +769,7 @@ def phoenix(src='backgrounds/phoenix.art'):
 
 def from_image(path, name_en, name_es, drop_black=True, fill=True,
                dither_alpha=False, logical_width=0):
-    """Convert a raster picture into the single-glyph cell format.
+    """Convert a raster picture into the filled-cell format.
 
     Pixel art needs care on the way down. A smooth filter (Lanczos, bicubic)
     rings and blurs hard edges, which is exactly what this kind of artwork is
@@ -826,7 +809,7 @@ def from_image(path, name_en, name_es, drop_black=True, fill=True,
     q = im.quantize(colors=48, method=Image.MEDIANCUT, dither=Image.NONE)
     im = q.convert('RGB')
 
-    # The picture uses one shade glyph per occupied character cell, so the
+    # The picture uses one filled colour per occupied character cell, so the
     # destination grid IS the desktop: 128 x 46. Reducing straight onto it
     # keeps the conversion as sharp as it can be -- every cell is decided by
     # the source pixels that actually fall in it, with nothing resampled twice.

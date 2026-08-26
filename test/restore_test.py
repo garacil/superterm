@@ -43,6 +43,13 @@ class Session:
         self.drain(t)
     def text(self):
         return "\n".join(r.rstrip() for r in self.screen.display)
+    def wait_until(self, pred, timeout=8.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            self.drain(0.2)
+            if pred(self.screen.display):
+                return True
+        return pred(self.screen.display)
     def close(self):
         try:
             os.close(self.fd)
@@ -69,8 +76,14 @@ if os.path.exists(SESS):
 a = Session()
 a.drain(2.0)
 a.send(b'\x1bOQ', 1.2)              # F2 vertical split
-a.send(b'sleep 987\r', 1.2)         # distinctive command in pane 2
-a.send(b'cd /tmp\r', 0.8)           # change cwd of pane... goes to pane2 (focused); pane1 keep
+a.send(b'cd /tmp; sleep 987\r', 0.2) # distinctive foreground in pane 2
+# Saving immediately after a fixed sleep races the periodic process query on
+# a loaded runner.  Require the real window title to identify the foreground
+# process first; matching only pane text would accept the echoed command.
+foreground_observed = a.wait_until(
+    lambda rows: any('sleep' in row.lower() and
+                     any(ch in row for ch in '═─') for row in rows))
+check("A: foreground observed", foreground_observed)
 a.send(b'\x1bx', 1.0)               # Alt-X: local autosave on Exit
 a.close()
 time.sleep(0.4)

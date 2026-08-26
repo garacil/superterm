@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """superterm test: [profile.*] profiles, flattened legacy templates and saving."""
+import configparser
 import os, pty, time, select, sys, fcntl, termios, struct, shutil
 import pyte
 
@@ -120,6 +121,13 @@ class Session:
         self.drain(t)
     def text(self):
         return "\n".join(r.rstrip() for r in self.screen.display)
+    def wait_until(self, pred, timeout=8.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            self.drain(0.2)
+            if pred(self.screen.display):
+                return True
+        return pred(self.screen.display)
     def close(self):
         try: os.close(self.fd)
         except OSError: pass
@@ -165,7 +173,16 @@ check("workspace switched", "PROF_PANE_A" not in scr)
 # capturable markers: the pane's cwd and a single-word foreground
 # command (python3), which survives the INI write/re-read cycle
 s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
-s.send(b'python3\r', 1.0)
+s.send(b'python3\r', 0.2)
+# The pane process scanner is deliberately periodic.  Synchronize with its
+# visible title instead of assuming a one-second CI runner deadline.  The
+# executable is commonly "python3" on GNU/Linux and "Python" after Apple's
+# /usr/bin/python3 stub re-execs the framework binary.
+python_observed = s.wait_until(
+    lambda rows: any('python' in row.lower() and
+                     any(ch in row for ch in '═─') for row in rows) and
+                 any('>>>' in row for row in rows))
+check("foreground Python observed", python_observed)
 s.send(b'\x1br', 0.5)
 s.send(b's', 0.6)
 scr = s.text()
@@ -178,6 +195,13 @@ check("save-as toast", "Profile saved: captured" in scr)
 s.send(b'\r', 0.5)                 # close the toast
 
 txt = open(USERINI).read()
+saved_ini = configparser.ConfigParser()
+saved_ini.read(USERINI)
+captured_titles = [
+    saved_ini.get(section, 'title', fallback='').strip().lower()
+    for section in saved_ini.sections()
+    if section.startswith('profile.captured.window.') and '.pane.' in section
+]
 check("ini has profile.captured", "[profile.captured]" in txt)
 check("ini has layout key", "layout=" in txt)
 # macOS: /usr/bin/python3 is a stub that re-execs the framework Python, so the
@@ -185,7 +209,9 @@ check("ini has layout key", "layout=" in txt)
 check("ini captured marker cmd", ("cmd=python3" in txt) or ("cmd='python3'" in txt)
       or ("Python3.framework" in txt))
 check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
-check("ini captured visible title", "title=python3" in txt.lower())
+check("ini captured visible basename title",
+      len(captured_titles) == 1 and
+      captured_titles[0] in {'python3', 'python'})
 check("ini captured scrollback", "scrollback=10000" in txt)
 check("ini keeps default_profile", "default_profile=dev" in txt)
 check("ini keeps class section", "[class.keepme]" in txt)
@@ -219,10 +245,15 @@ s.send(b'\x1br', 0.5)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\r', 1.8)
+captured_title_observed = s.wait_until(
+    lambda rows: any(captured_titles and captured_titles[0] in row.lower() and
+                     any(ch in row for ch in '═─') for row in rows) and
+                 any('>>>' in row for row in rows),
+    2.0)
 scr = s.text()
 check("captured switches away", "OLDTPL_TOKEN" not in scr)
 check("captured repl prompt", ">>>" in scr)
-check("captured restores pane title", "python3" in scr.lower())
+check("captured restores pane title", captured_title_observed)
 s.send(b'print(40600+2)\r', 0.8)
 scr = s.text()
 check("captured activates", "40602" in scr)

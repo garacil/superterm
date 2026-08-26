@@ -147,8 +147,13 @@ end.
                 raw_lines = stream.read().splitlines()
         except FileNotFoundError:
             raw_lines = []
+        # Keep GNU strict: its pthread_t is emitted as a decimal ordinal.
+        # Darwin models pthread_t as a pointer, which st_debug renders in hex.
+        thread_id_pattern = (rb'[0-9A-Fa-f]+' if sys.platform == 'darwin'
+                             else rb'\d+')
         line_re = re.compile(
-            rb'^\d\d:\d\d:\d\d\.\d\d\d \[(\d+) mp-(\d+) tid=\d+\] '
+            rb'^\d\d:\d\d:\d\d\.\d\d\d \[(\d+) mp-(\d+) tid=' +
+            thread_id_pattern + rb'\] ' +
             rb'MPLOG worker=(\d+) seq=(\d+) payload=([A-P]+)$')
         seen = set()
         corrupt = []
