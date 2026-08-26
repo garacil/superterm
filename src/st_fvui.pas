@@ -7691,7 +7691,11 @@ var
   want: boolean;
 begin
   f := Lay.Focused;
-  want := (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
+  // Raw pane bytes cannot be width-preserving on a host which failed the
+  // UTF-8 rendering probe. Keep that one client on the cell renderer; other
+  // UTF-8 clients attached to the same canonical session may still use raw.
+  want := HostUtf8Output and
+    (f >= 0) and (f < MAX_PANES) and (Win[f] <> nil) and
     Win[f]^.Zoomed and Win[f]^.FullScreen and (Current = PView(Desktop)) and
     ((not RemoteMode) or
      (RemoteHostSummaryValid and RemoteHostSizesMatch and

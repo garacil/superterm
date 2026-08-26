@@ -25,10 +25,14 @@ interface
 // install before creating the application (before Keyboard.InitKeyboard)
 procedure InstallSuperKeyboard;
 // CaptureConsoleCursor issues CSI 6 n before the keyboard driver starts. A
-// slow host may answer only after startup; arm one expiring CPR so CSI r;c R
+// slow host may answer only after startup; arm one pending CPR so CSI r;c R
 // is consumed as a terminal reply rather than decoded as CSI-F3.
 procedure ArmCursorPositionReply;
 procedure CompleteCursorPositionReply;
+// Read one CPR synchronously during video initialisation, remove only its
+// protocol bytes and defer every interleaved key/mouse byte for the normal
+// decoder. st_video calls this once before and once after its concealed probe.
+function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
 // Bracketed paste arrives as one payload instead of thousands of unrelated
 // key events. The application drains this queue from Idle and routes each
 // item to the focused pane.
@@ -71,16 +75,247 @@ var
   PasteQueue: array[0..HOST_PASTE_QUEUE - 1] of RawByteString;
   PasteHead: integer = 0;
   PasteTail: integer = 0;
-  CursorReplyDeadline: QWord = 0;
+  CursorReplyPending: boolean = False;
+  DeferredInput: RawByteString = '';
+  DeferredPos: integer = 1;
 
 procedure ArmCursorPositionReply;
 begin
-  CursorReplyDeadline := GetTickCount64 + 1500;
+  // Queries are strictly sequential: a timeout aborts the probing sequence,
+  // so there can be only one legitimate late answer. Saturating at one also
+  // prevents an accidental double arm from swallowing a later real F3.
+  CursorReplyPending := True;
 end;
 
 procedure CompleteCursorPositionReply;
 begin
-  CursorReplyDeadline := 0;
+  CursorReplyPending := False;
+end;
+
+procedure AppendDeferredInput(const S: RawByteString);
+begin
+  if S = '' then
+    Exit;
+  if DeferredPos > 1 then
+  begin
+    if DeferredPos <= Length(DeferredInput) then
+      DeferredInput := Copy(DeferredInput, DeferredPos,
+        Length(DeferredInput) - DeferredPos + 1)
+    else
+      DeferredInput := '';
+    DeferredPos := 1;
+  end;
+  DeferredInput := DeferredInput + S;
+end;
+
+function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
+const
+  PROBE_TIMEOUT_MS = 200;
+  PROBE_MAX_READS = 64;
+type
+  TProbeState = (psGround, psEsc, psCsi, psRow, psColStart, psCol);
+var
+  State: TProbeState;
+  Candidate, Kept: RawByteString;
+  Row, Col: integer;
+  Found: boolean;
+  Reads, I, J, N, B, WaitMs: integer;
+  NowTick, LastTick, Deadline: QWord;
+  Fds: TFDSet;
+  Chunk: array[0..255] of byte;
+
+  procedure FlushCandidate;
+  begin
+    Kept := Kept + Candidate;
+    Candidate := '';
+    State := psGround;
+  end;
+
+  procedure AcceptReport;
+  begin
+    CompleteCursorPositionReply;
+    if not Found then
+    begin
+      ARow := Row;
+      ACol := Col;
+      Found := True;
+    end;
+  end;
+
+  procedure FeedByte(AB: byte);
+  begin
+    case State of
+      psGround:
+        if AB = 27 then
+        begin
+          Candidate := #27;
+          State := psEsc;
+        end
+        else
+          Kept := Kept + AnsiChar(AB);
+      psEsc:
+        if AB = Ord('[') then
+        begin
+          Candidate := Candidate + '[';
+          State := psCsi;
+        end
+        else
+        begin
+          FlushCandidate;
+          FeedByte(AB);
+        end;
+      psCsi:
+        if (AB >= Ord('0')) and (AB <= Ord('9')) then
+        begin
+          Candidate := Candidate + AnsiChar(AB);
+          Row := AB - Ord('0');
+          State := psRow;
+        end
+        else
+        begin
+          FlushCandidate;
+          FeedByte(AB);
+        end;
+      psRow:
+        if (AB >= Ord('0')) and (AB <= Ord('9')) and
+           (Length(Candidate) < 32) then
+        begin
+          Candidate := Candidate + AnsiChar(AB);
+          if Row <= 100000 then
+            Row := Row * 10 + AB - Ord('0');
+        end
+        else if AB = Ord(';') then
+        begin
+          Candidate := Candidate + ';';
+          State := psColStart;
+        end
+        else
+        begin
+          FlushCandidate;
+          FeedByte(AB);
+        end;
+      psColStart:
+        if (AB >= Ord('0')) and (AB <= Ord('9')) then
+        begin
+          Candidate := Candidate + AnsiChar(AB);
+          Col := AB - Ord('0');
+          State := psCol;
+        end
+        else
+        begin
+          FlushCandidate;
+          FeedByte(AB);
+        end;
+      psCol:
+        if (AB >= Ord('0')) and (AB <= Ord('9')) and
+           (Length(Candidate) < 32) then
+        begin
+          Candidate := Candidate + AnsiChar(AB);
+          if Col <= 100000 then
+            Col := Col * 10 + AB - Ord('0');
+        end
+        else if AB = Ord('R') then
+        begin
+          if (Row > 0) and (Col > 0) then
+          begin
+            Candidate := '';
+            State := psGround;
+            AcceptReport;
+          end
+          else
+          begin
+            Candidate := Candidate + 'R';
+            FlushCandidate;
+          end;
+        end
+        else
+        begin
+          FlushCandidate;
+          FeedByte(AB);
+        end;
+    end;
+  end;
+
+begin
+  Result := False;
+  ARow := 0;
+  ACol := 0;
+  State := psGround;
+  Candidate := '';
+  Kept := '';
+  Row := 0;
+  Col := 0;
+  Found := False;
+
+  // Bytes buffered before this query cannot be its reply. Preserve them
+  // literally and scan only newly read descriptor bytes; re-parsing old input
+  // as CPR could eat a real modified F3 or an application's earlier report.
+  while DeferredPos <= Length(DeferredInput) do
+  begin
+    Kept := Kept + DeferredInput[DeferredPos];
+    Inc(DeferredPos);
+  end;
+  DeferredInput := '';
+  DeferredPos := 1;
+  while RHead <> RTail do
+  begin
+    Kept := Kept + AnsiChar(RBuf[RTail]);
+    RTail := (RTail + 1) mod Length(RBuf);
+  end;
+
+  LastTick := GetTickCount64;
+  Deadline := LastTick + PROBE_TIMEOUT_MS;
+  Reads := 0;
+  repeat
+    NowTick := GetTickCount64;
+    // FPC 3.2.2 on Darwin uses a wall clock here. A rollback or an overflow
+    // ends the optional probe; it must never turn startup into an unbounded
+    // wait. A forward jump simply shortens the probe and keeps UTF-8.
+    if (NowTick < LastTick) or (NowTick >= Deadline) then
+      Break;
+    LastTick := NowTick;
+    WaitMs := integer(Deadline - NowTick);
+    if WaitMs > PROBE_TIMEOUT_MS then
+      WaitMs := PROBE_TIMEOUT_MS;
+    begin
+      fpFD_ZERO(Fds);
+      fpFD_SET(StdInputHandle, Fds);
+      N := fpSelect(StdInputHandle + 1, @Fds, nil, nil, WaitMs);
+    end;
+    if N < 0 then
+    begin
+      if FpGetErrNo = ESysEINTR then
+        Continue;
+      Break;
+    end;
+    if N = 0 then
+      Continue;
+    N := FileRead(StdInputHandle, Chunk, SizeOf(Chunk));
+    if N <= 0 then
+      Break;
+    Inc(Reads);
+    for I := 0 to N - 1 do
+    begin
+      B := Chunk[I];
+      FeedByte(byte(B));
+      if Found then
+      begin
+        // A single read may contain the requested CPR followed immediately
+        // by real keyboard input (or even another CPR-shaped key sequence).
+        // Remove exactly the first accepted report and preserve the rest of
+        // this descriptor chunk byte-for-byte for the normal decoder.
+        for J := I + 1 to N - 1 do
+          Kept := Kept + AnsiChar(Chunk[J]);
+        Break;
+      end;
+    end;
+    if Found then
+      Break;
+  until Reads >= PROBE_MAX_READS;
+  if Candidate <> '' then
+    Kept := Kept + Candidate;
+  AppendDeferredInput(Kept);
+  Result := Found;
 end;
 
 procedure QueueHostPaste(const AText: RawByteString);
@@ -142,6 +377,17 @@ end;
 
 function NextByte(TimeoutMs: integer): integer;
 begin
+  if DeferredPos <= Length(DeferredInput) then
+  begin
+    Result := byte(DeferredInput[DeferredPos]);
+    Inc(DeferredPos);
+    if DeferredPos > Length(DeferredInput) then
+    begin
+      DeferredInput := '';
+      DeferredPos := 1;
+    end;
+    Exit;
+  end;
   if not FillBuf(TimeoutMs) then
     Exit(-1);
   Result := RBuf[RTail];
@@ -150,6 +396,8 @@ end;
 
 function PeekByte(TimeoutMs: integer): integer;
 begin
+  if DeferredPos <= Length(DeferredInput) then
+    Exit(byte(DeferredInput[DeferredPos]));
   if not FillBuf(TimeoutMs) then
     Exit(-1);
   Result := RBuf[RTail];
@@ -507,16 +755,17 @@ begin
   p2 := p2 or ExtraMods;
   // 'R' is also CSI-F3, hence the explicit pending query state. Do not infer
   // CPR from numeric ranges: row 1/column 2 is byte-for-byte identical to a
-  // modified CSI F3 on some terminals. Only a DSR we actually emitted arms
-  // this one-shot swallow, and it expires shortly after startup.
-  if (AnsiChar(c) = 'R') and (CursorReplyDeadline <> 0) then
+  // modified CSI F3 on some terminals. Only an unanswered DSR we actually
+  // emitted arms this one-shot swallow. Keep it armed after the synchronous
+  // read times out: otherwise a genuinely late baseline becomes F3 and opens
+  // a phantom pane. The ambiguity is unavoidable, but at most one such key
+  // can be consumed, and only when the terminal never answers its own DSR.
+  if (AnsiChar(c) = 'R') and (idx = 1) and seen[0] and seen[1] and
+     (nums[0] > 0) and (nums[1] > 0) and
+     CursorReplyPending then
   begin
-    if GetTickCount64 <= CursorReplyDeadline then
-    begin
-      CompleteCursorPositionReply;
-      Exit;
-    end;
     CompleteCursorPositionReply;
+    Exit;
   end;
   case AnsiChar(c) of
     'A': Result := NavEvent($48, $8D, $98, p2);

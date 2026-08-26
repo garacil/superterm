@@ -231,11 +231,12 @@ superterm listar prod                           # the same CLI, en español
 
 ### Terminal fidelity and interface
 
-- Truecolor and 256-color escape sequences, real UTF-8 glyphs, two-column
-  emoji, combining marks, faint and concealed text are preserved in pane
-  content in tiled, windowed and maximized views. FreeVision still draws the
-  grid and decides visibility; SuperTerm's rich overlay presents the visible
-  pane cells without flattening them to CP437/16 colors.
+- On UTF-8 host terminals, truecolor and 256-color escape sequences, real
+  UTF-8 glyphs, two-column emoji, combining marks, faint and concealed text
+  are preserved in tiled, windowed and maximized panes. Each viewer is probed
+  independently before its first frame. A legacy-width result selects a
+  7-bit DEC Special Graphics/ASCII compatibility renderer for that viewer,
+  without changing the shared desktop or any other client.
 - The configurable prefix defaults to `Ctrl-Q`; `prefix f` controls
   fullscreen/restore, while physical `F5` remains input for the focused pane.
   A custom keyboard driver handles lone `Esc`, CSI/SS3 keys, bracketed paste
@@ -406,9 +407,11 @@ Session, UI and SSH-entry protocol code remains shared.
 See [`docs/MACOS.md`](docs/MACOS.md) for the macOS build, terminal setup, and
 platform notes.
 
-Windows is not a native target. WSL is the practical way to run superterm on
-Windows; a native port would need a ConPTY backend plus Windows-specific process,
-resize, signal, and configuration-path code.
+Windows is not yet a native SuperTerm host target. WSL is the practical way to
+run the server locally; a native host port would need a ConPTY backend plus
+Windows-specific process, resize, signal, and configuration-path code. Windows
+Terminal and the Microsoft OpenSSH client are supported as ordinary SSH
+viewers of a SuperTerm server.
 
 ## Why Free Pascal
 

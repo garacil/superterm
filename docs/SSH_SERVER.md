@@ -611,6 +611,45 @@ and removes the session. With zero viewers, a session whose panes have all
 exited may reap itself after its grace period; a deliberately empty desktop
 with zero panes remains available for reattach.
 
+### Windows SSH clients and terminal encoding
+
+An SSH PTY request carries the terminal type, rows, columns and terminal modes;
+it does **not** negotiate a Windows code page. SuperTerm therefore asks each
+physical viewer directly before drawing its first frame. It uses a bounded VT
+cursor-position report (`CSI 6 n`) to measure a concealed UTF-8 marker:
+
+- one cell keeps the full UTF-8 renderer;
+- more than one valid cell selects a 7-bit DEC Special Graphics/ASCII renderer;
+- a timeout, malformed reply or impossible position keeps the existing UTF-8
+  behavior.
+
+This decision belongs only to that client process. It never changes the shared
+desktop, geometry, panes, focus or another attached viewer. In compatibility
+mode, borders remain readable and unsupported symbols are transliterated;
+raw fullscreen is disabled only for that viewer because arbitrary pane bytes
+cannot be made width-safe. UTF-8 clients attached to the same session retain
+rich Unicode, truecolor and raw fullscreen.
+
+For complete fidelity, use Windows Terminal with Microsoft OpenSSH and select
+UTF-8 **before** starting `ssh.exe`:
+
+```powershell
+chcp.com 65001 > $null
+ssh -tt -p 8022 german@192.168.0.214
+```
+
+From `cmd.exe`:
+
+```bat
+chcp 65001 >nul
+ssh -tt -p 8022 german@192.168.0.214
+```
+
+Use a TrueType/Unicode-capable terminal font. The `-tt` option requests a PTY;
+it does not select UTF-8. See Microsoft's documentation for
+[`chcp`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/chcp)
+and [console VT sequences](https://learn.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences).
+
 ### Multiple clients on the same session
 
 Attach does not create private geometry. Everyone receives the same pane
@@ -695,6 +734,7 @@ does not promise a private text file.
 | Password requested despite having a key | None of the offered identities was accepted | Try `IdentitiesOnly=yes -i PATH` and inspect the fingerprint; do not copy private keys to the server |
 | `root` cannot log in with a password | Mandatory behavior | Use a key and check `allow_root=1` |
 | `interactive SSH PTY is required` | `ssh -T`, pipeline without a PTY, or noninteractive client | Request a PTY with `-t`/`-tt` |
+| Borders appear as text such as `â”€` or `ΓöÇ` | The Windows console decodes UTF-8 through a legacy code page | Use Windows Terminal, a Unicode font and run `chcp 65001` before starting `ssh`; `-tt` alone does not change encoding |
 | `remote commands and subsystems are disabled` | A command, SCP, or SFTP was requested | Connect without a command; these functions are not part of the service |
 | Returns to a different session | The latest one is no longer live, mode `default` is active, or the hint belongs to another user | Inspect `[session]` and `superterm --list-sessions` under that account |
 | Connection drops but panes remain | Detach through EOF/keepalive | This is expected behavior; reconnect |

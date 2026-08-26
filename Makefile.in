@@ -74,6 +74,7 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   restore_focus_test.py title_hold_focus_test.py alwaysserver_test.py \
   passthrough_test.py passthrough_multiclient_test.py f5_output_layout_order_test.py \
   exit_clean_test.py newwindow_test.py appcursor_test.py late_dsr_test.py \
+  terminal_encoding_test.py \
   scrollback_test.py nesting_test.py mouseforward_test.py \
   remote_newpane_test.py fullscreen_test.py empty_desktop_test.py \
   max_panes_test.py close_all_panes_test.py \
