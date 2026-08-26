@@ -90,7 +90,7 @@ procedure ArtReload;
 implementation
 
 uses
-  SysUtils, Classes;
+  SysUtils, Classes, st_config;
 
 type
   TArtRow = record
@@ -131,11 +131,14 @@ begin
   if GetEnvironmentVariable('SUPERTERM_BACKGROUNDS') <> '' then
     Result := GetEnvironmentVariable('SUPERTERM_BACKGROUNDS') + PathSep;
   Result := Result +
-    GetEnvironmentVariable('HOME') + '/.superterm/backgrounds' + PathSep +
-    Bin + '../share/superterm/backgrounds' + PathSep +
+    IncludeTrailingPathDelimiter(ConfigDir) + 'backgrounds' + PathSep +
+    Bin + '..' + PathDelim + 'share' + PathDelim + 'superterm' + PathDelim +
+      'backgrounds' + PathSep +
+    {$IFNDEF WINDOWS}
     '/usr/local/share/superterm/backgrounds' + PathSep +
     '/usr/share/superterm/backgrounds' + PathSep +
-    Bin + '../backgrounds';
+    {$ENDIF}
+    Bin + '..' + PathDelim + 'backgrounds';
 end;
 
 function HexColor(const S: string): LongWord;

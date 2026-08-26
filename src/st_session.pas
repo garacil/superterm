@@ -26,6 +26,7 @@ type
     BX, BY, BW, BH: integer;
     Minimized: boolean;
     Zoomed: boolean;
+    FullScreen: boolean;
   end;
 
   TPaneArray = array of TPaneInfo;
@@ -35,7 +36,8 @@ procedure SaveSession(const FileName: string; Lay: TLayout;
 function LoadSession(const FileName: string; var Lay: TLayout;
   out Panes: TPaneArray; out ADeskW, ADeskH: integer): boolean;
 function SaveLayoutString(Lay: TLayout): string;
-function LoadLayoutString(const Nodes: string; out Lay: TLayout): boolean;
+function LoadLayoutString(const Nodes: string; out Lay: TLayout;
+  AAllowEmpty: boolean = False): boolean;
 
 implementation
 
@@ -146,6 +148,8 @@ begin
         Ini.WriteInteger(Sec, 'min', 1);
       if Panes[i].Zoomed then
         Ini.WriteInteger(Sec, 'zoom', 1);
+      if Panes[i].FullScreen then
+        Ini.WriteInteger(Sec, 'fullscreen', 1);
       Ini.WriteInteger(Sec, 'argc', Length(Panes[i].Args));
       for j := 0 to High(Panes[i].Args) do
         Ini.WriteString(Sec, 'arg' + IntToStr(j), Panes[i].Args[j]);
@@ -228,6 +232,7 @@ begin
       Panes[i].BH := Ini.ReadInteger(Sec, 'bh', 0);
       Panes[i].Minimized := Ini.ReadInteger(Sec, 'min', 0) <> 0;
       Panes[i].Zoomed := Ini.ReadInteger(Sec, 'zoom', 0) <> 0;
+      Panes[i].FullScreen := Ini.ReadInteger(Sec, 'fullscreen', 0) <> 0;
       ArgCount := Ini.ReadInteger(Sec, 'argc', 0);
       if ArgCount < 0 then ArgCount := 0;
       if ArgCount > 128 then ArgCount := 128;
@@ -242,7 +247,8 @@ begin
   end;
 end;
 
-function LoadLayoutString(const Nodes: string; out Lay: TLayout): boolean;
+function LoadLayoutString(const Nodes: string; out Lay: TLayout;
+  AAllowEmpty: boolean): boolean;
 var
   SL: TStringList;
   Idx: integer;
@@ -250,6 +256,19 @@ var
 begin
   Result := False;
   Lay := nil;
+  // An empty node string is the canonical representation of an empty
+  // desktop.  It is not a malformed split tree: closing the last pane leaves
+  // the session alive so that any attached client can create the first pane
+  // again.  Callers that require at least one pane (profiles and saved startup
+  // layouts) still validate PaneCount themselves.
+  if (Nodes = '') and AAllowEmpty then
+  begin
+    Lay := TLayout.Create;
+    FreeAndNil(Lay.Root);
+    Lay.Focused := -1;
+    Lay.LastInsertedIndex := -1;
+    Exit(True);
+  end;
   SL := TStringList.Create;
   try
     SL.Delimiter := ';';

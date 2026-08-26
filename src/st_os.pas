@@ -26,6 +26,11 @@ interface
 function OsGetPid: LongInt;
 // Parent process id, or 0 where the platform does not expose it cheaply.
 function OsGetPPid: LongInt;
+// User profile and per-user superterm configuration directories, normalized
+// without a trailing separator. Windows uses the roaming AppData profile;
+// POSIX keeps the historical ~/.superterm location.
+function OsUserHome: string;
+function OsConfigDir: string;
 
 // Tighten a freshly written file or directory to owner-only access. On POSIX
 // this is chmod 600 / 700; on Windows it is currently a no-op (a single-user
@@ -38,6 +43,7 @@ procedure OsRestrictDir(const APath: string);     // 0700 equivalent
 implementation
 
 uses
+  SysUtils,
   {$IFDEF WINDOWS}
   Windows;
   {$ELSE}
@@ -62,6 +68,39 @@ begin
   {$ELSE}
   Result := LongInt(FpGetPPid);
   {$ENDIF}
+end;
+
+function OsUserHome: string;
+begin
+  {$IFDEF WINDOWS}
+  Result := SysUtils.GetEnvironmentVariable('USERPROFILE');
+  if Result = '' then
+    Result := SysUtils.GetUserDir;
+  if Result = '' then
+    Result := SysUtils.GetEnvironmentVariable('HOMEDRIVE') +
+      SysUtils.GetEnvironmentVariable('HOMEPATH');
+  {$ELSE}
+  Result := SysUtils.GetEnvironmentVariable('HOME');
+  if Result = '' then
+    Result := SysUtils.GetUserDir;
+  {$ENDIF}
+  Result := ExcludeTrailingPathDelimiter(Result);
+end;
+
+function OsConfigDir: string;
+var
+  Base: string;
+begin
+  {$IFDEF WINDOWS}
+  Base := SysUtils.GetEnvironmentVariable('APPDATA');
+  if Base = '' then
+    Base := IncludeTrailingPathDelimiter(OsUserHome) +
+      'AppData' + PathDelim + 'Roaming';
+  Result := IncludeTrailingPathDelimiter(Base) + 'superterm';
+  {$ELSE}
+  Result := IncludeTrailingPathDelimiter(OsUserHome) + '.superterm';
+  {$ENDIF}
+  Result := ExcludeTrailingPathDelimiter(Result);
 end;
 
 procedure OsRestrictFile(const APath: string);

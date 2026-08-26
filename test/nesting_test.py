@@ -91,7 +91,7 @@ check('other session killed', r.returncode == 0)
 a.drain(2.5)
 b.wait_exit(timeout=8.0)
 
-a.send(b'\x1bq', 1.0)
+a.send(b'\x1bx', 1.0)
 a.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

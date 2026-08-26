@@ -93,7 +93,7 @@ check('with reporting off the wheel scrolls the history again',
       [r for r in c.screen.display if r.strip()] != rows_before)
 
 c.send(b'\x1b[1;3F', 0.6)
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

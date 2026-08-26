@@ -96,6 +96,9 @@ function IsConPtyAvailable: boolean;
 
 implementation
 
+uses
+  Classes;
+
 const
   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = $00020016;
   EXTENDED_STARTUPINFO_PRESENT        = $00080000;
@@ -179,6 +182,63 @@ function AssignProcessToJobObject(hJob, hProcess: THandle): BOOL; stdcall;
 var
   ConPtyProbed: boolean = False;
   ConPtyOk: boolean = False;
+
+function BuildEnvironmentBlock(const AExtra: string): UnicodeString;
+var
+  Vars, Extra: TStringList;
+  Env, P: PWideChar;
+  Entry, Name: string;
+  Eq, I, Existing: integer;
+
+  procedure PutEntry(const AEntry: string);
+  begin
+    Eq := Pos('=', AEntry);
+    if Eq <= 1 then
+      Exit;
+    Name := Copy(AEntry, 1, Eq - 1);
+    Existing := Vars.IndexOfName(Name);
+    if Existing >= 0 then
+      Vars.Delete(Existing);
+    Vars.Add(AEntry);
+  end;
+
+begin
+  Result := '';
+  Vars := TStringList.Create;
+  Extra := TStringList.Create;
+  try
+    Vars.NameValueSeparator := '=';
+    Vars.CaseSensitive := False;
+    Vars.Sorted := True;
+    Vars.Duplicates := dupIgnore;
+    Env := GetEnvironmentStringsW;
+    if Env <> nil then
+    begin
+      P := Env;
+      while P^ <> #0 do
+      begin
+        Entry := UTF8Encode(UnicodeString(P));
+        PutEntry(Entry);
+        Inc(P, Length(UnicodeString(P)) + 1);
+      end;
+      FreeEnvironmentStringsW(Env);
+    end;
+    Extra.Text := StringReplace(AExtra, #0, LineEnding, [rfReplaceAll]);
+    for I := 0 to Extra.Count - 1 do
+      if Trim(Extra[I]) <> '' then
+        PutEntry(Trim(Extra[I]));
+    for I := 0 to Vars.Count - 1 do
+      Result := Result + UTF8Decode(Vars[I]) + WideChar(#0);
+    // CreateProcess requires a double-NUL terminator, including for an empty
+    // environment. Pascal strings may contain embedded NULs safely.
+    Result := Result + WideChar(#0);
+    if Length(Result) = 1 then
+      Result := Result + WideChar(#0);
+  finally
+    Extra.Free;
+    Vars.Free;
+  end;
+end;
 
 function IsConPtyAvailable: boolean;
 var
@@ -270,8 +330,10 @@ var
   Si: STARTUPINFOEXW;
   AttrSize: SIZE_T;
   CmdLine: WideString;
+  EnvBlock: UnicodeString;
   CwdW: WideString;
   CwdPtr: PWideChar;
+  EnvPtr: PWideChar;
   Ok: BOOL;
   Jeli: JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 begin
@@ -328,18 +390,25 @@ begin
 
   // A child launched into a pseudo console must NOT inherit stray handles, and
   // must carry EXTENDED_STARTUPINFO_PRESENT so the attribute list is honoured.
-  // NOTE: AExtraEnv (SUPERTERM_SESSION_CHAIN, TERM, COLORTERM, ...) is not yet
-  // merged into the child block here; the st_pty Windows wrapper will build a
-  // CREATE_UNICODE_ENVIRONMENT block. For the Phase-1 shell it inherits ours.
+  // Build a private Unicode environment: inherited values plus the pane's
+  // TERM/COLORTERM/session metadata overlays.
+  EnvBlock := BuildEnvironmentBlock(AExtraEnv);
+  EnvPtr := PWideChar(EnvBlock);
   Ok := CreateProcessW(nil, PWideChar(CmdLine), nil, nil, False,
     EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT,
-    nil, CwdPtr, @Si.StartupInfo, @FProc);
+    EnvPtr, CwdPtr, @Si.StartupInfo, @FProc);
 
   if not Ok then
   begin
     Close;
     Exit;
   end;
+
+  // These two ends were supplied to CreatePseudoConsole only to connect its
+  // channels. Once the child exists the host must close its copies so EOF and
+  // broken-pipe state propagate correctly; the ConPTY retains what it needs.
+  CloseHandleSafe(FInRead);
+  CloseHandleSafe(FOutWrite);
 
   // Kill-on-close job so losing the master tears down the whole child tree,
   // the Windows stand-in for signalling the process group in KillPane.
@@ -362,7 +431,7 @@ var
   Avail, Got: DWORD;
 begin
   Result := 0;
-  if (FOutRead = INVALID_HANDLE_VALUE) then
+  if (FOutRead = INVALID_HANDLE_VALUE) or (Length(Buf) = 0) then
     Exit;
   if APeekFirst then
   begin
@@ -434,7 +503,21 @@ end;
 procedure TConPty.Close;
 begin
   FAlive := False;
-  // Closing the ConPTY first signals the child that its console is gone.
+  // Break both synchronous pipe directions before ClosePseudoConsole. Older
+  // ConPTY implementations can wait for their output writer during Close;
+  // leaving our read handle open while nobody drains it can deadlock teardown.
+  CloseHandleSafe(FInWrite);
+  CloseHandleSafe(FOutRead);
+  CloseHandleSafe(FInRead);
+  CloseHandleSafe(FOutWrite);
+  // Closing the kill-on-close job terminates any surviving process tree.
+  if FJob <> 0 then
+  begin
+    CloseHandle(FJob);
+    FJob := 0;
+  end
+  else if FProc.hProcess <> 0 then
+    TerminateProcess(FProc.hProcess, 1);
   if FHPC <> 0 then
   begin
     ClosePseudoConsole(FHPC);
@@ -445,16 +528,6 @@ begin
     DeleteProcThreadAttributeList(FAttrList);
     FreeMem(FAttrList);
     FAttrList := nil;
-  end;
-  CloseHandleSafe(FInWrite);
-  CloseHandleSafe(FInRead);
-  CloseHandleSafe(FOutRead);
-  CloseHandleSafe(FOutWrite);
-  // Closing the job with KILL_ON_JOB_CLOSE terminates any surviving tree.
-  if FJob <> 0 then
-  begin
-    CloseHandle(FJob);
-    FJob := 0;
   end;
   if FProc.hProcess <> 0 then
   begin

@@ -24,6 +24,11 @@ interface
 
 // install before creating the application (before Keyboard.InitKeyboard)
 procedure InstallSuperKeyboard;
+// CaptureConsoleCursor issues CSI 6 n before the keyboard driver starts. A
+// slow host may answer only after startup; arm one expiring CPR so CSI r;c R
+// is consumed as a terminal reply rather than decoded as CSI-F3.
+procedure ArmCursorPositionReply;
+procedure CompleteCursorPositionReply;
 // Bracketed paste arrives as one payload instead of thousands of unrelated
 // key events. The application drains this queue from Idle and routes each
 // item to the focused pane.
@@ -32,7 +37,9 @@ function TakeHostPaste(out AText: RawByteString): boolean;
 implementation
 
 uses
-  BaseUnix, termio, SysUtils, Keyboard, Mouse, Drivers;
+  SysUtils, Keyboard, Mouse, Drivers
+  {$IFDEF UNIX}, BaseUnix, Termio{$ENDIF}
+  {$IFDEF WINDOWS}, Windows{$ENDIF};
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
@@ -56,8 +63,16 @@ begin
 end;
 
 var
+  {$IFDEF UNIX}
   SavedTio: termios;
   TioSaved: boolean = False;
+  {$ENDIF}
+  {$IFDEF WINDOWS}
+  SavedInputMode: DWORD = 0;
+  SavedInputCP: UINT = 0;
+  InputModeSaved: boolean = False;
+  InputCPSaved: boolean = False;
+  {$ENDIF}
   RBuf: array[0..1023] of byte;
   RHead: integer = 0;
   RTail: integer = 0;
@@ -66,6 +81,17 @@ var
   PasteQueue: array[0..HOST_PASTE_QUEUE - 1] of RawByteString;
   PasteHead: integer = 0;
   PasteTail: integer = 0;
+  CursorReplyDeadline: QWord = 0;
+
+procedure ArmCursorPositionReply;
+begin
+  CursorReplyDeadline := GetTickCount64 + 1500;
+end;
+
+procedure CompleteCursorPositionReply;
+begin
+  CursorReplyDeadline := 0;
+end;
 
 procedure QueueHostPaste(const AText: RawByteString);
 var
@@ -96,14 +122,37 @@ function FillBuf(TimeoutMs: integer): boolean;
 type
   TReadChunk = array[0..255] of byte;
 var
+  {$IFDEF UNIX}
   fds: TFDSet;
-  tmp: TReadChunk;
   n: cint;
+  {$ENDIF}
+  {$IFDEF WINDOWS}
+  HIn: THandle;
+  WaitMs, WaitResult, Got: DWORD;
+  {$ENDIF}
+  tmp: TReadChunk;
   r: integer;
   i: integer;
 begin
   if RHead <> RTail then
     Exit(True);
+  tmp := Default(TReadChunk);
+  {$IFDEF WINDOWS}
+  HIn := GetStdHandle(STD_INPUT_HANDLE);
+  if (HIn = 0) or (HIn = INVALID_HANDLE_VALUE) then
+    Exit(False);
+  if TimeoutMs < 0 then
+    WaitMs := INFINITE
+  else
+    WaitMs := DWORD(TimeoutMs);
+  WaitResult := WaitForSingleObject(HIn, WaitMs);
+  if WaitResult <> WAIT_OBJECT_0 then
+    Exit(False);
+  Got := 0;
+  if not ReadFile(HIn, tmp[0], SizeOf(tmp), Got, nil) then
+    Exit(False);
+  r := integer(Got);
+  {$ELSE}
   fpFD_ZERO(fds);
   fpFD_SET(0, fds);
   if TimeoutMs < 0 then
@@ -112,8 +161,8 @@ begin
     n := fpSelect(1, @fds, nil, nil, TimeoutMs);
   if n <= 0 then
     Exit(False);
-  tmp := Default(TReadChunk);
   r := FileRead(0, tmp, SizeOf(tmp)); // FileRead retries EINTR
+  {$ENDIF}
   if r <= 0 then
     Exit(False);
   for i := 0 to r - 1 do
@@ -471,6 +520,19 @@ begin
     p2 := 1;
   Dec(p2); // xterm modifier bits: 1=shift 2=alt 4=ctrl
   p2 := p2 or ExtraMods;
+  // 'R' is also CSI-F3, hence the explicit pending query state. Do not infer
+  // CPR from numeric ranges: row 1/column 2 is byte-for-byte identical to a
+  // modified CSI F3 on some terminals. Only a DSR we actually emitted arms
+  // this one-shot swallow, and it expires shortly after startup.
+  if (AnsiChar(c) = 'R') and (CursorReplyDeadline <> 0) then
+  begin
+    if GetTickCount64 <= CursorReplyDeadline then
+    begin
+      CompleteCursorPositionReply;
+      Exit;
+    end;
+    CompleteCursorPositionReply;
+  end;
   case AnsiChar(c) of
     'A': Result := NavEvent($48, $8D, $98, p2);
     'B': Result := NavEvent($50, $91, $A0, p2);
@@ -606,8 +668,17 @@ begin
 end;
 
 procedure KInit;
+{$IFDEF UNIX}
 var
   T: termios;
+{$ENDIF}
+{$IFDEF WINDOWS}
+const
+  ENABLE_VIRTUAL_TERMINAL_INPUT_ = $0200;
+var
+  HIn: THandle;
+  Mode: DWORD;
+{$ENDIF}
 begin
   RHead := 0;
   RTail := 0;
@@ -615,6 +686,26 @@ begin
   LastMouse := Default(TMouseEvent);
   PasteHead := 0;
   PasteTail := 0;
+  {$IFDEF WINDOWS}
+  HIn := GetStdHandle(STD_INPUT_HANDLE);
+  Mode := 0;
+  if (HIn <> 0) and (HIn <> INVALID_HANDLE_VALUE) and
+     GetConsoleMode(HIn, Mode) then
+  begin
+    SavedInputMode := Mode;
+    // VT input turns keys, mouse and focus into the same byte protocol this
+    // decoder uses on POSIX. Disable cooked console processing so ReadFile
+    // returns each key immediately and Ctrl-C reaches the focused pane.
+    Mode := Mode or ENABLE_VIRTUAL_TERMINAL_INPUT_ or ENABLE_EXTENDED_FLAGS;
+    Mode := Mode and not (ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT or
+      ENABLE_PROCESSED_INPUT or ENABLE_QUICK_EDIT_MODE or
+      ENABLE_MOUSE_INPUT or ENABLE_WINDOW_INPUT);
+    InputModeSaved := SetConsoleMode(HIn, Mode);
+    SavedInputCP := GetConsoleCP;
+    if (SavedInputCP <> 0) and (SavedInputCP <> CP_UTF8) then
+      InputCPSaved := SetConsoleCP(CP_UTF8);
+  end;
+  {$ELSE}
   if TCGetAttr(0, SavedTio) = 0 then
   begin
     TioSaved := True;
@@ -626,15 +717,29 @@ begin
     T.c_cc[VTIME] := 0;
     TCSetAttr(0, TCSANOW, T);
   end;
+  {$ENDIF}
 end;
 
 procedure KDone;
 begin
+  {$IFDEF WINDOWS}
+  if InputModeSaved then
+  begin
+    SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), SavedInputMode);
+    InputModeSaved := False;
+  end;
+  if InputCPSaved then
+  begin
+    SetConsoleCP(SavedInputCP);
+    InputCPSaved := False;
+  end;
+  {$ELSE}
   if TioSaved then
   begin
     TCSetAttr(0, TCSANOW, SavedTio);
     TioSaved := False;
   end;
+  {$ENDIF}
 end;
 
 function KGet: TKeyEvent;

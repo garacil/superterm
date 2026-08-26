@@ -7,7 +7,8 @@ honored, and the detach session name is sanitized ([A-Za-z0-9._-]).
 """
 import os, pty, time, select, fcntl, termios, struct, shutil, glob, sys
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/sthome-prefix'
 W, H = 100, 30
 
@@ -99,7 +100,7 @@ def detach_works(prefix_byte):
     ok = client_exited(c) and bool(
         glob.glob(HOME + '/.superterm/sessions/*.sock'))
     if not ok:
-        c.send(b'\x1bq', 0.8)     # it was not a prefix: exit without saving
+        c.send(b'\x1bx', 0.8)     # it was not a prefix: use the one Exit key
     c.close()
     # clean up the session left alive for the next round
     for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
@@ -142,7 +143,7 @@ c.send(b's', 1.0)
 t = c.text()
 check("prefijo-s abre selector", 'Attach' in t or 'Conectar' in t or 'Sessions' in t or 'Sesiones' in t)
 c.send(b'\x1b', 0.6)
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 c.close()
 
 # ---- 6: the session name is sanitized (no ../ nor spaces) ----

@@ -42,7 +42,6 @@ background_mode=center
 
 [session]
 server=always
-resize_policy=session
 autosave=1
 autorestore=1
 dragcontent=1
@@ -87,7 +86,9 @@ help, and dialogs immediately and saves the selection.
 palette, the default), `bw` (black and white), or `mono` (monochrome). Any
 other value falls back to `color`. The same setting is available at runtime
 from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
-saved when changed.
+saved when changed. Selecting it repaints the whole interface immediately;
+no pane click is needed. A later resize of the host terminal preserves the
+selected palette while rebuilding the screen surface.
 
 ### [ui] new window size
 
@@ -150,32 +151,46 @@ character grid.
   threads, not eight. `SUPERTERM_MULTITHREAD=1|auto|N` overrides the file for
   one launch, which is useful for deterministic debugging. Existing session
   daemons keep the mode they started with until they are restarted.
-- `resize_policy=session` (default) gives every attached client its own
-  window geometry and viewport. Resizing, moving, minimizing or focusing a
-  window in one interactive client does not move it in another client and
-  does not send `TIOCSWINSZ` to the shared PTY. A client smaller than the
-  canonical screen crops it and follows the live cursor; a larger client pads
-  it. Mouse and copy-mode coordinates are translated through that viewport.
-  The pane-menu action `Set PTY to this window`, the control CLI `resize`
-  command, and F5 passthrough are explicit canonical resizes and are visible
-  to every client. `resize_policy=smallest` restores the previous common-
-  minimum negotiation, in which the smallest attached viewport determines
-  the PTY. `SUPERTERM_RESIZE_POLICY=session|smallest` overrides the file for
-  one launch. A running daemon keeps the policy it started with.
+- A session has exactly one daemon-owned desktop and one PTY geometry per
+  pane. Positions, sizes, minimize, zoom and fullscreen are shared by every
+  viewer, as is the focused pane. Input from every viewer remains enabled and
+  is processed in arrival order. Attaching a client never changes that state:
+  a small terminal clips it and a large one leaves margin. A later physical
+  resize of any attached host is an explicit shared operation; it atomically
+  replaces the canonical desktop, proportionally scales its windows and
+  updates the PTYs for every viewer. Explicit window operations and CLI
+  `resize` likewise change the common geometry.
+  A new normal IDE maximize is a shared exception to clipping: its complete
+  frame and PTY fit the smallest host connected when the action commits while
+  the larger canonical desktop remains intact for restore. A later attach does
+  not recalculate that committed geometry. F5 uses the smallest host's complete
+  terminal instead because it removes the IDE chrome.
+  Detach performs no save/reload; the daemon keeps the live object untouched.
 - `autosave=1` (default) saves the fallback session on exit.
 - `autorestore=1` (default) restores `~/.superterm/session.ini` at startup
   when no profile takes priority. Set it to `0` when every startup must
   create fresh profile connections.
 - `dragcontent=1` (default) draws a window's contents while it is being
-  dragged. Set it to `0` for a wireframe drag: the window is hidden for the
-  duration of the gesture and only its outline moves, so the desktop and the
-  windows behind it stay visible through it and each step sends just the strip
-  the outline vacates plus the one it takes. On a 53x29 window that is about 29
-  cells per step instead of redrawing the interior, which is worth having on a
-  slow or high-latency link, or with a pane full of content.
-- `zoomanim=0` (default) makes `F5` switch instantly. Set it to `1` for a short
-  expanding and contracting outline between the pane and the full desktop
-  (about 350 ms). Purely cosmetic; the instant transition is the fast one.
+  dragged. The client holding that pane's gesture lease publishes its live
+  positions (capped at 60 Hz) through the daemon FIFO, so every attached
+  viewer sees the same movement while it happens; only the final release
+  changes canonical geometry and resizes the PTY. Set it to `0` for a shared
+  wireframe drag: the window is hidden for the duration of the gesture and
+  only its outline moves, so the desktop and the windows behind it stay
+  visible through it and each step sends just the strip the outline vacates
+  plus the one it takes. On a 53x29 window that is about 29 cells per step
+  instead of redrawing the interior, which is worth having on a slow or
+  high-latency link, or with a pane full of content.
+  Different clients may hold and move different panes concurrently. Each
+  viewer applies peer commits while preserving only its own in-flight pane,
+  so releasing either mouse cannot roll the other gesture back.
+- `zoomanim=0` (default) makes IDE maximize and `F5` switch instantly. Set it
+  to `1` for a short expanding and contracting outline between the pane and
+  its target (about 350 ms). The eight outline frames are relayed to every
+  viewer and use that viewer's active theme. They are purely cosmetic: the
+  pre-commit frames cannot change a PTY or revision, and the short contraction
+  tail begins only after the canonical layout acknowledgement. The instant
+  transition remains the fast path.
 - All four flags can also be toggled at runtime from the `Options` menu.
 - Pane focus is deliberately not a content effect: focused and unfocused
   terminal interiors keep identical colors and attributes. Only the window
@@ -192,9 +207,11 @@ character grid.
 
 Maximizing a pane (F5) makes it own the whole terminal and streams its raw
 output straight through, so a truecolor/emoji TUI (e.g. Claude Code) renders
-at full fidelity instead of being approximated to the CP437 grid. Press F5
-again to un-maximize and bring the window manager back. This assumes a single
-client is attached to the session.
+at full fidelity instead of being approximated to the CP437 grid. This raw
+path is also valid with several clients when all physical host geometries are
+equal. If they differ, F5 stays in the synchronized IDE renderer and uses one
+shared fullscreen area sized to the smallest host. Press F5 again to restore
+the normal canonical desktop and the window's previous bounds.
 
 ## Clipboard and SSH
 

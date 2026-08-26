@@ -103,7 +103,9 @@ USES
    {$ENDIF}
 
    video,
+   {$IFNDEF OS_WINDOWS}
    SysMsg,
+   {$ENDIF}
    Objects;                                           { GFV standard units }
 
 {***************************************************************************}
@@ -1290,9 +1292,19 @@ end;
 {  GetSystemEvent                                                           }
 {---------------------------------------------------------------------------}
 procedure GetSystemEvent (Var Event: TEvent);
+{$IFNDEF OS_WINDOWS}
 var
   SysEvent : TsystemEvent;
+{$ENDIF}
 begin
+{$IFDEF OS_WINDOWS}
+  { SuperTerm owns Windows console input as a VT byte stream.  FPC SysMsg's
+    winevent thread reads INPUT_RECORDs from that same handle and discards
+    keys because the stock keyboard handler is not installed.  Terminal size
+    changes are polled by TSuperApp.SyncTerminalSize, so no SysMsg event is
+    required on this platform. }
+  Event.What := evNothing;
+{$ELSE}
   SysEvent := Default(TsystemEvent);
   if PollSystemEvent(SysEvent) then
     begin
@@ -1328,6 +1340,7 @@ begin
     end
   else
     Event.What:=evNothing;
+{$ENDIF}
 end;
 
 
@@ -1355,7 +1368,9 @@ BEGIN
      LastWhere.y:=MouseWhere.y;
      MouseEvents := True;                             { Set initialized flag }
     end;
+{$IFNDEF OS_WINDOWS}
   InitSystemMsg;
+{$ENDIF}
 END;
 
 {---------------------------------------------------------------------------}
@@ -1363,7 +1378,9 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE DoneEvents;
 BEGIN
+{$IFNDEF OS_WINDOWS}
   DoneSystemMsg;
+{$ENDIF}
   DisableTmuxMouse;
   Mouse.DoneMouse;
   MouseEvents:=false;
@@ -1671,7 +1688,9 @@ BEGIN
    ButtonCount := DetectMouse;                        { Detect mouse }
    DetectVideo;                                       { Detect video }
 {   InitKeyboard;}
+{$IFNDEF OS_WINDOWS}
    InitSystemMsg;
+{$ENDIF}
 {$ifdef OS_WINDOWS}
    SetFileApisToOEM;
 {$endif}

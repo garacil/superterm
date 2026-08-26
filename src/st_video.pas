@@ -75,6 +75,18 @@ procedure OutlineLeaveDiff(OX1, OY1, OX2, OY2, NX1, NY1, NX2, NY2: LongInt);
 procedure OutlineEnterDiff(NX1, NY1, NX2, NY2, OX1, OY1, OX2, OY2: LongInt;
   AAttr: Byte);
 
+// Renderer-owned transient outlines. Unlike OutlinePaint these participate in
+// the effective-screen delta, so ordinary pane repaints cannot erase them and
+// replacing/clearing one is presented in the same frame as the restored cells
+// underneath. Slots are independent (0..15); when rings overlap the higher
+// slot has deterministic priority. Set/Clear only change renderer state: the
+// caller decides when to present it by calling UpdateScreen.
+procedure TransientOutlineSet(ASlot, X1, Y1, X2, Y2: LongInt; AAttr: Byte;
+  ALocked: Boolean = False);
+procedure TransientOutlineClear(ASlot: LongInt);
+procedure TransientOutlineClearAll;
+function TransientOutlineActive(ASlot: LongInt): Boolean;
+
 // Declare that what the terminal currently shows is unknown, so the NEXT
 // update repaints every cell. This is the only legitimate way to ask for a
 // full repaint: the per-cell delta is otherwise always trustworthy, because
@@ -103,7 +115,7 @@ var
 implementation
 
 uses
-  SysUtils, Video, st_debug
+  SysUtils, Video, st_debug, st_kbd
   {$IFDEF UNIX}, termio, BaseUnix{$ENDIF}
   {$IFDEF WINDOWS}, Windows{$ENDIF};
 
@@ -118,12 +130,12 @@ var
 const
   ENABLE_VIRTUAL_TERMINAL_PROCESSING_ = $0004;
   DISABLE_NEWLINE_AUTO_RETURN_        = $0008;
-  ENABLE_VIRTUAL_TERMINAL_INPUT_      = $0200;
 
 var
   SavedOutMode: DWORD = 0;
-  SavedInMode: DWORD = 0;
-  VTModeSaved: Boolean = False;
+  SavedOutputCP: UINT = 0;
+  OutModeSaved: Boolean = False;
+  OutputCPSaved: Boolean = False;
 
 // Put the Windows console into VT mode: the output side interprets the ANSI
 // escapes st_video emits (colours, cursor, alternate screen), and the input
@@ -133,34 +145,34 @@ var
 // conhost on Windows 10 1809+ too.
 procedure EnableVTConsole;
 var
-  HOut, HIn: THandle;
+  HOut: THandle;
   M: DWORD;
 begin
   HOut := GetStdHandle(STD_OUTPUT_HANDLE);
-  HIn := GetStdHandle(STD_INPUT_HANDLE);
   if (HOut <> INVALID_HANDLE_VALUE) and GetConsoleMode(HOut, M) then
   begin
     SavedOutMode := M;
-    SetConsoleMode(HOut, M or ENABLE_VIRTUAL_TERMINAL_PROCESSING_
-      or DISABLE_NEWLINE_AUTO_RETURN_);
-  end;
-  if (HIn <> INVALID_HANDLE_VALUE) and GetConsoleMode(HIn, M) then
-  begin
-    SavedInMode := M;
-    // VT input, and drop line/echo/Ctrl-C processing so bytes reach us raw.
-    SetConsoleMode(HIn, (M or ENABLE_VIRTUAL_TERMINAL_INPUT_)
-      and not (ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT or ENABLE_PROCESSED_INPUT));
-    VTModeSaved := True;
+    OutModeSaved := SetConsoleMode(HOut,
+      M or ENABLE_VIRTUAL_TERMINAL_PROCESSING_
+        or DISABLE_NEWLINE_AUTO_RETURN_);
+    SavedOutputCP := GetConsoleOutputCP;
+    if (SavedOutputCP <> 0) and (SavedOutputCP <> CP_UTF8) then
+      OutputCPSaved := SetConsoleOutputCP(CP_UTF8);
   end;
 end;
 
 procedure RestoreVTConsole;
 begin
-  if not VTModeSaved then
-    Exit;
-  SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), SavedOutMode);
-  SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), SavedInMode);
-  VTModeSaved := False;
+  if OutModeSaved then
+  begin
+    SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), SavedOutMode);
+    OutModeSaved := False;
+  end;
+  if OutputCPSaved then
+  begin
+    SetConsoleOutputCP(SavedOutputCP);
+    OutputCPSaved := False;
+  end;
 end;
 {$ENDIF}
 
@@ -425,6 +437,12 @@ type
     Fg, Bg: LongWord;   // rich path
     Flags: Byte;
   end;
+  TTransientOutline = record
+    Active: Boolean;
+    Locked: Boolean;
+    X1, Y1, X2, Y2: LongInt;
+    Attr: Byte;
+  end;
 
 const
   COALESCE_MS = 40;   // never defer a frame longer than this: ~25 fps floor
@@ -446,6 +464,8 @@ var
   EffOld: array of TEffCell;        // previous frame's effective screen (delta)
   RichW: LongInt = 0;
   RichH: LongInt = 0;
+  TransientOutlines: array[0..15] of TTransientOutline;
+  TransientOutlineMask: LongWord = 0;
 
 procedure RichEnsureSize;
 var
@@ -735,6 +755,218 @@ begin
   else RingGlyph := #$E2#$94#$82;                                // U+2502
 end;
 
+// A remote owner is shown with the same visual vocabulary as TTermFrame's
+// locked border: CP437 176/177 become U+2591/U+2592, and LOCK is written down
+// the left edge.  The actor keeps the ordinary line-drawing ring; only other
+// clients receive this form, so ownership remains unambiguous while the real
+// window is hidden for a wireframe drag.
+function LockedRingGlyph(X, Y, X1, Y1, X2, Y2: LongInt): AnsiString;
+const
+  LOCK_TEXT = 'LOCK';
+var
+  Height, Start, Pos: LongInt;
+begin
+  Height := Y2 - Y1 + 1;
+  if (X = X1) and (Height >= 6) then
+  begin
+    Start := (Height - Length(LOCK_TEXT)) div 2;
+    if Start < 1 then Start := 1;
+    Pos := Y - (Y1 + Start) + 1;
+    if (Pos >= 1) and (Pos <= Length(LOCK_TEXT)) then
+      Exit(LOCK_TEXT[Pos]);
+  end;
+  if (X = X1) or (X = X2) then
+    Result := #$E2#$96#$92             // U+2592, CP437 177
+  else
+    Result := #$E2#$96#$91;            // U+2591, CP437 176
+end;
+
+// Poison a changed ring and its horizontal neighbours. A rich wide glyph is
+// represented by a lead and a continuation cell; an outline can cover either
+// half. Invalidating the neighbour as well guarantees the pair is re-emitted
+// together when an outline appears, moves or disappears.
+procedure InvalidateTransientRingPairs(X1, Y1, X2, Y2: LongInt);
+var
+  X, Y, FirstX, LastX, FirstY, LastY: LongInt;
+
+  procedure Poison(AX, AY: LongInt);
+  var
+    Index: LongInt;
+  begin
+    if (AX < 0) or (AY < 0) or (AX >= ScreenWidth) or
+       (AY >= ScreenHeight) then
+      Exit;
+    Index := AY * RichW + AX;
+    if (Index < 0) or (Index > High(EffOld)) then
+      Exit;
+    EffOld[Index].Skip := False;
+    EffOld[Index].Rich := False;
+    EffOld[Index].Glyph := #1;
+    EffOld[Index].Attr := $FF;
+  end;
+
+  procedure PoisonPair(AX, AY: LongInt);
+  begin
+    Poison(AX - 1, AY);
+    Poison(AX, AY);
+    Poison(AX + 1, AY);
+  end;
+
+begin
+  if (ScreenWidth <= 0) or (ScreenHeight <= 0) or
+     (X2 < X1) or (Y2 < Y1) then
+    Exit;
+  if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
+    RichEnsureSize;
+  FirstX := X1;
+  if FirstX < 0 then FirstX := 0;
+  LastX := X2;
+  if LastX >= ScreenWidth then LastX := ScreenWidth - 1;
+  FirstY := Y1;
+  if FirstY < 0 then FirstY := 0;
+  LastY := Y2;
+  if LastY >= ScreenHeight then LastY := ScreenHeight - 1;
+  if (FirstX > LastX) or (FirstY > LastY) then
+    Exit;
+  for X := FirstX to LastX do
+  begin
+    PoisonPair(X, Y1);
+    if Y2 <> Y1 then PoisonPair(X, Y2);
+  end;
+  // Include the clipped endpoints too. When the real top/bottom lies outside
+  // the screen, the first visible cell is part of a vertical edge rather than
+  // a horizontal one and still has to be invalidated.
+  for Y := FirstY to LastY do
+  begin
+    if (X1 >= 0) and (X1 < ScreenWidth) then
+      PoisonPair(X1, Y);
+    if (X2 <> X1) and (X2 >= 0) and (X2 < ScreenWidth) then
+      PoisonPair(X2, Y);
+  end;
+end;
+
+
+procedure TransientOutlineSet(ASlot, X1, Y1, X2, Y2: LongInt; AAttr: Byte;
+  ALocked: Boolean);
+begin
+  if (ASlot < Low(TransientOutlines)) or
+     (ASlot > High(TransientOutlines)) then
+    Exit;
+  // Match OutlinePaint's definition of a drawable rectangle. Treating a
+  // degenerate Set as Clear also prevents an invisible active slot lingering.
+  if (X2 <= X1) or (Y2 <= Y1) then
+  begin
+    TransientOutlineClear(ASlot);
+    Exit;
+  end;
+  if TransientOutlines[ASlot].Active and
+     (TransientOutlines[ASlot].X1 = X1) and
+     (TransientOutlines[ASlot].Y1 = Y1) and
+     (TransientOutlines[ASlot].X2 = X2) and
+     (TransientOutlines[ASlot].Y2 = Y2) and
+     (TransientOutlines[ASlot].Attr = AAttr) and
+     (TransientOutlines[ASlot].Locked = ALocked) then
+    Exit;
+  if TransientOutlines[ASlot].Active then
+    InvalidateTransientRingPairs(TransientOutlines[ASlot].X1,
+      TransientOutlines[ASlot].Y1, TransientOutlines[ASlot].X2,
+      TransientOutlines[ASlot].Y2);
+  TransientOutlines[ASlot].Active := True;
+  TransientOutlines[ASlot].X1 := X1;
+  TransientOutlines[ASlot].Y1 := Y1;
+  TransientOutlines[ASlot].X2 := X2;
+  TransientOutlines[ASlot].Y2 := Y2;
+  TransientOutlines[ASlot].Attr := AAttr;
+  TransientOutlines[ASlot].Locked := ALocked;
+  TransientOutlineMask := TransientOutlineMask or
+    (LongWord(1) shl ASlot);
+  InvalidateTransientRingPairs(X1, Y1, X2, Y2);
+end;
+
+
+procedure TransientOutlineClear(ASlot: LongInt);
+begin
+  if (ASlot < Low(TransientOutlines)) or
+     (ASlot > High(TransientOutlines)) or
+     (not TransientOutlines[ASlot].Active) then
+    Exit;
+  InvalidateTransientRingPairs(TransientOutlines[ASlot].X1,
+    TransientOutlines[ASlot].Y1, TransientOutlines[ASlot].X2,
+    TransientOutlines[ASlot].Y2);
+  TransientOutlines[ASlot] := Default(TTransientOutline);
+  TransientOutlineMask := TransientOutlineMask and
+    not (LongWord(1) shl ASlot);
+end;
+
+
+procedure TransientOutlineClearAll;
+var
+  Slot: LongInt;
+begin
+  for Slot := Low(TransientOutlines) to High(TransientOutlines) do
+    TransientOutlineClear(Slot);
+end;
+
+
+function TransientOutlineActive(ASlot: LongInt): Boolean;
+begin
+  if (ASlot < Low(TransientOutlines)) or
+     (ASlot > High(TransientOutlines)) then
+    Exit(False);
+  Result := TransientOutlines[ASlot].Active;
+end;
+
+
+function TransientOutlineCell(X, Y: LongInt; out AGlyph: AnsiString;
+  out AAttr: Byte): Boolean;
+var
+  Slot: LongInt;
+begin
+  Result := False;
+  AGlyph := '';
+  AAttr := 0;
+  if TransientOutlineMask = 0 then
+    Exit;
+  // Higher slots win at intersections. Walking downwards makes that priority
+  // explicit and independent of update/arrival order.
+  for Slot := High(TransientOutlines) downto Low(TransientOutlines) do
+    if ((TransientOutlineMask and (LongWord(1) shl Slot)) <> 0) and
+       TransientOutlines[Slot].Active and
+       OnRing(X, Y, TransientOutlines[Slot].X1,
+         TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
+         TransientOutlines[Slot].Y2) then
+    begin
+      if TransientOutlines[Slot].Locked then
+        AGlyph := LockedRingGlyph(X, Y, TransientOutlines[Slot].X1,
+          TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
+          TransientOutlines[Slot].Y2)
+      else
+        AGlyph := RingGlyph(X, Y, TransientOutlines[Slot].X1,
+          TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
+          TransientOutlines[Slot].Y2);
+      AAttr := TransientOutlines[Slot].Attr;
+      Exit(True);
+    end;
+end;
+
+
+function TransientOutlineAt(X, Y: LongInt): Boolean; inline;
+var
+  Slot: LongInt;
+begin
+  Result := False;
+  if TransientOutlineMask = 0 then
+    Exit;
+  for Slot := High(TransientOutlines) downto Low(TransientOutlines) do
+    if ((TransientOutlineMask and (LongWord(1) shl Slot)) <> 0) and
+       TransientOutlines[Slot].Active and
+       OnRing(X, Y, TransientOutlines[Slot].X1,
+         TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
+         TransientOutlines[Slot].Y2) then
+      Exit(True);
+end;
+
+
 procedure OutlineLeaveDiff(OX1, OY1, OX2, OY2, NX1, NY1, NX2, NY2: LongInt);
 var
   X, Y: LongInt;
@@ -875,9 +1107,10 @@ var
   X, Y, Index, Nx: LongInt;
   VCell: TVideoCell;
   Eff: TEffCell;
-  NeedMove, Shadowed, NShadow: Boolean;
+  NeedMove, Shadowed, NShadow, OverlayHere: Boolean;
   OutCursorX, OutCursorY: Word;
-  Body, Frame, CurSGR, LastSGR: AnsiString;
+  Body, Frame, CurSGR, LastSGR, OverlayGlyph: AnsiString;
+  OverlayAttr: Byte;
   ChangedCells, Runs, RHit, RMiss: LongInt;
 begin
   if PassthroughActive then
@@ -908,6 +1141,12 @@ begin
   LastEmitTick := GetTickCount64;
 
   RichEnsureSize;
+  // TransientOutlineCell initializes both out parameters on every call.  Set
+  // an explicit baseline here as well: FPC -O4 does not propagate that fact
+  // through the helper and otherwise reports two false uninitialized-value
+  // warnings at the overlay assignment below.
+  OverlayGlyph := '';
+  OverlayAttr := 0;
   Body := '';
   ChangedCells := 0;
   Runs := 0;
@@ -953,38 +1192,66 @@ begin
         Eff.Bg := 0;
         Eff.Flags := 0;
       end;
+      if TransientOutlineMask <> 0 then
+        OverlayHere := TransientOutlineCell(X, Y, OverlayGlyph, OverlayAttr)
+      else
+        OverlayHere := False;
       // A two-column glyph and its continuation are two independent cells
       // here, and a pane edge can separate them: the lead's right half would
       // then land on the window frame (which the delta sees as unchanged and
       // never repaints), or a continuation would be left blank forever with no
-      // lead to fill it. Only emit the pair when BOTH halves are ours.
+      // lead to fill it. A transient outline is another one-cell owner, so it
+      // splits a rich pair in exactly the same way. Only emit the pair when
+      // BOTH halves are ours.
       if Eff.Rich and Eff.Wide then
       begin
-        Nx := Index + 1;
-        if (X + 1 >= ScreenWidth) or (not RichScreen[Nx].Skip) or
-           (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
+        if not OverlayHere then
         begin
-          Eff.Glyph := ' ';    // split pair: never overflow into a foreign cell
-          Eff.Wide := False;
+          Nx := Index + 1;
+          if (X + 1 >= ScreenWidth) or TransientOutlineAt(X + 1, Y) or
+             (not RichScreen[Nx].Skip) or
+             (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
+          begin
+            Eff.Glyph := ' ';  // split pair: never overflow into a foreign cell
+            Eff.Wide := False;
+          end;
         end;
       end
       else if Eff.Rich and Eff.Skip then
       begin
-        Nx := Index - 1;
-        if (X = 0) or (not RichScreen[Nx].Wide) or
-           (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
+        if not OverlayHere then
         begin
-          // orphan continuation: fall back to the chrome cell so the column is
-          // painted instead of staying blank
-          Eff.Skip := False;
-          Eff.Rich := False;
-          Eff.Wide := False;
-          Eff.Attr := Byte(VCell shr 8);
-          Eff.Glyph := VgaChar(Byte(VCell and $FF));
-          Eff.Fg := 0;
-          Eff.Bg := 0;
-          Eff.Flags := 0;
+          Nx := Index - 1;
+          if (X = 0) or TransientOutlineAt(X - 1, Y) or
+             (not RichScreen[Nx].Wide) or
+             (not RichStands(Nx, NShadow)) or (NShadow <> Shadowed) then
+          begin
+            // orphan continuation: fall back to the chrome cell so the column
+            // is painted instead of staying blank
+            Eff.Skip := False;
+            Eff.Rich := False;
+            Eff.Wide := False;
+            Eff.Attr := Byte(VCell shr 8);
+            Eff.Glyph := VgaChar(Byte(VCell and $FF));
+            Eff.Fg := 0;
+            Eff.Bg := 0;
+            Eff.Flags := 0;
+          end;
         end;
+      end;
+      // Overlay last: it is presentation chrome and deliberately wins over
+      // both rich pane content and ordinary FreeVision cells. Attr remains the
+      // caller's palette-mapped frame attribute; no RGB conversion is needed.
+      if OverlayHere then
+      begin
+        Eff.Skip := False;
+        Eff.Rich := False;
+        Eff.Wide := False;
+        Eff.Attr := OverlayAttr;
+        Eff.Glyph := OverlayGlyph;
+        Eff.Fg := 0;
+        Eff.Bg := 0;
+        Eff.Flags := 0;
       end;
       // Force is IGNORED on purpose: FreeVision asks for a forced update from
       // TGroup.Redraw, which TGroup.ChangeBounds triggers on every step of a
@@ -1149,6 +1416,10 @@ begin
   RawTio.c_cc[VTIME] := 2; // 0.2s maximum wait per read
   if TCSetAttr(StdInputHandle, TCSANOW, RawTio) <> 0 then
     Exit;
+  // If the outer terminal answers after our bounded synchronous read, the
+  // custom keyboard driver must still recognize that one late CSI r;c R as a
+  // report. Otherwise CSI's overlapping final 'R' is decoded as F3.
+  ArmCursorPositionReply;
   WriteRaw(#27'[6n');
   Resp := '';
   repeat
@@ -1158,6 +1429,8 @@ begin
     Resp := Resp + ch;
   until (ch = 'R') or (Length(Resp) >= 32);
   TCSetAttr(StdInputHandle, TCSANOW, OldTio);
+  if ch = 'R' then
+    CompleteCursorPositionReply;
   // response: ESC [ row ; column R (ignore typeahead before the last ESC)
   i := Length(Resp);
   while (i > 0) and (Resp[i] <> #27) do

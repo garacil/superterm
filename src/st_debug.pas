@@ -23,7 +23,7 @@
   clients saying 'connection lost', with nothing to look at afterwards. So the
   fatal signals are trapped and, before the process goes down, a report is
   written to /tmp/superterm-crash-<role>-<pid>-<time>-<tag>.log containing the
-  signal, the faulting address, how long the process had been up, a stack
+  signal, process identity, how long the process had been up, a stack
   backtrace with file and line when the binary carries debug info, and the
   last few hundred log lines from a ring buffer that is kept even when the
   flow log is switched off -- so a crash always arrives with its context. The
@@ -62,25 +62,41 @@ implementation
 uses
   SysUtils, ctypes, st_os
   {$IFDEF UNIX}, BaseUnix{$ENDIF}
-  {$IFDEF WINDOWS}, Windows{$ENDIF};
+  {$IFDEF WINDOWS}, Windows{$ENDIF}
+  {$IFDEF SUPERTERM_HEAPTRACE}, HeapTrc{$ENDIF};
 
 const
   RING_SIZE = 400;      // lines of context kept for a crash report
+  {$IFDEF UNIX}
+  // Full debug logs can contain commands, paths and terminal contents. Keep a
+  // newly created file private even when the caller has a permissive umask.
+  LOG_CREATE_MODE = S_IRUSR or S_IWUSR;
+  {$ENDIF}
 
 // Directory crash reports and the debug-build default log land in: /tmp on
-// POSIX, %TEMP% on Windows. GetTempDir already resolves TMPDIR/TEMP per
-// platform, so a report is always written somewhere the user can reach.
+// POSIX, %TEMP% on Windows. GetTempDir resolves TMPDIR/TEMP per platform, so a
+// report is always written somewhere the user can reach.
 function CrashDir: string;
 begin
   Result := IncludeTrailingPathDelimiter(GetTempDir);
 end;
 
+type
+  TLogSnapshot = array of string;
+
 var
   Lock: TRTLCriticalSection;
-  Resolved: boolean = False;
+  // Published with the RTL interlocked primitives only after Enabled,
+  // FullMode and LogFD are complete. A plain Boolean fast-path could observe
+  // True before those fields on another worker core and lose its first line.
+  ResolveState: Longint = 0;
   Enabled: boolean = False;
   FullMode: boolean = False;
-  LogFile: Text;
+  {$IFDEF WINDOWS}
+  LogHandle: THandle = INVALID_HANDLE_VALUE;
+  {$ELSE}
+  LogFD: cint = -1;
+  {$ENDIF}
   LogOpen: boolean = False;
   Role: string = 'main';
   StartedAt: TDateTime;
@@ -94,10 +110,16 @@ var
 procedure EnsureOpen;
 var
   FN: string;
+  {$IFDEF WINDOWS}
+  WideFN: UnicodeString;
+  {$ELSE}
+  OpenErr: cint;
+  {$ENDIF}
 begin
-  if Resolved then
+  // EnsureOpen is called with Lock held. The atomic read pairs with the final
+  // InterlockedExchange below for callers which take the resolved fast path.
+  if System.InterlockedCompareExchange(ResolveState, 1, 1) <> 0 then
     Exit;
-  Resolved := True;
   FullMode := SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG_FULL') = '1';
   FN := SysUtils.GetEnvironmentVariable('SUPERTERM_DEBUG');
 {$IFDEF DEBUG}
@@ -111,24 +133,33 @@ begin
     FullMode := True;
 {$ENDIF}
   if FN = '' then
+  begin
+    System.InterlockedExchange(ResolveState, 1);
     Exit;
-  Enabled := True;
-  try
-    AssignFile(LogFile, FN);
-    // append: client and daemon share one file, told apart by [pid] and role
-    if FileExists(FN) then
-      Append(LogFile)
-    else
-      Rewrite(LogFile);
-    LogOpen := True;
-  except
-    Enabled := False;
   end;
+  // Every client and daemon shares this path. Open it once in append mode so
+  // the OS, rather than a racy FileExists/Rewrite pair, owns placement at EOF.
+  {$IFDEF WINDOWS}
+  WideFN := UTF8Decode(FN);
+  LogHandle := CreateFileW(PWideChar(WideFN), FILE_APPEND_DATA,
+    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE, nil,
+    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+  LogOpen := LogHandle <> INVALID_HANDLE_VALUE;
+  {$ELSE}
+  repeat
+    LogFD := FpOpen(RawByteString(FN), O_WRONLY or O_CREAT or O_APPEND,
+      LOG_CREATE_MODE);
+    OpenErr := FpGetErrNo;
+  until (LogFD >= 0) or (OpenErr <> ESysEINTR);
+  LogOpen := LogFD >= 0;
+  {$ENDIF}
+  Enabled := LogOpen;
+  System.InterlockedExchange(ResolveState, 1);
 end;
 
 function DebugActive: boolean;
 begin
-  if not Resolved then
+  if System.InterlockedCompareExchange(ResolveState, 1, 1) = 0 then
   begin
     EnterCriticalsection(Lock);
     try
@@ -147,8 +178,22 @@ begin
 end;
 
 procedure DebugSetRole(const ARole: string);
+{$IFDEF SUPERTERM_HEAPTRACE}
+var
+  HeapBase: string;
+{$ENDIF}
 begin
   Role := ARole;
+  {$IFDEF SUPERTERM_HEAPTRACE}
+  // HeapTrc's HEAPTRC=log= option is one inherited filename. A session fork
+  // would therefore mix the client and daemon reports and concurrent exits
+  // could interleave them. Redirect again after every role/PID transition so
+  // each process owns one complete, attributable dump.
+  HeapBase := SysUtils.GetEnvironmentVariable('SUPERTERM_HEAP_LOG');
+  if HeapBase <> '' then
+    HeapTrc.SetHeapTraceOutput(HeapBase + '-' + Role + '-' +
+      IntToStr(OsGetPid) + '.log');
+  {$ENDIF}
 end;
 
 // Keep the line for a future crash report whether or not the flow log is on.
@@ -160,25 +205,93 @@ begin
     Inc(RingCount);
 end;
 
+// Submit the complete record in one write(2), so O_APPEND protects it as one
+// append operation against every other process using the flow log.  EINTR
+// before any byte was accepted retries the same complete record.  A partial
+// write is exceptional for a blocking regular file, but advancing the offset
+// avoids duplicating its prefix and preserves all bytes if one does occur.
+function WriteLogLine(const ALine: string): boolean;
+var
+  Data: RawByteString;
+  Offset, DataLen: SizeInt;
+  {$IFDEF WINDOWS}
+  Written: DWORD;
+  {$ELSE}
+  Written: TSsize;
+  WriteErr: cint;
+  {$ENDIF}
+begin
+  Result := False;
+  if not LogOpen then
+    Exit;
+  Data := RawByteString(ALine + LineEnding);
+  DataLen := Length(Data);
+  Offset := 1;
+  while Offset <= DataLen do
+  begin
+    {$IFDEF WINDOWS}
+    Written := 0;
+    if not WriteFile(LogHandle, Data[Offset], DWORD(DataLen - Offset + 1),
+      Written, nil) then
+      Exit;
+    {$ELSE}
+    Written := FpWrite(LogFD, PChar(@Data[Offset]), DataLen - Offset + 1);
+    {$ENDIF}
+    if Written > 0 then
+    begin
+      Inc(Offset, Written);
+      Continue;
+    end;
+    if Written = 0 then
+      Exit;
+    {$IFNDEF WINDOWS}
+    WriteErr := FpGetErrNo;
+    if WriteErr <> ESysEINTR then
+      Exit;
+    {$ENDIF}
+  end;
+  Result := True;
+end;
+
 procedure DebugLog(const S: string);
 var
   Line: string;
 begin
-  if not Resolved then
+  if System.InterlockedCompareExchange(ResolveState, 1, 1) = 0 then
     DebugActive;
   Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' [' + IntToStr(OsGetPid) +
-    ' ' + Role + '] ' + S;
+    ' ' + Role + ' tid=' + UIntToStr(QWord(System.GetThreadID)) + '] ' + S;
   EnterCriticalsection(Lock);
   try
     RingAdd(Line);
     if LogOpen then
-    begin
-      WriteLn(LogFile, Line);
-      Flush(LogFile);
-    end;
+      WriteLogLine(Line);
   except
   end;
   LeaveCriticalsection(Lock);
+end;
+
+// Managed strings cannot be read safely while another thread replaces their
+// ring slot.  Normal on-demand dumps therefore take an ordered copy under the
+// same critical section used by DebugLog and do all file I/O after releasing
+// it.  SetLength/string assignment use the FPC RTL's managed-type reference
+// counting; the lock keeps the source references stable for that operation.
+procedure SnapshotRing(out ARecent: TLogSnapshot);
+var
+  I, Idx: integer;
+begin
+  ARecent := nil;
+  EnterCriticalsection(Lock);
+  try
+    SetLength(ARecent, RingCount);
+    for I := 0 to RingCount - 1 do
+    begin
+      Idx := (RingHead - RingCount + I + RING_SIZE * 2) mod RING_SIZE;
+      ARecent[I] := Ring[Idx];
+    end;
+  finally
+    LeaveCriticalsection(Lock);
+  end;
 end;
 
 // --- crash report ------------------------------------------------------
@@ -214,7 +327,9 @@ end;
 // Write everything known about this process to APath. Called from a signal
 // handler, so it stays with plain file writes and does not allocate more than
 // it must.
-procedure WriteReport(const APath, AReason: string; AFrame: pointer);
+procedure WriteReport(const APath, AReason: string; AFrame: pointer;
+  const ARecent: array of string; ARecentHead, ARecentCount: integer;
+  ARecentOrdered: boolean);
 var
   F: Text;
   i, idx: integer;
@@ -247,12 +362,18 @@ begin
       WriteLn(F, '(backtrace unavailable)');
     end;
     WriteLn(F, '');
-    WriteLn(F, '--- last ', RingCount, ' log lines ---');
-    for i := 0 to RingCount - 1 do
+    WriteLn(F, '--- last ', ARecentCount, ' log lines ---');
+    for i := 0 to ARecentCount - 1 do
     begin
-      // oldest first
-      idx := (RingHead - RingCount + i + RING_SIZE * 2) mod RING_SIZE;
-      WriteLn(F, Ring[idx]);
+      if ARecentOrdered then
+        idx := i
+      else
+        // CrashHandler cannot lock: the fatal signal may have interrupted a
+        // thread inside DebugLog.  Preserve the old best-effort ring walk in
+        // that async context instead of risking a guaranteed mutex deadlock.
+        idx := (ARecentHead - ARecentCount + i + Length(ARecent) * 2) mod
+          Length(ARecent);
+      WriteLn(F, ARecent[idx]);
     end;
     WriteLn(F, '=== end of report ===');
   finally
@@ -261,8 +382,18 @@ begin
 end;
 
 procedure DumpNow(const AReason: string);
+var
+  Recent: TLogSnapshot;
 begin
-  WriteReport(ReportPath, AReason, get_frame);
+  Recent := nil;
+  try
+    SnapshotRing(Recent);
+    WriteReport(ReportPath, AReason, get_frame, Recent, 0,
+      Length(Recent), True);
+  except
+    // A diagnostic requested while handling another exception must never be
+    // the reason the daemon leaves its main loop.
+  end;
 end;
 
 {$IFDEF WINDOWS}
@@ -285,14 +416,14 @@ var
   P: string;
 begin
   P := ReportPath;
-  WriteReport(P, 'unhandled exception', get_frame);
+  // As with the POSIX signal handler, do not take Lock from a fatal callback:
+  // the exception may have interrupted DebugLog while this thread owned it.
+  WriteReport(P, 'unhandled exception', get_frame, Ring, RingHead, RingCount,
+    False);
   if LogOpen then
-  begin
-    WriteLn(LogFile, '*** FATAL unhandled exception -- report in ', P);
-    Flush(LogFile);
-  end;
+    WriteLogLine('*** FATAL unhandled exception -- report in ' + P);
   // EXCEPTION_CONTINUE_SEARCH: let the default handler (WER) run next.
-  Result := 0;
+  Result := EXCEPTION_CONTINUE_SEARCH;
   if Assigned(PrevFilter) then
     Result := PrevFilter(ExceptionInfo);
 end;
@@ -310,12 +441,11 @@ var
   P: string;
 begin
   P := ReportPath;
-  WriteReport(P, SignalName(ASig), get_frame);
+  // No SnapshotRing here: a signal can interrupt DebugLog while it owns Lock.
+  WriteReport(P, SignalName(ASig), get_frame, Ring, RingHead, RingCount,
+    False);
   if LogOpen then
-  begin
-    WriteLn(LogFile, '*** FATAL ', SignalName(ASig), ' -- report in ', P);
-    Flush(LogFile);
-  end;
+    WriteLogLine('*** FATAL ' + SignalName(ASig) + ' -- report in ' + P);
   // restore the default action and re-raise, so the kernel still produces the
   // core dump systemd-coredump would have collected anyway
   FpSignal(ASig, SignalHandler(SIG_DFL));
@@ -342,7 +472,11 @@ initialization
 
 finalization
   if LogOpen then
-    CloseFile(LogFile);
+    {$IFDEF WINDOWS}
+    CloseHandle(LogHandle);
+    {$ELSE}
+    FpClose(LogFD);
+    {$ENDIF}
   DoneCriticalSection(Lock);
 
 end.

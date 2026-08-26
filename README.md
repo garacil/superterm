@@ -4,16 +4,16 @@
 
 `superterm` is a terminal multiplexer written in Free Pascal. It provides a
 Turbo Vision-style window and pane interface inside one terminal, while every
-visible pane remains a real PTY-backed terminal.
+visible pane remains a real PTY/ConPTY-backed terminal.
 
 It is designed for working with several local shells and remote SSH sessions
 at once. Sessions can be restored automatically, named profiles can describe
 repeatable workspaces, and the session wizard can launch a small ad-hoc
 workspace without editing a configuration file.
 
-Since 3.0, **every session is a client/server pair from the moment it
-starts**: the terminal you see is just the first attached client. That makes
-superterm far more than a window manager for shells — the entire workspace
+On GNU/Linux and macOS, **every session is a client/server pair from the
+moment it starts**: the terminal you see is just the first attached client.
+That makes superterm far more than a window manager for shells — the entire workspace
 can be driven from any other shell, script, cron job or automation tool,
 with commands and flags accepted **in English and in Spanish**:
 
@@ -31,11 +31,16 @@ to that same session at once, each seeing every keystroke, title change and
 window operation live — and a slow or dead client can never stall the rest.
 Full reference: [`docs/CLI.md`](docs/CLI.md).
 
+The native Windows build runs the same interactive workspace locally through
+ConPTY. Its detached server, multi-client attach, and control CLI are not yet
+available.
+
 ![superterm four-pane workspace](screenshots/four-pane.png)
 
-Four independent PTY-backed panes in a normal GNU/Linux or macOS terminal
-window: a process list, disk usage, a coloured application log and a git
-history. Each pane keeps its own process, terminal state, focus and size.
+Four independent PTY/ConPTY-backed panes in a normal GNU/Linux, macOS, or
+Windows terminal window: a process list, disk usage, a coloured application
+log and a git history. Each pane keeps its own process, terminal state, focus
+and size.
 
 ## Features
 
@@ -48,29 +53,38 @@ history. Each pane keeps its own process, terminal state, focus and size.
 - Profiles (`[profile.*]`): named workspaces of windows and pane layouts
   whose panes reference window classes. Legacy `[t-*]` terminals and
   `[template.*]` templates (INI or SQLite) are still read and migrated.
-- Every session is a server from launch (tmux-style): the visible terminal
-  is just the first attached client, and the whole workspace can be driven
-  from another shell with the control CLI. `[session] server=detach`
-  restores the classic detach-only flow.
+- On GNU/Linux and macOS, every session is a server from launch (tmux-style):
+  the visible terminal is just the first attached client, and the whole
+  workspace can be driven from another shell with the control CLI.
+  `[session] server=detach` restores the classic detach-only flow.
 - Optional per-pane event reactors can parse independent PTY streams on
   multiple CPU cores. `[session] multithread=1` preserves the original
   single-threaded daemon; `auto` or a total thread limit enables dynamic
   workers, each with its own `fpPoll`, on GNU/Linux and macOS.
-- A bilingual control CLI (commands and flags accepted in English AND
-  Spanish, output in the configured UI language): `list/listar`,
+- On GNU/Linux and macOS, a bilingual control CLI (commands and flags accepted
+  in English AND Spanish, output in the configured UI language): `list/listar`,
   `send/enviar`, `capture/capturar` (visible screen, last N lines or the
   whole scrollback), `kill/matar`, plus full window management from the
   command line — `new/nueva`, `close/cerrar`, `focus/foco`,
   `rename/renombrar`, `resize/tamano`, `minimize/minimizar`,
   `restore/restaurar`, `zoom/ampliar` and `organize/organizar`. See
   [`docs/CLI.md`](docs/CLI.md).
-- True multi-user sessions: up to 8 clients attached to the same session at
-  once, with output broadcast, live window events, client-local geometry and
-  viewports, and slow-client flow control so one stalled client never blocks
-  the rest. `[session] resize_policy=smallest` retains common-minimum sizing
-  for compatibility.
-- Named multi-session detach: several live sessions under
-  `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
+- On GNU/Linux and macOS, true multi-user sessions: up to 8 clients attached
+  to the same session at once, with one daemon-owned desktop -- positions,
+  sizes, minimize, zoom and
+  fullscreen are identical for everyone, including the focused pane. Input
+  from every client is delivered in arrival order. Window moves, incremental
+  resizes and optional maximize/F5 outlines are also shown live in every
+  viewer, not just in the client performing the action; minimize and restore
+  are one atomic shared transition. Per-pane leases let different clients
+  manipulate different panes concurrently without either pane jumping back,
+  while each final canonical commit alone changes PTY geometry. Attaching
+  from a differently sized terminal only clips or pads that desktop; a later
+  physical resize is a shared operation which atomically adopts the new
+  desktop and PTY geometry. Slow-client flow control ensures one stalled
+  client never blocks the rest.
+- On GNU/Linux and macOS, named multi-session detach: several live sessions
+  under `~/.superterm/sessions/`, tmux-style `Ctrl-Q d` detach, a session picker
   (`Ctrl-Q s`), and `superterm --attach` / `--list-sessions`. Local and
   remote PTYs stay alive on the session server.
 - A configurable tmux-style prefix key (`[keymap]`, default `Ctrl-Q`).
@@ -83,8 +97,10 @@ history. Each pane keeps its own process, terminal state, focus and size.
 - Two per-profile display options in the Options menu: **show contents while
   dragging** (off gives a wireframe drag, where only the window outline moves
   and everything behind it stays visible -- much less traffic on a slow link)
-  and an optional **zoom transition** for `F5`.
-- Automatic session save and restore through `~/.superterm/session.ini`.
+  and an optional **zoom transition** for IDE maximize and `F5`. Every attached
+  viewer sees the same live path in its own active palette.
+- Automatic local fallback save and restore through
+  `~/.superterm/session.ini`.
 - A quick session wizard for one to four panes. Each pane accepts a connection
   command and an optional command to feed to the connection after it starts.
 - A custom keyboard driver: a lone `Esc` reaches the pane (timeout-based, not
@@ -97,8 +113,15 @@ history. Each pane keeps its own process, terminal state, focus and size.
   maximized. The vendored FreeVision is not modified: its grid is still drawn
   and decides what is visible.
 - **Maximize (`F5`) hands the pane the whole terminal** and writes its raw PTY
-  bytes straight through, for applications that want the terminal to
-  themselves. `F5` again restores the window at the size it had.
+  bytes straight through when every attached host has the same geometry. With
+  different geometries, every client instead gets the same IDE-rendered
+  fullscreen area sized to the smallest host. `F5` again restores the window
+  at the size it had.
+- Normal window maximize (title button or double-click) keeps the IDE visible.
+  At commit time its one shared frame and PTY fit the smallest connected host,
+  even when a larger client previously grew the canonical desktop; restore
+  returns to the exact pre-maximize rectangle. A later attach never derives a
+  second local geometry from that canonical result.
 - English application interface by default, with a runtime-selectable Spanish
   interface.
 - Local FreeVision sources in `vendor/fv322`, including wide-screen and tmux
@@ -124,8 +147,10 @@ nothing over a slow link:
 
 ![Two panes keeping their colours, focused and not](screenshots/focus-colour.png)
 
-**Minimize or restore every window at once**, from the `Windows` / `Ventanas`
-menu. The per-window entries stay in `Panes` / `Paneles`:
+**Minimize, restore, or close every window at once**, from the `Windows` /
+`Ventanas` menu. Closing all leaves the desktop and the live session attached;
+either client can create the first pane again. The per-window entries stay in
+`Panes` / `Paneles`:
 
 ![Minimize all and restore all in the Windows menu](screenshots/windows-menu.png)
 
@@ -180,7 +205,8 @@ Four windows share the desktop — a log tailer, a `watch` on disk usage, `top`
 in the centre, and a fourth minimized to a title bar at the bottom. `F5`
 maximizes the focused pane and hands it the entire terminal, so `top` reflows
 into the full screen; `F5` again brings the desktop back with every window
-where it was. The expanding outline is the optional zoom transition
+where it was. Every attached viewer sees the expanding or contracting outline,
+not only the client which pressed the key. It is the optional zoom transition
 (`[session] zoomanim`, off by default — the instant switch is the fast one):
 
 ![The F5 zoom transition](screenshots/zoom-transition.gif)
@@ -230,23 +256,25 @@ More captures are on the [Screenshots wiki page](https://github.com/garacil/supe
 ## Platform Support
 
 `superterm` is a single cross-platform codebase that builds and runs natively on
-**GNU/Linux and macOS** (Apple Silicon and Intel). Both are POSIX systems, so the
-UI, VT engine, layout, configuration, and detach/attach server are shared without
-change. The only platform-specific code is the PTY/process layer, selected at
-compile time with `{$IFDEF DARWIN}`:
+**GNU/Linux, macOS, and Windows 10 version 1809 or newer**. The UI, VT engine,
+layout, and configuration are shared; compiler directives select the terminal,
+process, input, console, and path implementations.
 
 - **GNU/Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
   and reads process titles from `/proc`.
 - **macOS** allocates it with BSD `openpty` + `login_tty` and reads process
   titles with `libproc`/`sysctl`. Free Pascal auto-defines `DARWIN`, so no build
   flag is required — run superterm in Terminal.app or iTerm2 exactly as on GNU/Linux.
+- **Windows** uses ConPTY, native console VT input/output, Windows process
+  management, `%COMSPEC%` (normally `cmd.exe`) as the default shell, and
+  `%APPDATA%\superterm` for configuration.
 
-See [`docs/MACOS.md`](docs/MACOS.md) for the macOS build, terminal setup, and
-platform notes.
+See [`docs/MACOS.md`](docs/MACOS.md) and [`docs/WINDOWS.md`](docs/WINDOWS.md)
+for platform-specific build and terminal setup.
 
-Windows is not a native target. WSL is the practical way to run superterm on
-Windows; a native port would need a ConPTY backend plus Windows-specific process,
-resize, signal, and configuration-path code.
+GNU/Linux and macOS provide the detached session daemon, multi-client attach,
+session enumeration, and control CLI. Native Windows currently runs interactive
+workspaces in one process, without those detached-session features.
 
 ## Technology Choice
 
@@ -274,8 +302,10 @@ Build requirements:
 
 - Free Pascal Compiler 3.2.2 or a compatible Free Pascal 3.x release.
 - Free Pascal FV, FCL, and DB units.
-- GNU make.
-- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
+- GNU make (including the 3.80 build bundled with Free Pascal on Windows).
+- GNU/Linux (with `/proc`), macOS (Apple Silicon or Intel), or Windows 10
+  version 1809 or newer for ConPTY.
+- Git Bash for native Windows builds.
 
 Test requirements:
 
@@ -292,21 +322,33 @@ Remote requirements:
 
 The project includes a self-contained POSIX `configure` script. It is not
 generated by GNU Autoconf. It detects the compiler and test tools, then creates
-the ignored `Makefile` from `Makefile.in`.
+the ignored `Makefile` from `Makefile.in`. Run it from Git Bash on Windows.
 
 ```sh
 ./configure
 make release
 ```
 
-The optimized release binary is `bin/superterm` and uses Free Pascal `-O4`.
+For a native Windows build, put the Free Pascal binary directory first on the
+Git Bash `PATH`; this also avoids accidentally invoking a non-GNU `make.exe`:
+
+```sh
+export PATH="/path/to/fpc/bin:$PATH"
+./configure --with-fpc="$(command -v fpc)"
+make release
+./bin/superterm.exe --version
+```
+
+The optimized release binary is `bin/superterm` (`bin/superterm.exe` on
+Windows) and uses Free Pascal `-O4`.
 The debug build is separate and uses symbols and line information:
 
 ```sh
 make debug
 ```
 
-The debug binary is `bin/superterm-debug` and uses `-O1 -g -gl -dDEBUG`.
+The debug binary is `bin/superterm-debug` (`bin/superterm-debug.exe` on
+Windows) and uses `-O1 -g -gl -dDEBUG`.
 
 Useful configure options:
 
@@ -357,6 +399,10 @@ the nonblocking session daemon under partial frames, stalled readers and file
 descriptors above 1023. GitHub Actions runs it on GNU/Linux, macOS Apple Silicon
 and macOS Intel.
 
+The Python harness imports POSIX `pty`, `fcntl`, and `termios`, so it does not
+run in native Windows Python. Use the release build plus `--version`, `--help`,
+and an interactive ConPTY launch as the Windows smoke test.
+
 Individual tests are also runnable directly:
 
 ```sh
@@ -382,9 +428,12 @@ python3 test/nonblocking_server_test.py
 ./bin/superterm
 ```
 
-Since 3.0 the session is named when it starts (`--session NAME`, else the
-active profile, else `session`) and `Ctrl-Q d` detaches instantly, with no
-dialog. To return to a live session:
+On Windows, launch `bin\superterm.exe` (for example
+`.\bin\superterm.exe` from PowerShell).
+
+On GNU/Linux and macOS, the session is named when it starts (`--session NAME`,
+else the active profile, else `session`) and `Ctrl-Q d` detaches instantly,
+with no dialog. To return to a live session:
 
 ```sh
 ./bin/superterm --attach            # one session: direct; several: picker
@@ -399,11 +448,18 @@ sessions exist. Every launch starts a per-user session server at
 still recognized). The server owns the PTY masters, process groups,
 terminal parsers, and scrollback, so leaving the client — or losing it —
 does not close local shells or remote SSH connections. With several clients,
-`Alt-X` and `Alt-Q` close only the client that requested the exit; the session
-ends when its last attached client exits. `Alt-X` asks the server to save
-`session.ini` first, while `Alt-Q` skips saving. The explicit CLI `kill`
+`Alt-X` closes only the client that requested the exit; the session ends when
+its last attached client exits. A detached live session already is the saved
+state, so there are no separate "save and exit" or "exit without saving"
+paths. The explicit CLI `kill`
 command remains an immediate session-wide close. Inside the app, `Ctrl-Q s`
 opens the session picker to attach to or permanently close other sessions.
+`Ctrl-Q d` only detaches the viewer: the single live desktop remains exactly
+as it was, even with no viewers, and the next attach receives it directly.
+
+On native Windows, the interactive workspace instead stays in the launching
+process. Detach, attach, the session picker, and control CLI operations are not
+available yet; exiting superterm ends its panes.
 
 Optional diagnostics:
 
@@ -421,7 +477,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | Key | Action |
 | --- | --- |
 | `F2` / `F3` | Open a window; it appears centred and nothing already open is moved or resized |
-| `Alt-F3` / `Alt-F4` | Close the focused pane; exit when one remains |
+| `Alt-F3` / `Alt-F4` | Close the focused pane; closing the last one leaves an empty desktop |
 | `F6` / `F7` | Next / previous pane |
 | `Alt-1..9` | Go to pane N |
 | `Alt-0` | Pane list: pick a pane, restoring it if minimized |
@@ -433,9 +489,9 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q n` / `Ctrl-Q p` | Next / previous profile window |
 | `Ctrl-Q` arrows | Resize the focused pane |
 | `Ctrl-Q c` | Open a window class in a new pane |
-| `Ctrl-Q s` | Session picker: attach to or close detached sessions |
+| `Ctrl-Q s` | Session picker: attach to or close detached sessions (GNU/Linux and macOS) |
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
-| `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` (GNU/Linux and macOS) |
 | `Ctrl-Q [` | Enter pane copy mode. Move with arrows/PgUp/PgDn, press Space to start a selection and Enter to copy; mouse drag also copies |
 | `Ctrl-Q ]` | Paste the newest clipboard-history item into the focused pane |
 | `Ctrl-Q h` | Choose one of the ten most recent clipboard items to paste |
@@ -443,12 +499,12 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
 | Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
 | `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
 | `Alt-Home` / `Alt-End` | History: oldest line / back to live |
-| `Ctrl-S` | Save now: profile selection or session layout; when attached, sync the layout to the session server |
-| `Alt-X` | Exit and save when autosave is enabled |
-| `Alt-Q` | Exit without saving |
+| `Ctrl-S` | Save a local layout or profile selection (not needed or shown while attached to a live session) |
+| `Alt-X` | Exit; the last attached viewer closes the live session |
 
 Changing pane focus changes only the window border/title and cursor. Terminal
 content keeps exactly the same colors and attributes in every pane, focused or
@@ -456,8 +512,9 @@ not, and unchanged interiors are not retransmitted on a focus switch.
 
 The same actions are available from the `Panes`, `Windows`, `Classes`,
 `Profiles`, `Sessions`, `Options`, `Clipboard`, and `Help` menus. The
-`Windows` menu contains `Minimize all windows`, `Restore all windows`, `Tile`,
-`Organize`, `Cascade`, `List`, and `Refresh display`. `Options` holds the
+`Windows` menu contains `Minimize all windows`, `Restore all windows`,
+`Close all windows`, `Tile`, `Organize`, `Cascade`, `List`, and
+`Refresh display`. `Options` holds the
 language (`English`/`Espanol`, applied immediately), the color palette (color,
 black and white, monochrome), and the autosave/autorestore toggles. In Spanish
 mode the menus are `Paneles`, `Ventanas`, `Clases`, `Perfiles`, `Sesiones`,
@@ -536,7 +593,6 @@ palette=color               ; color (default), bw, or mono
 [session]
 autosave=1
 autorestore=1               ; use 0 for a fresh profile startup
-resize_policy=session       ; independent client viewports (default)
 default_profile=daily
 ```
 
@@ -628,7 +684,8 @@ src/
 ├── st_fvui.pas     FreeVision application, menus, panes, focus, and polling.
 ├── st_dialogs.pas  Class/profile managers, session picker, pane list.
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
-├── st_pty.pas      POSIX PTYs, fork/exec, I/O, resize, and process cleanup.
+├── st_pty.pas      Cross-platform PTY/ConPTY facade, I/O, resize, and cleanup.
+├── st_conpty.pas   Native Windows ConPTY and child-process backend.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
 ├── st_clipboard.pas Ten-item client clipboard history and OSC 52 helpers.
 ├── st_server.pas   Detached session daemon, protocol and enumeration.
@@ -680,7 +737,8 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- Native runtimes are GNU/Linux and macOS; Windows is not yet a native target.
+- Native Windows is currently single-process: detached sessions, multi-client
+  attach, session enumeration, and the control CLI remain POSIX-only.
 - The visible layout supports 16 panes; the wizard intentionally limits a
   quick launch to four panes.
 - FreeVision rendering uses its classic palette and approximates truecolor.
@@ -689,8 +747,9 @@ Current limitations:
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 
-Planned platform and runtime work includes a native Windows ConPTY backend,
-better connection readiness/retry state, and continued macOS parity polish.
+Planned platform and runtime work includes the detached/control server on
+Windows, native Windows CI coverage, better connection readiness/retry state,
+and continued macOS parity polish.
 
 ## License and Author
 

@@ -39,9 +39,11 @@ type
     Panes: TPaneRows;
   end;
 
-// processes the command line; if it was a CLI command, runs it and does
-// Halt with its code; otherwise (normal TUI startup or --attach), returns
-procedure RunCli;
+// Processes the command line. True means a CLI command was handled and
+// AExitCode contains its status. False delegates normal TUI/attach startup to
+// the caller. Returning normally is intentional: Halt skips finalization of
+// this routine's managed strings and dynamic arrays in FPC 3.2.x.
+function RunCli(out AExitCode: integer): boolean;
 
 // queries LIST/INFO of a session through its socket (also used by the
 // attached UI to capture live cmd/cwd when saving a profile)
@@ -453,9 +455,16 @@ end;
 procedure HelpGlobal;
 const
   L: array[0..42] of THelpLine = (
+    {$IFDEF WINDOWS}
+    (En: 'superterm %V - native ConPTY terminal workspaces for Windows';
+     Es: 'superterm %V - espacios de terminal ConPTY nativos para Windows'),
+    (En: 'Interactive local mode; detached sessions and control commands are unavailable.';
+     Es: 'Modo local interactivo; no hay sesiones separadas ni ordenes de control.'),
+    {$ELSE}
     (En: 'superterm %V - detachable terminal sessions for GNU/Linux and macOS';
      Es: 'superterm %V - sesiones de terminal separables para GNU/Linux y macOS'),
     (En: ''; Es: ''),
+    {$ENDIF}
     (En: 'Usage:'; Es: 'Uso:'),
     (En: '  superterm                              start the interactive terminal';
      Es: '  superterm                              abre el terminal interactivo'),
@@ -507,8 +516,13 @@ const
      Es: 'Todas las ordenes y opciones se aceptan tambien en ingles (send,'),
     (En: 'listar, capturar, --ayuda, ...). Messages follow [ui] language.';
      Es: 'list, capture, --help, ...). Los mensajes siguen [ui] language.'),
+    {$IFDEF WINDOWS}
+    (En: '--attach, --list-sessions, and control commands require GNU/Linux or macOS.';
+     Es: '--attach, --list-sessions y el control requieren GNU/Linux o macOS.'),
+    {$ELSE}
     (En: 'Legacy --attach and --list-sessions still work.';
      Es: 'Los antiguos --attach y --list-sessions siguen funcionando.'),
+    {$ENDIF}
     (En: ''; Es: ''),
     (En: 'Examples:'; Es: 'Ejemplos:'),
     (En: '  superterm send prod:2 tail -f /var/log/syslog';
@@ -1419,7 +1433,7 @@ begin
   Result := (N = 'help') or (N = 'ayuda') or (S = '-?') or (S = '-h');
 end;
 
-procedure RunCli;
+function RunCli(out AExitCode: integer): boolean;
 var
   i, rc, CmdIdx: integer;
   Cmd, N: string;
@@ -1427,6 +1441,8 @@ var
   WantHelp: boolean;
   AttInfo: TSessionInfo;
 begin
+  Result := False;
+  AExitCode := 0;
   SetLength(CliArgs, ParamCount);
   for i := 1 to ParamCount do
     CliArgs[i - 1] := ParamStr(i);
@@ -1441,13 +1457,14 @@ begin
     Exit;   // superterm.lpr processes it as before
   if Cmd = '--list-sessions' then
   begin
-    Halt(CmdList([], True));
+    AExitCode := CmdList([], True);
+    Exit(True);
   end;
 
   if (N = 'version') or (Cmd = '-V') then
   begin
     WriteLn('superterm ', SUPERTERM_VERSION);
-    Halt(0);
+    Exit(True);
   end;
 
   WantHelp := False;
@@ -1475,35 +1492,38 @@ begin
         begin
           rc := ResolveSession(CliArgs[1], True, AttInfo);
           if rc <> 0 then
-            Halt(rc);
+          begin
+            AExitCode := rc;
+            Exit(True);
+          end;
           AttachSocket := AttInfo.SocketPath;
         end;
-        Exit;
+        Exit(False);
       end;
     'help', 'ayuda':
       begin
         if Length(CliArgs) > 1 then
         begin
           case NormToken(CliArgs[1]) of
-            'list', 'listar', 'ls': begin HelpList; Halt(0); end;
-            'send', 'enviar': begin HelpSend; Halt(0); end;
-            'capture', 'capturar': begin HelpCapture; Halt(0); end;
-            'kill', 'matar': begin HelpKill; Halt(0); end;
+            'list', 'listar', 'ls': begin HelpList; Exit(True); end;
+            'send', 'enviar': begin HelpSend; Exit(True); end;
+            'capture', 'capturar': begin HelpCapture; Exit(True); end;
+            'kill', 'matar': begin HelpKill; Exit(True); end;
             'new', 'nueva', 'nuevo', 'close', 'cerrar', 'focus', 'foco',
             'select', 'seleccionar', 'minimize', 'minimizar', 'restore',
             'restaurar', 'zoom', 'ampliar', 'organize', 'organizar',
             'rename', 'renombrar', 'resize', 'tamano', 'redimensionar',
-            'windows', 'ventanas': begin HelpWindows; Halt(0); end;
+            'windows', 'ventanas': begin HelpWindows; Exit(True); end;
           end;
         end;
         HelpGlobal;
-        Halt(0);
+        Exit(True);
       end;
   else
     if IsHelpToken(Cmd) or (Cmd = '--help') or (Cmd = '--ayuda') then
     begin
       HelpGlobal;
-      Halt(0);
+      Exit(True);
     end;
     // not a CLI command: normal startup (no extra arguments)
     if IsFlag(Cmd) then
@@ -1511,7 +1531,8 @@ begin
     ErrLn(Format(T('superterm: unknown command ''%s''. Try ''superterm --help''.',
       'superterm: orden desconocida ''%s''. Prueba ''superterm --ayuda''.'),
       [Cmd]));
-    Halt(2);
+    AExitCode := 2;
+    Exit(True);
   end;
 
   // per-command help: superterm send --help
@@ -1528,7 +1549,7 @@ begin
       4: HelpKill;
       5..13: HelpWindows;
     end;
-    Halt(0);
+    Exit(True);
   end;
 
   Rest := nil;
@@ -1552,7 +1573,8 @@ begin
     12: rc := CmdRename(Rest);
     13: rc := CmdResize(Rest);
   end;
-  Halt(rc);
+  AExitCode := rc;
+  Result := True;
 end;
 
 end.

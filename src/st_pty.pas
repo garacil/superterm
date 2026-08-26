@@ -11,7 +11,9 @@ unit st_pty;
 interface
 
 uses
-  Classes, SysUtils, baseunix, unix, termio, ctypes;
+  Classes, SysUtils, ctypes
+  {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF}
+  {$IFDEF WINDOWS}, Windows, st_conpty{$ENDIF};
 
 const
   MAXREAD = 65536;
@@ -25,15 +27,25 @@ const
 type
   TStringArray = array of string;
 
+  {$IFDEF WINDOWS}
+  // BaseUnix supplies TPid on POSIX. Keep the public TPty surface identical
+  // on Windows without pulling a POSIX-only unit into the interface.
+  TPid = LongInt;
+  {$ENDIF}
+
   TPty = class
   private
     FMaster: cint;
     FPid: TPid;
+    {$IFDEF WINDOWS}
+    FConPty: TConPty;
+    {$ENDIF}
     FPendingInput: RawByteString;
     FAlive: boolean;
     FShellBase: string;
     FPendingSecret: RawByteString;
     FPromptBuffer: RawByteString;
+    function GetAlive: boolean;
     function SpawnInternal(const AProgram: string;
       const AArgs: array of string; const ACwd: string;
       ACols, ARows: integer; const AExtraEnv, ASecret: string): boolean;
@@ -44,7 +56,7 @@ type
     destructor Destroy; override;
     property Master: cint read FMaster;
     property Pid: TPid read FPid;
-    property Alive: boolean read FAlive write FAlive;
+    property Alive: boolean read GetAlive write FAlive;
     function Spawn(const AShell, ACwd, ACommand: string; ACols, ARows: integer;
       const AExtraEnv: string = ''; ALoginShell: boolean = True): boolean;
     function SpawnArgv(const AProgram: string; const AArgs: array of string;
@@ -99,7 +111,7 @@ function FirstWordOf(const S: string): string;
 implementation
 
 uses
-  st_debug, StrUtils;
+  st_debug, st_os, StrUtils;
 
 function FirstWordOf(const S: string): string;
 var
@@ -117,7 +129,7 @@ var
 function PaneSessionId: string;
 begin
   if SessionIdCache = '' then
-    SessionIdCache := IntToHex(fpGetPid, 8) + '-' +
+    SessionIdCache := IntToHex(OsGetPid, 8) + '-' +
       IntToHex(GetTickCount64 and $FFFFFFFFFFFF, 12);
   Result := SessionIdCache;
 end;
@@ -127,10 +139,21 @@ var
   Above: string;
 begin
   Result := PaneSessionId;
-  Above := GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN');
+  Above := SysUtils.GetEnvironmentVariable('SUPERTERM_SESSION_CHAIN');
   if (Above <> '') and (Pos(Result, Above) = 0) then
     Result := Above + ':' + Result;
 end;
+
+function TPty.GetAlive: boolean;
+begin
+  {$IFDEF WINDOWS}
+  if FAlive and (FConPty <> nil) then
+    FAlive := FConPty.Alive;
+  {$ENDIF}
+  Result := FAlive;
+end;
+
+{$IFDEF UNIX}
 
 function BuildEnv(const AExtra: string): PPAnsiChar;
 var
@@ -1095,6 +1118,334 @@ begin
     TitleArgs := Args;
   end;
 end;
+{$ENDIF}
+
+{$ELSE}
+
+// Windows command lines are one mutable string. Quote one argv item using the
+// escaping rules consumed by CommandLineToArgvW/the Microsoft C runtime.
+function QuoteWindowsArg(const S: string): string;
+var
+  I, Slashes: integer;
+  NeedsQuotes: boolean;
+begin
+  NeedsQuotes := S = '';
+  for I := 1 to Length(S) do
+    if S[I] in [' ', #9, '"'] then
+    begin
+      NeedsQuotes := True;
+      Break;
+    end;
+  if not NeedsQuotes then
+    Exit(S);
+  Result := '"';
+  Slashes := 0;
+  for I := 1 to Length(S) do
+    if S[I] = #92 then
+      Inc(Slashes)
+    else if S[I] = '"' then
+    begin
+      Result := Result + StringOfChar(#92, Slashes * 2 + 1) + '"';
+      Slashes := 0;
+    end
+    else
+    begin
+      if Slashes > 0 then
+        Result := Result + StringOfChar(#92, Slashes);
+      Slashes := 0;
+      Result := Result + S[I];
+    end;
+  if Slashes > 0 then
+    Result := Result + StringOfChar(#92, Slashes * 2);
+  Result := Result + '"';
+end;
+
+function WindowsCommandLine(const AProgram: string;
+  const AArgs: array of string): string;
+var
+  I, FirstArg: integer;
+begin
+  // cmd parses everything after /K itself, using a grammar different from
+  // CommandLineToArgvW. Preserve that command tail byte-for-byte: applying
+  // C-runtime escaping here breaks quoted executable paths and prints literal
+  // backslashes. /S is deliberately absent for the same reason.
+  if ((LowerCase(ExtractFileName(AProgram)) = 'cmd.exe') or
+      (LowerCase(ExtractFileName(AProgram)) = 'cmd')) and
+     (Length(AArgs) = 4) and SameText(AArgs[1], '/d') and
+     SameText(AArgs[2], '/k') then
+    Exit(QuoteWindowsArg(AProgram) + ' /d /k ' + AArgs[3]);
+  Result := QuoteWindowsArg(AProgram);
+  FirstArg := 0;
+  // The POSIX surface carries argv[0] in AArgs. CreateProcess gets it from
+  // the first command-line token already, so do not duplicate it here.
+  if Length(AArgs) > 0 then
+    FirstArg := 1;
+  for I := FirstArg to High(AArgs) do
+    Result := Result + ' ' + QuoteWindowsArg(AArgs[I]);
+end;
+
+function EffectiveWindowsShell(const AShell: string): string;
+begin
+  Result := Trim(AShell);
+  if (Result = '') or
+     ((Pos('/', Result) > 0) and (not FileExists(Result))) then
+    Result := SysUtils.GetEnvironmentVariable('COMSPEC');
+  if Result = '' then
+    Result := 'cmd.exe';
+end;
+
+function TPty.SpawnInternal(const AProgram: string;
+  const AArgs: array of string; const ACwd: string;
+  ACols, ARows: integer; const AExtraEnv, ASecret: string): boolean;
+var
+  CommandLine, Cwd, PaneEnv: string;
+begin
+  Result := False;
+  KillPane;
+  FMaster := -1;
+  FPid := -1;
+  FPendingInput := '';
+  FPendingSecret := ASecret;
+  FPromptBuffer := '';
+  FConPty := TConPty.Create;
+  CommandLine := WindowsCommandLine(AProgram, AArgs);
+  PaneEnv := AExtraEnv;
+  if (PaneEnv <> '') and (PaneEnv[Length(PaneEnv)] <> #10) then
+    PaneEnv := PaneEnv + LineEnding;
+  PaneEnv := PaneEnv + 'TERM=xterm-256color' + LineEnding +
+    'COLORTERM=truecolor' + LineEnding + 'SUPERTERM=1' + LineEnding +
+    'SUPERTERM_SESSION_CHAIN=' + PaneSessionChain;
+  Cwd := ACwd;
+  if (Cwd <> '') and (not DirectoryExists(Cwd)) then
+    Cwd := '';
+  if not FConPty.Spawn(CommandLine, Cwd, ACols, ARows, PaneEnv) then
+  begin
+    FreeAndNil(FConPty);
+    Exit;
+  end;
+  FPid := LongInt(FConPty.ProcessId);
+  FAlive := True;
+  FShellBase := ExtractFileName(AProgram);
+  TitleCmd := AProgram;
+  TitleCwd := Cwd;
+  Result := True;
+  DebugLog(Format('spawn ok conpty pid=%d program=%s cwd=%s',
+    [FPid, AProgram, Cwd]));
+end;
+
+destructor TPty.Destroy;
+begin
+  KillPane;
+  inherited Destroy;
+end;
+
+function TPty.Spawn(const AShell, ACwd, ACommand: string;
+  ACols, ARows: integer; const AExtraEnv: string;
+  ALoginShell: boolean): boolean;
+var
+  Shell, Base: string;
+  Args: TStringArray;
+begin
+  Shell := EffectiveWindowsShell(AShell);
+  Base := LowerCase(ExtractFileName(Shell));
+  Args := Default(TStringArray);
+  if ACommand = '' then
+  begin
+    SetLength(Args, 1);
+    Args[0] := ExtractFileName(Shell);
+  end
+  else if (Base = 'cmd.exe') or (Base = 'cmd') then
+  begin
+    SetLength(Args, 4);
+    Args[0] := ExtractFileName(Shell);
+    Args[1] := '/d';
+    // cmd /K runs the command and remains interactive in the pane. This is
+    // the Windows equivalent of the POSIX outer-shell fallback.
+    Args[2] := '/k';
+    Args[3] := ACommand;
+  end
+  else if (Base = 'powershell.exe') or (Base = 'powershell') or
+          (Base = 'pwsh.exe') or (Base = 'pwsh') then
+  begin
+    SetLength(Args, 5);
+    Args[0] := ExtractFileName(Shell);
+    Args[1] := '-NoLogo';
+    Args[2] := '-NoExit';
+    Args[3] := '-Command';
+    Args[4] := ACommand;
+  end
+  else
+  begin
+    SetLength(Args, 3);
+    Args[0] := ExtractFileName(Shell);
+    Args[1] := '-c';
+    Args[2] := ACommand;
+  end;
+  Result := SpawnInternal(Shell, Args, ACwd, ACols, ARows, AExtraEnv, '');
+  if Result then
+  begin
+    // Preserve the shell command itself, not the wrapper argv. An empty
+    // command is a plain interactive shell and must restore as one.
+    TitleCmd := ACommand;
+    TitleArgs := nil;
+  end;
+end;
+
+function TPty.SpawnArgv(const AProgram: string;
+  const AArgs: array of string; const ACwd: string; ACols, ARows: integer;
+  const AExtraEnv: string; const ASecret: string): boolean;
+begin
+  Result := SpawnInternal(AProgram, AArgs, ACwd, ACols, ARows,
+    AExtraEnv, ASecret);
+  if Result then
+  begin
+    TitleCmd := WindowsCommandLine(AProgram, AArgs);
+    TitleArgs := nil;
+  end;
+end;
+
+function TPty.ReadBuf(out Buf: array of byte): integer;
+var
+  S: RawByteString;
+  Lower, Tail: string;
+  Keep, Start: integer;
+begin
+  Result := 0;
+  if (FConPty = nil) or (Length(Buf) = 0) then
+    Exit;
+  Result := FConPty.ReadOutput(Buf, True);
+  FAlive := FConPty.Alive;
+  if (Result > 0) and (FPendingSecret <> '') then
+  begin
+    SetString(S, PAnsiChar(@Buf[0]), Result);
+    FPromptBuffer := FPromptBuffer + S;
+    Keep := Length(FPromptBuffer) - 256;
+    if Keep > 0 then
+      Delete(FPromptBuffer, 1, Keep);
+    Lower := LowerCase(FPromptBuffer);
+    Start := LastDelimiter(#10#13, Lower);
+    if Start > 0 then
+      Tail := Trim(Copy(Lower, Start + 1, MaxInt))
+    else
+      Tail := Trim(Lower);
+    if (Length(Tail) <= 128) and
+       ((RightStr(Tail, 9) = 'password:') or
+        ((Pos('passphrase for', Tail) > 0) and
+         (Length(Tail) > 0) and (Tail[Length(Tail)] = ':'))) then
+    begin
+      WriteStr(FPendingSecret + #13);
+      FPendingSecret := '';
+      FPromptBuffer := '';
+    end;
+  end;
+end;
+
+function TPty.WriteStr(const S: RawByteString): boolean;
+begin
+  Result := False;
+  if (FConPty = nil) or (not Alive) or (S = '') then
+    Exit;
+  if Length(FPendingInput) + Length(S) > PENDING_INPUT_MAX then
+    Exit;
+  FPendingInput := FPendingInput + S;
+  FlushInput;
+  Result := FPendingInput = '';
+end;
+
+procedure TPty.FlushInput;
+var
+  N, Want, Total: integer;
+  Chunk: RawByteString;
+begin
+  if (FConPty = nil) or (FPendingInput = '') then
+    Exit;
+  Total := 0;
+  while (FPendingInput <> '') and (Total < PTY_WRITE_BUDGET) do
+  begin
+    Want := Length(FPendingInput);
+    if Want > PTY_WRITE_BUDGET - Total then
+      Want := PTY_WRITE_BUDGET - Total;
+    Chunk := Copy(FPendingInput, 1, Want);
+    N := FConPty.WriteInput(Chunk);
+    if N <= 0 then
+      Exit;
+    Delete(FPendingInput, 1, N);
+    Inc(Total, N);
+  end;
+end;
+
+function TPty.InputPending: boolean;
+begin
+  Result := FPendingInput <> '';
+end;
+
+procedure TPty.Resize(ACols, ARows: integer);
+begin
+  if FConPty <> nil then
+    FConPty.Resize(ACols, ARows);
+end;
+
+procedure TPty.KillPane;
+begin
+  if FConPty <> nil then
+  begin
+    FConPty.Close;
+    FreeAndNil(FConPty);
+  end;
+  FMaster := -1;
+  FPid := -1;
+  FAlive := False;
+  FPendingInput := '';
+  FPendingSecret := '';
+  FPromptBuffer := '';
+end;
+
+procedure TPty.MarkExited;
+begin
+  KillPane;
+end;
+
+procedure TPty.Abandon;
+begin
+  // Native Windows Phase 1 has no forked session daemon to inherit this
+  // pseudo console. Treat an unexpected abandon as an ordinary close.
+  KillPane;
+end;
+
+procedure TPty.MarkDead;
+begin
+  KillPane;
+end;
+
+function FindChildProcs(ParentPid: TPid;
+  out Children: array of TPid): integer;
+begin
+  Result := 0;
+end;
+
+function ProcArgs(Pid: TPid): TStringArray;
+begin
+  Result := nil;
+end;
+
+function ProcCmdLine(Pid: TPid): string;
+begin
+  Result := '';
+end;
+
+function ProcCwd(Pid: TPid): string;
+begin
+  Result := '';
+end;
+
+procedure TPty.QueryState;
+begin
+  // Keep the launch command/current directory as the stable Windows title.
+  // Process-command introspection is optional UI polish and is deliberately
+  // separate from the ConPTY transport needed for a runnable terminal.
+  GetAlive;
+end;
+
 {$ENDIF}
 
 end.

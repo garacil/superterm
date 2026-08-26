@@ -6,7 +6,8 @@
 
 - `src/superterm.lpr` is the program entry point.
 - `src/st_fvui.pas` contains the FreeVision application, menus, panes, windows, and event routing.
-- `src/st_pty.pas` owns PTYs and child processes.
+- `src/st_pty.pas` owns PTYs/ConPTY instances and child processes.
+- `src/st_conpty.pas` implements the native Windows ConPTY backend.
 - `src/st_config.pas` reads terminal definitions and user settings.
 - `src/st_templates.pas` reads INI and SQLite templates.
 - `src/st_session.pas` persists the fallback session layout.
@@ -14,7 +15,8 @@
 - `src/st_screen.pas` interprets terminal output for each pane.
 - `src/st_clipboard.pas` keeps the ten-item client history and OSC 52 helpers.
 - `src/st_kbd.pas` decodes keyboard, mouse, and bracketed-paste input.
-- `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol.
+- `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol on
+  POSIX; native Windows currently uses its single-process stubs.
 
 `vendor/fv322/` is the local FreeVision source used by the build. It is not a
 copy of application code. It provides the `Objects`, `Drivers`, `Views`,
@@ -32,7 +34,10 @@ Required:
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
 - Free Pascal FV, FCL, and DB units.
 - GNU make.
-- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
+- GNU/Linux (with `/proc`), macOS (Apple Silicon or Intel), or Windows 10
+  version 1809 or newer for ConPTY.
+- Git Bash when building natively on Windows; it runs `configure` and the
+  POSIX shell recipes in the generated Makefile.
 
 Required only for the regression suite:
 
@@ -70,6 +75,18 @@ commands, then creates the ignored `Makefile` from `Makefile.in`.
 ./configure
 ```
 
+On native Windows, run the build from Git Bash and put the Free Pascal binary
+directory first on `PATH`. The GNU Make 3.80 shipped with Free Pascal is
+supported; use that `make.exe` explicitly if another tool (for example an
+Embarcadero make) appears first on `PATH`:
+
+```sh
+export PATH="/path/to/fpc/bin:$PATH"
+./configure --with-fpc="$(command -v fpc)"
+make release
+./bin/superterm.exe --version
+```
+
 For a user-local installation:
 
 ```sh
@@ -100,7 +117,7 @@ keeps warnings enabled:
 make release
 ```
 
-The release executable is `bin/superterm`.
+The release executable is `bin/superterm` (`bin/superterm.exe` on Windows).
 
 The debug build uses level-1 optimization, debug symbols, line information,
 and the `DEBUG` define:
@@ -109,13 +126,19 @@ and the `DEBUG` define:
 make debug
 ```
 
-The debug executable is `bin/superterm-debug`.
+The debug executable is `bin/superterm-debug` (`bin/superterm-debug.exe` on
+Windows).
 
 For extra compiler flags:
 
 ```sh
 make MODE=debug FPCFLAGS_EXTRA='-Sa'
 ```
+
+For memory audits, `make debug-heap` builds the separate
+`bin/superterm-debug-heap` executable (`.exe` on Windows) with FPC HeapTrc and
+per-process memory reports. See [HEAP_DEBUGGING.md](HEAP_DEBUGGING.md) for the
+required variables, report lifecycle and stress-test examples.
 
 The compatibility wrapper is still available:
 
@@ -135,6 +158,22 @@ Build the release binary and run every Python/pyte regression test:
 make test
 ```
 
+Each suite has an independent 15-minute deadline. A timed-out suite and its
+process group are terminated, the remaining suites still run, and the final
+summary lists every failure. Override the per-suite deadline when required:
+
+```sh
+SUPERTERM_TEST_TIMEOUT=1200 make test
+```
+
+The runner is implemented in Python and works on Linux and macOS; it does not
+depend on the GNU `timeout` utility.
+
+The regression harness uses POSIX `pty`, `fcntl`, and `termios` modules, so it
+does not run in native Windows Python. On Windows, use `make release`, check
+`bin/superterm.exe --version` or `--help`, and launch it for an interactive
+ConPTY smoke test.
+
 The tests launch isolated PTYs. They do not attach to, restart, or modify a
 user's tmux server. The detach test starts superterm's own per-user server,
 checks that a pane survives the client exit, reattaches it, and then closes it
@@ -143,7 +182,7 @@ permanently. The mouse tests cover both normal xterm `TERM` values and
 
 ## Install
 
-System installation normally requires root:
+On POSIX, system installation normally requires root:
 
 ```sh
 ./configure --prefix=/usr/local --sysconfdir=/etc
@@ -153,7 +192,7 @@ sudo make install
 
 The installation contains:
 
-- `PREFIX/bin/superterm`.
+- `PREFIX/bin/superterm` (`superterm.exe` on Windows).
 - `PREFIX/share/doc/superterm/README.md`.
 - `PREFIX/share/doc/superterm/BUILDING.md`.
 - `PREFIX/share/doc/superterm/CONFIGURATION.md`.
@@ -195,20 +234,20 @@ harness.
 ## Platform support
 
 superterm is a single cross-platform codebase that builds and runs natively on
-GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `poll`, POSIX
-PTYs, and the bundled FreeVision text UI. The detached server registers its
-listener, handshakes, clients and PTY masters through `BaseUnix.fpPoll`, with no
-external event-library dependency and no `FD_SETSIZE` ceiling. The only
-conditionally compiled unit is `src/st_pty.pas`, which selects the PTY/process
-backend with `{$IFDEF DARWIN}`:
+GNU/Linux, macOS, and Windows 10 1809 or newer. The FreeVision UI, VT engine,
+layout, and configuration are shared, while compiler directives select the
+terminal, process, input, console, and path implementations.
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
   Pascal auto-defines `DARWIN`, so the compile line, `configure`, and `make` are
   identical to GNU/Linux. Run in Terminal.app or iTerm2. See
   [`MACOS.md`](MACOS.md) for terminal setup and platform notes.
+- Windows: ConPTY, native console VT input/output, Windows process management,
+  `%COMSPEC%` (normally `cmd.exe`) as the default shell, and configuration under
+  `%APPDATA%\superterm`. See [`WINDOWS.md`](WINDOWS.md).
 
-No other unit is platform-conditional, so a change merged on one OS applies to
-both. Windows support would require a separate PTY backend based on ConPTY, plus
-Windows process, resize, signal, and configuration-path implementations; WSL is
-the practical way to run superterm on Windows today.
+GNU/Linux and macOS provide the detached session daemon, multi-client attach,
+session enumeration, and control CLI. Native Windows currently runs interactive
+workspaces in one process; those detached-session features are not available
+there yet.

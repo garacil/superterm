@@ -1,11 +1,15 @@
 # The superterm control CLI / La CLI de control de superterm
 
-superterm 3.0 turns every session into a server from the moment it starts:
-the visible terminal is just the first attached client. This document
-describes the command-line interface that drives those sessions from any
-other shell. **Every command and option is accepted in English and in
-Spanish**, case-insensitively and ignoring accents; messages follow the
+On GNU/Linux and macOS, superterm 3.0 turns every session into a server from
+the moment it starts: the visible terminal is just the first attached client.
+This document describes the command-line interface that drives those sessions
+from any other shell. **Every command and option is accepted in English and
+in Spanish**, case-insensitively and ignoring accents; messages follow the
 `[ui] language` setting (or `LANG` when no configuration exists yet).
+
+Native Windows builds run interactive workspaces locally through ConPTY. The
+detached server, attach/list operations, and control commands documented below
+are not available on Windows yet.
 
 La versión en español está en la segunda mitad de este documento.
 
@@ -74,9 +78,12 @@ superterm rename TARGET NAME     set a pane title (survives reattach/save)
 superterm resize TARGET WxH      explicitly resize the shared PTY, e.g. 100x30
 superterm minimize TARGET        minimize the window
 superterm restore TARGET         undo minimize and zoom
-superterm zoom TARGET            maximize the window
+superterm zoom TARGET            maximize and focus the window
 superterm organize SESSION [grid|tile|cascade]
 ```
+
+`resize` requires a normal, restored window. A maximized/F5 pane must be
+restored first so its canonical frame and PTY cannot describe different grids.
 
 ### Exit codes
 
@@ -98,23 +105,44 @@ superterm list prod
 ### Multi-user sessions
 
 Up to 8 clients can attach to one session (`superterm attach` from several
-terminals). Output and shared pane events are broadcast to everyone, while
-the default `resize_policy=session` keeps each interactive client's focus,
-window geometry and viewport independent. Use `resize_policy=smallest` for
-the former tmux-style common-minimum PTY sizing. A stalled client pauses
-output briefly and is disconnected after a grace period so it can never
-block the session. Legacy (pre-3.0) clients still attach exclusively,
-exactly as before.
+terminals). The daemon owns one desktop: window positions and sizes, minimize,
+zoom, fullscreen and focus are the same for every client. Input from all
+viewers remains enabled and the daemon processes it in arrival order. Attaching a
+different-sized terminal never adapts that desktop or sends `TIOCSWINSZ`;
+a smaller terminal clips it and a larger one has unused margin. A later
+physical resize of an attached host is different: it is a shared desktop
+operation and atomically updates every window and PTY. A new normal maximize
+uses the smallest currently attached framed IDE area; with unequal host sizes,
+F5 uses the smallest common IDE-rendered fullscreen area, while equal hosts
+can all use raw passthrough for F5. A later attach does not retroactively
+rewrite an existing maximum. Moves, incremental resizes and optional
+maximize/F5 outlines are relayed while they happen, not only as a final
+result. Per-pane leases allow different viewers to manipulate different panes
+concurrently; a maximize hand-off also acquires the previous maximized pane
+because both states change atomically. A peer commit cannot rewind the gesture
+still held by another viewer. Minimize and restore are delivered as one atomic
+shared transition.
+A stalled client pauses output briefly and is disconnected after a grace
+period so it can never block the session. Legacy (pre-3.0) clients still
+attach exclusively, exactly as before.
 
-Exiting an interactive client with `Alt-X` or `Alt-Q` disconnects only that
-client while another UI is attached. The last interactive client to exit
-closes the session. `Alt-X` saves first; `Alt-Q` does not. The explicit
+`Ctrl-Q d` disconnects only that viewer. No save or restore occurs: the live
+daemon object remains exactly as it was, and the next attach receives it.
+
+Exiting an interactive client with `Alt-X` disconnects only that client while
+another UI is attached. The last interactive client to exit closes the
+session. A live detached session already is the current state; there is no
+separate save/no-save exit. The explicit
 `superterm kill SESSION` command is always administrative and closes the
 whole session regardless of how many clients are attached.
 
 ---
 
 ## Español
+
+En Windows nativo, los espacios de trabajo interactivos se ejecutan localmente
+mediante ConPTY. El servidor separado, las operaciones de conectar/listar y
+las órdenes de control descritas aquí todavía no están disponibles en Windows.
 
 ### Destinos
 
@@ -178,9 +206,13 @@ superterm renombrar DESTINO NOMBRE  fija el título (sobrevive al reattach)
 superterm tamano DESTINO WxH     redimensiona el PTY compartido, ej. 100x30
 superterm minimizar DESTINO      minimiza la ventana
 superterm restaurar DESTINO      deshace minimizar y zoom
-superterm ampliar DESTINO        maximiza la ventana
+superterm ampliar DESTINO        maximiza la ventana y le da el foco
 superterm organizar SESION [rejilla|mosaico|cascada]
 ```
+
+`tamano` requiere una ventana normal y restaurada. Antes hay que restaurar un
+panel maximizado/F5 para que su marco canónico y su PTY no describan rejillas
+distintas.
 
 ### Códigos de salida
 
@@ -202,17 +234,37 @@ superterm listar prod
 ### Sesiones multiusuario
 
 Hasta 8 clientes pueden conectarse a una misma sesión (`superterm
-conectar` desde varios terminales). La salida se difunde a todos; los
-eventos compartidos del panel se propagan en vivo; y la política por defecto
-`resize_policy=session` mantiene independientes el foco, la geometría y el
-viewport de cada cliente interactivo. `resize_policy=smallest` recupera el
-anterior tamaño mínimo común del PTY al estilo tmux. Un cliente atascado
-pausa la salida brevemente y se desconecta pasado un periodo de gracia, de
-modo que nunca bloquea la sesión. Los clientes antiguos (anteriores a 3.0)
-siguen conectando en exclusiva, igual que siempre.
+conectar` desde varios terminales). El daemon posee un único escritorio:
+posiciones y tamaños, minimizar, zoom y pantalla completa son iguales para
+todos, incluido el panel enfocado. La entrada de todos los clientes sigue
+habilitada y el daemon la procesa por orden de llegada. Conectar un terminal
+de otro tamaño nunca adapta el escritorio ni
+envía `TIOCSWINSZ`; uno pequeño lo recorta y uno grande deja margen. Cambiar
+después el tamaño físico de un host conectado sí es una operación compartida:
+actualiza atómicamente todas las ventanas y PTY. Cada nuevo maximizado normal
+usa el área del IDE enmarcada del host conectado más pequeño; con hosts de
+tamaños distintos, F5 usa su área común de pantalla completa, y si son iguales
+todos pueden usar el passthrough crudo para F5. Un attach posterior no
+reescribe retroactivamente un maximizado existente. Los movimientos, cambios
+de tamaño graduales y contornos opcionales de maximizar/F5 se retransmiten
+mientras ocurren, no
+solo como resultado final. Los leases por panel permiten que distintos
+clientes manipulen paneles diferentes a la vez; el relevo de maximizado también
+adquiere el panel maximizado anterior porque ambos estados cambian de forma
+atómica. El commit de uno no puede hacer retroceder el gesto que otro aún
+mantiene. Minimizar y restaurar se presentan como una única transición
+compartida y atómica. Un cliente atascado pausa la salida brevemente y se
+desconecta pasado un periodo de
+gracia, de modo que nunca bloquea la sesión. Los clientes antiguos (anteriores
+a 3.0) siguen conectando en exclusiva, igual que siempre.
 
-Salir de un cliente interactivo con `Alt-X` o `Alt-Q` desconecta solo ese
-cliente mientras haya otra interfaz conectada. Cuando sale el último cliente
-interactivo, se cierra la sesión. `Alt-X` guarda antes; `Alt-Q` no. El comando
+`Ctrl-Q d` desconecta únicamente ese visor. No se guarda ni se restaura nada:
+el objeto vivo del daemon queda exactamente como estaba y el siguiente attach
+lo recibe directamente.
+
+Salir de un cliente interactivo con `Alt-X` desconecta solo ese cliente
+mientras haya otra interfaz conectada. Cuando sale el último cliente
+interactivo, se cierra la sesión. Una sesión viva separada ya es el estado
+actual; no hay salidas distintas con/sin guardado. El comando
 administrativo explícito `superterm matar SESION` siempre cierra la sesión
 completa, independientemente del número de clientes conectados.

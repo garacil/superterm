@@ -317,8 +317,11 @@ end;
 procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;
   Args: TStringList; out Secret: string; const CommandOverride: string);
 var
-  Target, Path, Item: string;
+  Target: string;
+  {$IFDEF UNIX}
+  Path, Item: string;
   Start, Sep: integer;
+  {$ENDIF}
   HaveSshPass: boolean;
 begin
   ProgramName := '';
@@ -332,6 +335,7 @@ begin
   if C.Password <> '' then
   begin
     Secret := C.Password;
+    {$IFDEF UNIX}
     Path := GetEnvironmentVariable('PATH');
     Start := 1;
     while Start <= Length(Path) + 1 do
@@ -349,6 +353,7 @@ begin
       end;
       Start := Sep + 1;
     end;
+    {$ENDIF}
   end;
   if HaveSshPass then
   begin
@@ -396,9 +401,11 @@ begin
   Result := Trim(AConnect);
   if Result = '' then
     Exit;
+  {$IFDEF UNIX}
   if Trim(APostConnect) <> '' then
     Result := 'printf ''%s\n'' ' + ShellQuote(Trim(APostConnect)) +
       ' | (' + Result + ')';
+  {$ENDIF}
 end;
 
 function CommandWithInteractiveShell(const Command, AShell: string;
@@ -409,6 +416,12 @@ begin
   Result := Trim(Command);
   if Result = '' then
     Exit;
+  {$IFDEF WINDOWS}
+  // TPty selects cmd /K or PowerShell -NoExit, which run this command and
+  // keep the same ConPTY interactive. POSIX `exec`, `-l` and `-i` syntax is
+  // invalid in those shells.
+  Exit;
+  {$ENDIF}
   if LoginShell then
     ModeArg := ' -l'
   else

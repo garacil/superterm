@@ -7,7 +7,8 @@ that it survives an autosave/autorestore round trip.
 """
 import os, pty, time, select, fcntl, termios, struct, shutil, sys
 
-BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bin', 'superterm'))
+BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
+    os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = '/tmp/opencode/sttitle-test'
 W, H = 100, 28
 
@@ -56,7 +57,8 @@ def text(sc):
                      for y in range(H))
 
 # ---- 1: rename, no-overwrite, persistence ----
-reset('[ui]\nlanguage=en\n[session]\nautosave=1\nautorestore=1\n')
+reset('[ui]\nlanguage=en\n[session]\nserver=detach\n'
+      'autosave=1\nautorestore=1\n')
 sc, st, pid, fd = launch()
 drain(sc, st, fd, 2.0)
 os.write(fd, b'\x1bp'); drain(sc, st, fd, 0.6)   # Panes menu
@@ -69,7 +71,7 @@ os.write(fd, b'MY-TITLE\r'); drain(sc, st, fd, 0.8)
 check('title set to custom', 'MY-TITLE' in text(sc))
 os.write(fd, b'cd /etc\r'); drain(sc, st, fd, 2.2)  # would refresh title from cwd
 check('custom title not overwritten by cwd', 'MY-TITLE' in text(sc))
-os.write(fd, b'\x1bx'); drain(sc, st, fd, 1.5)      # Alt-X save and exit
+os.write(fd, b'\x1bx'); drain(sc, st, fd, 1.5)      # local Exit autosaves
 time.sleep(0.4)
 try:
     os.close(fd)
@@ -78,7 +80,7 @@ except OSError:
 sc, st, pid, fd = launch()
 drain(sc, st, fd, 2.5)
 check('custom title restored after save', 'MY-TITLE' in text(sc))
-os.write(fd, b'\x1bq'); drain(sc, st, fd, 0.8)
+os.write(fd, b'\x1bx'); drain(sc, st, fd, 0.8)
 try:
     os.close(fd)
 except OSError:
@@ -89,6 +91,7 @@ reset('''[ui]
 language=en
 [session]
 default_profile=dummy
+server=detach
 [class.mybox]
 name=mybox
 enabled=1
@@ -109,7 +112,7 @@ drain(sc, st, fd, 2.0)
 os.write(fd, b'\x1bc'); drain(sc, st, fd, 0.5)   # Classes menu
 os.write(fd, b'2'); drain(sc, st, fd, 0.9)        # open class mybox
 check('class default title on window', 'Production DB' in text(sc))
-os.write(fd, b'\x1bq'); drain(sc, st, fd, 0.8)
+os.write(fd, b'\x1bx'); drain(sc, st, fd, 0.8)
 try:
     os.close(fd)
 except OSError:

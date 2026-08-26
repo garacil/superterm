@@ -22,6 +22,7 @@ FRAME_SCREEN = 21
 FRAME_READY = 22
 FRAME_CTL_DATA = 42
 FRAME_CTL_END = 43
+WINOP_RENAME = 9
 
 
 def attach_proto_ver():
@@ -82,7 +83,7 @@ def attach_in_fragments(path):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(5.0)
     sock.connect(path)
-    payload = struct.pack('<iiii', PROTO_VER, 0, 0, 1)
+    payload = struct.pack('<iiiii', PROTO_VER, 100, 28, 1, 0)
     frame = raw_frame(1, -1, payload)
     cuts = (1, 3, 7, 9, 13, len(frame))
     start = 0
@@ -192,7 +193,7 @@ if SOCK:
     snapshot_peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     snapshot_peer.connect(SOCK)
     snapshot_peer.sendall(raw_frame(
-        1, -1, struct.pack('<iiii', PROTO_VER, 0, 0, 1)))
+        1, -1, struct.pack('<iiiii', PROTO_VER, 100, 28, 1, 0)))
     time.sleep(0.5)
     ok, elapsed = info_works(SOCK, timeout=3.0)
     check('stalled snapshot does not block controls', ok and elapsed < 2.0)
@@ -237,6 +238,22 @@ if SOCK:
     check('oversize frame header drops the peer', dropped)
     ok, elapsed = info_works(SOCK, timeout=2.0)
     check('daemon alive after oversize header', ok and elapsed < 1.5)
+
+    # A valid outer frame can still contain a malicious Pascal-string length.
+    # The nested decoder must reject it by subtraction (without integer
+    # overflow/allocation), release the pane lease in its finally block, and
+    # accept the immediately following well-formed rename.
+    malformed_rename = bytes((WINOP_RENAME,)) + struct.pack('<i', 0x7fffffff)
+    bad_nested, _ = ctl_frames(
+        SOCK, FRAME_CTL_WINOP, 0, malformed_rename, 3.0)
+    check('oversize nested string is rejected',
+          bool(bad_nested) and bad_nested[-1][0] == 41)
+    good_rename = bytes((WINOP_RENAME,)) + pas_string('LEASE_RELEASED')
+    renamed, _ = ctl_frames(SOCK, FRAME_CTL_WINOP, 0, good_rename, 3.0)
+    check('malformed request releases pane lease',
+          bool(renamed) and renamed[-1][0] == 40)
+    ok, elapsed = info_works(SOCK, timeout=2.0)
+    check('daemon alive after nested length attack', ok and elapsed < 1.5)
 
 
 # Integration coverage for the old select FD_SETSIZE failure. The UI, pane,

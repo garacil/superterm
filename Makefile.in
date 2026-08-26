@@ -13,15 +13,28 @@ SYSCONFDIR := @SYSCONFDIR@
 DOCDIR := @DOCDIR@
 DATADIR := @DATADIR@
 
+EXEEXT :=
+ifeq ($(OS),Windows_NT)
+EXEEXT := .exe
+# configure runs under Git Bash and records /d/... paths. Native GNU Make and
+# CreateProcess cannot use that spelling, so normalize paths passed to Make's
+# prerequisite scanner and to the compiler executable.
+PROJECT_DIR := $(shell cygpath -m "$(PROJECT_DIR)")
+FPC := $(shell cygpath -m "$(FPC)")
+endif
+
+SUPERTERM_BIN := $(PROJECT_DIR)/bin/superterm$(EXEEXT)
+SUPERTERM_DEBUG_BIN := $(PROJECT_DIR)/bin/superterm-debug$(EXEEXT)
+SUPERTERM_HEAP_BIN := $(PROJECT_DIR)/bin/superterm-debug-heap$(EXEEXT)
+
 MODE ?= release
-TARGET ?= $(PROJECT_DIR)/bin/superterm
+TARGET ?= $(SUPERTERM_BIN)
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 
-# -vewnh: errors, warnings, notes and hints all on -- the project builds with
-# none of them. -vm11030,11031 silences the two FPC emits about reading its
-# own /etc/fpc.cfg, which say nothing about this code and made a clean build
-# look like it had something to report.
+# -vewnh keeps errors, warnings, notes and hints visible on every target.
+# -vm11030,11031 silences the two FPC emits about reading its own fpc.cfg;
+# those messages describe compiler setup rather than project code.
 BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm11030,11031 \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
@@ -31,7 +44,8 @@ ifeq ($(MODE),debug)
 # -Crtoi explicito: /etc/fpc.cfg lo activa via su rama "#IFDEF DEBUG", pero
 # el build no debe depender del config global para sus checks de runtime
 MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
-else ifeq ($(MODE),release)
+else
+ifeq ($(MODE),release)
 # -gl: line information, kept in the optimised build on purpose. A crash
 # report from a release binary carried bare addresses that resolved to
 # nothing, which is exactly when the report matters most; with this the
@@ -40,6 +54,7 @@ MODE_FLAGS := -O4 -gl
 else
 $(error MODE must be release or debug)
 endif
+endif
 
 SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
   $(wildcard $(PROJECT_DIR)/src/*.lpr) \
@@ -47,24 +62,37 @@ SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.inc)
 
 TESTS := drive_test.py large_screen_test.py mouse_test.py \
-  mouse_focus_test.py focus_color_test.py restore_test.py sysconfig_test.py \
+  mouse_focus_test.py focus_color_test.py palette_resize_transition_test.py \
+  class_creation_transition_test.py \
+  restore_test.py sysconfig_test.py \
   template_test.py sqlite_test.py wizard_test.py language_test.py clipboard_test.py \
   window_test.py cursor_test.py wclass_test.py profile_test.py \
-  profile_default_test.py profile_shell_fallback_test.py multisession_test.py \
+  profile_default_test.py profile_shell_fallback_test.py \
+  profile_switch_transition_test.py multisession_test.py \
   prefix_test.py title_test.py \
   detach_test.py control_test.py cli_test.py control_wm_test.py \
-  nonblocking_server_test.py \
+  nonblocking_server_test.py global_command_fifo_test.py sidecar_atomic_test.py \
+  global_lock_queue_test.py \
+  multiclient_input_burst_test.py \
   multithread_server_test.py \
-  multiclient_test.py multiclient_close_test.py independent_geometry_test.py \
-  multiclient_focus_test.py alwaysserver_test.py \
-  passthrough_test.py passthrough_multiclient_test.py \
-  exit_clean_test.py newwindow_test.py appcursor_test.py \
+  multiclient_test.py multiclient_close_test.py shared_geometry_test.py \
+  host_resize_shared_test.py maximize_min_viewport_test.py \
+  zoom_exclusive_switch_test.py \
+  host_summary_lease_test.py \
+  shared_state_stress_test.py multiclient_intensive_test.py \
+  multiclient_focus_test.py multiclient_minimize_test.py \
+  layout_transition_test.py layout_preview_protocol_test.py wireframe_preview_test.py \
+  concurrent_gesture_test.py \
+  restore_focus_test.py title_hold_focus_test.py alwaysserver_test.py \
+  passthrough_test.py passthrough_multiclient_test.py f5_output_layout_order_test.py \
+  exit_clean_test.py newwindow_test.py appcursor_test.py late_dsr_test.py \
   scrollback_test.py nesting_test.py mouseforward_test.py \
   remote_newpane_test.py fullscreen_test.py empty_desktop_test.py \
+  max_panes_test.py close_all_panes_test.py \
   mousemode_test.py dialog_opaque_test.py \
   badclass_test.py passthrough_modes_test.py resize_keep_test.py
 
-.PHONY: all release debug test install uninstall install-deps clean distclean info
+.PHONY: all release debug debug-heap test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
@@ -79,10 +107,19 @@ $(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(PROJECT_DIR)/config.st
 		-o$(TARGET) $(PROJECT_DIR)/src/superterm.lpr
 
 release:
-	$(MAKE) MODE=release TARGET=$(PROJECT_DIR)/bin/superterm all
+	$(MAKE) MODE=release TARGET=$(SUPERTERM_BIN) all
 
 debug:
-	$(MAKE) MODE=debug TARGET=$(PROJECT_DIR)/bin/superterm-debug all
+	$(MAKE) MODE=debug TARGET=$(SUPERTERM_DEBUG_BIN) all
+
+# Separate instrumented binary: -gh installs FPC's HeapTrc memory manager and
+# SUPERTERM_HEAPTRACE gives st_debug permission to redirect every process to a
+# distinct, PID-tagged dump. Keeping it separate avoids changing normal debug
+# timing and memory layout when a race/deadlock is being reproduced.
+debug-heap:
+	$(MAKE) MODE=debug TARGET=$(SUPERTERM_HEAP_BIN) \
+		UNITDIR=$(PROJECT_DIR)/build/units/debug-heap \
+		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -gh -dSUPERTERM_HEAPTRACE' all
 
 test: release
 	@if [ -z "$(PYTHON)" ]; then \
@@ -90,18 +127,9 @@ test: release
 	fi
 	@$(PYTHON) -c 'import pyte' 2>/dev/null || \
 		(printf '%s\n' 'Python module pyte is required; install python3-pyte or run pip install pyte'; exit 1)
-	@failed=''; total=0; for test in $(TESTS); do \
-		printf '\n==> test/%s\n' "$$test"; \
-		total=$$((total + 1)); \
-		$(PYTHON) "$(PROJECT_DIR)/test/$$test" || failed="$$failed $$test"; \
-	done; \
-	printf '\n---------------------------------------------\n'; \
-	if [ -n "$$failed" ]; then \
-		printf 'FAILED suites (of %s):\n' "$$total"; \
-		for t in $$failed; do printf '  test/%s\n' "$$t"; done; \
-		exit 1; \
-	fi; \
-	printf 'all %s suites passed\n' "$$total"
+	@SUPERTERM_TEST_BIN="$(SUPERTERM_BIN)" \
+		$(PYTHON) "$(PROJECT_DIR)/test/run_tests.py" \
+		--project-dir "$(PROJECT_DIR)" $(TESTS)
 
 # Regenerate this Makefile when its template or configure changes. An existing
 # checkout otherwise keeps a stale Makefile after a pull -- which is how a new
@@ -112,7 +140,7 @@ Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
 
 install: release
 	@mkdir -p "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DOCDIR)" "$(DESTDIR)$(SYSCONFDIR)/superterm"
-	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(DESTDIR)$(BINDIR)/superterm"
+	install -m 0755 "$(SUPERTERM_BIN)" "$(DESTDIR)$(BINDIR)/superterm$(EXEEXT)"
 	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DESTDIR)$(DOCDIR)/README.md"
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
 		install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \
@@ -131,7 +159,7 @@ install: release
 	fi
 
 uninstall:
-	rm -f "$(DESTDIR)$(BINDIR)/superterm"
+	rm -f "$(DESTDIR)$(BINDIR)/superterm$(EXEEXT)"
 	rm -f "$(DESTDIR)$(DOCDIR)/README.md" "$(DESTDIR)$(DOCDIR)/BUILDING.md" \
 		"$(DESTDIR)$(DOCDIR)/CONFIGURATION.md" "$(DESTDIR)$(DOCDIR)/WIZARD.md"
 	rm -f "$(DESTDIR)$(SYSCONFDIR)/superterm/superterm.ini.example"

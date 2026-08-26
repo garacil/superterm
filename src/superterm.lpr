@@ -15,18 +15,31 @@ uses
   {$ifdef unix}cthreads,{$endif}
   // st_mouse BEFORE Drivers: it must register its mouse driver before the
   // Drivers unit initialises and asks the RTL whether a mouse exists
-  SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server, st_video,
-  st_kbd, st_config, st_cli, st_debug;
+  SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server,
+  st_video, st_kbd, st_config, st_cli, st_debug
+  {$IFDEF UNIX}, BaseUnix{$ENDIF};
 
+// The daemon child must run Pascal unit finalizers (notably HeapTrc) after
+// its inherited TApplication has unwound, but must not enter the platform's
+// normal post-fork exit/atexit path.  This is the RTL routine System itself
+// calls from Halt; FpExit below is the raw Unix syscall on Linux and macOS.
+{$IFDEF UNIX}
+procedure FinalizePascalUnits; external name 'FPC_FINALIZEUNITS';
+{$ENDIF}
+
+procedure Main;
 var
   STApp: PSuperApp;
-  i: integer;
+  i, CliExitCode: integer;
   AttachName: string;
   ListOnly: boolean;
   Infos: TSessionInfoArray;
   BootCfg: TConfig;
 
 begin
+  // In a HeapTrc build this also gives even short-lived CLI commands their
+  // own PID-tagged memory report. The daemon calls it again after fork.
+  DebugSetRole('client');
   AttachRequested := False;
   AttachSocket := '';
   // language resolved BEFORE printing anything: the CLI speaks the IDE
@@ -41,7 +54,11 @@ begin
     CurrentLanguage := ulSpanish;
   // CLI commands (list/send/capture/... in English or Spanish): they run
   // and exit; the TUI startup and --attach continue through here
-  RunCli;
+  if RunCli(CliExitCode) then
+  begin
+    System.ExitCode := CliExitCode;
+    Exit;
+  end;
   AttachName := '';
   ListOnly := False;
   i := 1;
@@ -82,14 +99,16 @@ begin
     end
     else
       WriteLn('superterm: no detached sessions');
-    Halt(0);
+    System.ExitCode := 0;
+    Exit;
   end;
   if AttachRequested then
   begin
     if not EnumerateSessions(Infos) then
     begin
       WriteLn(StdErr, 'superterm: no detached session is available');
-      Halt(1);
+      System.ExitCode := 1;
+      Exit;
     end;
     if AttachName <> '' then
     begin
@@ -111,7 +130,8 @@ begin
       if AttachSocket = '' then
       begin
         WriteLn(StdErr, 'superterm: no session named "', AttachName, '"');
-        Halt(1);
+        System.ExitCode := 1;
+        Exit;
       end;
       // inside a pane: never the session this pane belongs to, nor one
       // above it (see st_server.SessionAllowedFromHere)
@@ -127,7 +147,8 @@ begin
             WriteLn(StdErr, 'superterm: "', Infos[i].Name,
               '" is the session this pane belongs to (or one above it); ',
               'attaching to it would be a mirror without end.');
-          Halt(2);
+          System.ExitCode := 2;
+          Exit;
         end;
     end
     else
@@ -144,7 +165,8 @@ begin
             'engancharse desde aqui.')
         else
           WriteLn(StdErr, 'superterm: no session can be attached from here.');
-        Halt(1);
+        System.ExitCode := 1;
+        Exit;
       end;
     end;
     // with several sessions and no name, the app selector decides
@@ -180,10 +202,13 @@ begin
     // server-always: the freshly built workspace moves to a daemon
     // and this instance becomes a client (config [session] server=always)
     STApp^.PromoteToServer;
-    if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
-    STApp^.FinishBoot;   // release the boot lock and paint ONCE
     if not STApp^.AbortRun then
-      STApp^.Run;
+    begin
+      if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
+      STApp^.FinishBoot;   // release the boot lock and paint ONCE
+      if not STApp^.AbortRun then
+        STApp^.Run;
+    end;
   end;
   Dispose(STApp, Done);
   // stop the terminal reporting to whatever runs next, and drop anything it
@@ -191,4 +216,21 @@ begin
   ReleaseConsoleInput;
   // leave the cursor where it was at program launch (quit or detach)
   RestoreConsoleCursor;
+end;
+
+begin
+  try
+    Main;
+  finally
+    {$IFDEF UNIX}
+    if DetachedServerChildFinished then
+    begin
+      // FinalizeUnits decrements the RTL init count before every callback, so
+      // this emits one HeapTrc report.  The raw exit prevents System/Halt or
+      // libc atexit from repeating inherited pre-fork cleanup afterwards.
+      FinalizePascalUnits;
+      FpExit(System.ExitCode);
+    end;
+    {$ENDIF}
+  end;
 end.

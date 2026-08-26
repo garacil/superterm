@@ -181,7 +181,7 @@ if up and first() > 0:
 else:
     check('the bar still drives this pane after renumbering', False)
 
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

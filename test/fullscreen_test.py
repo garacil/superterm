@@ -60,7 +60,7 @@ c.send(b'echo BACK_IN_THE_IDE\r', 1.2)
 c.wait_until(lambda t: 'BACK_IN_THE_IDE' in t, 6.0)
 check('the pane still runs', 'BACK_IN_THE_IDE' in c.text())
 
-c.send(b'\x1bq', 0.8)
+c.send(b'\x1bx', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

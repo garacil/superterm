@@ -2,9 +2,9 @@
 """superterm test: always-server (every session is born with a daemon).
 
 Covers: socket and sidecar at launch, CLI control from startup,
-automatic names and --session, Alt-Q kills without saving, Alt-X kills
-and saves, detach with no dialog, a hard-killed client leaves the daemon
-alive, self-cleanup once all panes are dead, and the escape hatch
+automatic names and --session, the single Alt-X exit path, detach with no
+dialog, a hard-killed client leaves the daemon alive, self-cleanup once all
+panes are dead, and the escape hatch
 [session] server=detach (classic mode).
 """
 import os
@@ -48,14 +48,14 @@ check('client shows CLI text', 'LIVE_FROM_CLI' in a.text())
 r = run_cli(['capture', '.'], HOME)
 check('capture works from launch', 'LIVE_FROM_CLI' in r.stdout)
 
-# ---- 2: Alt-Q kills the daemon without saving ----
+# ---- 2: the last viewer's single Exit path closes the live session ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
-a.send(b'\x1bq', 1.0)
-check('Alt-Q exits client', a.wait_exit(timeout=8.0) is not None)
+a.send(b'\x1bx', 1.0)
+check('Alt-X exits last client', a.wait_exit(timeout=8.0) == 0)
 a.close()
-check('Alt-Q kills the daemon', wait_for(lambda: socks() == []))
-check('Alt-Q does not save', not os.path.exists(SESS_INI))
+check('last Exit closes daemon', wait_for(lambda: socks() == []))
+check('live Exit creates no fallback save', not os.path.exists(SESS_INI))
 
 # ---- 3: --session FreeFormName and collision -> suffix ----
 b = stlib.Client(HOME, args=['--session', 'Trabajo Uno'], w=100, h=28)
@@ -68,14 +68,14 @@ c.send(b'\x1b', 0.6)   # the selector appears (a live session exists): Esc = new
 c.drain(1.5)
 check('collision gets suffix', wait_for(
     lambda: len([s for s in socks() if 'Trabajo' in s]) == 2))
-c.send(b'\x1bq', 1.0)
+c.send(b'\x1bx', 1.0)
 c.wait_exit(timeout=8.0)
 c.close()
 
 # ---- 4: detach with no dialog; hard-killing the client leaves the daemon ----
 b.send(b'\x11', 0.4)
 b.send(b'd', 1.0)
-check('detach exits with no prompt', b.wait_exit(timeout=8.0) is not None)
+check('detach exits with no prompt', b.wait_exit(timeout=8.0) == 0)
 b.close()
 check('daemon survives detach', any('Trabajo' in s for s in socks()))
 
@@ -90,15 +90,14 @@ e.drain(2.0)
 e.send(b'echo BACK_AGAIN\r', 1.0)
 check('reattach after kill works', 'BACK_AGAIN' in e.text())
 
-# ---- 5: Alt-X kills and saves session.ini daemon-side ----
+# ---- 5: final Exit after detach/reattach closes without a save variant ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
 e.send(b'\x1bx', 1.0)
-check('Alt-X exits client', e.wait_exit(timeout=8.0) is not None)
+check('Alt-X exits client', e.wait_exit(timeout=8.0) == 0)
 e.close()
 check('Alt-X kills the daemon', wait_for(lambda: socks() == []))
-check('Alt-X saves session.ini', wait_for(
-    lambda: os.path.exists(SESS_INI), timeout=4.0))
+check('attached Exit creates no fallback save', not os.path.exists(SESS_INI))
 
 # ---- 6: self-cleanup: dead panes and no clients -> shuts itself down ----
 f = stlib.Client(HOME, env={'SUPERTERM_REAP_MS': '2500'}, w=100, h=28)
