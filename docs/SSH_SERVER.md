@@ -696,6 +696,7 @@ does not promise a private text file.
 | `check` rejects `/etc/ssh/sshrc` | OpenSSH would run it outside `ForceCommand` control | Audit/remove that global hook; do not bypass validation |
 | Unprotected path rejected | The binary or an ancestor directory is writable/not owned by root | Install into a root-owned hierarchy and run `setup` again |
 | Public host key missing or mismatched | The `.pub` does not derive from the retained private key | `setup` can repair only the public half; verify the fingerprint afterwards |
+| `Missing privilege separation directory: /run/sshd` | A Debian/Ubuntu `sshd` was invoked directly while its systemd runtime directory was absent | Start the distribution's `ssh.service`, or create the standard root-owned `0755` `/run/sshd` runtime directory before retrying; do not weaken `sshd_config` |
 | `protocol version ... need ...` | Client and daemon come from incompatible builds | Explicitly close the old session or use the matching binary |
 
 Never debug by passing a password in argv, `server.ini`, a URL, or a log.
@@ -725,7 +726,12 @@ SUPERTERM_TEST_BIN="$PWD/bin/superterm-test" \
   detach, reattach, profiles, and an empty desktop over the session protocol.
 - `ssh_transport_test.py` starts an isolated OpenSSH TCP listener and connects
   with the standard `ssh` client; it covers two viewers, abrupt loss, resize,
-  rejection of exec/SFTP/forwarding, and reattach.
+  rejection of exec/SFTP/forwarding, and reattach. On Debian/Ubuntu, when the
+  host service has not created its compiled `/run/sshd` prerequisite, this
+  isolated privileged fixture creates that protected runtime directory after
+  the exact OpenSSH diagnostic. It deliberately leaves the standard directory
+  in place because another OpenSSH process may start using the shared empty
+  chroot at any time; removing it safely cannot be inferred from its contents.
 - `ssh_service_uninstall_test.py` tests descriptor ownership, service-manager
   failures, rollback, and preservation of all `/etc/superterm/sshd` state
   during uninstall.
