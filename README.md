@@ -2,7 +2,7 @@
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
-![SuperTerm connects from any standard SSH client](screenshots/ssh-anywhere.png)
+![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
 GNU/Linux and macOS. It puts up to 16 real PTY-backed terminals inside a
@@ -871,9 +871,9 @@ units plus the project-specific wide-screen and tmux mouse fixes.
 
 Prebuilt x86_64 packages for every release are on the
 [releases page](https://github.com/garacil/superterm/releases/latest): a
-portable tarball for any GNU/Linux, plus `.deb`, `.rpm` and Arch
-`.pkg.tar.zst`. The only dependency is glibc, and each file ships with its
-`.sha256`. macOS and ARM builds are published separately.
+portable tarball for x86_64 GNU/Linux with glibc 2.34 or newer, plus `.deb`,
+`.rpm` and Arch `.pkg.tar.zst`. Each file ships with its `.sha256`; macOS arm64
+and universal builds are published separately.
 
 To build from source instead, for a system install:
 
