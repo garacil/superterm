@@ -1501,11 +1501,11 @@ begin
   end;
   Result := snlError;
   LockPath := SessionsDir + '/.create-' + SanitizeSessionName(AName) + '.lock';
-  // O_NOFOLLOW closes the final-component symlink race. The parent sessions
+  // Open_NoFollow closes the final-component symlink race. The parent sessions
   // directory is private (0700); fstat still validates an existing inode so
   // a FIFO/device or same-UID group-writable file can never become a lock.
   HeldSessionNameLockFD := FpOpen(PAnsiChar(LockPath),
-    O_RDWR or O_CREAT or O_NOFOLLOW, &600);
+    O_RDWR or O_CREAT or Open_NoFollow, &600);
   if HeldSessionNameLockFD < 0 then
     Exit;
   St := Default(Stat);

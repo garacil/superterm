@@ -478,7 +478,7 @@ begin
   Result := UniqueTempName(Target, 'write');
   Flags := O_WRONLY or O_CREAT or O_EXCL;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   Fd := FpOpen(RawByteString(Result), Flags, Mode);
   if Fd < 0 then
@@ -534,7 +534,7 @@ var
 begin
   Flags := O_RDONLY;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   repeat
     Fd := FpOpen(RawByteString(Path), Flags, 0);
@@ -606,7 +606,7 @@ begin
   Result := '';
   Flags := O_RDONLY or O_NONBLOCK;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   repeat
     Fd := FpOpen(RawByteString(Path), Flags, 0);
@@ -1670,7 +1670,7 @@ var
 begin
   Flags := O_RDWR or O_CREAT;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
-  Flags := Flags or O_NOFOLLOW;
+  Flags := Flags or Open_NoFollow;
   {$ENDIF}
   Result := FpOpen(RawByteString(RootPath('.admin.lock')), Flags, &600);
   if Result < 0 then
