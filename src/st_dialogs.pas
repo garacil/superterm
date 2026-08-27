@@ -72,6 +72,12 @@ function RunClipboardHistory(AHistory: TClipboardHistory;
 // AColor is both the colour to start on and, on True, the one chosen.
 function RunDesktopColorPick(var AColor: integer): boolean;
 
+// Edits the one logical desktop work area (menu/status rows excluded).
+// Values are returned only after both fields satisfy st_layout's shared
+// canonical limits.
+function RunDesktopSizeDialog(var AWidth, AHeight: integer;
+  AMinWidth, AMinHeight, AMaxWidth, AMaxHeight: integer): boolean;
+
 function RunSessionPicker(AllowStartNew: boolean;
   out ASocketPath: string): TSessionPickAction;
 
@@ -145,6 +151,13 @@ type
     procedure UpdateSuggestedName;
   end;
 
+  PDesktopSizeDialog = ^TDesktopSizeDialog;
+  TDesktopSizeDialog = object(TDialog)
+    WidthLine, HeightLine: PInputLine;
+    MinWidth, MinHeight, MaxWidth, MaxHeight: integer;
+    function Valid(Command: word): boolean; virtual;
+  end;
+
   // one-class editor; Valid(cmOK) validates and shows the error without
   // closing. OtherNames points to a local variable of the caller (only
   // alive during the modal ExecView): other class names for uniqueness.
@@ -187,6 +200,73 @@ procedure SetLineText(P: PInputLine; const S: string);
 begin
   if (P <> nil) and (P^.Data <> nil) then
     P^.Data^ := Copy(S, 1, P^.MaxLen);
+end;
+
+function TDesktopSizeDialog.Valid(Command: word): boolean;
+var
+  W, H: integer;
+begin
+  Result := inherited Valid(Command);
+  if (not Result) or (Command <> cmOK) then
+    Exit;
+  if (not TryStrToInt(Trim(LineText(WidthLine)), W)) or
+     (not TryStrToInt(Trim(LineText(HeightLine)), H)) or
+     (W < MinWidth) or (W > MaxWidth) or
+     (H < MinHeight) or (H > MaxHeight) then
+  begin
+    MessageBox(Format(UiText(
+      'Enter dimensions between %dx%d and %dx%d cells.',
+      'Indique dimensiones entre %dx%d y %dx%d caracteres.'),
+      [MinWidth, MinHeight, MaxWidth, MaxHeight]), nil,
+      mfError or mfOKButton);
+    Result := False;
+  end;
+end;
+
+function CenteredRect(W, H: integer): TRect; forward;
+
+function RunDesktopSizeDialog(var AWidth, AHeight: integer;
+  AMinWidth, AMinHeight, AMaxWidth, AMaxHeight: integer): boolean;
+var
+  D: PDesktopSizeDialog;
+  R: TRect;
+  Command: word;
+begin
+  Result := False;
+  R := CenteredRect(54, 10);
+  D := New(PDesktopSizeDialog, Init(R,
+    UiText('Desktop dimensions', 'Dimensiones del escritorio')));
+  with D^ do
+  begin
+    MinWidth := AMinWidth;
+    MinHeight := AMinHeight;
+    MaxWidth := AMaxWidth;
+    MaxHeight := AMaxHeight;
+    NewButton(14, 6, 10, 2, UiText('OK', 'Aceptar'), cmOK,
+      hcNoContext, bfDefault);
+    NewButton(28, 6, 12, 2, UiText('Cancel', 'Cancelar'), cmCancel,
+      hcNoContext, bfNormal);
+    R.Assign(3, 4, 51, 5);
+    Insert(New(PStaticText, Init(R, Format(
+      UiText('Allowed: %d..%d wide, %d..%d high (cells)',
+        'Limites: ancho %d..%d, alto %d..%d (caracteres)'),
+      [AMinWidth, AMaxWidth, AMinHeight, AMaxHeight]))));
+    HeightLine := NewInputLine(22, 2, 12, 5, hcNoContext, nil);
+    NewLabel(3, 2, UiText('Height', 'Alto'), HeightLine);
+    WidthLine := NewInputLine(22, 1, 12, 5, hcNoContext, nil);
+    NewLabel(3, 1, UiText('Width', 'Ancho'), WidthLine);
+    SetLineText(WidthLine, IntToStr(AWidth));
+    SetLineText(HeightLine, IntToStr(AHeight));
+  end;
+  Command := Desktop^.ExecView(D);
+  if Command = cmOK then
+  begin
+    Result := TryStrToInt(Trim(LineText(D^.WidthLine)), AWidth) and
+      TryStrToInt(Trim(LineText(D^.HeightLine)), AHeight) and
+      (AWidth >= AMinWidth) and (AWidth <= AMaxWidth) and
+      (AHeight >= AMinHeight) and (AHeight <= AMaxHeight);
+  end;
+  Dispose(D, Done);
 end;
 
 // MessageBox runs the text through FormatStr, which interprets '%':

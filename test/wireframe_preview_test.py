@@ -30,6 +30,8 @@ RING_GLYPHS = frozenset('┌─┐│└┘')
 FRAME_LEFT = ('╔', '┌', '░', '▒', '▓')
 FRAME_RIGHT = ('╗', '┐', '░', '▒', '▓')
 CLEAR_RE = re.compile(br'\x1b\[[0-?]*[ -/]*J|\x1bc|\x1b#8')
+GEOMETRY_STATUS_RE = re.compile(
+    r' (?:Window|Ventana) (\d+),(\d+)  (\d+)x(\d+) $')
 
 HOME = stlib.fresh_home('wireframe-preview')
 INI = HOME + '/.superterm/superterm.ini'
@@ -112,6 +114,17 @@ def frame_rect(value, title=TITLE):
                 rows[bottom][right] in ('╝', '┘')):
             return left, top, right, bottom
     return None
+
+
+def geometry_status(value):
+    """Return the labelled window ``X,Y  WxH`` status, if present."""
+    rows = display_of(value)
+    if not rows:
+        return None
+    match = GEOMETRY_STATUS_RE.search(rows[-1])
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
 
 
 def has_lock(value):
@@ -435,6 +448,9 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
           daemon_baseline is not None)
     check(label + ' uses same monochrome frame attribute',
           actor_attr is not None and actor_attr == observer_attr)
+    check(label + ' baseline has no geometry status',
+          geometry_status(actor) is None and
+          geometry_status(observer) is None)
     if baseline is None or daemon_baseline is None:
         return
 
@@ -458,6 +474,7 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
 
     step_rects = []
     ring_ok = True
+    geometry_status_ok = True
     lock_samples = [(not has_lock(actor), has_lock(observer))]
     canonical_samples = [held_state]
     focus_samples = [] if held_state is None else [held_state[0]]
@@ -475,6 +492,16 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
         actor_ok = exact_ring(actor_sample, expected, actor_attr)
         observer_ok = exact_locked_ring(observer_sample, expected,
                                         observer_attr)
+        bx, by, bw, bh = daemon_baseline[1]
+        expected_status = ((bx, by, bw + step, bh) if resize else
+                           (bx + step, by, bw, bh))
+        step_status_ok = (geometry_status(actor_sample) == expected_status and
+                          geometry_status(observer_sample) is None)
+        if not step_status_ok:
+            print(f'  {label} step {step}: expected status='
+                  f'{expected_status} actor={geometry_status(actor_sample)} '
+                  f'observer={geometry_status(observer_sample)}')
+        geometry_status_ok = geometry_status_ok and step_status_ok
         if not (actor_ok and observer_ok):
             ar, ac = active_ring(actor_sample, actor_attr)
             br = expected if complete_ring(observer_sample, expected,
@@ -500,6 +527,11 @@ def perform_mouse_gesture(label, actor, observer, sock_path, resize):
           held_lock_ok and all(actor_ok and observer_ok
                                for actor_ok, observer_ok in lock_samples))
     check(label + ' relays six exact one-cell rings', ring_ok)
+    check(label + ' shows live canonical geometry at right',
+          geometry_status_ok)
+    check(label + ' clears geometry status on release',
+          geometry_status(actor) is None and
+          geometry_status(observer) is None)
     check(label + ' keeps canonical geometry/PTY under every ring',
           bool(canonical_samples) and
           all(state == daemon_baseline for state in canonical_samples))

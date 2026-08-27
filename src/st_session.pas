@@ -25,6 +25,7 @@ type
     // exactly where they were when the session is restored
     BX, BY, BW, BH: integer;
     Minimized: boolean;
+    IconSlot: integer; // stable minimized slot; -1 when restored/legacy
     Zoomed: boolean;
     FullScreen: boolean;
   end;
@@ -122,8 +123,7 @@ begin
     Ini.WriteString('layout', 'nodes', SL.DelimitedText);
     Ini.WriteInteger('layout', 'count', Length(Panes));
     Ini.WriteInteger('layout', 'focused', Lay.Focused);
-    // desktop size at save time: absolute bounds are only reapplied
-    // on restore if the desktop has the same dimensions
+    // One canonical desktop. A later physical terminal is merely a viewport.
     if (ADeskW > 0) and (ADeskH > 0) then
     begin
       Ini.WriteInteger('layout', 'deskw', ADeskW);
@@ -145,7 +145,12 @@ begin
         Ini.WriteInteger(Sec, 'bh', Panes[i].BH);
       end;
       if Panes[i].Minimized then
+      begin
         Ini.WriteInteger(Sec, 'min', 1);
+        if (Panes[i].IconSlot >= 0) and
+           (Panes[i].IconSlot < MAX_PANES) then
+          Ini.WriteInteger(Sec, 'icon_slot', Panes[i].IconSlot);
+      end;
       if Panes[i].Zoomed then
         Ini.WriteInteger(Sec, 'zoom', 1);
       if Panes[i].FullScreen then
@@ -231,6 +236,10 @@ begin
       Panes[i].BW := Ini.ReadInteger(Sec, 'bw', 0);
       Panes[i].BH := Ini.ReadInteger(Sec, 'bh', 0);
       Panes[i].Minimized := Ini.ReadInteger(Sec, 'min', 0) <> 0;
+      Panes[i].IconSlot := Ini.ReadInteger(Sec, 'icon_slot', -1);
+      if (not Panes[i].Minimized) or (Panes[i].IconSlot < 0) or
+         (Panes[i].IconSlot >= MAX_PANES) then
+        Panes[i].IconSlot := -1;
       Panes[i].Zoomed := Ini.ReadInteger(Sec, 'zoom', 0) <> 0;
       Panes[i].FullScreen := Ini.ReadInteger(Sec, 'fullscreen', 0) <> 0;
       ArgCount := Ini.ReadInteger(Sec, 'argc', 0);

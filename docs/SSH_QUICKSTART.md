@@ -335,6 +335,19 @@ ssh -tt -o BatchMode=yes -o IdentitiesOnly=yes \
 
 Never use `StrictHostKeyChecking=no` to make this test pass.
 
+Windows viewer: in Windows Terminal, select UTF-8 before starting the client;
+`-tt` requests a PTY but does not change the code page:
+
+```powershell
+chcp.com 65001 > $null
+ssh -tt -p 8022 german@192.168.0.214
+```
+
+SuperTerm also probes each viewer and falls back to 7-bit line drawing when it
+detects legacy-width decoding. See
+[Windows SSH clients and terminal encoding](SSH_SERVER.md#windows-ssh-clients-and-terminal-encoding)
+for behavior and limitations.
+
 ## 7. Optional client shortcut
 
 Append a new entry to the client's `~/.ssh/config`:

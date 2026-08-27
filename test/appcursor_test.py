@@ -14,6 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stlib import Client, fresh_home, check, report, close_all_daemons
 
 home = fresh_home('appcursor')
+with open(home + '/.superterm/superterm.ini', 'w') as config:
+    config.write('[ui]\n'
+                 'language=en\n'
+                 'palette=color\n'
+                 'background=none\n'
+                 '[session]\n'
+                 'server=always\n'
+                 'autosave=0\n'
+                 'autorestore=0\n')
 c = Client(home, w=100, h=30)
 c.drain(3.0)
 

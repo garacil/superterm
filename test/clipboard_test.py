@@ -60,7 +60,20 @@ def has_pane_line(client, expected):
     return False
 
 
+def write_config(home, language='en'):
+    with open(home + '/.superterm/superterm.ini', 'w') as config:
+        config.write('[ui]\n'
+                     f'language={language}\n'
+                     'palette=color\n'
+                     'background=none\n'
+                     '[session]\n'
+                     'server=always\n'
+                     'autosave=0\n'
+                     'autorestore=0\n')
+
+
 home = fresh_home('clipboard')
+write_config(home)
 c = Client(home, w=110, h=32, env={'SHELL': bracketed_paste_shell()})
 c.drain(2.5)
 
@@ -186,10 +199,15 @@ close_all_daemons(home)
 # The longer Spanish top-level label must still fit the supported 80-column
 # layout, and must use the translated menu/dialog names.
 home_es = fresh_home('clipboard-es')
+write_config(home_es, 'es')
 es = Client(home_es, w=80, h=25, lang='es')
 es.drain(2.0)
 menu_row = es.screen.display[0]
 check('Spanish Clipboard menu fits', 'Portapapeles' in menu_row)
+check('Spanish compact menu keeps Desktop and Help',
+      'Escritorio' in menu_row and 'Ayuda' in menu_row)
+check('Spanish compact menu abbreviates only crowded neighbours',
+      all(label in menu_row for label in ('Perf.', 'Ses.', 'Opc.')))
 check('Spanish Clipboard immediately before Help',
       menu_row.find('Portapapeles') < menu_row.find('Ayuda') and
       menu_row[menu_row.find('Portapapeles') + len('Portapapeles'):
@@ -197,8 +215,41 @@ check('Spanish Clipboard immediately before Help',
 es.send(b'\x1bt', 0.4)  # Alt-T: Por-t-apapeles
 check('Spanish Clipboard actions',
       'Copiar del panel' in es.text() and 'Pegar del historial' in es.text())
+es.send(b'\x1b', 0.2)
+
+# Crossing the exact 89-column Spanish boundary rebuilds only the menu tree;
+# resizing within compact mode leaves it compact. Returning below the boundary
+# must restore the same complete 80-column-safe bar.
+es.resize(88, 25, 0.5)
+check('Spanish 88-column menu remains compact',
+      all(label in es.screen.display[0]
+          for label in ('Perf.', 'Ses.', 'Opc.', 'Portapapeles', 'Ayuda')))
+es.resize(89, 25, 0.5)
+check('Spanish 89-column menu restores full names',
+      all(label in es.screen.display[0]
+          for label in ('Perfiles', 'Sesiones', 'Opciones',
+                        'Portapapeles', 'Ayuda')))
+es.resize(88, 25, 0.5)
+check('Spanish menu returns to compact form',
+      all(label in es.screen.display[0]
+          for label in ('Perf.', 'Ses.', 'Opc.', 'Portapapeles', 'Ayuda')))
 es.send(b'\x1bx', 0.7)
 es.close()
 close_all_daemons(home_es)
+
+# English consumes exactly 80 cells with the full names; the threshold is
+# deliberately strict (<80), so no unnecessary abbreviation occurs here.
+home_en80 = fresh_home('clipboard-en80')
+write_config(home_en80)
+en80 = Client(home_en80, w=80, h=25, lang='en')
+en80.drain(2.0)
+menu_row = en80.screen.display[0]
+check('English 80-column menu keeps every full name',
+      all(label in menu_row for label in
+          ('Desktop', 'Profiles', 'Sessions', 'Options',
+           'Clipboard', 'Help')))
+en80.send(b'\x1bx', 0.7)
+en80.close()
+close_all_daemons(home_en80)
 
 report()

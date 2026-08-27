@@ -655,7 +655,7 @@ def run_raw_protocol():
     peers = []
     try:
         path = create_two_panes(home, session, {})
-        check('raw protocol v15 fixture exists', bool(path) and PROTO_VER >= 15)
+        check('raw protocol v15+ fixture exists', bool(path) and PROTO_VER >= 15)
         snapshots = []
         if path:
             for _viewer in range(3):

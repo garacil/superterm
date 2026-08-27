@@ -41,6 +41,8 @@ windows=web
 enabled=1
 layout=V:500;L;L
 focused_pane=0
+deskw=92
+deskh=28
 panes=a,b
 
 [profile.dev.window.web.pane.a]
@@ -211,6 +213,10 @@ captured_cmds = [
     for section in saved_ini.sections()
     if section.startswith('profile.captured.window.') and '.pane.' in section
 ]
+captured_windows = [
+    section for section in saved_ini.sections()
+    if section.startswith('profile.captured.window.') and '.pane.' not in section
+]
 
 
 def captured_python(value):
@@ -237,6 +243,13 @@ check("ini captured visible basename title",
       len(captured_titles) == 1 and
       captured_titles[0] in {'python3', 'python'})
 check("ini captured scrollback", "scrollback=10000" in txt)
+check("ini keeps source DeskW/H",
+      saved_ini.getint('profile.dev.window.web', 'deskw') == 92 and
+      saved_ini.getint('profile.dev.window.web', 'deskh') == 28)
+check("ini captures current DeskW/H",
+      len(captured_windows) == 1 and
+      saved_ini.getint(captured_windows[0], 'deskw') == W and
+      saved_ini.getint(captured_windows[0], 'deskh') == H - 2)
 check("ini keeps default_profile", "default_profile=dev" in txt)
 check("ini keeps class section", "[class.keepme]" in txt)
 

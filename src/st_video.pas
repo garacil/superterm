@@ -5,6 +5,10 @@ unit st_video;
 interface
 
 procedure InstallWideVideoOutput;
+// Renderer capability of this process/host terminal.  Every attached client
+// has its own process and therefore its own value; it is never shared with the
+// canonical desktop kept by the daemon.
+function HostUtf8Output: Boolean;
 procedure CaptureConsoleCursor;
 procedure RestoreConsoleCursor;
 // Ask the outer terminal to delimit paste operations. st_kbd consumes those
@@ -21,6 +25,9 @@ procedure ReleaseConsoleInput;
 procedure PassthroughRaw(const Data; ALen: LongInt);
 // Raw escape/string writer to the host terminal (respects OutputFailed).
 procedure WriteRaw(const S: AnsiString);
+// Audible client-local notification. Never route this byte through a pane or
+// the shared session transport: it belongs only to the outer host terminal.
+procedure HostBell;
 
 // True when more input is already waiting to be read. Painting a frame that
 // the very next event will overwrite is wasted work and, over a slow link,
@@ -123,6 +130,13 @@ var
   OutputFailed: Boolean;
   ConsoleRow, ConsoleCol: Integer; // cursor position at startup (0 = unknown)
   UseSyncOutput: Boolean = False;  // DECSET 2026; opt-in via SUPERTERM_SYNC=1
+  HostUtf8: Boolean = True;
+  ProbeHostEncoding: Boolean = True;
+
+function HostUtf8Output: Boolean;
+begin
+  Result := HostUtf8;
+end;
 
 procedure PassthroughRaw(const Data; ALen: LongInt);
 var
@@ -197,6 +211,11 @@ begin
   end;
 end;
 
+procedure HostBell;
+begin
+  WriteRaw(#7);
+end;
+
 function InputPending: Boolean;
 var
   fds: TFDSet;
@@ -252,7 +271,7 @@ begin
     Result := Result + IntToStr(VgaColorToAnsi(Background, False)) + 'm';
 end;
 
-function VgaChar(AChar: Byte): AnsiString;
+function Utf8VgaChar(AChar: Byte): AnsiString;
 begin
   if (AChar >= 32) and (AChar < 127) then
     Exit(AnsiChar(AChar));
@@ -336,18 +355,85 @@ begin
 end;
 end;
 
+// Convert the CP437 presentation byte used throughout FreeVision to either
+// UTF-8 or the 7-bit DEC Alternate Character Set.  DEC ACS is deliberately
+// represented as a glyph plus a state flag: the frame emitter can keep ACS
+// selected across a whole run instead of wrapping every cell in two escape
+// sequences.  Unsupported symbols degrade to one printable ASCII cell.
+procedure PresentedVgaChar(AChar: Byte; out AGlyph: AnsiString;
+  out AACS: Boolean);
+begin
+  AACS := False;
+  if HostUtf8 then
+  begin
+    AGlyph := Utf8VgaChar(AChar);
+    Exit;
+  end;
+  if (AChar >= 32) and (AChar < 127) then
+  begin
+    AGlyph := AnsiChar(AChar);
+    Exit;
+  end;
+  case AChar of
+    0: AGlyph := ' ';
+    16, 26: AGlyph := '>';
+    17: AGlyph := '<';
+    18: AGlyph := '|';
+    24, 30: AGlyph := '^';
+    25, 31: AGlyph := 'v';
+    27: AGlyph := '<';
+    29: AGlyph := '-';
+    129: AGlyph := 'u';
+    130: AGlyph := 'e';
+    144: AGlyph := 'E';
+    160: AGlyph := 'a';
+    161: AGlyph := 'i';
+    162: AGlyph := 'o';
+    163: AGlyph := 'u';
+    164: AGlyph := 'n';
+    165: AGlyph := 'N';
+    8, 176, 177, 178, 219, 220, 223:
+      begin AGlyph := 'a'; AACS := True; end;  // checkerboard/shade
+    180, 181, 182, 185:
+      begin AGlyph := 'u'; AACS := True; end;  // right junction
+    183, 184, 187, 191:
+      begin AGlyph := 'k'; AACS := True; end;  // upper-right
+    188, 189, 190, 217:
+      begin AGlyph := 'j'; AACS := True; end;  // lower-right
+    192, 200, 211, 212:
+      begin AGlyph := 'm'; AACS := True; end;  // lower-left
+    193, 202, 207, 208:
+      begin AGlyph := 'v'; AACS := True; end;  // bottom junction
+    194, 203, 209, 210:
+      begin AGlyph := 'w'; AACS := True; end;  // top junction
+    195, 198, 199, 204:
+      begin AGlyph := 't'; AACS := True; end;  // left junction
+    196, 205:
+      begin AGlyph := 'q'; AACS := True; end;  // horizontal
+    179, 186:
+      begin AGlyph := 'x'; AACS := True; end;  // vertical
+    197, 206, 215, 216:
+      begin AGlyph := 'n'; AACS := True; end;  // crossing
+    201, 213, 214, 218:
+      begin AGlyph := 'l'; AACS := True; end;  // upper-left
+    1, 2, 7, 9, 10: AGlyph := 'o';
+    3..6, 13..15, 22, 254: AGlyph := '*';
+    11: AGlyph := 'M';
+    12: AGlyph := 'F';
+    19: AGlyph := '!';
+    20: AGlyph := 'P';
+    21: AGlyph := 'S';
+    23: AGlyph := '^';
+    28: AGlyph := '+';
+    250: AGlyph := '.';
+  else
+    AGlyph := '?';
+  end;
+end;
+
 function CursorPosition(AX, AY: Word): AnsiString;
 begin
   Result := #27'[' + IntToStr(AY + 1) + ';' + IntToStr(AX + 1) + 'H';
-end;
-
-function CellsToStr(AStart, AStop: LongInt): AnsiString;
-var
-  I: LongInt;
-begin
-  Result := '';
-  for I := AStart to AStop - 1 do
-    Result := Result + VgaChar(Byte(VideoCellAt(VideoBuf, I)));
 end;
 
 type
@@ -370,6 +456,7 @@ type
     Skip: Boolean;
     Rich: Boolean;
     Wide: Boolean;
+    ACS: Boolean;
     Glyph: string[7];
     Attr: Byte;         // chrome path (VGA attribute byte)
     Fg, Bg: LongWord;   // rich path
@@ -619,6 +706,7 @@ begin
   if A.Skip or B.Skip then Exit(A.Skip and B.Skip);
   if A.Rich <> B.Rich then Exit(False);
   if A.Glyph <> B.Glyph then Exit(False);
+  if A.ACS <> B.ACS then Exit(False);
   if A.Rich then
     Result := (A.Fg = B.Fg) and (A.Bg = B.Bg) and (A.Flags = B.Flags) and
               (A.Wide = B.Wide)
@@ -682,15 +770,16 @@ begin
             ((X = X1) or (X = X2) or (Y = Y1) or (Y = Y2));
 end;
 
-// glyph for a position on a ring
-function RingGlyph(X, Y, X1, Y1, X2, Y2: LongInt): AnsiString;
+// CP437 presentation byte for a position on a ring.  Keeping this as CP437
+// lets the same geometry feed either the UTF-8 or DEC-ACS client renderer.
+function RingVgaChar(X, Y, X1, Y1, X2, Y2: LongInt): Byte;
 begin
-  if (X = X1) and (Y = Y1) then RingGlyph := #$E2#$94#$8C        // U+250C
-  else if (X = X2) and (Y = Y1) then RingGlyph := #$E2#$94#$90   // U+2510
-  else if (X = X1) and (Y = Y2) then RingGlyph := #$E2#$94#$94   // U+2514
-  else if (X = X2) and (Y = Y2) then RingGlyph := #$E2#$94#$98   // U+2518
-  else if (Y = Y1) or (Y = Y2) then RingGlyph := #$E2#$94#$80    // U+2500
-  else RingGlyph := #$E2#$94#$82;                                // U+2502
+  if (X = X1) and (Y = Y1) then RingVgaChar := 218
+  else if (X = X2) and (Y = Y1) then RingVgaChar := 191
+  else if (X = X1) and (Y = Y2) then RingVgaChar := 192
+  else if (X = X2) and (Y = Y2) then RingVgaChar := 217
+  else if (Y = Y1) or (Y = Y2) then RingVgaChar := 196
+  else RingVgaChar := 179;
 end;
 
 // A remote owner is shown with the same visual vocabulary as TTermFrame's
@@ -698,7 +787,7 @@ end;
 // the left edge.  The actor keeps the ordinary line-drawing ring; only other
 // clients receive this form, so ownership remains unambiguous while the real
 // window is hidden for a wireframe drag.
-function LockedRingGlyph(X, Y, X1, Y1, X2, Y2: LongInt): AnsiString;
+function LockedRingVgaChar(X, Y, X1, Y1, X2, Y2: LongInt): Byte;
 const
   LOCK_TEXT = 'LOCK';
 var
@@ -711,12 +800,12 @@ begin
     if Start < 1 then Start := 1;
     Pos := Y - (Y1 + Start) + 1;
     if (Pos >= 1) and (Pos <= Length(LOCK_TEXT)) then
-      Exit(LOCK_TEXT[Pos]);
+      Exit(Byte(LOCK_TEXT[Pos]));
   end;
   if (X = X1) or (X = X2) then
-    Result := #$E2#$96#$92             // U+2592, CP437 177
+    Result := 177
   else
-    Result := #$E2#$96#$91;            // U+2591, CP437 176
+    Result := 176;
 end;
 
 // Poison a changed ring and its horizontal neighbours. A rich wide glyph is
@@ -856,13 +945,14 @@ end;
 
 
 function TransientOutlineCell(X, Y: LongInt; out AGlyph: AnsiString;
-  out AAttr: Byte): Boolean;
+  out AAttr: Byte; out AACS: Boolean): Boolean;
 var
   Slot: LongInt;
 begin
   Result := False;
   AGlyph := '';
   AAttr := 0;
+  AACS := False;
   if TransientOutlineMask = 0 then
     Exit;
   // Higher slots win at intersections. Walking downwards makes that priority
@@ -875,13 +965,14 @@ begin
          TransientOutlines[Slot].Y2) then
     begin
       if TransientOutlines[Slot].Locked then
-        AGlyph := LockedRingGlyph(X, Y, TransientOutlines[Slot].X1,
-          TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
-          TransientOutlines[Slot].Y2)
+        PresentedVgaChar(LockedRingVgaChar(X, Y,
+          TransientOutlines[Slot].X1, TransientOutlines[Slot].Y1,
+          TransientOutlines[Slot].X2, TransientOutlines[Slot].Y2),
+          AGlyph, AACS)
       else
-        AGlyph := RingGlyph(X, Y, TransientOutlines[Slot].X1,
+        PresentedVgaChar(RingVgaChar(X, Y, TransientOutlines[Slot].X1,
           TransientOutlines[Slot].Y1, TransientOutlines[Slot].X2,
-          TransientOutlines[Slot].Y2);
+          TransientOutlines[Slot].Y2), AGlyph, AACS);
       AAttr := TransientOutlines[Slot].Attr;
       Exit(True);
     end;
@@ -933,8 +1024,21 @@ procedure OutlineEnterDiff(NX1, NY1, NX2, NY2, OX1, OY1, OX2, OY2: LongInt;
   AAttr: Byte);
 var
   X, Y: LongInt;
-  Body: AnsiString;
+  Body, G: AnsiString;
   LastX, LastY: LongInt;
+  ACSActive, GACS: Boolean;
+
+  procedure AppendVga(AChar: Byte);
+  begin
+    PresentedVgaChar(AChar, G, GACS);
+    if GACS <> ACSActive then
+    begin
+      if GACS then Body := Body + #27'(0'
+      else Body := Body + #27'(B';
+      ACSActive := GACS;
+    end;
+    Body := Body + G;
+  end;
 
   procedure Put(AX, AY: LongInt; Corner: Boolean);
   begin
@@ -949,14 +1053,14 @@ var
     // glyphs, not the membership. (Diagonal steps never showed it because no
     // corner is shared.)
     if OnRing(AX, AY, OX1, OY1, OX2, OY2) and
-       (RingGlyph(AX, AY, OX1, OY1, OX2, OY2) =
-        RingGlyph(AX, AY, NX1, NY1, NX2, NY2)) then
+       (RingVgaChar(AX, AY, OX1, OY1, OX2, OY2) =
+        RingVgaChar(AX, AY, NX1, NY1, NX2, NY2)) then
       Exit;
     if (AY <> LastY) or (AX <> LastX + 1) then
       Body := Body + CursorPosition(AX, AY);
     LastX := AX;
     LastY := AY;
-    Body := Body + RingGlyph(AX, AY, NX1, NY1, NX2, NY2);
+    AppendVga(RingVgaChar(AX, AY, NX1, NY1, NX2, NY2));
   end;
 
 begin
@@ -965,6 +1069,7 @@ begin
   if (NX2 <= NX1) or (NY2 <= NY1) then
     Exit;
   Body := AttrSequence(AAttr);
+  ACSActive := False;
   LastX := -99;
   LastY := -99;
   Put(NX1, NY1, True);
@@ -981,19 +1086,35 @@ begin
     Put(NX1, Y, False);
     Put(NX2, Y, False);
   end;
+  if ACSActive then
+    Body := Body + #27'(B';
   WriteRaw(Body);
 end;
 
 procedure OutlinePaint(X1, Y1, X2, Y2: LongInt; AAttr: Byte);
 var
   X, Y: LongInt;
-  Body: AnsiString;
+  Body, G: AnsiString;
+  ACSActive, GACS: Boolean;
 
-  procedure Put(AX, AY: LongInt; const G: AnsiString);
+  procedure AppendVga(AChar: Byte);
+  begin
+    PresentedVgaChar(AChar, G, GACS);
+    if GACS <> ACSActive then
+    begin
+      if GACS then Body := Body + #27'(0'
+      else Body := Body + #27'(B';
+      ACSActive := GACS;
+    end;
+    Body := Body + G;
+  end;
+
+  procedure Put(AX, AY: LongInt; AChar: Byte);
   begin
     if not OnScreen(AX, AY) then
       Exit;
-    Body := Body + CursorPosition(AX, AY) + G;
+    Body := Body + CursorPosition(AX, AY);
+    AppendVga(AChar);
   end;
 
 begin
@@ -1002,36 +1123,39 @@ begin
   if (X2 <= X1) or (Y2 <= Y1) then
     Exit;
   Body := AttrSequence(AAttr);
+  ACSActive := False;
   // horizontal edges as runs (one cursor move each), verticals cell by cell
-  Put(X1, Y1, #$E2#$94#$8C);                      // U+250C
+  Put(X1, Y1, 218);
   for X := X1 + 1 to X2 - 1 do
     if OnScreen(X, Y1) then
     begin
       if not OnScreen(X - 1, Y1) then Body := Body + CursorPosition(X, Y1);
-      Body := Body + #$E2#$94#$80;                // U+2500
+      AppendVga(196);
     end;
   if OnScreen(X2, Y1) then
   begin
     if not OnScreen(X2 - 1, Y1) then Body := Body + CursorPosition(X2, Y1);
-    Body := Body + #$E2#$94#$90;                  // U+2510
+    AppendVga(191);
   end;
-  Put(X1, Y2, #$E2#$94#$94);                      // U+2514
+  Put(X1, Y2, 192);
   for X := X1 + 1 to X2 - 1 do
     if OnScreen(X, Y2) then
     begin
       if not OnScreen(X - 1, Y2) then Body := Body + CursorPosition(X, Y2);
-      Body := Body + #$E2#$94#$80;
+      AppendVga(196);
     end;
   if OnScreen(X2, Y2) then
   begin
     if not OnScreen(X2 - 1, Y2) then Body := Body + CursorPosition(X2, Y2);
-    Body := Body + #$E2#$94#$98;                  // U+2518
+    AppendVga(217);
   end;
   for Y := Y1 + 1 to Y2 - 1 do
   begin
-    Put(X1, Y, #$E2#$94#$82);                     // U+2502
-    Put(X2, Y, #$E2#$94#$82);
+    Put(X1, Y, 179);
+    Put(X2, Y, 179);
   end;
+  if ACSActive then
+    Body := Body + #27'(B';
   WriteRaw(Body);
 end;
 
@@ -1045,9 +1169,10 @@ var
   X, Y, Index, Nx: LongInt;
   VCell: TVideoCell;
   Eff: TEffCell;
-  NeedMove, Shadowed, NShadow, OverlayHere: Boolean;
+  NeedMove, Shadowed, NShadow, OverlayHere, OverlayACS, ACSActive,
+    CellACS: Boolean;
   OutCursorX, OutCursorY: Word;
-  Body, Frame, CurSGR, LastSGR, OverlayGlyph: AnsiString;
+  Body, Frame, CurSGR, LastSGR, OverlayGlyph, CellGlyph: AnsiString;
   OverlayAttr: Byte;
   ChangedCells, Runs, RHit, RMiss: LongInt;
 begin
@@ -1084,8 +1209,11 @@ begin
   // through the helper and otherwise reports two false uninitialized-value
   // warnings at the overlay assignment below.
   OverlayGlyph := '';
+  CellGlyph := '';
   OverlayAttr := 0;
+  OverlayACS := False;
   Body := '';
+  ACSActive := False;
   ChangedCells := 0;
   Runs := 0;
   RHit := 0;
@@ -1102,7 +1230,7 @@ begin
       // VideoBuf (visible top cell), otherwise the CP437/16-color chrome
       if RichScreen[Index].Valid then
         if Word(VCell) = RichScreen[Index].Oracle then Inc(RHit) else Inc(RMiss);
-      if RichStands(Index, Shadowed) then
+      if HostUtf8 and RichStands(Index, Shadowed) then
       begin
         Eff.Skip := RichScreen[Index].Skip;
         Eff.Wide := RichScreen[Index].Wide;
@@ -1112,6 +1240,7 @@ begin
         Eff.Bg := RichScreen[Index].Bg;
         Eff.Flags := RichScreen[Index].Flags;
         Eff.Attr := 0;
+        Eff.ACS := False;
         if Shadowed then
         begin
           Eff.Fg := DimColor(Eff.Fg, $00AAAAAA);
@@ -1125,13 +1254,16 @@ begin
         Eff.Wide := False;
         Eff.Rich := False;
         Eff.Attr := Byte(VCell shr 8);
-        Eff.Glyph := VgaChar(Byte(VCell and $FF));
+        PresentedVgaChar(Byte(VCell and $FF), CellGlyph, CellACS);
+        Eff.Glyph := CellGlyph;
+        Eff.ACS := CellACS;
         Eff.Fg := 0;
         Eff.Bg := 0;
         Eff.Flags := 0;
       end;
       if TransientOutlineMask <> 0 then
-        OverlayHere := TransientOutlineCell(X, Y, OverlayGlyph, OverlayAttr)
+        OverlayHere := TransientOutlineCell(X, Y, OverlayGlyph, OverlayAttr,
+          OverlayACS)
       else
         OverlayHere := False;
       // A two-column glyph and its continuation are two independent cells
@@ -1170,7 +1302,9 @@ begin
             Eff.Rich := False;
             Eff.Wide := False;
             Eff.Attr := Byte(VCell shr 8);
-            Eff.Glyph := VgaChar(Byte(VCell and $FF));
+            PresentedVgaChar(Byte(VCell and $FF), CellGlyph, CellACS);
+            Eff.Glyph := CellGlyph;
+            Eff.ACS := CellACS;
             Eff.Fg := 0;
             Eff.Bg := 0;
             Eff.Flags := 0;
@@ -1187,6 +1321,7 @@ begin
         Eff.Wide := False;
         Eff.Attr := OverlayAttr;
         Eff.Glyph := OverlayGlyph;
+        Eff.ACS := OverlayACS;
         Eff.Fg := 0;
         Eff.Bg := 0;
         Eff.Flags := 0;
@@ -1226,9 +1361,20 @@ begin
         Body := Body + CurSGR;
         LastSGR := CurSGR;
       end;
+      if Eff.ACS <> ACSActive then
+      begin
+        if Eff.ACS then Body := Body + #27'(0'
+        else Body := Body + #27'(B';
+        ACSActive := Eff.ACS;
+      end;
       Body := Body + Eff.Glyph;
     end;
   end;
+
+  // Never leak the alternate character set into cursor-only updates, direct
+  // pane output or the shell that receives the terminal after superterm.
+  if ACSActive then
+    Body := Body + #27'(B';
 
   if CursorX >= ScreenWidth then
     OutCursorX := ScreenWidth - 1
@@ -1267,7 +1413,9 @@ end;
 
 procedure WideDoneVideo;
 begin
-  WriteRaw(#27'[?7h');
+  // Restore the ordinary ASCII character set even if teardown follows a
+  // partially written compatibility frame.
+  WriteRaw(#27'(B'#27'[?7h');
   if Assigned(SavedDriver.DoneDriver) then
     SavedDriver.DoneDriver;
   { FreeVision homes the cursor while tearing down the alternate screen.
@@ -1278,6 +1426,73 @@ begin
   WriteRaw(#27'[u'#27'8');
 end;
 
+procedure DetectHostEncoding;
+var
+  BaseRow, BaseCol, AfterRow, AfterCol, CellWidth: Integer;
+begin
+  if not ProbeHostEncoding then
+    Exit;
+  ProbeHostEncoding := False;
+  // CaptureConsoleCursor already proved that this terminal answers CPR.  If
+  // it did not, do not issue another query: its late reply could otherwise be
+  // mistaken for our baseline.  The existing UTF-8 behaviour is the safest
+  // default for a terminal which cannot be measured.
+  if (ConsoleRow <= 0) or (ConsoleCol <= 0) or (ScreenWidth < 4) then
+  begin
+    if DebugActive then
+      DebugLog('video: encoding probe skipped (no reliable CPR)');
+    Exit;
+  end;
+
+  // SavedDriver.InitDriver has already entered the alternate screen, while
+  // Video.InitVideo has not yet performed its ClearScreen.  The marker is
+  // concealed, and that imminent clear removes its cell before the first
+  // application frame: no shared state and no visible screen are touched.
+  ArmCursorPositionReply;
+  WriteRaw(#27'[H'#27'[6n');
+  if not ReadCursorPositionReply(BaseRow, BaseCol) then
+  begin
+    if DebugActive then
+      DebugLog('video: encoding probe baseline timed out; keeping UTF-8');
+    Exit;
+  end;
+  if (BaseRow <> 1) or (BaseCol <> 1) then
+  begin
+    if DebugActive then
+      DebugLog(Format('video: encoding probe invalid baseline=%d,%d',
+        [BaseRow, BaseCol]));
+    Exit;
+  end;
+
+  // U+00A3 (C2 A3) is one cell in UTF-8.  Under the legacy Windows pages
+  // involved in the reported corruption both bytes are printable characters,
+  // so the same wire bytes advance two cells.  Unlike box drawing, this glyph
+  // has no East-Asian ambiguous width and contains no C1 control byte.
+  ArmCursorPositionReply;
+  WriteRaw(#27'[8m'#$C2#$A3#27'[0m'#27'[6n');
+  if not ReadCursorPositionReply(AfterRow, AfterCol) then
+  begin
+    if DebugActive then
+      DebugLog('video: encoding probe result timed out; keeping UTF-8');
+    Exit;
+  end;
+  if (AfterRow <> BaseRow) or (AfterCol <= BaseCol) or
+     (AfterCol > ScreenWidth) then
+  begin
+    if DebugActive then
+      DebugLog(Format('video: encoding probe invalid result=%d,%d base=%d,%d',
+        [AfterRow, AfterCol, BaseRow, BaseCol]));
+    Exit;
+  end;
+  CellWidth := AfterCol - BaseCol;
+  HostUtf8 := CellWidth = 1;
+  if DebugActive then
+    if HostUtf8 then
+      DebugLog(Format('video: encoding probe width=%d mode=utf8', [CellWidth]))
+    else
+      DebugLog(Format('video: encoding probe width=%d mode=acs', [CellWidth]));
+end;
+
 procedure WideInitVideo;
 begin
   { Keep the cursor position from the shell even on terminals that do not
@@ -1285,15 +1500,37 @@ begin
   WriteRaw(#27'7'#27'[s');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
+  DetectHostEncoding;
+  // TTermView and every FreeVision frame use CP437 semantic bytes. FPC may
+  // select CP850 when LANG is not UTF-8; keep one canonical grid and perform
+  // the client-specific UTF-8/ACS conversion only at the final emitter.
+  Video.internal_codepage := Video.cp437;
 end;
 
 procedure InstallWideVideoOutput;
 var
   Driver: TVideoDriver;
+  Encoding: string;
 begin
   if DriverInstalled then
     Exit;
   UseSyncOutput := GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
+  Encoding := LowerCase(Trim(
+    GetEnvironmentVariable('SUPERTERM_CLIENT_ENCODING')));
+  // The only safe override is the 7-bit compatibility renderer.  Never
+  // force UTF-8 from an environment variable: FPC may already have selected
+  // an ISO-8859 terminal mode from LANG, and only the live cursor probe can
+  // prove how this particular terminal interprets the wire bytes.
+  if (Encoding = 'acs') or (Encoding = 'legacy') then
+  begin
+    HostUtf8 := False;
+    ProbeHostEncoding := False;
+  end
+  else
+  begin
+    HostUtf8 := True;
+    ProbeHostEncoding := True;
+  end;
   GetVideoDriver(SavedDriver);
   Driver := SavedDriver;
   Driver.InitDriver := @WideInitVideo;
@@ -1313,21 +1550,19 @@ end;
 procedure CaptureConsoleCursor;
 var
   OldTio, RawTio: TermIOS;
-  Resp: AnsiString;
-  ch: AnsiChar;
-  n: longint;
-  i, j, k: integer;
 begin
   ConsoleRow := 0;
   ConsoleCol := 0;
   OldTio := Default(TermIOS);
-  ch := #0;
   if IsATTY(StdInputHandle) <> 1 then
     Exit;
   if TCGetAttr(StdInputHandle, OldTio) <> 0 then
     Exit;
   RawTio := OldTio;
-  RawTio.c_lflag := RawTio.c_lflag and (not (ICANON or ECHO));
+  RawTio.c_lflag := RawTio.c_lflag and
+    (not (ICANON or ECHO or ISIG or IEXTEN));
+  RawTio.c_iflag := RawTio.c_iflag and
+    (not (IXON or IXOFF or ICRNL or INLCR or IGNCR or ISTRIP or BRKINT));
   RawTio.c_cc[VMIN] := 0;
   RawTio.c_cc[VTIME] := 2; // 0.2s maximum wait per read
   if TCSetAttr(StdInputHandle, TCSANOW, RawTio) <> 0 then
@@ -1337,32 +1572,16 @@ begin
   // report. Otherwise CSI's overlapping final 'R' is decoded as F3.
   ArmCursorPositionReply;
   WriteRaw(#27'[6n');
-  Resp := '';
-  repeat
-    n := FileRead(StdInputHandle, ch, 1);
-    if n <> 1 then
-      Break;
-    Resp := Resp + ch;
-  until (ch = 'R') or (Length(Resp) >= 32);
-  TCSetAttr(StdInputHandle, TCSANOW, OldTio);
-  if ch = 'R' then
-    CompleteCursorPositionReply;
-  // response: ESC [ row ; column R (ignore typeahead before the last ESC)
-  i := Length(Resp);
-  while (i > 0) and (Resp[i] <> #27) do
-    Dec(i);
-  if i = 0 then
-    Exit;
-  j := i;
-  while (j <= Length(Resp)) and (Resp[j] <> ';') do
-    Inc(j);
-  k := j;
-  while (k <= Length(Resp)) and (Resp[k] <> 'R') do
-    Inc(k);
-  if (j > Length(Resp)) or (k > Length(Resp)) then
-    Exit;
-  ConsoleRow := StrToIntDef(Copy(Resp, i + 2, j - i - 2), 0);
-  ConsoleCol := StrToIntDef(Copy(Resp, j + 1, k - j - 1), 0);
+  try
+    if not ReadCursorPositionReply(ConsoleRow, ConsoleCol) or
+       (ConsoleRow <= 0) or (ConsoleCol <= 0) then
+    begin
+      ConsoleRow := 0;
+      ConsoleCol := 0;
+    end;
+  finally
+    TCSetAttr(StdInputHandle, TCSANOW, OldTio);
+  end;
 end;
 
 // Turns off everything that makes the terminal send us bytes, and throws

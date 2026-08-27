@@ -217,8 +217,9 @@ if button_frame is not None:
 pane_one = next((line for line in
                  run_cli(['list', SES], HOME).stdout.splitlines()
                  if line.startswith('1')), '')
+pane_one_flags = pane_one.split()[-1] if pane_one.split() else ''
 check('original minimize button minimizes shared pane',
-      pane_one.split()[-1:] == ['M'])
+      pane_one_flags == '*M')
 check('restore after minimize button',
       run_cli(['restore', SES + ':1'], HOME).returncode == 0)
 drain_both(1.2)

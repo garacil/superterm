@@ -15,7 +15,7 @@ interface
 
 uses
   Classes, SysUtils, IniFiles, BaseUnix, st_config, st_wclass,
-  st_templates;
+  st_templates, st_layout;
 
 type
   TProfilePaneSpec = record
@@ -33,6 +33,7 @@ type
     // profile leaving EVERYTHING as it was when saved
     BX, BY, BW, BH: integer;
     Minimized: boolean;
+    IconSlot: integer;       // stable minimized slot; -1 otherwise
     Zoomed: boolean;
   end;
   TProfilePaneArray = array of TProfilePaneSpec;
@@ -42,7 +43,7 @@ type
     Enabled: boolean;
     Layout: string;         // same grammar as session.ini (L, V:500;L;L)
     FocusedPane: integer;
-    DeskW, DeskH: integer;  // desktop size at save time (absolute bounds)
+    DeskW, DeskH: integer;  // canonical desktop work area (character cells)
     Panes: TProfilePaneArray;
   end;
   TProfileWindowArray = array of TProfileWindowSpec;
@@ -138,7 +139,8 @@ begin
     (A.ScrollBack = B.ScrollBack) and
     (A.BX = B.BX) and (A.BY = B.BY) and
     (A.BW = B.BW) and (A.BH = B.BH) and
-    (A.Minimized = B.Minimized) and (A.Zoomed = B.Zoomed);
+    (A.Minimized = B.Minimized) and (A.IconSlot = B.IconSlot) and
+    (A.Zoomed = B.Zoomed);
 end;
 
 function SameStoredProfileWindow(const A, B: TProfileWindowSpec): boolean;
@@ -274,6 +276,7 @@ begin
           PName := PaneNames[p];
           PSec := WSec + '.pane.' + PName;
           PSpec := Default(TProfilePaneSpec);
+          PSpec.IconSlot := -1;
           PSpec.Name := PName;
           PSpec.Enabled := ParseBoolStr(Ini.ReadString(PSec, 'enabled', '1'),
             True);
@@ -302,6 +305,10 @@ begin
           PSpec.BW := Ini.ReadInteger(PSec, 'bw', 0);
           PSpec.BH := Ini.ReadInteger(PSec, 'bh', 0);
           PSpec.Minimized := Ini.ReadInteger(PSec, 'min', 0) <> 0;
+          PSpec.IconSlot := Ini.ReadInteger(PSec, 'icon_slot', -1);
+          if (not PSpec.Minimized) or (PSpec.IconSlot < 0) or
+             (PSpec.IconSlot >= MAX_PANES) then
+            PSpec.IconSlot := -1;
           PSpec.Zoomed := Ini.ReadInteger(PSec, 'zoom', 0) <> 0;
           SetLength(WSpec.Panes, Length(WSpec.Panes) + 1);
           WSpec.Panes[High(WSpec.Panes)] := PSpec;
@@ -360,6 +367,7 @@ begin
         for p := 0 to High(Templates[t].Sessions[s].Windows[w].Panes) do
         begin
           PSpec := Default(TProfilePaneSpec);
+          PSpec.IconSlot := -1;
           PSpec.Name := Templates[t].Sessions[s].Windows[w].Panes[p].Name;
           PSpec.Enabled := Templates[t].Sessions[s].Windows[w].Panes[p].Enabled;
           PSpec.WClass := Templates[t].Sessions[s].Windows[w].Panes[p].Terminal;
@@ -495,7 +503,13 @@ begin
             Ini.WriteInteger(PSec, 'bh', AProfiles[i].Windows[w].Panes[p].BH);
           end;
           if AProfiles[i].Windows[w].Panes[p].Minimized then
+          begin
             Ini.WriteInteger(PSec, 'min', 1);
+            if (AProfiles[i].Windows[w].Panes[p].IconSlot >= 0) and
+               (AProfiles[i].Windows[w].Panes[p].IconSlot < MAX_PANES) then
+              Ini.WriteInteger(PSec, 'icon_slot',
+                AProfiles[i].Windows[w].Panes[p].IconSlot);
+          end;
           if AProfiles[i].Windows[w].Panes[p].Zoomed then
             Ini.WriteInteger(PSec, 'zoom', 1);
         end;

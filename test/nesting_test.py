@@ -92,7 +92,7 @@ a.send((BIN + ' --attach; echo AUTO=$?\r').encode(), 2.5)
 check('auto-pick finds nothing safe', 'AUTO=1' in screen(a))
 
 # --- another session, B, started from outside
-b = Client(home, w=90, h=26, args=['--session', 'other'])
+b = Client(home, w=90, h=27, args=['--session', 'other'])
 b.drain(3.0)
 b.send(b'\x1b', 1.5)        # the picker offers 'outer'; Esc = start the new one
 b.drain(2.0)
@@ -133,13 +133,22 @@ check('the nested client is on screen', 'Panes' in screen(a) and
       screen(a).count('Panes') >= 2)
 nested_normal_state = pane_state('other')
 
+# A physical resize of B is only that client's viewport. Waiting for its menu
+# to repaint is the SIGWINCH acknowledgement; the daemon-owned nested pane
+# must retain its exact canonical grid and flags.
+b.resize(100, 30, seconds=0.0)
+b_repainted = b.wait_until(lambda text: 'Panes' in text, 5.0)
+check('nested-session host resize is presentation-only',
+      b_repainted and pane_state('other') == nested_normal_state)
+
 # The outer prefix is escaped once so the inner SuperTerm receives its own
 # complete prefix+f chord. This replaces the old prefix+F5 special case and
 # proves that fullscreen remains controllable at arbitrary nesting depth.
-# These two hosts deliberately differ (90x26 outside versus the outer pane's
-# PTY), so source and the mixed-geometry tests require the synchronized IDE
-# renderer, not raw passthrough: the inner menu remains visible while its
-# canonical PTY grows to the exact 90x26 common fullscreen viewport.
+# These viewers deliberately differ (the resized 100x30 outside versus the
+# outer pane's PTY), so the inner menu remains rendered rather than using raw
+# passthrough. Fullscreen derives from B's fixed 90x25 logical desktop and is
+# therefore exactly 90x27 including menu/status rows; neither physical viewer
+# negotiates that value.
 a.send(b'\x11\x11f', 1.8)
 zoom_deadline = time.monotonic() + 3.0
 while time.monotonic() < zoom_deadline and not pane_zoomed('other'):
@@ -147,13 +156,13 @@ while time.monotonic() < zoom_deadline and not pane_zoomed('other'):
 nested_fullscreen_screen = screen(a)
 nested_fullscreen_count = nested_fullscreen_screen.count('Panes')
 nested_fullscreen_state = pane_state('other')
-nested_fullscreen_ok = (nested_fullscreen_state[0] == (90, 26) and
+nested_fullscreen_ok = (nested_fullscreen_state[0] == (90, 27) and
                         'Z' in nested_fullscreen_state[1])
 if not nested_fullscreen_ok:
     print('  nested states:', nested_normal_state, nested_fullscreen_state)
     print('  nested list:', repr(run_cli(
         ['list', 'other'], home, env={'LANG': 'C'}).stdout))
-check('escaped prefix commits nested fullscreen', nested_fullscreen_ok)
+check('escaped prefix uses nested logical desktop', nested_fullscreen_ok)
 check('mixed nested fullscreen stays in renderer',
       nested_fullscreen_count >= 2)
 a.send(b'\x11\x11f', 1.8)

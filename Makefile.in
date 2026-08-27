@@ -76,9 +76,12 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   multiclient_input_burst_test.py \
   multithread_server_test.py \
   multiclient_test.py multiclient_close_test.py shared_geometry_test.py \
-  host_resize_shared_test.py maximize_min_viewport_test.py \
+  host_resize_shared_test.py desktop_resize_protocol_test.py \
+  desktop_persistence_test.py \
+  maximize_min_viewport_test.py \
   zoom_exclusive_switch_test.py \
   host_summary_lease_test.py \
+  client_notifications_test.py \
   shared_state_stress_test.py multiclient_intensive_test.py \
   multiclient_focus_test.py multiclient_minimize_test.py \
   layout_transition_test.py layout_preview_protocol_test.py wireframe_preview_test.py \
@@ -86,10 +89,12 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   restore_focus_test.py title_hold_focus_test.py alwaysserver_test.py \
   passthrough_test.py passthrough_multiclient_test.py f5_output_layout_order_test.py \
   exit_clean_test.py newwindow_test.py appcursor_test.py late_dsr_test.py \
+  terminal_encoding_test.py \
   scrollback_test.py nesting_test.py mouseforward_test.py \
   remote_newpane_test.py fullscreen_test.py empty_desktop_test.py \
   max_panes_test.py close_all_panes_test.py \
   mousemode_test.py dialog_opaque_test.py background_assets_test.py \
+  fresh_install_defaults_test.py \
   badclass_test.py passthrough_modes_test.py resize_keep_test.py \
   config_concurrency_test.py \
   pane_reaper_test.py pty_spawn_safety_test.py session_startup_atomic_test.py \

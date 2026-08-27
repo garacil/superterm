@@ -1021,13 +1021,13 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         before_resize = pane_size()
         second.resize(124, 37, 0.4)
         resize_applied = wait_for(
-            lambda: (pane_size() is not None and
-                     pane_size() != before_resize),
+            lambda: (pane_size() == before_resize and
+                     'F2 Split' in second.screen.display[second.height - 1]),
             (second,), timeout=12.0)
         resized_size = pane_size()
-        check('SIGWINCH updates canonical geometry',
+        check('SIGWINCH updates only the SSH client viewport',
               before_resize is not None and resize_applied and
-              resized_size is not None and resized_size != before_resize)
+              resized_size == before_resize)
 
         # No PTY means no SSH_TTY, independently of the original-command
         # guard used by the next request.
@@ -1101,7 +1101,7 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         check('third viewer restores shared output',
               'AFTER_FIRST_NETWORK_LOSS' in third.text())
         third_size = pane_size()
-        check('reattach preserves resized canonical geometry',
+        check('reattach preserves canonical geometry after SIGWINCH',
               resized_size is not None and third_size is not None and
               third_size == resized_size)
         remember_listener_descendants(

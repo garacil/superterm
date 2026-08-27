@@ -40,13 +40,30 @@ def check_clean(raw, label):
         check('%s: ?%d %s off' % (label, mode, name), word in (None, 'l'))
 
 
+def write_config(home):
+    """Keep this mode-cleanup regression independent of first-run defaults."""
+    with open(os.path.join(home, '.superterm', 'superterm.ini'), 'w') as f:
+        f.write('[ui]\n'
+                'language=en\n'
+                'palette=color\n'
+                'background=none\n'
+                '[session]\n'
+                'server=always\n'
+                'autosave=0\n'
+                'autorestore=0\n')
+
+
 # --- quitting, after a maximise/restore round trip -----------------------
 # Fullscreen in and out makes the client re-assert ?1000/?1002 by hand, so
 # it is the case that used to leak. Do it before leaving.
 home = fresh_home('exitclean-quit')
+write_config(home)
 c = Client(home, w=100, h=30)
 c.drain(3.0)
+mark = len(c.raw())
 c.send(FULLSCREEN_CHORD, 1.2)      # enter passthrough
+check('quit: passthrough entered',
+      last_word(c.raw()[mark:], 1000) == 'l')
 c.send(FULLSCREEN_CHORD, 1.2)      # restore and re-assert the mouse modes
 c.send(b'\x1bx', 2.0)             # Alt-X: quit
 c.wait_exit(timeout=8.0)
@@ -56,9 +73,13 @@ close_all_daemons(home)
 
 # --- detaching -----------------------------------------------------------
 home = fresh_home('exitclean-detach')
+write_config(home)
 d = Client(home, w=100, h=30)
 d.drain(3.0)
+mark = len(d.raw())
 d.send(FULLSCREEN_CHORD, 1.2)
+check('detach: passthrough entered',
+      last_word(d.raw()[mark:], 1000) == 'l')
 d.send(FULLSCREEN_CHORD, 1.2)
 d.send(b'\x11', 0.4)              # prefix (Ctrl-Q)
 d.send(b'd', 2.0)                 # detach

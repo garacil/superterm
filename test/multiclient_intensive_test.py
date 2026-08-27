@@ -854,11 +854,6 @@ def visual_map_matches_flags(visual, flags, active,
                 zoomed_panes == focused_panes and
                 'M' not in flags[zoomed_panes[0] - 1])
 
-    if any('*' in flag and 'M' in flag for flag in flags):
-        # NormalizeFocusedPane guarantees that canonical focus never names an
-        # icon. Accepting *M with passive visible panes would hide that defect.
-        return False
-
     for pane, ((tops, frames, locks, icons), flag) in enumerate(
             zip(visual, flags), 1):
         if locks or len(tops) > 1 or len(frames) > 1:
@@ -881,18 +876,17 @@ def visual_map_matches_flags(visual, flags, active,
 
     focused_panes = [pane for pane, flag in enumerate(flags, 1)
                      if '*' in flag]
-    all_minimized = all('M' in flag for flag in flags)
-    if ((all_minimized and focused_panes) or
-            (not all_minimized and len(focused_panes) != 1)):
+    # Minimize and Minimize all are visibility operations.  A minimized icon
+    # intentionally retains the one shared logical focus until an explicit
+    # focus/restore action chooses another pane.
+    if len(focused_panes) != 1:
         return False
-    focused = focused_panes[0] if focused_panes else 0
+    focused = focused_panes[0]
     if active not in (0, focused):
         return False
     focused_top_visible = (focused > 0 and
                            bool(visual[focused - 1][0]))
     if focused_top_visible and active != focused:
-        return False
-    if focused == 0 and all('M' in flag for flag in flags) and active != 0:
         return False
     return True
 
