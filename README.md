@@ -5,7 +5,7 @@
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
-GNU/Linux and macOS. It puts up to 16 real PTY-backed terminals inside a
+GNU/Linux, macOS and Windows. It puts up to 16 real PTY-backed terminals inside a
 Turbo Vision-style desktop, then keeps that desktop alive in a session daemon
 so you can detach, reconnect, move to another screen, or work in it together.
 
@@ -42,7 +42,7 @@ size and scrollback; every attached viewer sees the same focused desktop.
 | Repeatable and scriptable workspaces | Profiles and window classes describe layouts; the bilingual CLI can create, focus, resize, feed and capture panes from another shell. |
 | Native, direct implementation | Free Pascal produces the optimized native binary; SuperTerm uses POSIX PTYs, `poll` and Unix sockets directly, without an external event-loop library. |
 
-The SuperTerm host runs natively on GNU/Linux or macOS. Viewers can be local
+The SuperTerm host runs natively on GNU/Linux, macOS or Windows. Viewers can be local
 terminal windows, another machine on the LAN, a remote laptop or mobile
 terminal, or a browser-hosted shell that provides a standard `ssh` command and
 forwards terminal input. The host is where SuperTerm and the live processes
@@ -407,11 +407,19 @@ More captures are on the [Screenshots wiki page](https://github.com/garacil/supe
 
 ## Platform Support
 
-`superterm` is a single cross-platform codebase that builds and runs natively on
-**GNU/Linux and macOS** (Apple Silicon and Intel). Both are POSIX systems, so the
-UI, VT engine, layout, configuration, and detach/attach server are shared without
-change. The PTY/process backend is selected at compile time with
-`{$IFDEF DARWIN}`:
+`superterm` is a native cross-platform project for **GNU/Linux**, **macOS**
+(Apple Silicon and Intel), and **Windows 10 version 1809 or newer**. Each target
+has a native terminal/process backend; the VT engine, FreeVision desktop,
+profiles, configuration format, command-line help and terminal model are shared.
+
+| Target | Maintained branch | Native backend | Session service |
+| --- | --- | --- | --- |
+| GNU/Linux | `main` | POSIX PTY + `fpPoll` | Full shared detached daemon and optional OpenSSH TCP entry |
+| macOS | `macos-support` | BSD PTY + `libproc` | Full shared detached daemon and optional OpenSSH TCP entry |
+| Windows | `windows-support` | Windows ConPTY | Native local workspace; the Unix detached daemon and dedicated SSH service remain POSIX-only |
+
+The GNU/Linux and macOS server implementation is shared. The PTY/process backend
+is selected at compile time with `{$IFDEF DARWIN}`:
 
 - **GNU/Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
   and reads process titles from `/proc`.
@@ -423,14 +431,10 @@ The optional dedicated SSH administrator also selects the native service
 manager in `src/st_ssh_server.pas`: systemd on GNU/Linux and launchd on macOS.
 Session, UI and SSH-entry protocol code remains shared.
 
-See [`docs/MACOS.md`](docs/MACOS.md) for the macOS build, terminal setup, and
-platform notes.
-
-Windows is not yet a native SuperTerm host target. WSL is the practical way to
-run the server locally; a native host port would need a ConPTY backend plus
-Windows-specific process, resize, signal, and configuration-path code. Windows
-Terminal and the Microsoft OpenSSH client are supported as ordinary SSH
-viewers of a SuperTerm server.
+See [`docs/MACOS.md`](docs/MACOS.md) and [`docs/WINDOWS.md`](docs/WINDOWS.md)
+for native build, terminal and platform details. Windows Terminal and the
+Microsoft OpenSSH client also work as standard SSH viewers of a GNU/Linux or
+macOS SuperTerm server.
 
 ## Why Free Pascal
 
@@ -898,11 +902,12 @@ units plus the project-specific wide-screen and tmux mouse fixes.
 
 ## Installation
 
-Prebuilt x86_64 packages for every release are on the
+Prebuilt x86_64 GNU/Linux packages for every release are on the
 [releases page](https://github.com/garacil/superterm/releases/latest): a
 portable tarball for x86_64 GNU/Linux with glibc 2.34 or newer, plus `.deb`,
 `.rpm` and Arch `.pkg.tar.zst`. Each file ships with its `.sha256`; macOS arm64
-and universal builds are published separately.
+and universal builds, plus the native Windows x64 installer, are published
+from their corresponding platform branches.
 
 To build from source instead, for a system install:
 
@@ -932,7 +937,9 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- Native runtimes are GNU/Linux and macOS; Windows is not yet a native target.
+- The native Windows ConPTY workspace is available from `windows-support`, but
+  detached sessions, multi-client sharing and the dedicated OpenSSH service
+  remain POSIX server features for now.
 - The dedicated SSH entry is an interactive SuperTerm UI, not a general SSH
   shell: it deliberately rejects remote commands, SCP/SFTP and forwarding.
   Run the ordinary host `sshd` alongside it for those facilities.
@@ -946,7 +953,7 @@ Current limitations:
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 
-Planned platform and runtime work includes a native Windows ConPTY backend,
+Planned platform and runtime work includes the Windows detached-server path,
 better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author

@@ -25,6 +25,9 @@ procedure ReleaseConsoleInput;
 procedure PassthroughRaw(const Data; ALen: LongInt);
 // Raw escape/string writer to the host terminal (respects OutputFailed).
 procedure WriteRaw(const S: AnsiString);
+// Audible client-local notification. Never route this byte through a pane or
+// the shared session transport: it belongs only to the outer host terminal.
+procedure HostBell;
 
 // True when more input is already waiting to be read. Painting a frame that
 // the very next event will overwrite is wasted work and, over a slow link,
@@ -206,6 +209,11 @@ begin
       Exit;
     end;
   end;
+end;
+
+procedure HostBell;
+begin
+  WriteRaw(#7);
 end;
 
 function InputPending: Boolean;

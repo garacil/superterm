@@ -39,7 +39,10 @@ Required:
 - Free Pascal FV, FCL, DB, and POSIX thread units (`fp-units-misc` supplies
   `PThreads` on Debian/Ubuntu).
 - GNU make.
-- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
+- GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel) for the full
+  detached-session daemon and dedicated OpenSSH service. Native Windows 10
+  version 1809 or newer builds are maintained on `windows-support` and require
+  ConPTY; see [`WINDOWS.md`](WINDOWS.md).
 
 Required only for the regression suite:
 
@@ -272,14 +275,12 @@ harness.
 
 ## Platform support
 
-superterm is a single cross-platform codebase that builds and runs natively on
-GNU/Linux and macOS. Both are POSIX systems using `fork/exec`, `poll`, POSIX
-PTYs, and the bundled FreeVision text UI. The detached server registers its
-listener, handshakes, clients and PTY masters through `BaseUnix.fpPoll`, with no
-external event-library dependency and no `FD_SETSIZE` ceiling. The principal
-platform adapters are the PTY/process and CPU-count backends plus the optional
-SSH service manager; a few small POSIX type/constant branches remain beside
-their shared call sites:
+superterm has native GNU/Linux, macOS and Windows builds. The GNU/Linux and
+macOS implementation shares `fork`/`exec`, `poll`, POSIX PTYs and the bundled
+FreeVision UI. Its detached server registers the listener, handshakes, clients
+and PTY masters through `BaseUnix.fpPoll`, with no external event-library
+dependency and no `FD_SETSIZE` ceiling. The principal POSIX adapters are the
+PTY/process and CPU-count backends plus the optional SSH service manager:
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
@@ -290,7 +291,9 @@ their shared call sites:
   limits; `src/st_ssh_server.pas` uses systemd or launchd for its optional
   dedicated OpenSSH instance.
 
-The session engine, UI, configuration and SSH entry protocol remain shared.
-Windows support would require a separate PTY backend based on ConPTY, plus
-Windows process, resize, signal, configuration-path and service-manager
-implementations; WSL is the practical way to run superterm on Windows today.
+The `windows-support` branch supplies the native Windows 10 1809+ ConPTY
+backend, Windows console input/output and Windows configuration paths. It
+builds a local native workspace; the Unix fork-based detached server,
+multi-client sharing and dedicated OpenSSH listener are intentionally retained
+as POSIX features until their Windows server lifecycle is implemented. See
+[`WINDOWS.md`](WINDOWS.md) for the exact branch, compiler and build commands.

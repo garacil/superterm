@@ -517,6 +517,9 @@ var
 
 implementation
 
+uses
+  st_video;
+
 const
   SESSION_CREATE_WAIT_MS = 30000;
   SESSION_CREATE_RETRY_MS = 25;
@@ -8234,6 +8237,12 @@ begin
       // begun, normal unwinding is safe and gives HeapTrc its child-PID file.
       try
         DebugSetRole('daemon');
+        // The daemon owns canonical terminal state and the session socket,
+        // never a physical terminal. It inherited the launching client's
+        // FreeVision objects across fork; keep their incidental DrawView
+        // calls buffer-only even if an RTL output handle survives redirection.
+        // Every visible frame is produced solely by an attached client.
+        st_video.SuppressFlush := True;
       except
         SignalChildFailure;
         FpExit(1);

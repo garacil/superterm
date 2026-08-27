@@ -94,6 +94,12 @@ const
   cmDesktopFitTerminal = 2768;  // explicit shared logical desktop resize
   cmDesktopModify      = 2769;
   cmDesktopShowSize    = 2770;
+  cmToggleDesktopNotifications = 2771;
+
+  // Membership changes are serialized by the daemon but can arrive faster
+  // than a human-readable toast expires. Preserve each event in FIFO order;
+  // a user explicitly asked never to collapse desktop notices.
+  MEMBER_NOTICE_MS = 2000;
 
 {$if cmProfileBase + MAX_PROFILE_MENU_ITEMS > cmProfileSaveAs}
   {$fatal Profile command range overlaps a direct command}
@@ -106,6 +112,11 @@ type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
     pfsDropOsc, pfsDropOscEsc);
   TIconSlotUsed = array[0..MAX_PANES - 1] of boolean;
+  TMemberNoticeKind = (mnConnected, mnDisconnected);
+  TMemberNotice = record
+    Kind: TMemberNoticeKind;
+    ClientCount: integer;
+  end;
 
   PSuperApp = ^TSuperApp;
 
@@ -202,6 +213,26 @@ type
   TArtDesktop = object(TDeskTop)
     procedure InitBackground; virtual;
     function ExecView(P: PView): word; virtual;
+    procedure HandleEvent(var Event: TEvent); virtual;
+  end;
+
+  // A local, non-selectable toast over canonical desktop coordinate (0,0).
+  // It is deliberately not a TWindow: it must not enter snapshots, profiles,
+  // focus selection, icon arrangement or the shared desktop layout.
+  PDesktopNotification = ^TDesktopNotification;
+  TDesktopNotification = object(TView)
+    Text: string;
+    constructor Init(var Bounds: Objects.TRect);
+    procedure Draw; virtual;
+  end;
+
+  // Root-level, client-local status chrome. It is deliberately outside the
+  // shared desktop and sits only in the unused tail of the status line.
+  PMemberStatusOverlay = ^TMemberStatusOverlay;
+  TMemberStatusOverlay = object(TView)
+    Text: string;
+    constructor Init(var Bounds: Objects.TRect);
+    procedure Draw; virtual;
   end;
 
   // Physical, client-local viewport chrome.  These views are siblings of the
@@ -270,6 +301,14 @@ type
     ViewportSyncing: boolean;
     DesktopHBar, DesktopVBar: PDesktopScrollBar;
     DesktopCorner, DesktopBackdrop: PDesktopBackdrop;
+    DesktopNotification: PDesktopNotification;
+    MemberStatusOverlay: PMemberStatusOverlay;
+    MemberNotices: array of TMemberNotice;
+    MemberNoticeHead: integer;
+    MemberNoticeActive: boolean;
+    MemberNoticeUntil, MemberNoticePauseTick: QWord;
+    MemberNoticePaused: boolean;
+    RemoteMembershipReady: boolean;
     GeometryStatusActive: boolean;
     GeometryStatusX, GeometryStatusY: integer;
     GeometryStatusW, GeometryStatusH: integer;
@@ -409,6 +448,11 @@ type
     procedure AdjustDesktopToTerminal;
     procedure ModifyDesktopDimensions;
     procedure ShowDesktopDimensions;
+    procedure QueueMemberNotice(AKind: TMemberNoticeKind; AClientCount: integer);
+    procedure UpdateMemberNotices(ANow: QWord);
+    procedure RefreshMemberNoticeViews;
+    function MemberNoticeStatusText(AAvailable: integer): string;
+    function MemberNoticeDesktopText: string;
     procedure SetGeometryStatus(const R: Objects.TRect; AActive: boolean);
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
@@ -2367,6 +2411,125 @@ begin
   WriteLine(0, 0, W, Size.Y, B);
 end;
 
+constructor TDesktopNotification.Init(var Bounds: Objects.TRect);
+begin
+  inherited Init(Bounds);
+  // FreeVision dispatches a positional event to the first visible view under
+  // the pointer even when that view has no event mask. TArtDesktop temporarily
+  // takes this cosmetic view out of that hit-test, so it can never eat a pane
+  // click; keeping it non-selectable also makes Show/Hide focus-neutral.
+  Options := Options and not ofSelectable;
+  EventMask := 0;
+  GrowMode := 0;
+  Text := '';
+end;
+
+procedure TDesktopNotification.Draw;
+var
+  B: TDrawBuffer;
+  W: integer;
+  FrameAttr, TextAttr: byte;
+  S: string;
+begin
+  W := Size.X;
+  if W < 1 then
+    Exit;
+  FrameAttr := byte(GetColor($0503));
+  TextAttr := byte(GetColor($0604));
+  S := Copy(Text, 1, W - 2);
+
+  B := Default(TDrawBuffer);
+  MoveChar(B, ' ', TextAttr, W);
+  if W >= 2 then
+  begin
+    B[0] := (word(FrameAttr) shl 8) or word(#218);
+    B[W - 1] := (word(FrameAttr) shl 8) or word(#191);
+    if W > 2 then
+      MoveChar(B[1], #196, FrameAttr, W - 2);
+  end;
+  WriteLine(0, 0, W, 1, B);
+
+  if Size.Y >= 2 then
+  begin
+    B := Default(TDrawBuffer);
+    MoveChar(B, ' ', TextAttr, W);
+    if W >= 2 then
+    begin
+      B[0] := (word(FrameAttr) shl 8) or word(#179);
+      B[W - 1] := (word(FrameAttr) shl 8) or word(#179);
+    end;
+    if W > 2 then
+      MoveStr(B[1], S, TextAttr);
+    WriteLine(0, 1, W, 1, B);
+  end;
+
+  if Size.Y >= 3 then
+  begin
+    B := Default(TDrawBuffer);
+    MoveChar(B, ' ', TextAttr, W);
+    if W >= 2 then
+    begin
+      B[0] := (word(FrameAttr) shl 8) or word(#192);
+      B[W - 1] := (word(FrameAttr) shl 8) or word(#217);
+      if W > 2 then
+        MoveChar(B[1], #196, FrameAttr, W - 2);
+    end;
+    WriteLine(0, 2, W, 1, B);
+  end;
+end;
+
+constructor TMemberStatusOverlay.Init(var Bounds: Objects.TRect);
+begin
+  inherited Init(Bounds);
+  Options := Options and not ofSelectable;
+  EventMask := 0;
+  // Its left edge is anchored after the fixed shortcuts while its right edge
+  // follows the terminal. Repositioning on a notification covers shrink too.
+  GrowMode := gfGrowLoY + gfGrowHiX + gfGrowHiY;
+  Text := '';
+end;
+
+procedure TMemberStatusOverlay.Draw;
+var
+  B: TDrawBuffer;
+  W: integer;
+  NormalAttr, TextAttr: byte;
+begin
+  W := Size.X;
+  if W < 1 then
+    Exit;
+  NormalAttr := byte(GetColor($0301));
+  TextAttr := byte(GetColor($0604));
+  B := Default(TDrawBuffer);
+  MoveChar(B, ' ', NormalAttr, W);
+  if W > 0 then
+    B[0] := (word(NormalAttr) shl 8) or word(#179);
+  if W > 2 then
+    MoveStr(B[2], Copy(Text, 1, W - 2), TextAttr);
+  WriteLine(0, 0, W, 1, B);
+end;
+
+// The visible status shortcuts are the fixed left boundary of the client
+// activity overlay. Keeping that arithmetic in one helper makes language and
+// prefix changes update the boundary together with InitStatusLine.
+function StatusQuickItemsEnd(const Cfg: TConfig): integer;
+  function ItemWidth(const S: string): integer;
+  begin
+    Result := CStrLen(' ' + S + ' ');
+  end;
+var
+  Prefix: string;
+begin
+  Prefix := PrefixKeyLabel(Cfg.PrefixKey);
+  Result := ItemWidth(UiText('~F2~ Split', '~F2~ Dividir')) +
+    ItemWidth(UiText('~F6~ Pane', '~F6~ Panel')) +
+    ItemWidth(UiText('~F8~ Window', '~F8~ Ventana')) +
+    ItemWidth(UiText('~' + Prefix + ' f~ Full screen',
+      '~' + Prefix + ' f~ Pantalla')) +
+    ItemWidth(UiText('~' + Prefix + ' d~ Detach',
+      '~' + Prefix + ' d~ Separar'));
+end;
+
 procedure TGeometryStatusLine.Draw;
 var
   App: PSuperApp;
@@ -2376,23 +2539,58 @@ var
 begin
   inherited Draw;
   App := PSuperApp(Application);
-  if (App = nil) or (not App^.GeometryStatusActive) then
+  if App = nil then
     Exit;
-  S := Format(UiText(' Window %d,%d  %dx%d ',
-                     ' Ventana %d,%d  %dx%d '),
-    [App^.GeometryStatusX, App^.GeometryStatusY,
-     App^.GeometryStatusW, App^.GeometryStatusH]);
-  if Length(S) > Size.X then
-    S := Copy(S, Length(S) - Size.X + 1, Size.X);
+  S := '';
+  if App^.GeometryStatusActive then
+  begin
+    S := Format(UiText(' Window %d,%d  %dx%d ',
+                       ' Ventana %d,%d  %dx%d '),
+      [App^.GeometryStatusX, App^.GeometryStatusY,
+       App^.GeometryStatusW, App^.GeometryStatusH]);
+    if Length(S) > Size.X then
+      S := Copy(S, Length(S) - Size.X + 1, Size.X);
+  end;
   L := Length(S);
-  X := Size.X - L;
-  if X < 0 then X := 0;
-  B := Default(TDrawBuffer);
-  // Use the status/menu selected pair, never a literal colour. This makes
-  // the live geometry a clearly delimited status block in color, light/BW
-  // and monochrome palettes alike.
-  MoveStr(B, S, byte(GetColor($0604)));
-  WriteLine(X, 0, L, 1, B);
+  if S <> '' then
+  begin
+    X := Size.X - L;
+    if X < 0 then X := 0;
+    B := Default(TDrawBuffer);
+    // Use the status/menu selected pair, never a literal colour. This makes
+    // the live geometry a clearly delimited status block in color, light/BW
+    // and monochrome palettes alike.
+    MoveStr(B, S, byte(GetColor($0604)));
+    WriteLine(X, 0, L, 1, B);
+  end;
+end;
+
+procedure TArtDesktop.HandleEvent(var Event: TEvent);
+var
+  App: PSuperApp;
+  Toast: PDesktopNotification;
+begin
+  App := PSuperApp(Application);
+  Toast := nil;
+  if App <> nil then
+    Toast := App^.DesktopNotification;
+  if (Toast <> nil) and Toast^.GetState(sfVisible) and
+     ((Event.What and PositionalEvents) <> 0) and
+     Toast^.MouseInView(Event.Where) then
+  begin
+    // TGroup selects the first visible view under a mouse event before it
+    // inspects EventMask. Remove this purely visual overlay from that one
+    // hit-test without emitting a hide/show frame, then restore and redraw it.
+    Toast^.State := Toast^.State and not sfVisible;
+    try
+      inherited HandleEvent(Event);
+    finally
+      Toast^.State := Toast^.State or sfVisible;
+    end;
+    Toast^.DrawView;
+  end
+  else
+    inherited HandleEvent(Event);
 end;
 
 procedure TSuperApp.SetGeometryStatus(const R: Objects.TRect;
@@ -2410,6 +2608,224 @@ begin
     StatusLine^.DrawView;
 end;
 
+function TSuperApp.MemberNoticeStatusText(AAvailable: integer): string;
+var
+  Notice: TMemberNotice;
+  FullText: string;
+begin
+  Result := '';
+  if (not MemberNoticeActive) or (MemberNoticeHead < 0) or
+     (MemberNoticeHead >= Length(MemberNotices)) then
+    Exit;
+  Notice := MemberNotices[MemberNoticeHead];
+  if Notice.Kind = mnConnected then
+    FullText := UiText('Client connected: ', 'Cliente conectado: ')
+  else
+    FullText := UiText('Client disconnected: ', 'Cliente desconectado: ');
+  FullText := FullText + IntToStr(Notice.ClientCount) +
+    UiText(' clients', ' clientes');
+  if Length(FullText) > AAvailable then
+  begin
+    if Notice.Kind = mnConnected then
+      Result := '+' + IntToStr(Notice.ClientCount)
+    else
+      Result := '-' + IntToStr(Notice.ClientCount);
+  end
+  else
+    Result := FullText;
+end;
+
+function TSuperApp.MemberNoticeDesktopText: string;
+var
+  Notice: TMemberNotice;
+begin
+  Result := '';
+  if (not MemberNoticeActive) or (MemberNoticeHead < 0) or
+     (MemberNoticeHead >= Length(MemberNotices)) then
+    Exit;
+  Notice := MemberNotices[MemberNoticeHead];
+  case Notice.Kind of
+    mnConnected: Result := UiText(' User connected ', ' Usuario conectado ');
+    mnDisconnected: Result := UiText(' User disconnected ',
+      ' Usuario desconectado ');
+  end;
+end;
+
+procedure TSuperApp.RefreshMemberNoticeViews;
+var
+  R, StatusR: Objects.TRect;
+  S, GeometryText: string;
+  ToastW, StatusW, StatusStart, StatusRight, GeometryLen: integer;
+  ShowDesktopToast, ShowStatus, SavedSuppress: boolean;
+begin
+  ShowDesktopToast := MemberNoticeActive and Cfg.DesktopNotifications and
+    (not PassthroughActive) and (Desktop <> nil) and
+    (DesktopNotification <> nil);
+  GeometryLen := 0;
+  if GeometryStatusActive then
+  begin
+    GeometryText := Format(UiText(' Window %d,%d  %dx%d ',
+      ' Ventana %d,%d  %dx%d '), [GeometryStatusX, GeometryStatusY,
+      GeometryStatusW, GeometryStatusH]);
+    GeometryLen := Length(GeometryText);
+    if GeometryLen > Size.X then
+      GeometryLen := Size.X;
+  end;
+  StatusStart := StatusQuickItemsEnd(Cfg);
+  StatusRight := Size.X - GeometryLen;
+  StatusW := StatusRight - StatusStart;
+  ShowStatus := MemberNoticeActive and (not PassthroughActive) and
+    (StatusW > 2);
+  SavedSuppress := SuppressFlush;
+  SuppressFlush := True;
+  try
+    if DesktopNotification <> nil then
+    begin
+      if ShowDesktopToast then
+      begin
+        S := MemberNoticeDesktopText;
+        ToastW := Length(S) + 2;
+        if ToastW < 20 then ToastW := 20;
+        if (Desktop <> nil) and (ToastW > Desktop^.Size.X) then
+          ToastW := Desktop^.Size.X;
+        if ToastW < 3 then ToastW := 3;
+        R.Assign(0, 0, ToastW, 3);
+        DesktopNotification^.Text := S;
+        if (DesktopNotification^.Origin.X <> R.A.X) or
+           (DesktopNotification^.Origin.Y <> R.A.Y) or
+           (DesktopNotification^.Size.X <> ToastW) or
+           (DesktopNotification^.Size.Y <> 3) then
+          DesktopNotification^.ChangeBounds(R);
+        // Inserted window panes naturally become first. Raise this local
+        // cosmetic view only while it is active; it is non-selectable, so
+        // this cannot change the shared focus.
+        DesktopNotification^.MakeFirst;
+        DesktopNotification^.Show;
+      end
+      else
+        DesktopNotification^.Hide;
+    end;
+
+    // The stock FreeVision status line redraws itself from private state when
+    // its help context changes. A small root-level view is therefore the
+    // reliable client-local tail: it is painted after that stock row, never
+    // changes shared desktop state, and leaves geometry text at the right.
+    if ShowStatus and (MemberStatusOverlay = nil) then
+    begin
+      StatusR.Assign(0, 0, 1, 1);
+      MemberStatusOverlay := New(PMemberStatusOverlay, Init(StatusR));
+      if MemberStatusOverlay <> nil then
+      begin
+        MemberStatusOverlay^.Hide;
+        Insert(PView(MemberStatusOverlay));
+      end;
+    end;
+    if MemberStatusOverlay <> nil then
+    begin
+      if ShowStatus then
+      begin
+        StatusR.Assign(StatusStart, Size.Y - 1, StatusRight, Size.Y);
+        MemberStatusOverlay^.Text := MemberNoticeStatusText(StatusW - 2);
+        if (MemberStatusOverlay^.Origin.X <> StatusR.A.X) or
+           (MemberStatusOverlay^.Origin.Y <> StatusR.A.Y) or
+           (MemberStatusOverlay^.Size.X <> StatusW) or
+           (MemberStatusOverlay^.Size.Y <> 1) then
+          MemberStatusOverlay^.ChangeBounds(StatusR);
+        MemberStatusOverlay^.MakeFirst;
+        MemberStatusOverlay^.Show;
+      end
+      else
+        MemberStatusOverlay^.Hide;
+    end;
+  finally
+    SuppressFlush := SavedSuppress;
+  end;
+  // One full-tree buffer build makes the status and the toast appear/vanish
+  // atomically. The renderer emits only changed cells, so it does not resend
+  // pane content or make a transition flash.
+  if (not SavedSuppress) and (not PassthroughActive) then
+  begin
+    RepaintChanges;
+    // A changed Text field does not itself invalidate a bare TView. Draw the
+    // already-topmost local tail explicitly after the shared tree has settled
+    // so each FIFO event replaces its count without waiting for another UI
+    // action or re-sending pane contents.
+    if ShowStatus and (MemberStatusOverlay <> nil) then
+      MemberStatusOverlay^.DrawView;
+  end;
+end;
+
+procedure TSuperApp.QueueMemberNotice(AKind: TMemberNoticeKind;
+  AClientCount: integer);
+var
+  N: integer;
+begin
+  if AClientCount < 0 then
+    Exit;
+  N := Length(MemberNotices);
+  SetLength(MemberNotices, N + 1);
+  MemberNotices[N].Kind := AKind;
+  MemberNotices[N].ClientCount := AClientCount;
+  // This is deliberately a host-terminal byte, never pane input/output.
+  // Each daemon-ordered membership event calls it exactly once.
+  HostBell;
+  if DebugFull then
+    DebugLog(Format('member-notice: queued kind=%d clients=%d pending=%d',
+      [Ord(AKind), AClientCount, Length(MemberNotices) - MemberNoticeHead]));
+end;
+
+procedure TSuperApp.UpdateMemberNotices(ANow: QWord);
+var
+  Remaining, I: integer;
+  Changed: boolean;
+begin
+  Changed := False;
+  // The raw fullscreen pane owns physical output. Preserve the visual timer
+  // exactly where it is, while QueueMemberNotice has already sounded every
+  // independent bell at event arrival.
+  if PassthroughActive then
+  begin
+    if MemberNoticeActive and (not MemberNoticePaused) then
+    begin
+      MemberNoticePaused := True;
+      MemberNoticePauseTick := ANow;
+    end;
+    Exit;
+  end;
+  if MemberNoticePaused then
+  begin
+    if ANow > MemberNoticePauseTick then
+      Inc(MemberNoticeUntil, ANow - MemberNoticePauseTick);
+    MemberNoticePaused := False;
+  end;
+  if MemberNoticeActive and (ANow >= MemberNoticeUntil) then
+  begin
+    Inc(MemberNoticeHead);
+    MemberNoticeActive := False;
+    Changed := True;
+    // Compact only consumed records. No live membership event is merged or
+    // discarded: every queued desktop toast remains an individual event.
+    if (MemberNoticeHead >= 32) and
+       (MemberNoticeHead * 2 >= Length(MemberNotices)) then
+    begin
+      Remaining := Length(MemberNotices) - MemberNoticeHead;
+      for I := 0 to Remaining - 1 do
+        MemberNotices[I] := MemberNotices[MemberNoticeHead + I];
+      SetLength(MemberNotices, Remaining);
+      MemberNoticeHead := 0;
+    end;
+  end;
+  if (not MemberNoticeActive) and
+     (MemberNoticeHead < Length(MemberNotices)) then
+  begin
+    MemberNoticeActive := True;
+    MemberNoticeUntil := ANow + MEMBER_NOTICE_MS;
+    Changed := True;
+  end;
+  if Changed then
+    RefreshMemberNoticeViews;
+end;
+
 procedure TSuperApp.InitViewportViews;
 var
   R: Objects.TRect;
@@ -2425,6 +2841,7 @@ begin
   DesktopVBar := nil;
   DesktopCorner := nil;
   DesktopBackdrop := nil;
+  DesktopNotification := nil;
   if Desktop = nil then
     Exit;
 
@@ -2433,9 +2850,11 @@ begin
   DesktopHBar := New(PDesktopScrollBar, Init(R, 0));
   DesktopVBar := New(PDesktopScrollBar, Init(R, 1));
   DesktopCorner := New(PDesktopBackdrop, Init(R));
+  DesktopNotification := New(PDesktopNotification, Init(R));
   DesktopHBar^.Hide;
   DesktopVBar^.Hide;
   DesktopCorner^.Hide;
+  DesktopNotification^.Hide;
 
   // First is frontmost in this FreeVision view ring.  The filler is behind
   // the logical desktop; bars/corner sit immediately in front of it while the
@@ -2444,6 +2863,7 @@ begin
   InsertBefore(PView(DesktopHBar), PView(Desktop));
   InsertBefore(PView(DesktopVBar), PView(Desktop));
   InsertBefore(PView(DesktopCorner), PView(Desktop));
+  Desktop^.Insert(PView(DesktopNotification));
   PArtDesktop(Desktop)^.GrowMode := 0;
   UpdateDesktopViewport(True);
 end;
@@ -2750,6 +3170,7 @@ begin
   SuppressFlush := True;
   inherited Init;
   FBootLocked := True;
+  MemberStatusOverlay := nil;
   ClipHistory := TClipboardHistory.Create;
   CopyMode := False;
   CopySelecting := False;
@@ -2832,6 +3253,13 @@ begin
   RemoteMinHostH := 0;
   RemoteHostSizesMatch := False;
   RemoteHostSummaryValid := False;
+  RemoteMembershipReady := False;
+  MemberNotices := nil;
+  MemberNoticeHead := 0;
+  MemberNoticeActive := False;
+  MemberNoticeUntil := 0;
+  MemberNoticePauseTick := 0;
+  MemberNoticePaused := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   RemoteHostSizeArmed := False;
@@ -3208,6 +3636,8 @@ begin
     // A new physical size always starts at the canonical upper-left corner.
     // Existing window bounds and PTY grids remain byte-for-byte untouched.
     UpdateDesktopViewport(True);
+    if MemberNoticeActive then
+      RefreshMemberNoticeViews;
     ResetVideoSurface;
     // Build the final frame while writes are held. EffOld remains invalid,
     // so the post-transaction ReDraw below emits every settled cell once.
@@ -4457,6 +4887,7 @@ procedure TSuperApp.ReleaseRuntime;
 var
   i: integer;
 begin
+  RemoteMembershipReady := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   ResetSizeRequests;
@@ -5102,6 +5533,7 @@ begin
   Result := False;
   RemoteHostSizeArmed := False;
   RemoteHostSummaryValid := False;
+  RemoteMembershipReady := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   Remote := TSessionClient.Create;
@@ -5287,6 +5719,7 @@ begin
   CurrentSessionSocket := APath;
   RemoteLayoutHash := ComputeLayoutHash;
   RemoteHostSizeArmed := True;
+  RemoteMembershipReady := True;
   RememberSshEntrySession(CurrentSessionName);
   Result := True;
 end;
@@ -5309,6 +5742,7 @@ begin
   Result := False;
   RemoteHostSizeArmed := False;
   RemoteHostSummaryValid := False;
+  RemoteMembershipReady := False;
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   Candidate := TSessionClient.Create;
@@ -5398,6 +5832,7 @@ begin
     ResetSizeRequests;
     RemoteLayoutHash := ComputeLayoutHash;
     RemoteHostSizeArmed := True;
+    RemoteMembershipReady := True;
     RememberSshEntrySession(CurrentSessionName);
     if DebugActive then
       DebugLog(Format('promote-adopt: panes=%d desk=%dx%d focused=%d revision=%d',
@@ -7894,7 +8329,6 @@ begin
   // normal Idle loop has not consumed the queued UI event yet.
   if Remote.HostSummaryValid then
   begin
-    RemoteClientCount := Remote.ClientCount;
     RemoteMinHostW := Remote.MinHostW;
     RemoteMinHostH := Remote.MinHostH;
     RemoteHostSizesMatch := Remote.HostSizesMatch;
@@ -7911,7 +8345,6 @@ begin
   // before deriving either kind of maximum.
   if Remote.HostSummaryValid then
   begin
-    RemoteClientCount := Remote.ClientCount;
     RemoteMinHostW := Remote.MinHostW;
     RemoteMinHostH := Remote.MinHostH;
     RemoteHostSizesMatch := Remote.HostSizesMatch;
@@ -7956,7 +8389,6 @@ begin
   // metadata is deliberately independent of layout revision.
   if Remote.HostSummaryValid then
   begin
-    RemoteClientCount := Remote.ClientCount;
     RemoteMinHostW := Remote.MinHostW;
     RemoteMinHostH := Remote.MinHostH;
     RemoteHostSizesMatch := Remote.HostSizesMatch;
@@ -8213,7 +8645,7 @@ end;
 // lease; never Locate a window or resize a mirror from this event.
 procedure TSuperApp.ApplyRemoteHostSummaryEv(const AData: TByteArray);
 var
-  Clients, MinHostW, MinHostH, OldClientCount, I: Longint;
+  Clients, MinHostW, MinHostH, OldClientCount, I, NoticeCount: Longint;
   HostSizesMatch, AnyFull: boolean;
 begin
   if not DecodeHostSummaryBlob(AData, Clients, MinHostW, MinHostH,
@@ -8225,6 +8657,19 @@ begin
   RemoteMinHostH := MinHostH;
   RemoteHostSizesMatch := HostSizesMatch;
   RemoteHostSummaryValid := True;
+  // The daemon serializes membership changes and emits this frame to every
+  // remaining client. Reuse that exact order; no new per-client protocol or
+  // shared desktop state is needed. A snapshot establishes the baseline for
+  // the attaching client, so it never announces its own attachment.
+  if RemoteMembershipReady and (Clients >= 0) then
+  begin
+    if Clients > OldClientCount then
+      for NoticeCount := OldClientCount + 1 to Clients do
+        QueueMemberNotice(mnConnected, NoticeCount)
+    else if Clients < OldClientCount then
+      for NoticeCount := OldClientCount - 1 downto Clients do
+        QueueMemberNotice(mnDisconnected, NoticeCount);
+  end;
   if DebugFull then
     DebugLog(Format('host-summary-event: clients=%d min=%dx%d match=%d',
       [Clients, MinHostW, MinHostH, Ord(HostSizesMatch)]));
@@ -9546,6 +9991,13 @@ begin
       cmDesktopFitTerminal: AdjustDesktopToTerminal;
       cmDesktopModify: ModifyDesktopDimensions;
       cmDesktopShowSize: ShowDesktopDimensions;
+      cmToggleDesktopNotifications:
+        begin
+          Cfg.DesktopNotifications := not Cfg.DesktopNotifications;
+          SaveConfigFields(Cfg, [cfDesktopNotifications]);
+          RebuildMenu;
+          RefreshMemberNoticeViews;
+        end;
       cmPaneTile: DoTilePanes;
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
@@ -10055,6 +10507,7 @@ begin
             RemoteMode := False;
             RemoteHostSizeArmed := False;
             RemoteHostSummaryValid := False;
+            RemoteMembershipReady := False;
             ResetRemotePreviewState;
             ResetRemoteZoomState;
             SkipSave := True;
@@ -10068,6 +10521,7 @@ begin
             RemoteMode := False;
             RemoteHostSizeArmed := False;
             RemoteHostSummaryValid := False;
+            RemoteMembershipReady := False;
             ResetRemotePreviewState;
             ResetRemoteZoomState;
             // flag before the MessageBox: nothing from this instance must
@@ -10101,6 +10555,7 @@ begin
           FinishRemoteZoomAnimation;
       end;
     end;
+    UpdateMemberNotices(GetTickCount64);
     if RemoteMode and RemoteZoomPending and
        (Tick - RemoteZoomSentTick >= 2500) then
     begin
@@ -10735,6 +11190,10 @@ begin
   DesktopItems := NewItem(UiText('~S~how current dimensions...',
     '~M~ostrar dimensiones actuales...'), '', kbNoKey,
     cmDesktopShowSize, hcNoContext, nil);
+  DesktopItems := NewItem(ActiveMark(Cfg.DesktopNotifications) +
+    UiText('Show desktop ~n~otifications',
+           'Mostrar ~n~otificaciones del escritorio'), '', kbNoKey,
+    cmToggleDesktopNotifications, hcNoContext, DesktopItems);
   DesktopItems := NewItem(UiText('~M~odify dimensions...',
     'Modificar ~d~imensiones...'), '', kbNoKey,
     cmDesktopModify, hcNoContext, DesktopItems);
