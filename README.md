@@ -9,10 +9,9 @@
 > finale, official anthem and all — and slammed the panic button the moment
 > the boss walked back in.
 >
-> [![An AI celebrating Fallas inside a SuperTerm pane — CLICK FOR THE FULL SHOW WITH SOUND](screenshots/ai-fireworks.gif)](https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4)
+> [![An AI celebrating Fallas inside a SuperTerm pane - click to play the full show with sound](screenshots/ai-fireworks-play.jpg)](https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4)
 >
-> 🔊 **[▶ CLICK HERE for the COMPLETE 89-second show WITH SOUND — the official anthem deserves it](https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4)**
-> *(what you see above is just the silent finale — the real thing has a countdown, the anthem of València and a very abrupt ending)*
+> https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4
 
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
