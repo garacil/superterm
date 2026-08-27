@@ -436,6 +436,16 @@ for native build, terminal and platform details. Windows Terminal and the
 Microsoft OpenSSH client also work as standard SSH viewers of a GNU/Linux or
 macOS SuperTerm server.
 
+### Branch direction
+
+`newfeatures` is the development branch and is promoted into `main` only after
+review and validation. `macos-support` and `windows-support` are downstream
+platform branches: they receive the tested changes from `main`, then add only
+their platform-specific build or backend work. They are **never** pull-request
+sources for `main` and are never merged back into it. GitHub may offer a
+generic “Compare & pull request” button after a platform-branch push; that is
+an automatic GitHub prompt, not the project integration direction.
+
 ## Why Free Pascal
 
 Free Pascal is part of SuperTerm's runtime design, not just its implementation
