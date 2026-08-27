@@ -2,6 +2,24 @@
 
 ## 4.2.1 - 2026-08
 
+### Native Windows is now a first-class documented target
+
+SuperTerm now documents its three native targets clearly: GNU/Linux on
+`main`, macOS on `macos-support`, and Windows 10 1809+ on `windows-support`.
+Windows uses its native ConPTY and console backend rather than WSL. The branch
+currently provides the native local workspace; the fork-based detached daemon,
+multi-client service and dedicated OpenSSH listener remain POSIX server
+features while their Windows lifecycle is completed.
+
+### Ordered client-activity notifications
+
+Each attach and detach now produces one client-local bell and one ordered
+status-line message with the resulting number of interactive viewers. The
+daemon itself is never a viewer and is never counted. `Desktop -> Show desktop
+notifications` controls an optional short `(0,0)` desktop toast; it never
+alters the shared workspace, pane output, status message or bell. The setting
+is persisted as `[ui] desktop_notifications` and defaults to enabled.
+
 ### A useful first workspace needs no setup
 
 A configuration-free first start now opens a fixed `120x50` shared desktop

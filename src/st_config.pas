@@ -76,6 +76,10 @@ type
     // palette calls something else 'black', otherwise shows through
     // everything superterm draws. Turn it off to keep that transparency.
     SolidBg: boolean;
+    // Local cosmetic preference: show the short client-activity toast at
+    // canonical desktop coordinate (0,0). The status-line notice remains
+    // visible regardless, so a small or clipped desktop never hides it.
+    DesktopNotifications: boolean;
   end;
 
   // Field-scoped persistence prevents two attached clients changing
@@ -84,6 +88,7 @@ type
   TConfigField = (cfShell, cfLoginShell, cfUser, cfPrefixKey,
     cfServerMode, cfMultiThread, cfAutoSave, cfAutoRestore, cfDragContent,
     cfZoomAnim, cfDesktopColor, cfSolidBg, cfNewWinCols, cfNewWinRows,
+    cfDesktopNotifications,
     cfBackground, cfBackgroundMode, cfDefaultProfile, cfDefaultTemplate,
     cfDefaultSession, cfSshSessionMode, cfSshLastSession, cfDefaultWindow,
     cfLanguage, cfPalette);
@@ -460,6 +465,7 @@ begin
   Cfg.NewWinRows := 0;
   Cfg.DesktopColor := 0;        // black
   Cfg.SolidBg := True;
+  Cfg.DesktopNotifications := True;
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -494,6 +500,8 @@ begin
     Cfg.DesktopColor := Ini.ReadInteger('ui', 'desktop_color',
       Cfg.DesktopColor);
     Cfg.SolidBg := Ini.ReadBool('ui', 'solid_background', Cfg.SolidBg);
+    Cfg.DesktopNotifications := Ini.ReadBool('ui', 'desktop_notifications',
+      Cfg.DesktopNotifications);
     if (Cfg.DesktopColor < 0) or (Cfg.DesktopColor > 15) then
       Cfg.DesktopColor := 0;
     Cfg.NewWinCols := Ini.ReadInteger('ui', 'newwincols', Cfg.NewWinCols);
@@ -975,6 +983,9 @@ begin
           Ini.WriteInteger('ui', 'desktop_color', Cfg.DesktopColor);
         if cfSolidBg in Fields then
           Ini.WriteBool('ui', 'solid_background', Cfg.SolidBg);
+        if cfDesktopNotifications in Fields then
+          Ini.WriteBool('ui', 'desktop_notifications',
+            Cfg.DesktopNotifications);
         if cfNewWinCols in Fields then
           Ini.WriteInteger('ui', 'newwincols', Cfg.NewWinCols);
         if cfNewWinRows in Fields then

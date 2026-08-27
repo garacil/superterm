@@ -5,13 +5,9 @@
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
-GNU/Linux and macOS. It puts up to 16 real PTY-backed terminals inside a
+GNU/Linux, macOS and Windows. It puts up to 16 real PTY-backed terminals inside a
 Turbo Vision-style desktop, then keeps that desktop alive in a session daemon
 so you can detach, reconnect, move to another screen, or work in it together.
-
-The native Windows build provides the same local interactive workspace through
-ConPTY in a single process. Detached sessions, multi-client attach, the control
-CLI, and the dedicated incoming SSH service remain GNU/Linux/macOS features.
 
 **If your device has an SSH client, it already has a SuperTerm client.** If a
 device or hosted terminal can start a standard interactive SSH session, it can
@@ -42,16 +38,15 @@ size and scrollback; every attached viewer sees the same focused desktop.
 | Work that outlives a terminal window | `Ctrl-Q d`, a dropped connection or closing an SSH terminal removes the viewer, not the live panes. Reconnect to the same desktop. |
 | The same workspace on another screen | Attach locally through a private Unix socket or remotely with ordinary interactive `ssh`; no SuperTerm-specific client is installed on the viewing device. |
 | A terminal you can share live | Up to 8 attached clients see the same panes, focus, layout and changes. Input is applied in arrival order, and a stalled viewer cannot block the others. |
-| More than one shell | Up to 16 PTY/ConPTY-backed panes can run local commands, remote SSH sessions and full-screen terminal applications. |
+| More than one shell | Up to 16 PTY-backed panes can run local commands, remote SSH sessions and full-screen terminal applications. |
 | Repeatable and scriptable workspaces | Profiles and window classes describe layouts; the bilingual CLI can create, focus, resize, feed and capture panes from another shell. |
-| Native, direct implementation | Free Pascal produces the optimized native binary; SuperTerm uses POSIX PTYs, `poll` and Unix sockets on POSIX, and ConPTY plus native console/process APIs on Windows. |
+| Native, direct implementation | Free Pascal produces the optimized native binary; SuperTerm uses POSIX PTYs, `poll` and Unix sockets directly, without an external event-loop library. |
 
-The persistent, SSH-published SuperTerm host runs natively on GNU/Linux or
-macOS. Viewers can be local terminal windows, another machine on the LAN, a
-remote laptop or mobile terminal, or a browser-hosted shell that provides a
-standard `ssh` command and forwards terminal input. The host is where
-SuperTerm and the live processes run; the other screen is simply an SSH
-terminal. Native Windows instead runs the workspace locally through ConPTY.
+The SuperTerm host runs natively on GNU/Linux, macOS or Windows. Viewers can be local
+terminal windows, another machine on the LAN, a remote laptop or mobile
+terminal, or a browser-hosted shell that provides a standard `ssh` command and
+forwards terminal input. The host is where SuperTerm and the live processes
+run; the other screen is simply an SSH terminal.
 
 ![Two clients attached to one session](screenshots/multiuser.png)
 
@@ -69,8 +64,7 @@ Install a package from the
 superterm
 ```
 
-On GNU/Linux and macOS, press `Ctrl-Q d` to detach without stopping the panes.
-Return with:
+Press `Ctrl-Q d` to detach without stopping the panes. Return with:
 
 ```sh
 superterm --attach
@@ -86,9 +80,7 @@ make release
 
 See [Installation](#installation) for package and system/user-local install
 options, or [`docs/BUILDING.md`](docs/BUILDING.md) for the complete build
-reference. For native Windows, follow the Git Bash build below or the verified
-machine-specific procedure in [`docs/WINDOWS.md`](docs/WINDOWS.md), then run
-`bin\superterm.exe`.
+reference.
 
 ### Publish it over SSH
 
@@ -184,10 +176,6 @@ survive a host reboot; profiles and preferences do.
 
 ### Persistent, shared sessions
 
-The persistent daemon, attach, sharing, and session-control features in this
-subsection are available on GNU/Linux and macOS. Native Windows currently runs
-one local interactive workspace in the launching process.
-
 - Every session is a server from launch (tmux-style): the visible terminal is
   the first attached client. Named sessions live under
   `~/.superterm/sessions/`; use `Ctrl-Q d`, the `Ctrl-Q s` session picker,
@@ -233,19 +221,17 @@ one local interactive workspace in the launching process.
 - Profiles (`[profile.*]`) describe named workspaces, windows and pane layouts.
   Legacy `[t-*]` terminals and `[template.*]` INI/SQLite templates are still
   read and migrated. Automatic local fallback save/restore uses
-  `~/.superterm/session.ini` on POSIX and
-  `%APPDATA%\superterm\session.ini` on Windows.
+  `~/.superterm/session.ini`.
 - The quick session wizard launches one to four panes without editing a
   configuration file. Each pane accepts a connection command and optional
   post-connect input.
-- On GNU/Linux and macOS, the bilingual control CLI accepts English and
-  Spanish commands and long options without case/accent distinctions:
-  `list/listar`, `send/enviar`, `capture/capturar`, `kill/matar`,
-  `new/nueva`, `close/cerrar`, `focus/foco`, `rename/renombrar`,
-  `resize/tamano`, `minimize/minimizar`, `restore/restaurar`,
-  `zoom/ampliar` and `organize/organizar`. The built-in `--help` index is
-  portable and documents every command; the narrative reference is
-  [`docs/CLI.md`](docs/CLI.md).
+- The bilingual control CLI accepts English and Spanish commands and long
+  options without case/accent distinctions: `list/listar`, `send/enviar`,
+  `capture/capturar`, `kill/matar`, `new/nueva`, `close/cerrar`,
+  `focus/foco`, `rename/renombrar`, `resize/tamano`,
+  `minimize/minimizar`, `restore/restaurar`, `zoom/ampliar` and
+  `organize/organizar`. The built-in `--help` index documents every command;
+  the narrative reference is [`docs/CLI.md`](docs/CLI.md).
 
 ```sh
 superterm send prod:2 tail -f /var/log/syslog   # type into any pane
@@ -278,18 +264,16 @@ superterm listar prod                           # the same CLI, en español
   active window. This temporary indicator is not the desktop size; use
   `Desktop -> Show current dimensions...` for the canonical desktop.
 - Nine RGB ASCII-art desktop backgrounds ship as runtime-readable text files;
-  custom files can be dropped into `~/.superterm/backgrounds/` on POSIX or
-  `%APPDATA%\superterm\backgrounds\` on Windows without a rebuild and
-  displayed centred, tiled, stretched or fitted.
+  custom files can be dropped into `~/.superterm/backgrounds/` without a
+  rebuild and displayed centred, tiled, stretched or fitted.
 - Vendored FreeVision sources in `vendor/fv322` provide the project's
   wide-screen and tmux mouse fixes without modifying the system FreeVision
   installation.
 
 ### Native runtime
 
-- The release build is compiled by Free Pascal with `-O4` to native code. On
-  POSIX it talks directly to PTYs, processes, Unix sockets and SQLite APIs;
-  on Windows it uses ConPTY and native console/process APIs.
+- The release build is compiled by Free Pascal with `-O4` to native code and
+  talks directly to POSIX PTYs, processes, Unix sockets and SQLite APIs.
 - The default daemon is a bounded, nonblocking `fpPoll` reactor. Optional
   per-pane reactors can parse independent PTY streams on multiple CPU cores;
   `multithread=1` preserves the single reactor, while `auto` or a total thread
@@ -297,8 +281,6 @@ superterm listar prod                           # the same CLI, en español
 - GNU/Linux and macOS share the UI, VT engine, layout, configuration, session
   protocol and control CLI. Platform-specific PTY/process and service-manager
   adapters are selected at compile time.
-- Windows shares that UI, VT engine, layout, and configuration while compiler
-  directives select its ConPTY, console, input, process, and path adapters.
 
 ## Screenshots
 
@@ -328,11 +310,9 @@ either client can create the first pane again. The per-window entries stay in
 ![Minimize all and restore all in the Windows menu](screenshots/windows-menu.png)
 
 **A picture on the desktop, behind the windows.** Nine ship, and your own drop
-into `~/.superterm/backgrounds/` on POSIX or
-`%APPDATA%\superterm\backgrounds\` on Windows without rebuilding. The colours
-are real RGB, not the 16-colour grid. Every generated picture uses completely
-filled RGB cells, painted by the terminal itself so no font seam appears
-between them.
+into `~/.superterm/backgrounds/` without rebuilding. The colours are real RGB,
+not the 16-colour grid. Every generated picture uses completely filled RGB
+cells, painted by the terminal itself so no font seam appears between them.
 On a configuration-free first run, this Alien hacker is already selected over
 a monochrome `120x50` shared desktop, with one `80x25` shell waiting in its
 minimized icon.
@@ -427,33 +407,44 @@ More captures are on the [Screenshots wiki page](https://github.com/garacil/supe
 
 ## Platform Support
 
-`superterm` is a single cross-platform codebase that builds and runs natively on
-**GNU/Linux, macOS (Apple Silicon and Intel), and Windows 10 version 1809 or
-newer**. The UI, VT engine, layout, and configuration are shared; compiler
-directives select the terminal, process, input, console, and path
-implementations.
+`superterm` is a native cross-platform project for **GNU/Linux**, **macOS**
+(Apple Silicon and Intel), and **Windows 10 version 1809 or newer**. Each target
+has a native terminal/process backend; the VT engine, FreeVision desktop,
+profiles, configuration format, command-line help and terminal model are shared.
+
+| Target | Maintained branch | Native backend | Session service |
+| --- | --- | --- | --- |
+| GNU/Linux | `main` | POSIX PTY + `fpPoll` | Full shared detached daemon and optional OpenSSH TCP entry |
+| macOS | `macos-support` | BSD PTY + `libproc` | Full shared detached daemon and optional OpenSSH TCP entry |
+| Windows | `windows-support` | Windows ConPTY | Native local workspace; the Unix detached daemon and dedicated SSH service remain POSIX-only |
+
+The GNU/Linux and macOS server implementation is shared. The PTY/process backend
+is selected at compile time with `{$IFDEF DARWIN}`:
 
 - **GNU/Linux** allocates the pseudo-terminal with the SysV `posix_openpt` sequence
   and reads process titles from `/proc`.
 - **macOS** allocates it with BSD `openpty` + `login_tty` and reads process
   titles with `libproc`/`sysctl`. Free Pascal auto-defines `DARWIN`, so no build
   flag is required — run superterm in Terminal.app or iTerm2 exactly as on GNU/Linux.
-- **Windows** uses ConPTY, native console VT input/output, Windows process
-  management, `%COMSPEC%` (normally `cmd.exe`) as the default shell, and
-  `%APPDATA%\superterm` for configuration.
 
-On GNU/Linux and macOS, the optional dedicated SSH administrator selects the
-native service manager in `src/st_ssh_server.pas`: systemd on GNU/Linux and
-launchd on macOS. Its session, UI, and SSH-entry protocol code is shared
-between those platforms; native Windows Phase 1 does not provide the dedicated
-SSH service.
+The optional dedicated SSH administrator also selects the native service
+manager in `src/st_ssh_server.pas`: systemd on GNU/Linux and launchd on macOS.
+Session, UI and SSH-entry protocol code remains shared.
 
 See [`docs/MACOS.md`](docs/MACOS.md) and [`docs/WINDOWS.md`](docs/WINDOWS.md)
-for platform-specific build and terminal setup.
+for native build, terminal and platform details. Windows Terminal and the
+Microsoft OpenSSH client also work as standard SSH viewers of a GNU/Linux or
+macOS SuperTerm server.
 
-GNU/Linux and macOS provide the detached session daemon, multi-client attach,
-session enumeration, and control CLI. Native Windows currently runs interactive
-workspaces in one process, without those detached-session features.
+### Branch direction
+
+`newfeatures` is the development branch and is promoted into `main` only after
+review and validation. `macos-support` and `windows-support` are downstream
+platform branches: they receive the tested changes from `main`, then add only
+their platform-specific build or backend work. They are **never** pull-request
+sources for `main` and are never merged back into it. GitHub may offer a
+generic “Compare & pull request” button after a platform-branch push; that is
+an automatic GitHub prompt, not the project integration direction.
 
 ## Why Free Pascal
 
@@ -486,13 +477,10 @@ faster than another.
 Build requirements:
 
 - Free Pascal Compiler 3.2.2 or a compatible Free Pascal 3.x release.
-- Free Pascal FV, FCL, and DB units.
-- POSIX thread units on GNU/Linux/macOS (`fp-units-misc` provides `PThreads`
-  on Debian/Ubuntu).
-- GNU make (including the 3.80 build bundled with Free Pascal on Windows).
-- GNU/Linux (with `/proc`), macOS (Apple Silicon or Intel), or Windows 10
-  version 1809 or newer for ConPTY.
-- Git Bash for native Windows builds.
+- Free Pascal FV, FCL, DB, and POSIX thread units (`fp-units-misc` provides
+  `PThreads` on Debian/Ubuntu).
+- GNU make.
+- A POSIX host: GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel).
 
 Test requirements:
 
@@ -504,46 +492,32 @@ Test requirements:
 Remote requirements:
 
 - `openssh-client` for SSH connections.
-- On GNU/Linux and macOS, the operating system's OpenSSH server for the
-  optional dedicated encrypted TCP entry (`openssh-server` on Debian/Ubuntu;
-  included with macOS). See [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
-- On GNU/Linux and macOS, `sshpass` only for an outgoing SSH pane explicitly
-  configured with a password. Native Windows starts the installed OpenSSH
-  client directly and handles its password prompt through the ConPTY pane.
-  Incoming passwords for the dedicated POSIX SuperTerm service are handled by
-  the system OpenSSH/PAM stack; SSH keys remain preferred.
+- The operating system's OpenSSH server for the optional dedicated encrypted
+  TCP entry (`openssh-server` on Debian/Ubuntu; included with macOS). See
+  [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md).
+- `sshpass` only for an outgoing SSH pane explicitly configured with a
+  password. Incoming passwords for the dedicated SuperTerm service are
+  handled by the system OpenSSH/PAM stack; SSH keys remain preferred.
 
 ## Build
 
 The project includes a self-contained POSIX `configure` script. It is not
 generated by GNU Autoconf. It detects the compiler and test tools, then creates
-the ignored `Makefile` from `Makefile.in`. Run it from Git Bash on Windows.
+the ignored `Makefile` from `Makefile.in`.
 
 ```sh
 ./configure
 make release
 ```
 
-For a native Windows build, put the Free Pascal binary directory first on the
-Git Bash `PATH`; this also avoids accidentally invoking a non-GNU `make.exe`:
-
-```sh
-export PATH="/path/to/fpc/bin:$PATH"
-./configure --with-fpc="$(command -v fpc)"
-make release
-./bin/superterm.exe --version
-```
-
-The optimized release binary is `bin/superterm` (`bin/superterm.exe` on
-Windows) and uses Free Pascal `-O4`.
+The optimized release binary is `bin/superterm` and uses Free Pascal `-O4`.
 The debug build is separate and uses symbols and line information:
 
 ```sh
 make debug
 ```
 
-The debug binary is `bin/superterm-debug` (`bin/superterm-debug.exe` on
-Windows) and uses `-O1 -g -gl -dDEBUG`.
+The debug binary is `bin/superterm-debug` and uses `-O1 -g -gl -dDEBUG`.
 
 Useful configure options:
 
@@ -595,10 +569,6 @@ descriptors above 1023. It also checks the isolated SSH configuration,
 administration boundary, package removal and standard-client transport.
 GitHub Actions runs it on GNU/Linux, macOS Apple Silicon and macOS Intel; the
 real encrypted listener is repeated in an isolated privileged step on each.
-
-The Python harness imports POSIX `pty`, `fcntl`, and `termios`, so it does not
-run in native Windows Python. Use the release build plus `--version`, `--help`,
-and an interactive ConPTY launch as the Windows smoke test.
 
 Individual tests are also runnable directly:
 
@@ -660,12 +630,9 @@ an unrelated page. The longer narrative reference is
 ./bin/superterm
 ```
 
-On Windows, launch `bin\superterm.exe` (for example
-`.\bin\superterm.exe` from PowerShell).
-
-On GNU/Linux and macOS, the session is named when it starts (`--session NAME`,
-else the active profile, else `session`) and `Ctrl-Q d` detaches instantly,
-with no dialog. To return to a live session:
+Since 3.0 the session is named when it starts (`--session NAME`, else the
+active profile, else `session`) and `Ctrl-Q d` detaches instantly, with no
+dialog. To return to a live session:
 
 ```sh
 ./bin/superterm --attach            # one session: direct; several: picker
@@ -688,10 +655,6 @@ command remains an immediate session-wide close. Inside the app, `Ctrl-Q s`
 opens the session picker to attach to or permanently close other sessions.
 `Ctrl-Q d` only detaches the viewer: the single live desktop remains exactly
 as it was, even with no viewers, and the next attach receives it directly.
-
-On native Windows, the interactive workspace instead stays in the launching
-process. Detach, attach, the session picker, and control CLI operations are not
-available yet; exiting superterm ends its panes.
 
 Optional diagnostics:
 
@@ -722,9 +685,9 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Ctrl-Q n` / `Ctrl-Q p` | Next / previous profile window |
 | `Ctrl-Q` arrows | Resize the focused pane |
 | `Ctrl-Q c` | Open a window class in a new pane |
-| `Ctrl-Q s` | Session picker: attach to or close detached sessions (GNU/Linux and macOS) |
+| `Ctrl-Q s` | Session picker: attach to or close detached sessions |
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
-| `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` (GNU/Linux and macOS) |
+| `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
 | `Ctrl-Q [` | Enter pane copy mode. Move with arrows/PgUp/PgDn, press Space to start a selection and Enter to copy; mouse drag also copies |
 | `Ctrl-Q ]` | Paste the newest clipboard-history item into the focused pane |
 | `Ctrl-Q h` | Choose one of the ten most recent clipboard items to paste |
@@ -738,7 +701,7 @@ the prefix, an unbound key sends the prefix byte plus that key to the pane.
 | `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
 | `Alt-Home` / `Alt-End` | History: oldest line / back to live |
 | `Ctrl-S` | Save a local layout or profile selection (not needed or shown while attached to a live session) |
-| `Alt-X` | Exit; the last attached POSIX viewer closes the live session, while native Windows ends its local panes |
+| `Alt-X` | Exit; the last attached viewer closes the live session |
 
 Changing pane focus changes only the window border/title and cursor. Terminal
 content keeps exactly the same colors and attributes in every pane, focused or
@@ -797,14 +760,10 @@ consume the same input, so key-based authentication is recommended.
 
 There are two configuration roles:
 
-- `~/.superterm/superterm.ini` on POSIX, or
-  `%APPDATA%\superterm\superterm.ini` on Windows, stores user preferences
-  (language, prefix key, autosave, default profile) and the user's own window
-  classes and profiles.
-- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when unset on POSIX, can
-  provide shared window classes and profiles. Native Windows uses the same
-  environment override, then `%PROGRAMDATA%\superterm\superterm.ini` when
-  available.
+- `~/.superterm/superterm.ini` stores user preferences (language, prefix key,
+  autosave, default profile) and the user's own window classes and profiles.
+- `$SUPERTERM_INI`, or `/etc/superterm/superterm.ini` when unset, can provide
+  shared window classes and profiles.
 
 They may be the same file for a personal installation:
 
@@ -813,9 +772,8 @@ export SUPERTERM_INI="$HOME/.superterm/superterm.ini"
 ```
 
 Classes and profiles from both files are merged by name; the user file wins.
-On POSIX, the application creates `~/.superterm` with mode `700` automatically
-and writes its own files with mode `600`. On Windows, files inherit the user's
-AppData ACLs; explicit private ACL tightening is not implemented yet.
+The application creates `~/.superterm` with mode `700` automatically and
+writes its own files with mode `600`.
 
 ### User settings
 
@@ -916,11 +874,10 @@ behavior.
 
 ### Fallback session
 
-When no profile takes priority, `~/.superterm/session.ini` on POSIX or
-`%APPDATA%\superterm\session.ini` on Windows stores the current split tree and
-pane `cmd`, `cwd`, and class identity. With `autorestore=1` (the default), the
-file is restored at startup. Set `autorestore=0` when a default profile must
-create fresh daily connections.
+When no profile takes priority, `~/.superterm/session.ini` stores the current
+split tree and pane `cmd`, `cwd`, and class identity. With `autorestore=1`
+(the default), the file is restored at startup. Set `autorestore=0` when a
+default profile must create fresh daily connections.
 
 ## Source Layout
 
@@ -930,8 +887,7 @@ src/
 ├── st_fvui.pas     FreeVision application, menus, panes, focus, and polling.
 ├── st_dialogs.pas  Class/profile managers, session picker, pane list.
 ├── st_layout.pas   Binary V/H split tree and pane rectangles.
-├── st_pty.pas      Cross-platform PTY/ConPTY facade, I/O, resize, and cleanup.
-├── st_conpty.pas   Native Windows ConPTY and child-process backend.
+├── st_pty.pas      POSIX PTYs, fork/exec, I/O, resize, and process cleanup.
 ├── st_screen.pas   VT100/ANSI parser and virtual screen for each pane.
 ├── st_clipboard.pas Ten-item client clipboard history and OSC 52 helpers.
 ├── st_cli.pas      Bilingual control-command parser and daemon client.
@@ -956,11 +912,12 @@ units plus the project-specific wide-screen and tmux mouse fixes.
 
 ## Installation
 
-Prebuilt x86_64 packages for every release are on the
+Prebuilt x86_64 GNU/Linux packages for every release are on the
 [releases page](https://github.com/garacil/superterm/releases/latest): a
 portable tarball for x86_64 GNU/Linux with glibc 2.34 or newer, plus `.deb`,
 `.rpm` and Arch `.pkg.tar.zst`. Each file ships with its `.sha256`; macOS arm64
-and universal builds are published separately.
+and universal builds, plus the native Windows x64 installer, are published
+from their corresponding platform branches.
 
 To build from source instead, for a system install:
 
@@ -990,8 +947,9 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- Native Windows is currently single-process: detached sessions, multi-client
-  attach, session enumeration, and the control CLI remain POSIX-only.
+- The native Windows ConPTY workspace is available from `windows-support`, but
+  detached sessions, multi-client sharing and the dedicated OpenSSH service
+  remain POSIX server features for now.
 - The dedicated SSH entry is an interactive SuperTerm UI, not a general SSH
   shell: it deliberately rejects remote commands, SCP/SFTP and forwarding.
   Run the ordinary host `sshd` alongside it for those facilities.
@@ -1005,9 +963,8 @@ Current limitations:
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 
-Planned platform and runtime work includes the detached/control server on
-Windows, native Windows CI coverage, better connection readiness/retry state,
-and continued macOS parity polish.
+Planned platform and runtime work includes the Windows detached-server path,
+better connection readiness/retry state, and continued macOS parity polish.
 
 ## License and Author
 

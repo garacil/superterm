@@ -20,6 +20,8 @@ palette=mono
 ; The alien artwork keeps the historical compatibility name "goody".
 background=goody
 background_mode=center
+; Show one local desktop toast for each attached-client change (1=yes, 0=no).
+desktop_notifications=1
 
 [session]
 autosave=1

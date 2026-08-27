@@ -45,6 +45,7 @@ language=en
 palette=mono
 background=goody
 background_mode=center
+desktop_notifications=1
 
 [session]
 server=always
@@ -99,6 +100,13 @@ from `Options -> Color palette` (`Opciones -> Paleta de colores`) and is
 saved when changed. Selecting it repaints the whole interface immediately;
 no pane click is needed. A later resize of the host terminal preserves the
 selected palette while rebuilding the screen surface.
+
+`desktop_notifications=1` (the default) shows one short, local toast at desktop
+coordinate `(0,0)` for every client connection or disconnection. Set it to `0`
+to suppress only that toast. The status line still records the ordered event,
+the resulting number of attached viewers, and its client-local bell; none of
+this cosmetic feedback changes the shared desktop or pane output. Toggle the
+same preference at runtime with `Desktop -> Show desktop notifications`.
 
 ### [ui] new window size
 

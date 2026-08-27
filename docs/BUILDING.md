@@ -6,8 +6,7 @@
 
 - `src/superterm.lpr` is the program entry point.
 - `src/st_fvui.pas` contains the FreeVision application, menus, panes, windows, and event routing.
-- `src/st_pty.pas` owns PTYs/ConPTY instances and child processes.
-- `src/st_conpty.pas` implements the native Windows ConPTY backend.
+- `src/st_pty.pas` owns PTYs and child processes.
 - `src/st_config.pas` reads terminal definitions and user settings.
 - `src/st_templates.pas` reads INI and SQLite templates.
 - `src/st_session.pas` persists the fallback session layout.
@@ -18,10 +17,8 @@
 - `src/st_cli.pas` parses the bilingual control CLI and talks to session daemons.
 - `src/st_cli_help.pas` is the single structured presentation source for the
   contextual command-line reference.
-- `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol on
-  POSIX; native Windows currently uses its single-process stubs.
-- `src/st_ssh_server.pas` builds and administers the isolated OpenSSH service
-  on GNU/Linux and macOS.
+- `src/st_server.pas` owns detached PTYs and the Unix-socket attach protocol.
+- `src/st_ssh_server.pas` builds and administers the isolated OpenSSH service.
 - `src/st_ssh_entry.pas` is the restricted `ForceCommand` adapter into the
   ordinary Unix-socket session client.
 
@@ -39,14 +36,13 @@ mode-specific Free Pascal units. Both are generated directories.
 Required:
 
 - Free Pascal Compiler 3.2.2 or a compatible 3.x compiler.
-- Free Pascal FV, FCL, and DB units.
-- On POSIX, Free Pascal thread units (`fp-units-misc` supplies `PThreads` on
-  Debian/Ubuntu). The native Windows build excludes those Unix-only units.
+- Free Pascal FV, FCL, DB, and POSIX thread units (`fp-units-misc` supplies
+  `PThreads` on Debian/Ubuntu).
 - GNU make.
-- GNU/Linux (with `/proc`), macOS (Apple Silicon or Intel), or Windows 10
-  version 1809 or newer for ConPTY.
-- Git Bash when building natively on Windows; it runs `configure` and the
-  POSIX shell recipes in the generated Makefile.
+- GNU/Linux (with `/proc`) or macOS (Apple Silicon or Intel) for the full
+  detached-session daemon and dedicated OpenSSH service. Native Windows 10
+  version 1809 or newer builds are maintained on `windows-support` and require
+  ConPTY; see [`WINDOWS.md`](WINDOWS.md).
 
 Required only for the regression suite:
 
@@ -58,12 +54,11 @@ Required only for the regression suite:
 Needed for remote features:
 
 - `openssh-client` for SSH terminals.
-- On GNU/Linux and macOS, the operating system's OpenSSH server for the
-  optional dedicated encrypted TCP entry described in
-  [SSH_SERVER.md](SSH_SERVER.md): `openssh-server` on Debian/Ubuntu and the
-  `/usr/sbin/sshd` included with macOS. It uses isolated state under
-  `/etc/superterm/sshd` and does not modify the host's ordinary `/etc/ssh`
-  configuration.
+- The operating system's OpenSSH server for the optional dedicated encrypted
+  TCP entry described in [SSH_SERVER.md](SSH_SERVER.md): `openssh-server` on
+  Debian/Ubuntu and the `/usr/sbin/sshd` included with macOS. It uses isolated
+  state under `/etc/superterm/sshd` and does not modify the host's ordinary
+  `/etc/ssh` configuration.
 - `sshpass` only for an outgoing SSH pane explicitly configured with a
   password. SSH keys or an SSH agent are safer and preferred. Incoming
   password authentication through the dedicated SuperTerm service is handled
@@ -92,22 +87,6 @@ commands, then creates the ignored `Makefile` from `Makefile.in`.
 
 ```sh
 ./configure
-```
-
-On native Windows, run the build from Git Bash. The generated recipes require
-`/bin/sh` and POSIX utilities, so do not invoke them from PowerShell. The GNU
-Make 3.80 shipped with Free Pascal is supported; invoke that `make.exe`
-explicitly because an unrelated make implementation may appear first on
-`PATH`. Replace `FPC_BIN` with the Git Bash spelling of your FPC Win64 binary
-directory (the verified path on the development machine is recorded in
-[`WINDOWS.md`](WINDOWS.md)):
-
-```sh
-FPC_BIN=/d/path/to/fpc/3.2.2/bin/x86_64-win64
-./configure --with-fpc="$FPC_BIN/fpc.exe"
-"$FPC_BIN/make.exe" info
-"$FPC_BIN/make.exe" release
-./bin/superterm.exe --version
 ```
 
 For a user-local installation:
@@ -140,13 +119,13 @@ keeps warnings enabled:
 make release
 ```
 
-The release executable is `bin/superterm` (`bin/superterm.exe` on Windows).
+The release executable is `bin/superterm`.
 
-`make test` also builds `bin/superterm-test` (`.exe` on Windows) in a separate
-unit directory. Only that non-installed executable contains the compile-time
-hooks used to redirect SSH paths and service-manager programs into isolated
-test fixtures; the release binary rejects those overrides even when invoked
-as root. Never install or use `superterm-test` as a service binary.
+`make test` also builds `bin/superterm-test` in a separate unit directory.
+Only that non-installed executable contains the compile-time hooks used to
+redirect SSH paths and service-manager programs into isolated test fixtures;
+the release binary rejects those overrides even when invoked as root. Never
+install or use `superterm-test` as a service binary.
 
 The debug build uses level-1 optimization, debug symbols, line information,
 and the `DEBUG` define:
@@ -155,8 +134,7 @@ and the `DEBUG` define:
 make debug
 ```
 
-The debug executable is `bin/superterm-debug` (`bin/superterm-debug.exe` on
-Windows).
+The debug executable is `bin/superterm-debug`.
 
 For extra compiler flags:
 
@@ -165,9 +143,9 @@ make MODE=debug FPCFLAGS_EXTRA='-Sa'
 ```
 
 For memory audits, `make debug-heap` builds the separate
-`bin/superterm-debug-heap` executable (`.exe` on Windows) with FPC HeapTrc and
-per-process memory reports. See [HEAP_DEBUGGING.md](HEAP_DEBUGGING.md) for the
-required variables, report lifecycle and stress-test examples.
+`bin/superterm-debug-heap` executable with FPC HeapTrc and per-process memory
+reports. See [HEAP_DEBUGGING.md](HEAP_DEBUGGING.md) for the required variables,
+report lifecycle and stress-test examples.
 
 The compatibility wrapper is still available:
 
@@ -197,11 +175,6 @@ SUPERTERM_TEST_TIMEOUT=1200 make test
 
 The runner is implemented in Python and works on GNU/Linux and macOS; it does not
 depend on the GNU `timeout` utility.
-
-The regression harness uses POSIX `pty`, `fcntl`, and `termios` modules, so it
-does not run in native Windows Python. On Windows, use `make release`, check
-`bin/superterm.exe --version` or `--help`, and launch it for an interactive
-ConPTY smoke test.
 
 The ordinary suite uses `bin/superterm-test` for isolated administrative path
 overrides, but passes `bin/superterm` separately to an unprivileged boundary
@@ -237,7 +210,7 @@ different privileged-feature boundaries.
 
 ## Install
 
-On POSIX, system installation normally requires root:
+System installation normally requires root:
 
 ```sh
 ./configure --prefix=/usr/local --sysconfdir=/etc
@@ -247,7 +220,7 @@ sudo make install
 
 The installation contains:
 
-- `PREFIX/bin/superterm` (`superterm.exe` on Windows).
+- `PREFIX/bin/superterm`.
 - `PREFIX/share/doc/superterm/README.md`.
 - Every Markdown file under `docs/`, including `SSH_SERVER.md`.
 - `SYSCONFDIR/superterm/superterm.ini.example`, only when no example exists.
@@ -302,36 +275,25 @@ harness.
 
 ## Platform support
 
-superterm is a single cross-platform codebase that builds and runs natively on
-GNU/Linux, macOS, and Windows 10 1809 or newer. The FreeVision UI, VT engine,
-layout, and configuration are shared, while compiler directives select the
-terminal, process, input, console, and path implementations.
-
-GNU/Linux and macOS use `fork/exec`, `poll`, POSIX PTYs, and the bundled
-FreeVision text UI. Their detached server registers its listener, handshakes,
-clients, and PTY masters through `BaseUnix.fpPoll`, with no external
-event-library dependency and no `FD_SETSIZE` ceiling. The principal platform
-adapters are the PTY/process and CPU-count backends plus the optional SSH
-service manager; a few small platform type/constant branches remain beside
-their shared call sites:
+superterm has native GNU/Linux, macOS and Windows builds. The GNU/Linux and
+macOS implementation shares `fork`/`exec`, `poll`, POSIX PTYs and the bundled
+FreeVision UI. Its detached server registers the listener, handshakes, clients
+and PTY masters through `BaseUnix.fpPoll`, with no external event-library
+dependency and no `FD_SETSIZE` ceiling. The principal POSIX adapters are the
+PTY/process and CPU-count backends plus the optional SSH service manager:
 
 - GNU/Linux: `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` and `/proc` process titles.
 - macOS: `openpty` + `login_tty` and `libproc`/`sysctl` process titles. Free
   Pascal auto-defines `DARWIN`, so the compile line, `configure`, and `make` are
   identical to GNU/Linux. Run in Terminal.app or iTerm2. See
   [`MACOS.md`](MACOS.md) for terminal setup and platform notes.
-- Windows: ConPTY, native console VT input/output, Windows process management,
-  `%COMSPEC%` (normally `cmd.exe`) as the default shell, and configuration under
-  `%APPDATA%\superterm`. See [`WINDOWS.md`](WINDOWS.md).
+- `src/st_cpu.pas` uses GNU/Linux affinity or macOS `hw.activecpu` for worker
+  limits; `src/st_ssh_server.pas` uses systemd or launchd for its optional
+  dedicated OpenSSH instance.
 
-- CPU limits come from GNU/Linux affinity, macOS `hw.activecpu`, or
-  `GetActiveProcessorCount` on Windows.
-- The optional `src/st_ssh_server.pas` administrator uses systemd on GNU/Linux
-  or launchd on macOS. Native Windows Phase 1 does not install or administer
-  the dedicated OpenSSH service.
-
-The session engine, UI, and configuration remain shared. GNU/Linux and macOS
-also share the detached-session and SSH-entry protocols. Native Windows
-currently runs interactive workspaces in one process; detached sessions,
-multi-client attach, session enumeration, the control CLI, and dedicated SSH
-service administration are not available there yet.
+The `windows-support` branch supplies the native Windows 10 1809+ ConPTY
+backend, Windows console input/output and Windows configuration paths. It
+builds a local native workspace; the Unix fork-based detached server,
+multi-client sharing and dedicated OpenSSH listener are intentionally retained
+as POSIX features until their Windows server lifecycle is implemented. See
+[`WINDOWS.md`](WINDOWS.md) for the exact branch, compiler and build commands.
