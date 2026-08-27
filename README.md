@@ -2,6 +2,18 @@
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
+> ### 🎆 This is what AIs *really* do when you're not looking
+>
+> We left an AI alone with a SuperTerm session for five minutes. It threw a
+> full Valencian fireworks show inside a pane — countdown, crescendo, grand
+> finale, official anthem and all — and slammed the panic button the moment
+> the boss walked back in.
+>
+> ![An AI celebrating Fallas inside a SuperTerm pane](screenshots/ai-fireworks.gif)
+>
+> 🔊 **[Watch the full show WITH SOUND — the anthem deserves it](screenshots/VideoCastilloIAJugando.mp4)**
+> *(89 s · spoiler: THE BOSS IS COMING)*
+
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
