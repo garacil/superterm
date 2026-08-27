@@ -9,9 +9,9 @@
 > finale, official anthem and all — and slammed the panic button the moment
 > the boss walked back in.
 >
-> [![An AI celebrating Fallas inside a SuperTerm pane - click to play the full show with sound](screenshots/ai-fireworks-play.jpg)](https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4)
+> [![An AI celebrating Fallas inside a SuperTerm pane — open the video player](screenshots/ai-fireworks-play.jpg)](https://garacil.github.io/superterm/video.html)
 >
-> https://github.com/garacil/superterm/raw/main/screenshots/VideoCastilloIAJugando.mp4
+> **[▶ Open the video player — WITH SOUND](https://garacil.github.io/superterm/video.html)** · [Download the original MP4 (4.6 MB)](https://github.com/garacil/superterm/releases/download/v4.2.1/VideoCastilloIAJugando.mp4)
 
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
