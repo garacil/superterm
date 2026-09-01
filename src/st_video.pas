@@ -122,7 +122,7 @@ var
 implementation
 
 uses
-  SysUtils, termio, BaseUnix, Video, st_debug, st_kbd;
+  SysUtils, termio, BaseUnix, Video, st_debug, st_kbd, st_perf;
 
 var
   SavedDriver: TVideoDriver;
@@ -1175,6 +1175,9 @@ var
   Body, Frame, CurSGR, LastSGR, OverlayGlyph, CellGlyph: AnsiString;
   OverlayAttr: Byte;
   ChangedCells, Runs, RHit, RMiss: LongInt;
+  // Opt-in telemetry (SUPERTERM_PERF=1). Zero cost when disabled: the observe
+  // call returns on one cached atomic test before reading the clock.
+  PerfScanStart, PerfWriteStart: QWord;
 begin
   if PassthroughActive then
   begin
@@ -1202,6 +1205,17 @@ begin
     Exit;
   end;
   LastEmitTick := GetTickCount64;
+  // One stage, not two: this loop compares every cell against the previously
+  // presented surface AND builds the changed-cell runs as it goes, so timing
+  // them separately would be an invented split. Its units are the cells that
+  // actually changed, which is what makes "cost follows changed cells, not
+  // desktop area" a checkable claim rather than an assertion.
+  // Guard the clock read behind the cached atomic test: this is the hot path
+  // the damage-tracking work will optimize, so the instrumentation must not
+  // put an unmeasured syscall in it when it is switched off.
+  PerfScanStart := 0;
+  if SuperTermPerfEnabled then
+    PerfScanStart := SuperTermPerfNowMicros;
 
   RichEnsureSize;
   // TransientOutlineCell initializes both out parameters on every call.  Set
@@ -1401,7 +1415,15 @@ begin
   else
     // nothing changed: only keep the hardware cursor in sync (cheap)
     Frame := CursorPosition(OutCursorX, OutCursorY);
+  if PerfScanStart <> 0 then
+    SuperTermPerfObserve(stpsFrameCompare, PerfScanStart, QWord(ChangedCells));
+  PerfWriteStart := 0;
+  if PerfScanStart <> 0 then
+    PerfWriteStart := SuperTermPerfNowMicros;
   WriteRaw(Frame);
+  if PerfWriteStart <> 0 then
+    SuperTermPerfObserve(stpsPhysicalWrite, PerfWriteStart,
+      QWord(Length(Frame)));
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
   // per-frame detail is FULL-mode only: a blinking cursor alone writes two
   // lines every half second, which buried everything worth reading

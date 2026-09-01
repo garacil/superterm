@@ -1,0 +1,14 @@
+# NS01-BASELINE environment
+date_utc: 2026-09-01T18:18:03Z
+commit: e80fc6562775e1d410895e2d45ced6393c0a1765  (newsupertermc)
+tree_clean: yes
+host: Linux 6.18.46-1-lts x86_64
+fpc: 3.2.2
+python: Python 3.14.7
+pyte: 0.8.2
+pillow: 12.3.0
+cpus: 16
+uid: 0 (root)
+suites_declared: 97
+sha256_release: 8c1923268a092b59bea74175c39d68cef39e83b3a8f2f0a31fd2de532fc84fba
+sha256_test: 3382447e4140c1722ed263a34f0fa549d95b1c8677dfe9879f33b92a659a206b

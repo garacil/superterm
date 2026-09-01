@@ -1,0 +1,3646 @@
+
+==> test/suite_manifest_test.py (timeout 900s)
+Makefile.in declares a TESTS list                   : OK
+no suite is listed twice in TESTS                   : OK
+every TESTS entry has a suite file                  : OK
+every suite file is listed in TESTS                 : OK
+this suite is itself listed in TESTS                : OK
+generated Makefile matches Makefile.in TESTS        : OK
+
+RESULT: PASS (97 suites)
+<== PASS test/suite_manifest_test.py (0.0s)
+
+==> test/wire_constants_test.py (timeout 900s)
+the daemon unit is readable                         : OK
+every table entry still exists in the unit          : OK
+every table entry has the unit's value              : OK
+every listed name is defined in stlib               : OK
+the attach protocol version is readable             : OK
+  attach protocol version 16
+no suite redeclares a wire constant                 : OK
+the runner's own copies still match the wire        : OK
+
+RESULT: PASS (61 constants)
+<== PASS test/wire_constants_test.py (0.1s)
+
+==> test/stlib_reaping_test.py (timeout 900s)
+a child reaped elsewhere still reports an exit: OK
+and reports it as a clean exit      : OK
+alive() reports a reaped child as not alive: OK
+alive() records the exit it discovered: OK
+a later wait_exit still reports the exit: OK
+repeated wait_exit keeps reporting it: OK
+a Client left half-reaped still reports the exit: OK
+an ordinary exit is reported        : OK
+an ordinary exit carries its real status: OK
+the reaped child is really gone     : OK
+a signalled exit is reported        : OK
+a signalled exit is not flattened into a clean one: OK
+a running child is reported as running: OK
+the running child was not reaped by the probe: OK
+and it is reported once it does exit: OK
+
+RESULT: PASS
+<== PASS test/stlib_reaping_test.py (0.7s)
+
+==> test/drive_test.py (timeout 900s)
+menubar Panels          : OK
+statusline F2           : OK
+window frame 1 shell    : OK
+OSC prompt hidden       : OK
+cmd output visible      : OK
+after split: 2 windows  : OK
+second pane interactive : OK
+pane closed             : OK
+session saved           : OK
+--- session.ini ---
+[layout]
+nodes=L
+count=1
+focused=0
+deskw=110
+deskh=33
+
+[pane0]
+cmd=
+cwd=/home/german/sources/claude/newsuperterm
+term=
+bx=0
+by=0
+bw=108
+bh=32
+argc=0
+
+<== PASS test/drive_test.py (7.1s)
+
+==> test/large_screen_test.py (timeout 900s)
+4096x35 startup settles             : OK
+4096x35 startup: full frame         : OK
+4096x35 startup: no stale corners   : OK
+4096x35 startup: status at bottom   : OK
+4096x35 startup: surface dimensions : OK
+4096x35 startup: frame matches canonical bounds: OK
+4096x35 startup: canonical frame stays on surface: OK
+one canonical session exists        : OK
+startup desktop stays at FreeVision logical width: OK
+4096x35 background fills            : OK
+4096x35 bright background fills     : OK
+8192x35 resize settles              : OK
+8192x35 maximum: full frame         : OK
+8192x35 maximum: no stale corners   : OK
+8192x35 maximum: status at bottom   : OK
+8192x35 maximum: surface dimensions : OK
+8192x35 maximum: frame matches canonical bounds: OK
+8192x35 maximum: canonical frame stays on surface: OK
+8192x35 keeps canonical PTY WxH     : OK
+200x80 clips behind a local horizontal scrollbar: OK
+200x80 status remains at physical bottom: OK
+200x80 keeps canonical PTY WxH      : OK
+4096x35 restore settles             : OK
+4096x35 restore: full frame         : OK
+4096x35 restore: no stale corners   : OK
+4096x35 restore: status at bottom   : OK
+4096x35 restore: surface dimensions : OK
+4096x35 restore: frame matches canonical bounds: OK
+4096x35 restore: canonical frame stays on surface: OK
+restore keeps PTY exactly           : OK
+
+RESULT: PASS
+<== PASS test/large_screen_test.py (4.9s)
+
+==> test/mouse_test.py (timeout 900s)
+mouse frame starts on fixed desktop: OK
+mouse resize changes exact fixed-desktop frame: OK
+mouse resize keeps statusline     : OK
+<== PASS test/mouse_test.py (5.2s)
+
+==> test/mouse_focus_test.py (timeout 900s)
+menu bar becomes visible            : OK
+one isolated session exists         : OK
+mouse opens Panels menu             : OK
+split command succeeds              : OK
+split creates exactly two panes     : OK
+split draws exactly two frames      : OK
+new pane is focused in list         : OK
+new pane receives input exclusively : OK
+pane click changes focused flag     : OK
+clicked pane receives input exclusively: OK
+
+RESULT: PASS
+<== PASS test/mouse_focus_test.py (4.5s)
+
+==> test/focus_color_test.py (timeout 900s)
+pane 2 ANSI green is visible        : OK
+pane 2 truecolor is visible         : OK
+inactive pane 2 keeps all colours   : OK
+inactive pane 2 keeps ANSI green    : OK
+left focus sends border delta only  : OK
+focus changes only the left border  : OK
+pane 1 truecolor is visible         : OK
+inactive pane 1 keeps all colours   : OK
+refocused pane 2 keeps all colours  : OK
+refocused pane 2 keeps ANSI green   : OK
+right focus sends border delta only : OK
+focus changes only the right border : OK
+second left focus keeps pane 2 RGB  : OK
+second left focus keeps pane 2 green: OK
+second left focus sends chrome only : OK
+second right focus keeps pane 1 RGB : OK
+second right focus keeps pane 2 RGB : OK
+second right focus sends chrome only: OK
+
+RESULT: PASS
+<== PASS test/focus_color_test.py (13.0s)
+
+==> test/palette_resize_transition_test.py (timeout 900s)
+colour workspace is ready           : OK
+baseline frame is rendered in colour: OK
+keyboard opens palette submenu      : OK
+keyboard palette applies immediately: OK
+palette transition has no flash/blank: OK
+palette has no direct visual output : OK
+palette has one final repaint       : OK
+monochrome choice persists          : OK
+resize stream is completely parsed  : OK
+host resize preserves mono attributes: OK
+host resize never presents empty frame: OK
+host resize has no direct visual output: OK
+host resize publishes one fixed-canonical viewport: OK
+
+RESULT: PASS
+<== PASS test/palette_resize_transition_test.py (4.8s)
+
+==> test/class_creation_transition_test.py (timeout 900s)
+two-client daemon baseline is ready : OK
+actor opens configured Classes menu : OK
+actor inserts final class once      : OK
+actor has no direct clear/output    : OK
+actor never shows provisional geometry: OK
+observer sees only final class paint: OK
+observer has no direct clear/output : OK
+observer never shows provisional geometry: OK
+class has exact centred outer rectangle: OK
+stale cached class is never presented: OK
+both clients render the same shared desktop: OK
+daemon PTY starts at exact class size: OK
+local branch has no daemon          : OK
+local opens configured Classes menu : OK
+local actor inserts final class once: OK
+local actor has no direct clear/output: OK
+local actor never shows provisional geometry: OK
+local class has exact centred rectangle: OK
+
+RESULT: PASS
+<== PASS test/class_creation_transition_test.py (13.7s)
+
+==> test/restore_test.py (timeout 900s)
+daemon sidecar is complete and verifiable: FAIL
+  sidecar=/tmp/opencode/st-restore/.superterm/sessions/session.ini pid=2392730 session=session reason=identity does not match the live PID
+A: Linux wait fallback    : OK
+A: foreground observed    : OK
+A: session exists         : OK
+--- session.ini ---
+[layout]
+nodes=V:500;L;L
+count=2
+focused=1
+deskw=110
+deskh=33
+
+[pane0]
+cmd=
+cwd=/home/german/sources/claude/newsuperterm
+term=
+bx=0
+by=0
+bw=108
+bh=32
+argc=0
+
+[pane1]
+cmd=sleep 987
+cwd=/tmp
+term=
+bx=18
+by=5
+bw=73
+bh=22
+argc=2
+arg0=sleep
+arg1=987
+
+A: layout V saved         : OK
+A: background ignored     : OK
+A: cmd captured           : OK
+B: two panes restored     : OK
+B: command restarted      : OK
+C: lower-left returns to shell: OK
+D: moved window at saved pos: OK
+D: bounds round-trip      : OK
+D: DeskW/H round-trip     : OK
+<== FAIL test/restore_test.py (recorded failed assertion, 16.0s)
+
+==> test/sysconfig_test.py (timeout 900s)
+daemon sidecar is complete and verifiable: FAIL
+  sidecar=/tmp/opencode/st-sysconfig/.superterm/sessions/session.ini pid=2392938 session=session reason=identity does not match the live PID
+menu Terminals visible        : OK
+titulo pane uno               : OK
+titulo pane dos               : OK
+t1 arrancado                  : OK
+t2 arrancado                  : OK
+t3 disabled no arranca        : OK
+autosave=0 no guarda sesion   : OK
+live: ultimos numeros         : OK
+live: primeros no visibles    : OK
+scrolled: muestra historial   : OK
+scroll fwd: de nuevo vivo     : OK
+alt-home: top historial       : OK
+alt-end: bottom               : OK
+autosave=0 sigue sin sesion   : OK
+Alt-X guarda sesion           : OK
+session referencia term=solo  : OK
+restaura terminal por nombre  : OK
+<== FAIL test/sysconfig_test.py (recorded failed assertion, 16.8s)
+
+==> test/template_test.py (timeout 900s)
+template starts two panes     : OK
+template menu opens           : OK
+template menu lists alpha     : OK
+F8 visibly changes window state: OK
+hot template switch works     : OK
+<== PASS test/template_test.py (3.8s)
+
+==> test/sqlite_test.py (timeout 900s)
+SQLite template starts terminal    : OK
+SQLite template appears in menu    : OK
+<== PASS test/sqlite_test.py (2.1s)
+
+==> test/wizard_test.py (timeout 900s)
+daemon wizard: menu exposes wizard  : OK
+daemon wizard: pane-count prompt ready: OK
+daemon wizard: pane 1 connection prompt ready: OK
+daemon wizard: pane 1 post prompt ready: OK
+daemon wizard: pane 2 connection prompt ready: OK
+daemon wizard: pane 2 post prompt ready: OK
+daemon wizard publishes one session : OK
+both wizard commands reach their pane: OK
+pane 1 contains only its wizard token: OK
+pane 2 contains only its wizard token: OK
+wizard owns two live pane processes : OK
+wizard creates a divider            : OK
+help menu is accessible             : OK
+help dialog opens                   : OK
+detach policy starts alpha locally  : OK
+detach policy starts without daemon : OK
+local detach asks for a session name: OK
+local detach exits its client       : OK
+local detach creates one daemon     : OK
+detached alpha reattaches           : OK
+both materialization profiles are offered: OK
+declined profile promotion spawns pane locally: OK
+profile replacement leaves no hidden daemon: OK
+materialized beta can detach normally: OK
+beta detach exits its client        : OK
+beta detach creates one daemon      : OK
+beta daemon reattaches              : OK
+detach wizard: menu exposes wizard  : OK
+detach wizard: pane-count prompt ready: OK
+detach wizard: pane 1 connection prompt ready: OK
+detach wizard: pane 1 post prompt ready: OK
+detach wizard: pane 2 connection prompt ready: OK
+detach wizard: pane 2 post prompt ready: OK
+declined wizard promotion materializes both panes: OK
+local wizard keeps both pane windows: OK
+wizard replacement leaves no hidden daemon: OK
+
+RESULT: PASS
+<== PASS test/wizard_test.py (17.6s)
+
+==> test/language_test.py (timeout 900s)
+Spanish config selects Spanish UI   : OK
+Spanish status prefers Detach       : OK
+Spanish window-wide actions fit     : OK
+Spanish profile manager opens       : OK
+Profile overwrite action clicked    : OK
+Spanish confirmation uses Si/No     : OK
+Spanish input dialog is localized   : OK
+Spanish language menu offers English: OK
+English switch updates the UI       : OK
+English status prefers Detach       : OK
+English switch persists             : OK
+Spanish switch updates the UI       : OK
+Spanish message dialog is localized : OK
+Spanish help shows fullscreen chord : OK
+<== PASS test/language_test.py (11.7s)
+
+==> test/clipboard_test.py (timeout 900s)
+Clipboard top-level menu            : OK
+Clipboard immediately before Help   : OK
+outer bracketed paste enabled       : OK
+Clipboard menu copy action          : OK
+Clipboard menu history action       : OK
+host paste remains atomic           : OK
+host paste reaches pane             : OK
+history dialog opens                : OK
+history newest first                : OK
+history keeps ten items             : OK
+chosen history item pasted          : OK
+copy source is visible              : OK
+pane copy exports OSC 52            : OK
+latest copied item pastes           : OK
+UTF-8 copy source is visible        : OK
+UTF-8 pane copy is exact            : OK
+pane OSC 52 exported to host        : OK
+pane OSC 52 enters history          : OK
+passthrough blocks OSC 52 query     : OK
+Spanish Clipboard menu fits         : OK
+Spanish compact menu keeps Desktop and Help: OK
+Spanish compact menu abbreviates only crowded neighbours: OK
+Spanish Clipboard immediately before Help: OK
+Spanish Clipboard actions           : OK
+Spanish 88-column menu remains compact: OK
+Spanish 89-column menu restores full names: OK
+Spanish menu returns to compact form: OK
+English 80-column menu keeps every full name: OK
+
+RESULT: PASS
+<== PASS test/clipboard_test.py (25.0s)
+
+==> test/window_test.py (timeout 900s)
+window shortcuts visible          : OK
+split window created              : OK
+maximize enters passthrough       : OK
+restore leaves passthrough        : OK
+pane alive after passthrough      : OK
+two windows before minimize       : OK
+window minimized                  : OK
+window-wide actions listed        : OK
+all windows restored              : OK
+all windows minimized             : OK
+batch restore shows all windows   : OK
+<== PASS test/window_test.py (14.2s)
+
+==> test/cursor_test.py (timeout 900s)
+DSR consultado (Alt-X local)      : OK
+cursor tras Alt-X local           : OK
+DSR consultado (detach)           : OK
+cursor tras detach Ctrl-Q d       : OK
+servidor sigue vivo tras detach   : OK
+DSR consultado (--attach)         : OK
+cursor tras cierre definitivo     : OK
+socket eliminado tras cierre      : OK
+<== PASS test/cursor_test.py (10.3s)
+
+==> test/wclass_test.py (timeout 900s)
+bootstrap session saved       : OK
+menu Classes visible          : OK
+no class autostart            : OK
+menu: Local shell row         : OK
+menu: user local-echo         : OK
+menu: legacy syslegacy        : OK
+menu: shadowme user name      : OK
+menu: sys dup suppressed      : OK
+menu: freeconn+postonly       : OK
+user class opens pane         : OK
+user class pane closed        : OK
+legacy class opens pane       : OK
+shadow: user token wins       : OK
+shadow: sys token hidden      : OK
+connect+post via stdin        : OK
+postonly token printed        : OK
+postonly shell alive          : OK
+<== PASS test/wclass_test.py (23.4s)
+
+==> test/profile_test.py (timeout 900s)
+dev pane a token              : OK
+dev pane b token              : OK
+dev two panes                 : OK
+windows menu lists web        : OK
+profiles menu open            : OK
+dev has active mark           : OK
+menu lists oldtpl             : OK
+menu lists legacy1            : OK
+legacy profile token          : OK
+workspace switched            : OK
+foreground Python observed    : OK
+save-as input box             : OK
+save-as toast                 : OK
+ini has profile.captured      : OK
+ini has layout key            : OK
+ini captured marker cmd       : OK
+ini captured marker cwd       : OK
+ini captured visible basename title: OK
+ini captured scrollback       : OK
+ini keeps source DeskW/H      : OK
+ini captures current DeskW/H  : OK
+ini keeps default_profile     : OK
+ini keeps class section       : OK
+template absorbed             : OK
+oldtpl now a profile          : OK
+restart: dev default          : OK
+restart menu: oldtpl          : OK
+restart menu: captured        : OK
+oldtpl activates              : OK
+captured switches away        : OK
+captured repl prompt          : OK
+captured restores pane title  : OK
+captured activates            : OK
+<== PASS test/profile_test.py (20.5s)
+
+==> test/profile_default_test.py (timeout 900s)
+alpha profile starts                : OK
+profile manager opens               : OK
+initial default is alpha            : OK
+select beta row                     : OK
+set-default button clicked          : OK
+manager reopens after set default   : OK
+beta immediately marked default     : OK
+manager reopens after Ctrl-S        : OK
+beta remains default after Ctrl-S   : OK
+default persisted in config         : OK
+default window follows beta         : OK
+
+RESULT: PASS
+<== PASS test/profile_default_test.py (9.8s)
+
+==> test/profile_shell_fallback_test.py (timeout 900s)
+profile application starts          : OK
+profile application exits           : OK
+interactive shell remains           : OK
+shell accepts later commands        : OK
+
+RESULT: PASS
+<== PASS test/profile_shell_fallback_test.py (5.9s)
+
+==> test/profile_switch_transition_test.py (timeout 900s)
+alpha workspace starts complete     : OK
+initial profile daemon exists       : OK
+profile switch has no partial desktop: OK
+profile switch never reconstructs twice: OK
+profile switch uses synchronized paints: OK
+beta workspace finishes complete    : OK
+old profile is absent after switch  : OK
+profile constructed exactly once    : OK
+new profile daemon adopted in place : OK
+
+RESULT: PASS
+<== PASS test/profile_switch_transition_test.py (6.4s)
+
+==> test/multisession_test.py (timeout 900s)
+A token visible               : OK
+alfa live at launch           : OK
+detach needs no prompt        : OK
+A client exits                : OK
+alfa socket exists            : OK
+alfa sidecar exists           : OK
+alfa sidecar has name         : OK
+picker on startup             : OK
+picker lists alfa             : OK
+esc continues startup         : OK
+picker dismissed              : OK
+B client exits                : OK
+two session pairs             : OK
+list exit 0                   : OK
+list shows alfa+beta          : OK
+list header columns           : OK
+list row panes numeric        : OK
+attach beta shows token       : OK
+remote detach no prompt       : OK
+detached client exits         : OK
+both still live               : OK
+picker lists both             : OK
+picker attaches alfa          : OK
+alfa not beta                 : OK
+close client exits            : OK
+alfa socket removed           : OK
+alfa sidecar removed          : OK
+beta pair remains             : OK
+beta close exits              : OK
+beta socket removed           : OK
+beta sidecar removed          : OK
+sessions dir empty            : OK
+stale list exit 0             : OK
+zombi not listed              : OK
+zombi purged                  : OK
+<== PASS test/multisession_test.py (14.6s)
+
+==> test/prefix_test.py (timeout 900s)
+default Ctrl-Q separa             : OK
+prefix=2 migra a Ctrl-Q           : OK
+prefix=ctrl-b respeta Ctrl-B      : OK
+ctrl-b: Ctrl-Q no es prefijo      : OK
+ctrl-b se anuncia para fullscreen : OK
+ctrl-b f entra en fullscreen      : OK
+ctrl-b f restaura el IDE          : OK
+prefijo-s abre selector           : OK
+nombre saneado dentro del dir     : OK
+sin sockets fuera del dir         : OK
+
+RESULT: PASS
+<== PASS test/prefix_test.py (28.8s)
+
+==> test/title_test.py (timeout 900s)
+rename dialog opens               : OK
+title set to custom               : OK
+custom title not overwritten by cwd: OK
+custom title restored after save  : OK
+class default title on window     : OK
+
+RESULT: PASS
+<== PASS test/title_test.py (13.3s)
+
+==> test/detach_test.py (timeout 900s)
+detach menu is visible              : OK
+client exits after Ctrl-Q d         : OK
+cursor restored after detach        : OK
+one server socket remains           : OK
+session sidecar written             : OK
+pane process survives detach        : OK
+reattach shows detached output      : OK
+reattached pane accepts input       : OK
+permanent close exits client        : OK
+server socket is removed            : OK
+session sidecar removed             : OK
+permanent close terminates pane     : OK
+cursor restored after exit          : OK
+
+RESULT: PASS
+<== PASS test/detach_test.py (8.0s)
+
+==> test/control_test.py (timeout 900s)
+detached session exists             : OK
+list replies data+end               : OK
+list session name                   : OK
+list pane count 1                   : OK
+list pane alive                     : OK
+list pane local kind                : OK
+list pane size                      : OK
+list history lines counted          : OK
+list not attached                   : OK
+info replies                        : OK
+send replies ok                     : OK
+capture visible works               : OK
+sent text reached shell             : OK
+capture visible excludes scrollback : OK
+capture all works                   : OK
+capture all includes scrollback     : OK
+capture all includes visible        : OK
+capture utf-8 accents               : OK
+capture wide chars                  : OK
+capture last-5 works                : OK
+capture last-5 exact rows           : OK
+send bad pane errors                : OK
+capture bad pane errors             : OK
+daemon survives junk frames         : OK
+list works while attached           : OK
+attached count is 1                 : OK
+send works while attached           : OK
+attached client sees sent text      : OK
+
+RESULT: PASS
+<== PASS test/control_test.py (12.3s)
+
+==> test/cli_test.py (timeout 900s)
+version reports VERSION exactly     : OK
+--version reports VERSION exactly   : OK
+-V reports VERSION exactly          : OK
+--help reports VERSION in its first line: OK
+--help exits 0                      : OK
+--help is English by default        : OK
+--ayuda exits 0                     : OK
+help send shows send help           : OK
+unknown command exit 2              : OK
+unknown command on stderr           : OK
+list with no sessions exit 1        : OK
+send without target exit 2          : OK
+capture without target exit 2       : OK
+help follows config language (es)   : OK
+spanish command accepted            : OK
+spanish error message               : OK
+LANG=es fallback                    : OK
+LANG=C stays English                : OK
+detached session for CLI            : OK
+list sessions exit 0                : OK
+list shows session                  : OK
+list shows clients column           : OK
+list panes exit 0                   : OK
+list panes has TYPE local           : OK
+list panes has size                 : OK
+listar panes in Spanish             : OK
+send exit 0                         : OK
+capture visible exit 0              : OK
+capture sees sent text              : OK
+capture history includes scrollback : OK
+capturar --lineas exact             : OK
+capture -o writes file              : OK
+capture -o keeps stdout clean       : OK
+send -n exit 0                      : OK
+send -k C-c exit 0                  : OK
+unknown key exit 2                  : OK
+send stdin exit 0                   : OK
+stdin text arrived                  : OK
+bad session exit 1                  : OK
+bad pane exit 1                     : OK
+kill without name exit 2            : OK
+matar session exit 0                : OK
+session gone after kill             : OK
+
+RESULT: PASS
+<== PASS test/cli_test.py (6.7s)
+
+==> test/cli_help_test.py (timeout 900s)
+help index exits cleanly            : OK
+help index preserves release header : OK
+help index gives a copyable link for every main topic: OK
+help index advertises both navigation forms: OK
+every indexed contextual page resolves: OK
+every top-level help alias is the exact same index: OK
+every English all-component page exits cleanly: OK
+every topic alias is the exact canonical page: OK
+every main page contains its complete public contract: OK
+AI SSH quick-start preserves its complete safe workflow: OK
+AI SSH quick-start is linked from both documentation entrances: OK
+every AI SSH quick-start Markdown reference resolves: OK
+AI SSH quick-start uses only public SSH administration commands: OK
+all command aliases share exact contextual help pages: OK
+legacy startup options expose contextual help without opening the UI: OK
+all SSH admin help paths are the exact detailed page: OK
+every documented SSH admin alias reaches the real help parser: OK
+SSH contextual help genuinely requires no root privilege: OK
+SSH admin help enforces strict arity without doing work: OK
+SSH help and help errors have no filesystem/helper side effects: OK
+release and test help use distinct executables: OK
+release and test runtimes publish identical complete help: OK
+--help all is the exact ordered English page composition: OK
+complete help output is deterministic: OK
+complete help is independent of terminal geometry and TERM: OK
+complete help is plain text without terminal control bytes: OK
+complete help has bounded clean lines and final newline: OK
+unknown help topic exits 2 with a useful diagnostic: OK
+help rejects an extra topic instead of guessing: OK
+command help rejects extra arguments instead of hiding them: OK
+unknown top-level options and commands are usage errors: OK
+command grammars reject extra/missing operands with exit 2: OK
+extra simple-window operands report the exact arity error: OK
+strict arity errors do not create a session or mutate HOME: OK
+short -H remains capture history and never becomes help: OK
+configured Spanish renders the index and contextual navigation: OK
+--ayuda todo is the exact ordered Spanish page composition: OK
+Spanish complete help preserves translated operands and layout: OK
+accented uppercase Spanish help selects the exact command page: OK
+Spanish unknown-topic diagnostic is localized: OK
+early servidor-ssh ayuda is Spanish without reading privileged HOME: OK
+help truth fixture leaves one detached session: OK
+canonical and legacy targets preserve a dotted session name: OK
+rename accepts the literal title --paused: OK
+--no-enter is accepted and really withholds Enter: OK
+named Enter releases the English no-enter command: OK
+--sin-intro is accepted and really withholds Intro: OK
+named Intro releases the Spanish no-enter command: OK
+--noenter compatibility spelling really withholds Enter: OK
+named Enter releases the --noenter command: OK
+--sinintro compatibility spelling really withholds Intro: OK
+named Intro releases the --sinintro command: OK
+help-looking text after -- is delivered literally: OK
+a literal help pane title executes rename instead of opening help: OK
+complete help is stable after live session and pane mutations: OK
+help truth fixture closes cleanly   : OK
+
+RESULT: PASS
+<== PASS test/cli_help_test.py (4.4s)
+
+==> test/control_wm_test.py (timeout 900s)
+new without session exit 2          : OK
+close without target exit 2         : OK
+minimize without target exit 2      : OK
+organize without session exit 2     : OK
+new pane exit 0                     : OK
+two panes listed                    : OK
+new class pane exit 0               : OK
+class pane listed with title        : OK
+three panes now                     : OK
+new pane with cwd exit 0            : OK
+send to new pane                    : OK
+new pane cwd honored                : OK
+new pane TERM sane                  : OK
+rename exit 0                       : OK
+renamed title listed                : OK
+focus exit 0                        : OK
+focused flag moved                  : OK
+focus shell pane exit 0             : OK
+shell pane has focused flag         : OK
+send to focused pane                : OK
+dot followed the focus              : OK
+dot did not reach old focus         : OK
+minimize exit 0                     : OK
+minimized flag listed               : OK
+zoom exit 0                         : OK
+restaurar exit 0                    : OK
+restore minimized exit 0            : OK
+resize exit 0                       : OK
+resized size listed                 : OK
+resize bad size exit 2              : OK
+organize grid exit 0                : OK
+organizar cascada exit 0            : OK
+close pane exit 0                   : OK
+pane count back to 3                : OK
+indices still aligned after close   : OK
+grid before reattach exit 0         : OK
+reattach shows renamed title        : OK
+winop works while attached          : OK
+restore works while attached        : OK
+capture ok while attached           : OK
+
+RESULT: PASS
+<== PASS test/control_wm_test.py (9.0s)
+
+==> test/nonblocking_server_test.py (timeout 900s)
+detached session exists             : OK
+partial header does not block daemon: OK
+partial header expires after 1s     : OK
+partial payload does not block daemon: OK
+fragmented attach gets snapshot     : OK
+fragmented client input reaches PTY : OK
+non-reading pane created            : OK
+blocked PTY input is queued         : OK
+blocked PTY does not stall controls : OK
+other pane accepts input            : OK
+large scrollback command accepted   : OK
+chunked capture keeps every batch   : OK
+stalled snapshot does not block controls: OK
+connection beyond the pending slots is closed: OK
+slots recover once silent peers expire: OK
+oversize frame header drops the peer: OK
+daemon alive after oversize header  : OK
+oversize nested string is rejected  : OK
+malformed request releases pane lease: OK
+daemon alive after nested length attack: OK
+high descriptor setup available     : OK
+daemon serves descriptors above 1023: OK
+
+RESULT: PASS
+<== PASS test/nonblocking_server_test.py (11.3s)
+
+==> test/attach_progress_budget_test.py (timeout 900s)
+fragmented snapshot receives real ATTACH: OK
+fragmented snapshot sends every progress step: OK
+fragmented snapshot completes remote attach: OK
+fixture crosses historical readiness count: OK
+progress cycles do not exhaust attach budget: OK
+fragmented fixture stops cleanly    : OK
+slow-drip listener receives real ATTACH: OK
+slow-drip exits through total deadline: OK
+progress cannot extend total attach deadline: OK
+slow-drip fixture stops cleanly     : OK
+
+RESULT: PASS
+<== PASS test/attach_progress_budget_test.py (4.5s)
+
+==> test/global_command_fifo_test.py (timeout 900s)
+multiprocess log helper compiles cleanly: OK
+multiprocess log writers reach barrier: OK
+all multiprocess log writers exit cleanly: OK
+multiprocess log has every record once: OK
+multiprocess log lines stay atomic  : OK
+session exists                      : OK
+three raw clients attached          : OK
+raw echo command accepted           : OK
+raw echo is ready                   : OK
+concurrent senders completed        : OK
+every distinguishable token arrived once: OK
+FIFO logged commands                : OK
+enqueue sequence strictly consecutive: OK
+dequeue order equals enqueue order  : OK
+no queued command became stale      : OK
+PTY text follows global enqueue order: OK
+
+RESULT: PASS
+<== PASS test/global_command_fifo_test.py (3.0s)
+
+==> test/sidecar_atomic_test.py (timeout 900s)
+named daemon socket exists          : OK
+initial sidecar exists              : OK
+baseline metadata is independently meaningful: OK
+baseline sidecar is complete        : OK
+exclusive sidecar lock cannot break live discovery: OK
+stress workers terminate by deadline: OK
+raw attach/detach churn is substantial: OK
+concurrent CLI query load is substantial: OK
+published INI sampled substantially : OK
+all raw and CLI operations succeed  : OK
+no EFOpenError, EAGAIN or partial metadata: OK
+daemon survives and answers after stress: OK
+final sidecar remains complete      : OK
+no orphan sidecar temporary files   : OK
+
+RESULT: PASS
+<== PASS test/sidecar_atomic_test.py (4.1s)
+
+==> test/client_egress_nonblocking_test.py (timeout 900s)
+client egress probe compiles        : OK
+suite-owned session starts          : OK
+daemon has exact birth identity     : OK
+probe completes real attach         : OK
+stalled daemon never blocks client send: OK
+bounded FIFO rejects a complete frame: OK
+
+RESULT: PASS
+<== PASS test/client_egress_nonblocking_test.py (0.8s)
+
+==> test/global_lock_queue_test.py (timeout 900s)
+rename pane 1                       : OK
+rename pane 2                       : OK
+rename pane 3                       : OK
+one debug session with three panes  : OK
+tile baseline control and three panes: OK
+tile peer BOUNDS preview is physically rendered: OK
+tile input path primed before stop  : OK
+tile queues 34 validated old layouts: OK
+tile commits exactly the next canonical revision: OK
+tile reaches a distinct material geometry: OK
+tile physically presents the new action: OK
+tile never presents new-old-new     : OK
+tile settles old preview inside the owned action: OK
+tile uses complete synchronized renderer updates: OK
+tile real UI acquired one global lease: OK
+cascade baseline control and three panes: OK
+cascade input path primed before stop: OK
+cascade queues 34 validated old layouts: OK
+cascade commits exactly the next canonical revision: OK
+cascade reaches a distinct material geometry: OK
+cascade physically presents the new action: OK
+cascade never presents new-old-new  : OK
+cascade uses complete synchronized renderer updates: OK
+cascade real UI acquired one global lease: OK
+minimize all baseline control and three panes: FAIL
+minimize all input path primed before stop: OK
+minimize all queues 34 validated old layouts: OK
+minimize all commits exactly the next canonical revision: OK
+minimize all reaches a distinct material geometry: OK
+minimize all physically presents the new action: OK
+minimize all never presents new-old-new: OK
+minimize all uses complete synchronized renderer updates: OK
+minimize all real UI acquired one global lease: OK
+
+RESULT: FAIL (1): minimize all baseline control and three panes
+<== FAIL test/global_lock_queue_test.py (exit status 1, 22.2s)
+
+==> test/multiclient_input_burst_test.py (timeout 900s)
+session exists                      : OK
+three clients attached              : OK
+shared pane focused                 : OK
+raw reader ready                    : OK
+all concurrent writers finish       : OK
+client 1 writes complete burst      : OK
+client 2 writes complete burst      : OK
+client 3 writes complete burst      : OK
+FIFO delivers the complete global stream: OK
+client 1 FIFO order preserved       : OK
+client 2 FIFO order preserved       : OK
+client 3 FIFO order preserved       : OK
+all three bursts rendered to every client: OK
+
+RESULT: PASS
+<== PASS test/multiclient_input_burst_test.py (11.5s)
+
+==> test/multithread_server_test.py (timeout 900s)
+multithread session exists          : OK
+daemon detects available CPU count  : OK
+numeric value caps total threads    : OK
+one pane creates one pane worker    : OK
+sidecar matches OS thread count     : OK
+concurrent pane creation            : OK
+concurrent pane creation            : OK
+concurrent pane creation            : OK
+workers grow up to configured cap   : OK
+grown pool matches OS threads       : OK
+parallel pane command accepted      : OK
+parallel pane command accepted      : OK
+parallel pane command accepted      : OK
+parallel pane command accepted      : OK
+parallel pane streams stay ordered  : OK
+client reactor responsive under load: OK
+pane close while multithreaded      : OK
+pane close while multithreaded      : OK
+pane close while multithreaded      : OK
+workers shrink with pane count      : OK
+client catches up before last close : OK
+zero panes leaves network reactor   : OK
+pane recreated from empty session   : OK
+worker recreated after empty session: OK
+environment override selects single thread: OK
+single mode creates no hidden worker: OK
+single reactor remains functional   : OK
+auto independently detects CPUs     : OK
+auto uses available CPU limit       : OK
+auto creates only needed workers    : OK
+
+RESULT: PASS
+<== PASS test/multithread_server_test.py (8.1s)
+
+==> test/multiclient_test.py (timeout 900s)
+detached session exists             : OK
+legacy attach alone still served    : OK
+client A attached                   : OK
+client B attached                   : OK
+two clients listed                  : OK
+client A sees its own input         : OK
+client B sees broadcast output      : OK
+capture with 2 clients              : OK
+legacy attach rejected while shared : OK
+rename while attached exit 0        : OK
+client A sees new title             : OK
+client B sees new title             : OK
+new pane while attached exit 0      : OK
+daemon has 2 panes                  : OK
+client A gained the window          : OK
+client B gained the window          : OK
+smaller client leaves PTY canonical : OK
+new client sees snapshot content    : OK
+old client keeps visible content    : OK
+close while attached exit 0         : OK
+client A dropped the window         : OK
+client B dropped the window         : OK
+panes still aligned in A            : OK
+panes still aligned in B            : OK
+laggard attached                    : OK
+three clients listed                : OK
+flood reached canonical pane        : OK
+laggard dropped, live clients kept  : OK
+post-flood title accepted           : OK
+client A survived the flood         : OK
+client B survived the flood         : OK
+two live clients remain after flood : OK
+daemon alive after flood            : OK
+kill with clients attached exit 0   : OK
+client A exited cleanly after shutdown: OK
+client B exited cleanly after shutdown: OK
+session gone                        : OK
+
+RESULT: PASS
+<== PASS test/multiclient_test.py (30.6s)
+
+==> test/multiclient_close_test.py (timeout 900s)
+creator session exists              : OK
+second client attaches              : OK
+both clients receive output         : OK
+attached Alt-X exits sender         : OK
+secondary Exit keeps creator alive  : OK
+secondary Exit keeps session alive  : OK
+secondary Exit does not save        : OK
+replacement client attaches         : OK
+replacement Exit exits sender       : OK
+replacement Exit keeps creator alive: OK
+replacement Exit keeps session alive: OK
+remaining client remains usable     : OK
+last client exits                   : OK
+last client closes session          : OK
+last Exit leaves no saved session   : OK
+admin session exists                : OK
+admin daemon publishes an exact process identity: OK
+admin second client attaches        : OK
+administrative kill succeeds        : OK
+administrative kill closes session  : OK
+administrative kill fully reaps daemon: OK
+administrative kill notifies creator: OK
+administrative kill notifies attached: OK
+
+RESULT: PASS
+<== PASS test/multiclient_close_test.py (12.6s)
+
+==> test/shared_geometry_test.py (timeout 900s)
+session exists                      : OK
+pane rename succeeds                : OK
+creator geometry is canonical       : OK
+smaller client attaches             : OK
+attach leaves canonical desktop and PTY: OK
+smaller client has both local viewport scrollbars: OK
+horizontal scrollbar changes only the small local viewport: OK
+attached-client SIGWINCH keeps shared geometry: OK
+resized smaller client still owns both local scrollbars: OK
+creator SIGWINCH keeps shared geometry: OK
+large client needs no viewport scrollbars: OK
+explicit pane resize succeeds       : OK
+explicit pane resize changes only PTY: OK
+shared output remains live          : OK
+detached daemon keeps pane size     : OK
+reattach receives prior contents    : OK
+reattach geometry is not renegotiated: OK
+
+RESULT: PASS
+<== PASS test/shared_geometry_test.py (11.2s)
+
+==> test/host_resize_shared_test.py (timeout 900s)
+session exists                      : OK
+pane rename succeeds                : OK
+100x30 creator has exact desktop    : OK
+different-size attach is live       : OK
+attach does not negotiate desktop   : OK
+grow leaves shared desktop and PTY unchanged: OK
+shrink leaves shared desktop and PTY unchanged: OK
+only the smaller viewer gains viewport scrollbars: OK
+second shrink still leaves canonical state unchanged: OK
+each small viewer owns its own scrollbars: OK
+viewer grow restores its local full frame only: OK
+scrollbar ownership remains client-local: OK
+
+RESULT: PASS
+<== PASS test/host_resize_shared_test.py (6.6s)
+
+==> test/desktop_resize_protocol_test.py (timeout 900s)
+suite-owned session starts          : OK
+protocol v16 snapshot has three canonical panes: OK
+FRAME_CLIENT_SIZE is acknowledged as local metadata: OK
+host SIGWINCH leaves canonical geometry and revision intact: OK
+protocol peer can establish offscreen normal geometry: OK
+invalid geometry tail cannot apply a valid pane head: OK
+hostile BX/BY/BW/BH reject atomically without revision: OK
+minimum desktop is accepted atomically: OK
+shrink preserves BW/BH and normal PTY: OK
+shrink translates only to one safe title cell: OK
+desktop transaction emits no standalone PTY resize: OK
+explicit resize changes canonical state exactly once: OK
+four adjacent out-of-range dimensions are rejected: OK
+stale resize base is rejected and lease released: OK
+maximum desktop is accepted without resizing normal PTY: OK
+desktop returns from maximum without scaling a window: OK
+
+RESULT: PASS
+<== PASS test/desktop_resize_protocol_test.py (0.5s)
+
+==> test/desktop_persistence_test.py (timeout 900s)
+session loads saved window bounds   : OK
+session loads saved DeskW/H         : OK
+local explicit fit preserves exact normal window: OK
+local explicit fit publishes exact DeskW/H: OK
+autosaving session exit completes   : OK
+session save preserves DeskW/H and bounds: OK
+restart reloads exact DeskW/H       : OK
+smaller restart owns local viewport bars: OK
+restart retains saved INI values    : OK
+small viewport can scroll both local axes: OK
+oversized dialog anchors its visible upper-left corner: OK
+legacy session preserves accessible saved position: OK
+legacy accessible bounds remain exact: OK
+legacy unreachable title is minimally exposed without scaling: OK
+
+RESULT: PASS
+<== PASS test/desktop_persistence_test.py (4.3s)
+
+==> test/maximize_min_viewport_test.py (timeout 900s)
+small creator session exists        : OK
+maximize fixture pane renamed       : OK
+small creator has complete canonical frame: OK
+larger viewer attaches              : OK
+large SIGWINCH leaves canonical window and PTY unchanged: OK
+Desktop menu exposes explicit fit command: OK
+explicit fit grows desktop without scaling normal window: OK
+Desktop menu reports exact logical dimensions: OK
+manual Desktop dialog accepts explicit dimensions: OK
+manual Desktop dialog commits exact logical dimensions: OK
+fit restores terminal logical dimensions after manual edit: OK
+native maximize uses logical desktop, not smallest host: OK
+explicit pane resize rejects maximized pane: OK
+rejected pane resize preserves logical maximum: OK
+CLI restore succeeds                : OK
+restore recovers exact unscaled frame and PTY: OK
+CLI maximize succeeds               : OK
+CLI maximize uses same logical bounds: OK
+SIGWINCH while zoomed keeps logical maximum and PTY: OK
+
+RESULT: PASS
+<== PASS test/maximize_min_viewport_test.py (4.5s)
+
+==> test/zoom_exclusive_switch_test.py (timeout 900s)
+exclusive fixture session exists    : OK
+rename exclusive pane 1             : OK
+rename exclusive pane 2             : OK
+tile exclusive fixture              : OK
+two-pane two-client baseline        : OK
+both clients share both restore frames: OK
+pane 1 active before native zoom    : OK
+native pane 1 zoom click sent       : OK
+pane 1 is the sole canonical maximum: OK
+pane 1 maximum is identical on both clients: OK
+pane 2 raised while pane 1 remains zoomed canonically: OK
+native pane 2 zoom click sent       : OK
+direct maximize hand-off leaves exactly one Z: OK
+pane 1 PTY restored from its canonical BW/BH: OK
+pane 2 uses exact shared safe maximum: OK
+hand-off geometry is identical on both clients: OK
+hand-off releases all visible and daemon leases: OK
+maximized pane native minimize click sent: OK
+maximized pane minimizes canonically in both clients: OK
+maximized icon native restore click sent: OK
+icon restore returns to the same shared maximum: OK
+race 1 starts from two visible panes: OK
+race 1 completes both FIFO zooms    : OK
+race 1 sampled no dual-Z state      : OK
+race 1 settles one exact winner     : OK
+race 1 winner owns shared focus     : OK
+race 1 shared winner geometry       : OK
+race 1 releases every lease         : OK
+race 2 starts from two visible panes: OK
+race 2 completes both FIFO zooms    : OK
+race 2 sampled no dual-Z state      : OK
+race 2 settles one exact winner     : OK
+race 2 winner owns shared focus     : OK
+race 2 shared winner geometry       : OK
+race 2 releases every lease         : OK
+race 3 starts from two visible panes: OK
+race 3 completes both FIFO zooms    : OK
+race 3 sampled no dual-Z state      : OK
+race 3 settles one exact winner     : OK
+race 3 winner owns shared focus     : OK
+race 3 shared winner geometry       : OK
+race 3 releases every lease         : OK
+
+RESULT: PASS
+<== PASS test/zoom_exclusive_switch_test.py (17.5s)
+
+==> test/host_summary_lease_test.py (timeout 900s)
+one session exists                  : OK
+equal-host summary reaches protocol peer: OK
+equal hosts enter raw fullscreen    : OK
+protocol peer owns pane lease       : OK
+lease owner gets incompatible attach summary before unlock: OK
+host event is separate from lease-filtered layout: OK
+raw owner reclaims renderer on incompatible attach: OK
+attach summary does not roll back canonical geometry: OK
+lease owner gets resize summary before unlock: OK
+resize metadata leaves canonical geometry unchanged: OK
+fixture distinguishes canonical zoom from host metadata: OK
+zoom commit emits no intermediate RESIZE_EV: OK
+daemon keeps zoom on canonical desktop after host resize: OK
+canonical PTY matches committed LAYOUT_EV: OK
+malformed zoom fixture reacquires its pane lease: OK
+zero restore rectangle is rejected atomically: OK
+malformed zoom leaves canonical PTY unchanged: OK
+protocol peer gets detach host summary: OK
+membership change does not bounce renderer back to raw: OK
+detach metadata leaves canonical geometry unchanged: OK
+
+RESULT: PASS
+<== PASS test/host_summary_lease_test.py (11.2s)
+
+==> test/client_notifications_test.py (timeout 900s)
+one daemon session exists           : OK
+daemon is not counted as an attached viewer: OK
+A observes first connection in status: OK
+two UI clients publish exactly two viewers: OK
+A desktop toast is one plain connection event: OK
+A receives one bell for B attach    : OK
+B does not announce its own snapshot attach: OK
+A receives one bell for C attach    : OK
+second attach waits behind first desktop notice: OK
+each new client suppresses its own attach notice: OK
+queued connection advances to its own total: OK
+three UI clients publish exactly three viewers: OK
+queued connection retains its desktop event: OK
+connection toast expires after its own interval: OK
+Desktop menu exposes notification preference: OK
+desktop notification preference disables and persists: OK
+C detaches cleanly                  : OK
+A observes disconnect in status while desktop toast is disabled: OK
+disconnect removes exactly one viewer: OK
+A still receives one bell while desktop toast is disabled: OK
+desktop notification preference enables and persists: OK
+re-enable presents the active disconnect toast: OK
+notice bytes never enter pane output: OK
+
+RESULT: PASS
+<== PASS test/client_notifications_test.py (9.3s)
+
+==> test/shared_state_stress_test.py (timeout 900s)
+session server exists               : OK
+initial pane list succeeds          : OK
+F2 materially creates second pane   : OK
+pane 1 rename succeeds              : OK
+pane 2 rename succeeds              : OK
+initial grid succeeds               : OK
+second viewer attaches              : OK
+both normal panes are visible       : OK
+attach receives exact initial layout: OK
+initial daemon state is explicit    : OK
+first client focus reaches daemon   : OK
+first focus is rendered by both clients: OK
+second client focus reaches daemon  : OK
+second focus is rendered by both clients: OK
+shared fullscreen hands both equal hosts to the pane: OK
+shared raw fullscreen keeps both clients live: OK
+fullscreen preserves focused pane and ordinary flags: OK
+creator detach exits cleanly        : OK
+second viewer detach exits cleanly  : OK
+sole reattach receives live fullscreen passthrough: OK
+fullscreen reattach retains daemon focus: OK
+fullscreen exit restores exact saved rectangle: OK
+fullscreen exit retains explicit state: OK
+stress observer receives exact current layout: OK
+round 0 focus command succeeds      : OK
+round 0 focus transition settles    : OK
+round 0 tile command succeeds       : OK
+round 0 tile clears transient flags : OK
+round 0 tile has valid material frame origins: OK
+round 0 tile reaches both clients   : OK
+round 0 send command succeeds       : OK
+round 0 capture succeeds            : OK
+round 0 canonical pane content survives: OK
+round 0 pane content is rendered in both clients: OK
+round 0 active frame remains shared : OK
+round 0 geometry is identical       : OK
+round 0 exact cursor reaches both clients: OK
+round 0 output does not mutate window state: OK
+round 0 stop cursor fixture succeeds: OK
+round 1 focus command succeeds      : OK
+round 1 focus transition settles    : OK
+round 1 cascade command succeeds    : OK
+round 1 cascade clears transient flags: OK
+round 1 cascade has valid material frame origins: OK
+round 1 cascade reaches both clients: OK
+round 1 cascade material transition occurs: OK
+round 1 pre-minimize grid succeeds  : OK
+round 1 pre-minimize grid settles   : OK
+round 1 pre-minimize grid is presented: OK
+round 1 minimize command succeeds   : OK
+round 1 minimize flag settles       : OK
+round 1 minimized icon is material and shared: OK
+round 1 restore minimized command succeeds: OK
+round 1 restore minimized flag settles: OK
+round 1 restore returns exact material frame: OK
+round 1 send command succeeds       : OK
+round 1 capture succeeds            : OK
+round 1 canonical pane content survives: OK
+round 1 pane content is rendered in both clients: OK
+round 1 active frame remains shared : OK
+round 1 geometry is identical       : OK
+round 1 exact cursor reaches both clients: OK
+round 1 output does not mutate window state: OK
+round 1 stop cursor fixture succeeds: OK
+round 2 focus command succeeds      : OK
+round 2 focus transition settles    : OK
+round 2 grid command succeeds       : OK
+round 2 grid clears transient flags : OK
+round 2 grid has valid material frame origins: OK
+round 2 grid reaches both clients   : OK
+round 2 zoom command succeeds       : OK
+round 2 zoom flag settles           : OK
+round 2 zoom is a shared material transition: OK
+round 2 restore zoom command succeeds: OK
+round 2 restore zoom flag settles   : OK
+round 2 zoom restore returns exact layout: OK
+round 2 send command succeeds       : OK
+round 2 capture succeeds            : OK
+round 2 canonical pane content survives: OK
+round 2 pane content is rendered in both clients: OK
+round 2 active frame remains shared : OK
+round 2 geometry is identical       : OK
+round 2 exact cursor reaches both clients: OK
+round 2 output does not mutate window state: OK
+round 2 stop cursor fixture succeeds: OK
+round 3 focus command succeeds      : OK
+round 3 focus transition settles    : OK
+round 3 tile command succeeds       : OK
+round 3 tile clears transient flags : OK
+round 3 tile has valid material frame origins: OK
+round 3 tile reaches both clients   : OK
+round 3 send command succeeds       : OK
+round 3 capture succeeds            : OK
+round 3 canonical pane content survives: OK
+round 3 pane content is rendered in both clients: OK
+round 3 active frame remains shared : OK
+round 3 geometry is identical       : OK
+round 3 exact cursor reaches both clients: OK
+round 3 output does not mutate window state: OK
+round 3 stop cursor fixture succeeds: OK
+round 4 focus command succeeds      : OK
+round 4 focus transition settles    : OK
+round 4 cascade command succeeds    : OK
+round 4 cascade clears transient flags: OK
+round 4 cascade has valid material frame origins: OK
+round 4 cascade reaches both clients: OK
+round 4 cascade material transition occurs: OK
+round 4 pre-minimize grid succeeds  : OK
+round 4 pre-minimize grid settles   : OK
+round 4 pre-minimize grid is presented: OK
+round 4 minimize command succeeds   : OK
+round 4 minimize flag settles       : OK
+round 4 minimized icon is material and shared: OK
+round 4 restore minimized command succeeds: OK
+round 4 restore minimized flag settles: OK
+round 4 restore returns exact material frame: OK
+round 4 send command succeeds       : OK
+round 4 capture succeeds            : OK
+round 4 canonical pane content survives: OK
+round 4 pane content is rendered in both clients: OK
+round 4 active frame remains shared : OK
+round 4 geometry is identical       : OK
+round 4 exact cursor reaches both clients: OK
+round 4 output does not mutate window state: OK
+round 4 stop cursor fixture succeeds: OK
+round 5 focus command succeeds      : OK
+round 5 focus transition settles    : OK
+round 5 grid command succeeds       : OK
+round 5 grid clears transient flags : OK
+round 5 grid has valid material frame origins: OK
+round 5 grid reaches both clients   : OK
+round 5 zoom command succeeds       : OK
+round 5 zoom flag settles           : OK
+round 5 zoom is a shared material transition: OK
+round 5 restore zoom command succeeds: OK
+round 5 restore zoom flag settles   : OK
+round 5 zoom restore returns exact layout: OK
+round 5 send command succeeds       : OK
+round 5 capture succeeds            : OK
+round 5 canonical pane content survives: OK
+round 5 pane content is rendered in both clients: OK
+round 5 active frame remains shared : OK
+round 5 geometry is identical       : OK
+round 5 exact cursor reaches both clients: OK
+round 5 output does not mutate window state: OK
+round 5 stop cursor fixture succeeds: OK
+round 6 focus command succeeds      : OK
+round 6 focus transition settles    : OK
+round 6 tile command succeeds       : OK
+round 6 tile clears transient flags : OK
+round 6 tile has valid material frame origins: OK
+round 6 tile reaches both clients   : OK
+round 6 tile is deterministic       : OK
+round 6 send command succeeds       : OK
+round 6 capture succeeds            : OK
+round 6 canonical pane content survives: OK
+round 6 pane content is rendered in both clients: OK
+round 6 active frame remains shared : OK
+round 6 geometry is identical       : OK
+round 6 exact cursor reaches both clients: OK
+round 6 output does not mutate window state: OK
+round 6 stop cursor fixture succeeds: OK
+round 7 focus command succeeds      : OK
+round 7 focus transition settles    : OK
+round 7 cascade command succeeds    : OK
+round 7 cascade clears transient flags: OK
+round 7 cascade has valid material frame origins: OK
+round 7 cascade reaches both clients: OK
+round 7 cascade is deterministic    : OK
+round 7 cascade material transition occurs: OK
+round 7 pre-minimize grid succeeds  : OK
+round 7 pre-minimize grid settles   : OK
+round 7 pre-minimize grid is presented: OK
+round 7 minimize command succeeds   : OK
+round 7 minimize flag settles       : OK
+round 7 minimized icon is material and shared: OK
+round 7 restore minimized command succeeds: OK
+round 7 restore minimized flag settles: OK
+round 7 restore returns exact material frame: OK
+round 7 send command succeeds       : OK
+round 7 capture succeeds            : OK
+round 7 canonical pane content survives: OK
+round 7 pane content is rendered in both clients: OK
+round 7 active frame remains shared : OK
+round 7 geometry is identical       : OK
+round 7 exact cursor reaches both clients: OK
+round 7 output does not mutate window state: OK
+round 7 stop cursor fixture succeeds: OK
+round 8 focus command succeeds      : OK
+round 8 focus transition settles    : OK
+round 8 grid command succeeds       : OK
+round 8 grid clears transient flags : OK
+round 8 grid has valid material frame origins: OK
+round 8 grid reaches both clients   : OK
+round 8 grid is deterministic       : OK
+round 8 zoom command succeeds       : OK
+round 8 zoom flag settles           : OK
+round 8 zoom is a shared material transition: OK
+round 8 restore zoom command succeeds: OK
+round 8 restore zoom flag settles   : OK
+round 8 zoom restore returns exact layout: OK
+round 8 send command succeeds       : OK
+round 8 capture succeeds            : OK
+round 8 canonical pane content survives: OK
+round 8 pane content is rendered in both clients: OK
+round 8 active frame remains shared : OK
+round 8 geometry is identical       : OK
+round 8 exact cursor reaches both clients: OK
+round 8 output does not mutate window state: OK
+round 8 stop cursor fixture succeeds: OK
+final focus command succeeds        : OK
+final focus settles                 : OK
+final cascade command succeeds      : OK
+final cascade state settles         : OK
+final cascade is a material shared transition: OK
+stress creator detach exits cleanly : OK
+stress observer detach exits cleanly: OK
+final geometry survives all detach  : OK
+reattach restores explicit final daemon state: OK
+reattached client remains alive after input: OK
+final pane 1 capture succeeds       : OK
+final pane 2 capture succeeds       : OK
+final focus survives all detach     : OK
+final viewer detach exits cleanly   : OK
+
+RESULT: PASS
+<== PASS test/shared_state_stress_test.py (45.9s)
+
+==> test/multiclient_intensive_test.py (timeout 900s)
+stress seed=0x3515a11
+action log=/tmp/opencode/st-f47468s9/actions.log
+flow log=/tmp/opencode/st-f47468s9/superterm-full.log
+intensive session exists            : OK
+rename pane 1                       : OK
+rename pane 2                       : OK
+rename pane 3                       : OK
+three stable clients alive          : OK
+circle source frame found           : OK
+circle pane resized for travel      : OK
+circle 0.0 exact shared position    : OK
+circle 0.0 shared complete geometry : OK
+circle 0.0 valid cursors            : OK
+circle 0.0 marker submitted         : OK
+circle 0.0 marker canonical         : OK
+circle 0.0 marker rendered          : OK
+circle 0.1 exact shared position    : OK
+circle 0.1 shared complete geometry : OK
+circle 0.1 valid cursors            : OK
+circle 0.1 marker submitted         : OK
+circle 0.1 marker canonical         : OK
+circle 0.1 marker rendered          : OK
+circle 0.2 exact shared position    : OK
+circle 0.2 shared complete geometry : OK
+circle 0.2 valid cursors            : OK
+circle 0.2 marker submitted         : OK
+circle 0.2 marker canonical         : OK
+circle 0.2 marker rendered          : OK
+circle 0.3 exact shared position    : OK
+circle 0.3 shared complete geometry : OK
+circle 0.3 valid cursors            : OK
+circle 0.3 marker submitted         : OK
+circle 0.3 marker canonical         : OK
+circle 0.3 marker rendered          : OK
+circle 0.4 exact shared position    : OK
+circle 0.4 shared complete geometry : OK
+circle 0.4 valid cursors            : OK
+circle 0.4 marker submitted         : OK
+circle 0.4 marker canonical         : OK
+circle 0.4 marker rendered          : OK
+circle 0.5 exact shared position    : OK
+circle 0.5 shared complete geometry : OK
+circle 0.5 valid cursors            : OK
+circle 0.5 marker submitted         : OK
+circle 0.5 marker canonical         : OK
+circle 0.5 marker rendered          : OK
+circle 0.6 exact shared position    : OK
+circle 0.6 shared complete geometry : OK
+circle 0.6 valid cursors            : OK
+circle 0.6 marker submitted         : OK
+circle 0.6 marker canonical         : OK
+circle 0.6 marker rendered          : OK
+circle 0.7 exact shared position    : OK
+circle 0.7 shared complete geometry : OK
+circle 0.7 valid cursors            : OK
+circle 0.7 marker submitted         : OK
+circle 0.7 marker canonical         : OK
+circle 0.7 marker rendered          : OK
+circle 0.8 exact shared position    : OK
+circle 0.8 shared complete geometry : OK
+circle 0.8 valid cursors            : OK
+circle 0.8 marker submitted         : OK
+circle 0.8 marker canonical         : OK
+circle 0.8 marker rendered          : OK
+circle 0.9 exact shared position    : OK
+circle 0.9 shared complete geometry : OK
+circle 0.9 valid cursors            : OK
+circle 0.9 marker submitted         : OK
+circle 0.9 marker canonical         : OK
+circle 0.9 marker rendered          : OK
+circle 0.10 exact shared position   : OK
+circle 0.10 shared complete geometry: OK
+circle 0.10 valid cursors           : OK
+circle 0.10 marker submitted        : OK
+circle 0.10 marker canonical        : OK
+circle 0.10 marker rendered         : OK
+circle 0.11 exact shared position   : OK
+circle 0.11 shared complete geometry: OK
+circle 0.11 valid cursors           : OK
+circle 0.11 marker submitted        : OK
+circle 0.11 marker canonical        : OK
+circle 0.11 marker rendered         : OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+fullscreen 0 restore accepted       : OK
+fullscreen 0 focus accepted         : OK
+fullscreen 0 focus reaches every client: OK
+fullscreen 0 enters raw mode in every client: OK
+fullscreen 0 clients remain alive   : OK
+fullscreen 0 restores exact shared geometry: OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+round 0 snapshot tokens submitted   : OK
+round 0 snapshot tokens canonical   : OK
+round 0 snapshot tokens rendered before attach: OK
+round 0 snapshot layout is non-empty: OK
+round 0 reads PTY sizes before attach: OK
+round 0 churn receives snapshot tokens: OK
+round 0 churn renders snapshot tokens: OK
+round 0 churn receives snapshot layout: OK
+round 0 select exact pane 1         : OK
+round 0 exact focus sync 1          : OK
+round 0 select exact pane 2         : OK
+round 0 exact focus sync 2          : OK
+round 0 select exact pane 3         : OK
+round 0 exact focus sync 3          : OK
+round 0 exact locks released        : OK
+round 0 canonical pane 1            : OK
+round 0 P1 visible C1               : OK
+round 0 P1 visible C2               : OK
+round 0 P1 visible C3               : OK
+round 0 P1 visible C4               : OK
+round 0 owns exact foreground 1     : OK
+round 0 canonical pane 2            : OK
+round 0 P2 visible C1               : OK
+round 0 P2 visible C2               : OK
+round 0 P2 visible C3               : OK
+round 0 P2 visible C4               : OK
+round 0 owns exact foreground 2     : OK
+round 0 canonical pane 3            : OK
+round 0 P3 visible C1               : OK
+round 0 P3 visible C2               : OK
+round 0 P3 visible C3               : OK
+round 0 P3 visible C4               : OK
+round 0 owns exact foreground 3     : OK
+round 0 churn renders every live exact token: OK
+round 0 select cursor pane 1        : OK
+round 0 cursor focus sync 1         : OK
+round 0 focus P1 cursor C1          : OK
+round 0 focus P1 cursor C2          : OK
+round 0 focus P1 cursor C3          : OK
+round 0 focus P1 cursor C4          : OK
+round 0 churn cursor exact P1       : OK
+round 0 stops exact foreground 1    : OK
+round 0 select cursor pane 2        : OK
+round 0 cursor focus sync 2         : OK
+round 0 focus P2 cursor C1          : OK
+round 0 focus P2 cursor C2          : OK
+round 0 focus P2 cursor C3          : OK
+round 0 focus P2 cursor C4          : OK
+round 0 churn cursor exact P2       : OK
+round 0 stops exact foreground 2    : OK
+round 0 select cursor pane 3        : OK
+round 0 cursor focus sync 3         : OK
+round 0 focus P3 cursor C1          : OK
+round 0 focus P3 cursor C2          : OK
+round 0 focus P3 cursor C3          : OK
+round 0 focus P3 cursor C4          : OK
+round 0 churn cursor exact P3       : OK
+round 0 stops exact foreground 3    : OK
+round 0 select ordered pane         : OK
+round 0 ordered focus sync          : OK
+round 0 raw reader ready            : OK
+round 0 concurrent writers finish   : OK
+round 0 client 1 writes complete burst: OK
+round 0 client 2 writes complete burst: OK
+round 0 client 3 writes complete burst: OK
+round 0 complete concurrent FIFO stream: OK
+round 0 client 1 FIFO projection    : OK
+round 0 client 2 FIFO projection    : OK
+round 0 client 3 FIFO projection    : OK
+round 0 ordered output C1           : OK
+round 0 ordered output C2           : OK
+round 0 ordered output C3           : OK
+round 0 ordered output C4           : OK
+round 0 churn renders complete live FIFO output: OK
+round 0 raw reader exits and restores tty: OK
+round 0 churn client alive          : OK
+round 0 attach keeps PTYs           : OK
+round 0 churn applies live shared layout: OK
+round 0 concurrent geometry writers finish: OK
+round 0 concurrent geometry writes complete: OK
+round 0 churn detach command written: OK
+round 0 churn detaches cleanly      : OK
+round 0 shared layout is non-empty  : OK
+round 0 shared geometry converges   : OK
+round 0 shared layout converges     : OK
+round 0 shared pane/icon identity converges: OK
+round 0 canonical flags match every rendered pane/icon: OK
+round 0 geometry burst changes material state: OK
+round 0 reactor stays responsive    : OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+round 1 snapshot tokens submitted   : OK
+round 1 snapshot tokens canonical   : OK
+round 1 snapshot tokens rendered before attach: OK
+round 1 snapshot layout is non-empty: OK
+round 1 reads PTY sizes before attach: OK
+round 1 churn receives snapshot tokens: OK
+round 1 churn renders snapshot tokens: OK
+round 1 churn receives snapshot layout: OK
+round 1 select exact pane 1         : OK
+round 1 exact focus sync 1          : OK
+round 1 select exact pane 2         : OK
+round 1 exact focus sync 2          : OK
+round 1 select exact pane 3         : OK
+round 1 exact focus sync 3          : OK
+round 1 exact locks released        : OK
+round 1 canonical pane 1            : OK
+round 1 P1 visible C1               : OK
+round 1 P1 visible C2               : OK
+round 1 P1 visible C3               : OK
+round 1 P1 visible C4               : OK
+round 1 owns exact foreground 1     : OK
+round 1 canonical pane 2            : OK
+round 1 P2 visible C1               : OK
+round 1 P2 visible C2               : OK
+round 1 P2 visible C3               : OK
+round 1 P2 visible C4               : OK
+round 1 owns exact foreground 2     : OK
+round 1 canonical pane 3            : OK
+round 1 P3 visible C1               : OK
+round 1 P3 visible C2               : OK
+round 1 P3 visible C3               : OK
+round 1 P3 visible C4               : OK
+round 1 owns exact foreground 3     : OK
+round 1 churn renders every live exact token: OK
+round 1 select cursor pane 1        : OK
+round 1 cursor focus sync 1         : OK
+round 1 focus P1 cursor C1          : OK
+round 1 focus P1 cursor C2          : OK
+round 1 focus P1 cursor C3          : OK
+round 1 focus P1 cursor C4          : OK
+round 1 churn cursor exact P1       : OK
+round 1 stops exact foreground 1    : OK
+round 1 select cursor pane 2        : OK
+round 1 cursor focus sync 2         : OK
+round 1 focus P2 cursor C1          : OK
+round 1 focus P2 cursor C2          : OK
+round 1 focus P2 cursor C3          : OK
+round 1 focus P2 cursor C4          : OK
+round 1 churn cursor exact P2       : OK
+round 1 stops exact foreground 2    : OK
+round 1 select cursor pane 3        : OK
+round 1 cursor focus sync 3         : OK
+round 1 focus P3 cursor C1          : OK
+round 1 focus P3 cursor C2          : OK
+round 1 focus P3 cursor C3          : OK
+round 1 focus P3 cursor C4          : OK
+round 1 churn cursor exact P3       : OK
+round 1 stops exact foreground 3    : OK
+round 1 select ordered pane         : OK
+round 1 ordered focus sync          : OK
+round 1 raw reader ready            : OK
+round 1 concurrent writers finish   : OK
+round 1 client 1 writes complete burst: OK
+round 1 client 2 writes complete burst: OK
+round 1 client 3 writes complete burst: OK
+round 1 complete concurrent FIFO stream: OK
+round 1 client 1 FIFO projection    : OK
+round 1 client 2 FIFO projection    : OK
+round 1 client 3 FIFO projection    : OK
+round 1 ordered output C1           : OK
+round 1 ordered output C2           : OK
+round 1 ordered output C3           : OK
+round 1 ordered output C4           : OK
+round 1 churn renders complete live FIFO output: OK
+round 1 raw reader exits and restores tty: OK
+round 1 churn client alive          : OK
+round 1 attach keeps PTYs           : OK
+round 1 churn applies live shared layout: OK
+round 1 concurrent geometry writers finish: OK
+round 1 concurrent geometry writes complete: OK
+round 1 churn detach command written: OK
+round 1 churn detaches cleanly      : OK
+round 1 shared layout is non-empty  : OK
+round 1 shared geometry converges   : OK
+round 1 shared layout converges     : OK
+round 1 shared pane/icon identity converges: OK
+round 1 canonical flags match every rendered pane/icon: OK
+round 1 geometry burst changes material state: OK
+round 1 reactor stays responsive    : OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+round 2 snapshot tokens submitted   : OK
+round 2 snapshot tokens canonical   : OK
+round 2 snapshot tokens rendered before attach: OK
+round 2 snapshot layout is non-empty: OK
+round 2 reads PTY sizes before attach: OK
+round 2 churn receives snapshot tokens: OK
+round 2 churn renders snapshot tokens: OK
+round 2 churn receives snapshot layout: OK
+round 2 select exact pane 1         : OK
+round 2 exact focus sync 1          : OK
+round 2 select exact pane 2         : OK
+round 2 exact focus sync 2          : OK
+round 2 select exact pane 3         : OK
+round 2 exact focus sync 3          : OK
+round 2 exact locks released        : OK
+round 2 canonical pane 1            : OK
+round 2 P1 visible C1               : OK
+round 2 P1 visible C2               : OK
+round 2 P1 visible C3               : OK
+round 2 P1 visible C4               : OK
+round 2 owns exact foreground 1     : OK
+round 2 canonical pane 2            : OK
+round 2 P2 visible C1               : OK
+round 2 P2 visible C2               : OK
+round 2 P2 visible C3               : OK
+round 2 P2 visible C4               : OK
+round 2 owns exact foreground 2     : OK
+round 2 canonical pane 3            : OK
+round 2 P3 visible C1               : OK
+round 2 P3 visible C2               : OK
+round 2 P3 visible C3               : OK
+round 2 P3 visible C4               : OK
+round 2 owns exact foreground 3     : OK
+round 2 churn renders every live exact token: OK
+round 2 select cursor pane 1        : OK
+round 2 cursor focus sync 1         : OK
+round 2 focus P1 cursor C1          : OK
+round 2 focus P1 cursor C2          : OK
+round 2 focus P1 cursor C3          : OK
+round 2 focus P1 cursor C4          : OK
+round 2 churn cursor exact P1       : OK
+round 2 stops exact foreground 1    : OK
+round 2 select cursor pane 2        : OK
+round 2 cursor focus sync 2         : OK
+round 2 focus P2 cursor C1          : OK
+round 2 focus P2 cursor C2          : OK
+round 2 focus P2 cursor C3          : OK
+round 2 focus P2 cursor C4          : OK
+round 2 churn cursor exact P2       : OK
+round 2 stops exact foreground 2    : OK
+round 2 select cursor pane 3        : OK
+round 2 cursor focus sync 3         : OK
+round 2 focus P3 cursor C1          : OK
+round 2 focus P3 cursor C2          : OK
+round 2 focus P3 cursor C3          : OK
+round 2 focus P3 cursor C4          : OK
+round 2 churn cursor exact P3       : OK
+round 2 stops exact foreground 3    : OK
+round 2 select ordered pane         : OK
+round 2 ordered focus sync          : OK
+round 2 raw reader ready            : OK
+round 2 concurrent writers finish   : OK
+round 2 client 1 writes complete burst: OK
+round 2 client 2 writes complete burst: OK
+round 2 client 3 writes complete burst: OK
+round 2 complete concurrent FIFO stream: OK
+round 2 client 1 FIFO projection    : OK
+round 2 client 2 FIFO projection    : OK
+round 2 client 3 FIFO projection    : OK
+round 2 ordered output C1           : OK
+round 2 ordered output C2           : OK
+round 2 ordered output C3           : OK
+round 2 ordered output C4           : OK
+round 2 churn renders complete live FIFO output: OK
+round 2 raw reader exits and restores tty: OK
+round 2 churn client alive          : OK
+round 2 attach keeps PTYs           : OK
+round 2 churn applies live shared layout: OK
+round 2 concurrent geometry writers finish: OK
+round 2 concurrent geometry writes complete: OK
+round 2 churn detach command written: OK
+round 2 churn detaches cleanly      : OK
+round 2 shared layout is non-empty  : OK
+round 2 shared geometry converges   : OK
+round 2 shared layout converges     : OK
+round 2 shared pane/icon identity converges: OK
+round 2 canonical flags match every rendered pane/icon: OK
+round 2 geometry burst changes material state: OK
+round 2 reactor stays responsive    : OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+round 3 snapshot tokens submitted   : OK
+round 3 snapshot tokens canonical   : OK
+round 3 snapshot tokens rendered before attach: OK
+round 3 snapshot layout is non-empty: OK
+round 3 reads PTY sizes before attach: OK
+round 3 churn receives snapshot tokens: OK
+round 3 churn renders snapshot tokens: OK
+round 3 churn receives snapshot layout: OK
+round 3 select exact pane 1         : OK
+round 3 exact focus sync 1          : OK
+round 3 select exact pane 2         : OK
+round 3 exact focus sync 2          : OK
+round 3 select exact pane 3         : OK
+round 3 exact focus sync 3          : OK
+round 3 exact locks released        : OK
+round 3 canonical pane 1            : OK
+round 3 P1 visible C1               : OK
+round 3 P1 visible C2               : OK
+round 3 P1 visible C3               : OK
+round 3 P1 visible C4               : OK
+round 3 owns exact foreground 1     : OK
+round 3 canonical pane 2            : OK
+round 3 P2 visible C1               : OK
+round 3 P2 visible C2               : OK
+round 3 P2 visible C3               : OK
+round 3 P2 visible C4               : OK
+round 3 owns exact foreground 2     : OK
+round 3 canonical pane 3            : OK
+round 3 P3 visible C1               : OK
+round 3 P3 visible C2               : OK
+round 3 P3 visible C3               : OK
+round 3 P3 visible C4               : OK
+round 3 owns exact foreground 3     : OK
+round 3 churn renders every live exact token: OK
+round 3 select cursor pane 1        : OK
+round 3 cursor focus sync 1         : OK
+round 3 focus P1 cursor C1          : OK
+round 3 focus P1 cursor C2          : OK
+round 3 focus P1 cursor C3          : OK
+round 3 focus P1 cursor C4          : OK
+round 3 churn cursor exact P1       : OK
+round 3 stops exact foreground 1    : OK
+round 3 select cursor pane 2        : OK
+round 3 cursor focus sync 2         : OK
+round 3 focus P2 cursor C1          : OK
+round 3 focus P2 cursor C2          : OK
+round 3 focus P2 cursor C3          : OK
+round 3 focus P2 cursor C4          : OK
+round 3 churn cursor exact P2       : OK
+round 3 stops exact foreground 2    : OK
+round 3 select cursor pane 3        : OK
+round 3 cursor focus sync 3         : OK
+round 3 focus P3 cursor C1          : OK
+round 3 focus P3 cursor C2          : OK
+round 3 focus P3 cursor C3          : OK
+round 3 focus P3 cursor C4          : OK
+round 3 churn cursor exact P3       : OK
+round 3 stops exact foreground 3    : OK
+round 3 select ordered pane         : OK
+round 3 ordered focus sync          : OK
+round 3 raw reader ready            : OK
+round 3 concurrent writers finish   : OK
+round 3 client 1 writes complete burst: OK
+round 3 client 2 writes complete burst: OK
+round 3 client 3 writes complete burst: OK
+round 3 complete concurrent FIFO stream: OK
+round 3 client 1 FIFO projection    : OK
+round 3 client 2 FIFO projection    : OK
+round 3 client 3 FIFO projection    : OK
+round 3 ordered output C1           : OK
+round 3 ordered output C2           : OK
+round 3 ordered output C3           : OK
+round 3 ordered output C4           : OK
+round 3 churn renders complete live FIFO output: OK
+round 3 raw reader exits and restores tty: OK
+round 3 churn client alive          : OK
+round 3 attach keeps PTYs           : OK
+round 3 churn applies live shared layout: OK
+round 3 concurrent geometry writers finish: OK
+round 3 concurrent geometry writes complete: OK
+round 3 churn detach command written: OK
+round 3 churn detaches cleanly      : OK
+round 3 shared layout is non-empty  : OK
+round 3 shared geometry converges   : OK
+round 3 shared layout converges     : OK
+round 3 shared pane/icon identity converges: OK
+round 3 canonical flags match every rendered pane/icon: OK
+round 3 geometry burst changes material state: OK
+round 3 reactor stays responsive    : OK
+round 3 replaced client detaches cleanly: OK
+round 3 stable client replaced      : OK
+restore pane 1 after burst          : OK
+restore pane 2 after burst          : OK
+restore pane 3 after burst          : OK
+canonical tile after burst          : OK
+canonical tile is visible in every client: OK
+round 4 snapshot tokens submitted   : OK
+round 4 snapshot tokens canonical   : OK
+round 4 snapshot tokens rendered before attach: OK
+round 4 snapshot layout is non-empty: OK
+round 4 reads PTY sizes before attach: OK
+round 4 churn receives snapshot tokens: OK
+round 4 churn renders snapshot tokens: OK
+round 4 churn receives snapshot layout: OK
+round 4 select exact pane 1         : OK
+round 4 exact focus sync 1          : OK
+round 4 select exact pane 2         : OK
+round 4 exact focus sync 2          : OK
+round 4 select exact pane 3         : OK
+round 4 exact focus sync 3          : OK
+round 4 exact locks released        : OK
+round 4 canonical pane 1            : OK
+round 4 P1 visible C1               : OK
+round 4 P1 visible C2               : OK
+round 4 P1 visible C3               : OK
+round 4 P1 visible C4               : OK
+round 4 owns exact foreground 1     : OK
+round 4 canonical pane 2            : OK
+round 4 P2 visible C1               : OK
+round 4 P2 visible C2               : OK
+round 4 P2 visible C3               : OK
+round 4 P2 visible C4               : OK
+round 4 owns exact foreground 2     : OK
+round 4 canonical pane 3            : OK
+round 4 P3 visible C1               : OK
+round 4 P3 visible C2               : OK
+round 4 P3 visible C3               : OK
+round 4 P3 visible C4               : OK
+round 4 owns exact foreground 3     : OK
+round 4 churn renders every live exact token: OK
+round 4 select cursor pane 1        : OK
+round 4 cursor focus sync 1         : OK
+round 4 focus P1 cursor C1          : OK
+round 4 focus P1 cursor C2          : OK
+round 4 focus P1 cursor C3          : OK
+round 4 focus P1 cursor C4          : OK
+round 4 churn cursor exact P1       : OK
+round 4 stops exact foreground 1    : OK
+round 4 select cursor pane 2        : OK
+round 4 cursor focus sync 2         : OK
+round 4 focus P2 cursor C1          : OK
+round 4 focus P2 cursor C2          : OK
+round 4 focus P2 cursor C3          : OK
+round 4 focus P2 cursor C4          : OK
+round 4 churn cursor exact P2       : OK
+round 4 stops exact foreground 2    : OK
+round 4 select cursor pane 3        : OK
+round 4 cursor focus sync 3         : OK
+round 4 focus P3 cursor C1          : OK
+round 4 focus P3 cursor C2          : OK
+round 4 focus P3 cursor C3          : OK
+round 4 focus P3 cursor C4          : OK
+round 4 churn cursor exact P3       : OK
+round 4 stops exact foreground 3    : OK
+round 4 select ordered pane         : OK
+round 4 ordered focus sync          : OK
+round 4 raw reader ready            : OK
+round 4 concurrent writers finish   : OK
+round 4 client 1 writes complete burst: OK
+round 4 client 2 writes complete burst: OK
+round 4 client 3 writes complete burst: OK
+round 4 complete concurrent FIFO stream: OK
+round 4 client 1 FIFO projection    : OK
+round 4 client 2 FIFO projection    : OK
+round 4 client 3 FIFO projection    : OK
+round 4 ordered output C1           : OK
+round 4 ordered output C2           : OK
+round 4 ordered output C3           : OK
+round 4 ordered output C4           : OK
+round 4 churn renders complete live FIFO output: OK
+round 4 raw reader exits and restores tty: OK
+round 4 churn client alive          : OK
+round 4 attach keeps PTYs           : OK
+round 4 churn applies live shared layout: OK
+round 4 concurrent geometry writers finish: OK
+round 4 concurrent geometry writes complete: OK
+round 4 churn detach command written: OK
+round 4 churn detaches cleanly      : OK
+round 4 shared layout is non-empty  : OK
+round 4 shared geometry converges   : OK
+round 4 shared layout converges     : OK
+round 4 shared pane/icon identity converges: FAIL
+round 4 canonical flags match every rendered pane/icon: OK
+round 4 geometry burst changes material state: OK
+round 4 reactor stays responsive    : OK
+stress fail-fast at round 4 final invariants: round 4 shared pane/icon identity converges
+<== FAIL test/multiclient_intensive_test.py (exit status 1, 100.8s)
+
+==> test/multiclient_focus_test.py (timeout 900s)
+session server exists               : OK
+lock pane has stable title          : OK
+second client attached              : OK
+A focus propagates left to A        : OK
+A focus propagates left to B        : OK
+B focus propagates right to A       : OK
+B focus propagates right to B       : OK
+both clients can write shared focus : OK
+shared focus routes neither write left: OK
+both viewers receive A output       : OK
+both viewers receive B output       : OK
+CLI focus succeeds                  : OK
+CLI focus propagates to A           : OK
+CLI focus propagates to B           : OK
+other client sees shaded lock border: OK
+other client sees vertical LOCK     : OK
+competing pane action never waits   : OK
+first pane action owns the lock     : OK
+held gesture rejects 12 same-pane mutations: OK
+held rejection remains nonblocking  : OK
+input stays enabled while locked    : OK
+output stays live while locked      : OK
+unlock removes vertical LOCK        : OK
+unlock restores normal border       : OK
+title drag frame found              : OK
+title drag owns pane continuously   : OK
+title text drag moves window        : OK
+title drag never minimizes window   : OK
+original minimize button frame found: OK
+original minimize button visible in A: OK
+original minimize button visible in B: OK
+original minimize button minimizes shared pane: OK
+restore after minimize button       : OK
+restored button window visible in both clients: OK
+
+RESULT: PASS
+<== PASS test/multiclient_focus_test.py (24.9s)
+
+==> test/multiclient_minimize_test.py (timeout 900s)
+session server exists               : OK
+pane 1 renamed                      : OK
+pane 2 renamed                      : OK
+pane 3 renamed                      : OK
+pane 4 renamed                      : OK
+pane 5 renamed                      : OK
+pane 6 renamed                      : OK
+six panes arranged as grid          : OK
+establish pane 1 focus baseline     : OK
+first-free minimize pane 4          : OK
+minimize pane 4 preserves focus     : OK
+first-free minimize pane 2          : OK
+minimize pane 2 preserves focus     : OK
+first-free minimize pane 6          : OK
+minimize pane 6 preserves focus     : OK
+first-free minimize pane 3          : OK
+minimize pane 3 preserves focus     : OK
+first-free minimize pane 5          : OK
+minimize pane 5 preserves focus     : OK
+five icons unique and shared        : OK
+slots fill left to right on bottom row: OK
+next slot wraps upward at left edge : OK
+interactive restore focuses pane 2 for actor and observer: OK
+restore leaves a hole without moving icons: OK
+focused minimize keeps shared focus : OK
+next minimize reuses first free slot only: OK
+rapid restore 0                     : OK
+rapid restore state 0               : OK
+rapid restore keeps other slots 0   : OK
+rapid minimize 0                    : OK
+rapid minimize state 0              : OK
+rapid minimize reuses exact hole 0  : OK
+rapid restore 1                     : OK
+rapid restore state 1               : OK
+rapid restore keeps other slots 1   : OK
+rapid minimize 1                    : OK
+rapid minimize state 1              : OK
+rapid minimize reuses exact hole 1  : OK
+rapid restore 2                     : OK
+rapid restore state 2               : OK
+rapid restore keeps other slots 2   : OK
+rapid minimize 2                    : OK
+rapid minimize state 2              : OK
+rapid minimize reuses exact hole 2  : OK
+rapid restore 3                     : OK
+rapid restore state 3               : OK
+rapid restore keeps other slots 3   : OK
+rapid minimize 3                    : OK
+rapid minimize state 3              : OK
+rapid minimize reuses exact hole 3  : OK
+rapid restore 4                     : OK
+rapid restore state 4               : OK
+rapid restore keeps other slots 4   : OK
+rapid minimize 4                    : OK
+rapid minimize state 4              : OK
+rapid minimize reuses exact hole 4  : OK
+rapid restore 5                     : OK
+rapid restore state 5               : OK
+rapid restore keeps other slots 5   : OK
+rapid minimize 5                    : OK
+rapid minimize state 5              : OK
+rapid minimize reuses exact hole 5  : OK
+rapid restore 6                     : OK
+rapid restore state 6               : OK
+rapid restore keeps other slots 6   : OK
+rapid minimize 6                    : OK
+rapid minimize state 6              : OK
+rapid minimize reuses exact hole 6  : OK
+rapid restore 7                     : OK
+rapid restore state 7               : OK
+rapid restore keeps other slots 7   : OK
+rapid minimize 7                    : OK
+rapid minimize state 7              : OK
+rapid minimize reuses exact hole 7  : OK
+rapid restore 8                     : OK
+rapid restore state 8               : OK
+rapid restore keeps other slots 8   : OK
+rapid minimize 8                    : OK
+rapid minimize state 8              : OK
+rapid minimize reuses exact hole 8  : OK
+rapid restore 9                     : OK
+rapid restore state 9               : OK
+rapid restore keeps other slots 9   : OK
+rapid minimize 9                    : OK
+rapid minimize state 9              : OK
+rapid minimize reuses exact hole 9  : OK
+rapid restore 10                    : OK
+rapid restore state 10              : OK
+rapid restore keeps other slots 10  : OK
+rapid minimize 10                   : OK
+rapid minimize state 10             : OK
+rapid minimize reuses exact hole 10 : OK
+rapid restore 11                    : OK
+rapid restore state 11              : OK
+rapid restore keeps other slots 11  : OK
+rapid minimize 11                   : OK
+rapid minimize state 11             : OK
+rapid minimize reuses exact hole 11 : OK
+minimize all menu is observable     : OK
+minimize all keeps shared focus     : OK
+all minimized icons remain unique and shared: OK
+
+RESULT: PASS
+<== PASS test/multiclient_minimize_test.py (18.0s)
+
+==> test/layout_transition_test.py (timeout 900s)
+transition session exists           : OK
+rename transition pane              : OK
+rename other pane                   : OK
+focus transition pane               : OK
+shared tiled baseline visible       : OK
+minimize actor has one transition   : OK
+minimize observer has one transition: OK
+minimize never shades its actor     : OK
+minimized icon shared               : OK
+restore actor has one transition    : OK
+restore observer has one transition : OK
+restore never shades its actor      : OK
+restore returns exact shared rectangle: OK
+restored pane owns shared focus     : OK
+maximize observer sees held lock    : OK
+maximize actor never sees own lock  : OK
+maximize changes shared rectangle once: OK
+maximize restore has no rollback    : OK
+physical title double-click target starts active: OK
+title double-click maximizes exactly once in actor: OK
+title double-click maximizes exactly once in observer: OK
+title double-click keeps shared focus and never minimizes: OK
+maximized title double-click restores exact rectangle in actor: OK
+maximized title double-click restores exact rectangle in observer: OK
+title restore keeps shared focus and never minimizes: OK
+focus other pane before inactive title click: OK
+inactive title first click only focuses without resizing: OK
+move observer sees held lock        : OK
+move actor never sees own lock      : OK
+move renders every exact one-cell step in both clients: OK
+move keeps shared focus             : OK
+resize observer sees held lock      : OK
+resize actor never sees own lock    : OK
+resize actor renders every exact one-cell step: OK
+resize observer renders every exact one-cell step: OK
+layout commit sends no RESIZE_EV    : OK
+fullscreen geometry has no stale rollback: OK
+fullscreen return has no stale rollback: OK
+maximize clients use the same frame palette: OK
+maximize actor has exact 8 show + 8 hide rings: OK
+maximize observer has exact 8 show + 8 hide rings: OK
+maximize actor ring pairs contain no hidden redraw: OK
+maximize observer ring pairs contain no hidden redraw: OK
+maximize actor and observer ring streams are identical: OK
+unzoom clients use the same frame palette: OK
+unzoom actor has exact 8 show + 8 hide rings: OK
+unzoom observer has exact 8 show + 8 hide rings: OK
+unzoom actor ring pairs contain no hidden redraw: OK
+unzoom observer ring pairs contain no hidden redraw: OK
+unzoom actor and observer ring streams are identical: OK
+fullscreen in clients use the same frame palette: OK
+fullscreen in actor has exact 8 show + 8 hide rings: OK
+fullscreen in observer has exact 8 show + 8 hide rings: OK
+fullscreen in actor ring pairs contain no hidden redraw: OK
+fullscreen in observer ring pairs contain no hidden redraw: OK
+fullscreen in actor and observer ring streams are identical: OK
+fullscreen out clients use the same frame palette: OK
+fullscreen out actor has exact 8 show + 8 hide rings: OK
+fullscreen out observer has exact 8 show + 8 hide rings: OK
+fullscreen out actor ring pairs contain no hidden redraw: OK
+fullscreen out observer ring pairs contain no hidden redraw: OK
+fullscreen out actor and observer ring streams are identical: OK
+every presented update keeps surface: OK
+direct writes are nonvisual and never clear: OK
+minimize actor has one physical paint: OK
+restore actor has one physical paint: OK
+minimize observer lock then final   : OK
+restore observer lock then final    : OK
+maximize native zoom feedback is exact: OK
+unzoom native zoom feedback is exact: OK
+maximize actor exact physical sequence: OK
+maximize observer exact physical sequence: OK
+fullscreen in actor exact physical sequence: OK
+fullscreen in observer exact physical sequence: OK
+unzoom actor exact physical sequence: OK
+unzoom observer exact physical sequence: OK
+fullscreen out actor exact physical sequence: OK
+fullscreen out observer exact physical sequence: OK
+move actor has no rollback or duplicate paint: OK
+move observer previews all steps locked then unlocks final: OK
+resize actor has no rollback or duplicate paint: OK
+resize observer previews all steps locked then unlocks final: OK
+
+RESULT: PASS
+<== PASS test/layout_transition_test.py (38.3s)
+
+==> test/layout_preview_protocol_test.py (timeout 900s)
+detached protocol session exists    : OK
+raw peers use current protocol      : OK
+raw peers receive one canonical pane: OK
+canonical revision is initialized   : OK
+preview fixture has three valid distinct rectangles: OK
+fixture reads real canonical PTY size: OK
+owner acquires pane preview lease   : OK
+lock reply contains no preview echo : OK
+observer sees canonical pane lock   : OK
+preview leaves snapshot revision and geometry canonical: OK
+snapshot advertises the held lease, not preview geometry: OK
+mid-gesture attach replays exactly latest BOUNDS: OK
+observer receives BOUNDS then WIREFRAME exactly: OK
+preview owner receives no echo      : OK
+non-owner preview is rejected       : OK
+preview leaves the real PTY unchanged: OK
+stale preview base revision is rejected: OK
+stale preview sequence is rejected  : OK
+out-of-range preview pane is rejected: OK
+fully off-desktop preview rectangle is rejected: OK
+intersecting negative preview relays after rejections: OK
+owner still receives no resumed echo: OK
+negative preview leaves canonical state unchanged: OK
+unlock emits one ordered CLEAR rollback: OK
+unlock keeps canonical revision geometry and PTY metadata: OK
+owner reacquires lease for disconnect case: OK
+observer sees preview before owner disconnect: OK
+owner disconnect emits one CLEAR rollback: OK
+disconnect preserves canonical state and clears preview: OK
+unlock and disconnect never resize the real PTY: OK
+disconnect leaves pane lease acquirable for tail: OK
+tail observer sees acquired pane lease: OK
+TAIL_BEGIN relays exactly under the lease: OK
+tail owner receives no TAIL_BEGIN echo: OK
+tail commit advances one canonical pane revision: OK
+authorized outline tail relays SHOW HIDE END in order: OK
+tail owner receives no outline echo : OK
+attach after TAIL_END has canonical state and no stale preview: OK
+only tail commit changes the canonical PTY size: OK
+tail-expiry peer starts from committed canonical state: OK
+owner acquires lease for expiring tail: OK
+unfinished tail relays visual then TAIL_BEGIN exactly: OK
+unfinished tail commit advances exactly one revision: OK
+tail timeout emits one CLEAR immediately followed by canonical: OK
+tail timeout preserves final revision geometry and unlocked state: OK
+tail owner receives no reflected timeout preview: OK
+attach after tail timeout receives no stale preview: OK
+tail timeout never changes the committed PTY size: OK
+
+RESULT: PASS
+<== PASS test/layout_preview_protocol_test.py (16.1s)
+
+==> test/wireframe_preview_test.py (timeout 900s)
+wireframe session exists            : OK
+wireframe fixture configured        : OK
+wireframe observer attached         : OK
+wireframe baseline shared focus     : FAIL
+mouse move has identical baseline   : FAIL
+mouse move uses same monochrome frame attribute: FAIL
+mouse move baseline has no geometry status: OK
+mouse resize has identical baseline : FAIL
+mouse resize uses same monochrome frame attribute: FAIL
+mouse resize baseline has no geometry status: OK
+keyboard resize Esc baseline exists : FAIL
+
+RESULT: FAIL (6): wireframe baseline shared focus, mouse move has identical baseline, mouse move uses same monochrome frame attribute, mouse resize has identical baseline, mouse resize uses same monochrome frame attribute, keyboard resize Esc baseline exists
+<== FAIL test/wireframe_preview_test.py (exit status 1, 6.7s)
+
+==> test/concurrent_gesture_test.py (timeout 900s)
+raw protocol v15+ fixture exists    : OK
+raw actors and observer attach to two panes: OK
+raw peers start from one identical unlocked revision: OK
+raw bounds 1->0 first lock granted  : OK
+raw bounds 1->0 first owner preserve mask: OK
+raw bounds 1->0 first lock viewer 1 : OK
+raw bounds 1->0 first lock viewer 2 : OK
+raw bounds 1->0 second lock granted : OK
+raw bounds 1->0 actor0 relative locks: OK
+raw bounds 1->0 actor1 relative locks: OK
+raw bounds 1->0 observer sees both locks: OK
+raw bounds 1->0 actor0 sees only peer preview: OK
+raw bounds 1->0 actor1 sees only peer preview: OK
+raw bounds 1->0 observer sees every interleaved preview once: OK
+raw bounds 1->0 first release viewer 0: OK
+raw bounds 1->0 first release viewer 1: OK
+raw bounds 1->0 first release viewer 2: OK
+raw bounds 1->0 first owner has no self CLEAR: OK
+raw bounds 1->0 ordered first CLEAR viewer 0: OK
+raw bounds 1->0 ordered first CLEAR viewer 2: OK
+raw bounds 1->0 other preview is not cleared: OK
+raw bounds 1->0 released actor sees remaining next step: OK
+raw bounds 1->0 remaining actor still gets no echo: OK
+raw bounds 1->0 observer sees remaining next step: OK
+raw bounds 1->0 final viewer 0      : OK
+raw bounds 1->0 final viewer 1      : OK
+raw bounds 1->0 final viewer 2      : OK
+raw bounds 1->0 all three canonical layouts are byte-equivalent: OK
+raw bounds 1->0 second owner has no self CLEAR: OK
+raw bounds 1->0 ordered second CLEAR viewer 1: OK
+raw bounds 1->0 ordered second CLEAR viewer 2: OK
+raw bounds 1->0 canonical PTYs match both final geometries: OK
+raw wire 0->1 first lock granted    : OK
+raw wire 0->1 first owner preserve mask: OK
+raw wire 0->1 first lock viewer 1   : OK
+raw wire 0->1 first lock viewer 2   : OK
+raw wire 0->1 second lock granted   : OK
+raw wire 0->1 actor0 relative locks : OK
+raw wire 0->1 actor1 relative locks : OK
+raw wire 0->1 observer sees both locks: OK
+raw wire 0->1 actor0 sees only peer preview: OK
+raw wire 0->1 actor1 sees only peer preview: OK
+raw wire 0->1 observer sees every interleaved preview once: OK
+raw wire 0->1 first release viewer 0: OK
+raw wire 0->1 first release viewer 1: OK
+raw wire 0->1 first release viewer 2: OK
+raw wire 0->1 first owner has no self CLEAR: OK
+raw wire 0->1 ordered first CLEAR viewer 1: OK
+raw wire 0->1 ordered first CLEAR viewer 2: OK
+raw wire 0->1 other preview is not cleared: OK
+raw wire 0->1 released actor sees remaining next step: OK
+raw wire 0->1 remaining actor still gets no echo: OK
+raw wire 0->1 observer sees remaining next step: OK
+raw wire 0->1 final viewer 0        : OK
+raw wire 0->1 final viewer 1        : OK
+raw wire 0->1 final viewer 2        : OK
+raw wire 0->1 all three canonical layouts are byte-equivalent: OK
+raw wire 0->1 second owner has no self CLEAR: OK
+raw wire 0->1 ordered second CLEAR viewer 0: OK
+raw wire 0->1 ordered second CLEAR viewer 2: OK
+raw wire 0->1 canonical PTYs match both final geometries: OK
+raw concurrent zoom hand-off grants both per-pane leases at one base: OK
+raw concurrent zoom hand-off first winner viewer 0: OK
+raw concurrent zoom hand-off first winner viewer 1: OK
+raw concurrent zoom hand-off first winner viewer 2: OK
+raw concurrent zoom hand-off first commit contains exactly one Z: OK
+raw concurrent zoom hand-off final winner viewer 0: OK
+raw concurrent zoom hand-off final winner viewer 1: OK
+raw concurrent zoom hand-off final winner viewer 2: OK
+raw concurrent zoom hand-off atomically leaves only the second Z: OK
+raw concurrent zoom hand-off restores loser PTY and installs exact winner PTY: OK
+late viewer gets final canonical state without previews: OK
+live physical three-client fixture  : OK
+physical bounds 1->0 deterministic baseline: OK
+physical bounds 1->0 viewer-relative two-pane lock presentation: OK
+physical bounds 1->0 previews leave canonical geometry and PTYs unchanged: OK
+physical bounds 1->0 first release commits only its pane: OK
+physical bounds 1->0 first final and other held preview coexist: OK
+physical bounds 1->0 no final-old-final physical presentation: OK
+physical bounds 1->0 remaining gesture relays another exact cell: OK
+physical bounds 1->0 final geometry and PTYs merge exactly: OK
+physical bounds 1->0 all three viewers settle identically unlocked: OK
+physical bounds 1->0 emits no destructive physical clear: OK
+physical bounds 1->0 trace commits same-base gestures at base+1,+2: OK
+physical bounds 0->1 deterministic baseline: OK
+physical bounds 0->1 viewer-relative two-pane lock presentation: OK
+physical bounds 0->1 previews leave canonical geometry and PTYs unchanged: OK
+physical bounds 0->1 first release commits only its pane: OK
+physical bounds 0->1 first final and other held preview coexist: OK
+physical bounds 0->1 no final-old-final physical presentation: OK
+physical bounds 0->1 remaining gesture relays another exact cell: OK
+physical bounds 0->1 final geometry and PTYs merge exactly: OK
+physical bounds 0->1 all three viewers settle identically unlocked: OK
+physical bounds 0->1 emits no destructive physical clear: OK
+physical bounds 0->1 trace commits same-base gestures at base+1,+2: OK
+wire physical three-client fixture  : OK
+physical wire 1->0 deterministic baseline: OK
+physical wire 1->0 viewer-relative two-pane lock presentation: OK
+physical wire 1->0 previews leave canonical geometry and PTYs unchanged: OK
+physical wire 1->0 first release commits only its pane: OK
+physical wire 1->0 first final and other held preview coexist: OK
+physical wire 1->0 no final-old-final physical presentation: OK
+physical wire 1->0 remaining gesture relays another exact cell: OK
+physical wire 1->0 final geometry and PTYs merge exactly: OK
+physical wire 1->0 all three viewers settle identically unlocked: OK
+physical wire 1->0 emits no destructive physical clear: OK
+physical wire 1->0 trace commits same-base gestures at base+1,+2: OK
+physical wire 0->1 deterministic baseline: OK
+physical wire 0->1 viewer-relative two-pane lock presentation: OK
+physical wire 0->1 previews leave canonical geometry and PTYs unchanged: OK
+physical wire 0->1 first release commits only its pane: OK
+physical wire 0->1 first final and other held preview coexist: OK
+physical wire 0->1 no final-old-final physical presentation: OK
+physical wire 0->1 remaining gesture relays another exact cell: OK
+physical wire 0->1 final geometry and PTYs merge exactly: OK
+physical wire 0->1 all three viewers settle identically unlocked: OK
+physical wire 0->1 emits no destructive physical clear: OK
+physical wire 0->1 trace commits same-base gestures at base+1,+2: OK
+
+RESULT: PASS
+<== PASS test/concurrent_gesture_test.py (54.5s)
+
+==> test/restore_focus_test.py (timeout 900s)
+restore-focus session exists        : OK
+restore-focus pane 1 renamed        : OK
+restore-focus pane 2 renamed        : OK
+restore-focus panes arranged        : OK
+focus pane before minimizing        : OK
+restore-focus target frame found    : OK
+minimize retains logical pane focus : OK
+sole restore icon found             : OK
+restore publishes pane focus        : OK
+restored frame active in both       : OK
+actor input routed to restored pane : OK
+observer input routed to restored pane: OK
+
+RESULT: PASS
+<== PASS test/restore_focus_test.py (9.2s)
+
+==> test/title_hold_focus_test.py (timeout 900s)
+wireframe-off session exists        : OK
+wireframe-off titles installed      : OK
+wireframe-off second client attached: OK
+wireframe-off pane0 stationary setup: OK
+wireframe-off pane0 stationary target frame found: OK
+wireframe-off pane0 stationary daemon focus never changes: OK
+wireframe-off pane0 stationary trace never names other pane: OK
+wireframe-off pane0 stationary lock stays observer-only: OK
+wireframe-off pane0 stationary actor never activates other: OK
+wireframe-off pane0 stationary observer keeps target active: OK
+wireframe-off pane0 stationary has no wireframe paint: OK
+wireframe-off pane0 stationary release keeps shared geometry: OK
+wireframe-off pane0 stationary release keeps target active: OK
+wireframe-off pane0 move setup      : OK
+wireframe-off pane0 move target frame found: OK
+wireframe-off pane0 move daemon focus never changes: OK
+wireframe-off pane0 move trace never names other pane: OK
+wireframe-off pane0 move lock stays observer-only: OK
+wireframe-off pane0 move actor never activates other: OK
+wireframe-off pane0 move observer keeps target active: OK
+wireframe-off pane0 move has no wireframe paint: OK
+wireframe-off pane0 move release keeps shared geometry: OK
+wireframe-off pane0 move release keeps target active: OK
+wireframe-off pane1 stationary setup: OK
+wireframe-off pane1 stationary target frame found: OK
+wireframe-off pane1 stationary daemon focus never changes: OK
+wireframe-off pane1 stationary trace never names other pane: OK
+wireframe-off pane1 stationary lock stays observer-only: OK
+wireframe-off pane1 stationary actor never activates other: OK
+wireframe-off pane1 stationary observer keeps target active: OK
+wireframe-off pane1 stationary has no wireframe paint: OK
+wireframe-off pane1 stationary release keeps shared geometry: OK
+wireframe-off pane1 stationary release keeps target active: OK
+wireframe-off pane1 move setup      : OK
+wireframe-off pane1 move target frame found: OK
+wireframe-off pane1 move daemon focus never changes: OK
+wireframe-off pane1 move trace never names other pane: OK
+wireframe-off pane1 move lock stays observer-only: OK
+wireframe-off pane1 move actor never activates other: OK
+wireframe-off pane1 move observer keeps target active: OK
+wireframe-off pane1 move has no wireframe paint: OK
+wireframe-off pane1 move release keeps shared geometry: OK
+wireframe-off pane1 move release keeps target active: OK
+wireframe-off remote focus wins held move setup: OK
+wireframe-off remote focus wins held move target frame found: OK
+wireframe-off remote focus wins held move receives newer focus before first delta: OK
+wireframe-off remote focus wins held move keeps pane lease while focus changes: OK
+wireframe-off remote focus wins held move daemon keeps newer focus through commit: OK
+wireframe-off remote focus wins held move every sampled border keeps newer focus: OK
+wireframe-off remote focus wins held move every physical transition keeps newer focus: OK
+wireframe-off remote focus wins held move log never restores actor focus: OK
+wireframe-off remote focus wins held move commits movement without changing focus: OK
+wireframe-on session exists         : OK
+wireframe-on titles installed       : OK
+wireframe-on second client attached : OK
+wireframe-on pane0 stationary setup : OK
+wireframe-on pane0 stationary target frame found: OK
+wireframe-on pane0 stationary daemon focus never changes: OK
+wireframe-on pane0 stationary trace never names other pane: OK
+wireframe-on pane0 stationary lock stays observer-only: OK
+wireframe-on pane0 stationary actor never activates other: OK
+wireframe-on pane0 stationary observer keeps target active: OK
+wireframe-on pane0 stationary has no wireframe paint: OK
+wireframe-on pane0 stationary release keeps shared geometry: OK
+wireframe-on pane0 stationary release keeps target active: OK
+wireframe-on pane0 move setup       : OK
+wireframe-on pane0 move target frame found: OK
+wireframe-on pane0 move daemon focus never changes: OK
+wireframe-on pane0 move trace never names other pane: OK
+wireframe-on pane0 move lock stays observer-only: OK
+wireframe-on pane0 move actor never activates other: OK
+wireframe-on pane0 move observer keeps target active: OK
+wireframe-on pane0 move uses composited wireframe: OK
+wireframe-on pane0 move release keeps shared geometry: OK
+wireframe-on pane0 move release keeps target active: OK
+wireframe-on pane1 stationary setup : OK
+wireframe-on pane1 stationary target frame found: OK
+wireframe-on pane1 stationary daemon focus never changes: OK
+wireframe-on pane1 stationary trace never names other pane: OK
+wireframe-on pane1 stationary lock stays observer-only: OK
+wireframe-on pane1 stationary actor never activates other: OK
+wireframe-on pane1 stationary observer keeps target active: OK
+wireframe-on pane1 stationary has no wireframe paint: OK
+wireframe-on pane1 stationary release keeps shared geometry: OK
+wireframe-on pane1 stationary release keeps target active: OK
+wireframe-on pane1 move setup       : OK
+wireframe-on pane1 move target frame found: OK
+wireframe-on pane1 move daemon focus never changes: OK
+wireframe-on pane1 move trace never names other pane: OK
+wireframe-on pane1 move lock stays observer-only: OK
+wireframe-on pane1 move actor never activates other: OK
+wireframe-on pane1 move observer keeps target active: OK
+wireframe-on pane1 move uses composited wireframe: OK
+wireframe-on pane1 move release keeps shared geometry: OK
+wireframe-on pane1 move release keeps target active: OK
+wireframe-on remote focus wins held move setup: OK
+wireframe-on remote focus wins held move target frame found: OK
+wireframe-on remote focus wins held move receives newer focus before first delta: OK
+wireframe-on remote focus wins held move keeps pane lease while focus changes: OK
+wireframe-on remote focus wins held move daemon keeps newer focus through commit: OK
+wireframe-on remote focus wins held move every sampled border keeps newer focus: OK
+wireframe-on remote focus wins held move every physical transition keeps newer focus: OK
+wireframe-on remote focus wins held move log never restores actor focus: OK
+wireframe-on remote focus wins held move commits movement without changing focus: OK
+
+RESULT: PASS
+<== PASS test/title_hold_focus_test.py (41.5s)
+
+==> test/alwaysserver_test.py (timeout 900s)
+socket exists at launch             : OK
+auto name is session                : OK
+list works from launch              : OK
+initial icon restores for visible CLI test: OK
+send works from launch              : OK
+client shows CLI text               : OK
+capture works from launch           : OK
+Alt-X exits last client             : OK
+last Exit closes daemon             : OK
+live Exit creates no fallback save  : OK
+named session sanitized             : OK
+collision gets suffix               : OK
+detach exits with no prompt         : OK
+daemon survives detach              : OK
+daemon survives killed client       : OK
+reattached initial icon restores    : OK
+reattach after kill works           : OK
+Alt-X exits client                  : OK
+Alt-X kills the daemon              : OK
+attached Exit creates no fallback save: OK
+self-reap shell restored before exit: OK
+dead session self-reaps             : OK
+server=detach: no socket at launch  : OK
+server=detach: detach asks name     : OK
+server=detach: detach creates daemon: OK
+kill needs explicit name            : OK
+cleanup kill exit 0                 : OK
+all gone                            : OK
+
+RESULT: PASS
+<== PASS test/alwaysserver_test.py (27.2s)
+
+==> test/passthrough_test.py (timeout 900s)
+windowed keeps truecolor fg         : OK
+windowed keeps truecolor bg         : OK
+windowed keeps the U+276F arrow     : OK
+windowed keeps the wide glyph       : OK
+maximize hides the menu             : OK
+passthrough keeps truecolor fg      : OK
+passthrough keeps truecolor bg      : OK
+passthrough keeps the U+276F arrow  : OK
+passthrough keeps the wide glyph    : OK
+restore brings the menu back        : OK
+restore redraws a window frame      : OK
+
+RESULT: PASS
+<== PASS test/passthrough_test.py (7.6s)
+
+==> test/passthrough_multiclient_test.py (timeout 900s)
+one session exists                  : OK
+equal-size second client attaches   : OK
+equal-size attach leaves windowed PTY: OK
+equal-size fullscreen uses whole canonical terminal: OK
+RAW_F5_SAME_GEOMETRY command completes in every client: OK
+equal-size fullscreen is raw in actor and observer: OK
+equal-size raw fullscreen hides the IDE in both: OK
+DA query reaches both equal-size raw viewers: OK
+private DA replies never leak into the shared pane: OK
+input remains aligned after simultaneous DA replies: OK
+BEL/ST OSC color queries are blocked for every viewer: OK
+fragmented BEL/ST OSC color replies never leak into the pane: OK
+input remains aligned after simultaneous OSC replies: OK
+dynamic-color setter remains raw in every viewer: OK
+shared fullscreen exit restores both IDEs: OK
+shared fullscreen exit restores windowed PTY: OK
+one session exists                  : OK
+mixed-size second client attaches   : OK
+mixed-size attach does not negotiate PTY: OK
+smaller host initially crops shared frame: OK
+mixed-size fullscreen keeps canonical geometry: OK
+GRID_F5_MIXED_GEOMETRY command completes in every client: OK
+mixed-size fullscreen uses renderer in both clients: OK
+mixed-size fallback preserves common content: OK
+mixed-size canonical overlap is cell-identical: OK
+mixed-size fallback remains live    : OK
+mixed-size fullscreen exit restores large frame: OK
+mixed-size fullscreen exit keeps safe crop: OK
+mixed-size fullscreen exit restores canonical PTY: OK
+
+RESULT: PASS
+<== PASS test/passthrough_multiclient_test.py (20.2s)
+
+==> test/f5_output_layout_order_test.py (timeout 900s)
+one session exists                  : OK
+pane rename succeeds                : OK
+equal-size observer attaches        : OK
+initial pane is windowed 96x25      : OK
+raw ordering helper is ready        : OK
+entry reaches shared raw 100x30     : OK
+entry daemon capture completes      : OK
+entry burst really precedes layout  : OK
+pre-layout entry output is rendered by both: OK
+settled fullscreen OSC is raw in both: OK
+settled fullscreen bytes reach both : OK
+exit restores shared IDE 96x25      : OK
+final daemon capture completes      : OK
+exit burst is parsed after restore layout: OK
+daemon screen/cursor is exact       : OK
+actor mirror/render equals daemon capture: OK
+observer mirror/render equals daemon capture: OK
+post-ACK exit output is rendered by both: OK
+both restored physical cursors equal daemon: OK
+both clients survive ordering stress: OK
+
+RESULT: PASS
+<== PASS test/f5_output_layout_order_test.py (10.2s)
+
+==> test/exit_clean_test.py (timeout 900s)
+quit: passthrough entered           : OK
+quit: ?1000 normal tracking off     : OK
+quit: ?1002 button tracking off     : OK
+quit: ?1003 any-event tracking off  : OK
+quit: ?1006 SGR reporting off       : OK
+quit: ?2004 bracketed paste off     : OK
+detach: passthrough entered         : OK
+detach: ?1000 normal tracking off   : OK
+detach: ?1002 button tracking off   : OK
+detach: ?1003 any-event tracking off: OK
+detach: ?1006 SGR reporting off     : OK
+detach: ?2004 bracketed paste off   : OK
+
+RESULT: PASS
+<== PASS test/exit_clean_test.py (11.6s)
+
+==> test/newwindow_test.py (timeout 900s)
+starts with one window              : OK
+first window spans the desktop      : OK
+split: now two windows              : OK
+split: the old window kept its place: OK
+split: the old window was not resized: OK
+split: the new one is centred across: OK
+split: the new one is centred down  : OK
+second window: the first is untouched: OK
+session socket present              : OK
+class pane opened through the CLI   : OK
+class: one new window               : OK
+class: its configured width         : OK
+class: its configured height        : OK
+class: centred across               : OK
+class: centred down                 : OK
+class: the windows already open are untouched: OK
+prefix + t tiles them               : OK
+
+RESULT: PASS
+<== PASS test/newwindow_test.py (11.7s)
+
+==> test/appcursor_test.py (timeout 900s)
+DECCKM on: Up arrives as ESC O A    : OK
+DECCKM on: not as ESC [ A           : OK
+DECCKM on: Left arrives as ESC O D  : OK
+DECCKM off: Up arrives as ESC [ A   : OK
+DECCKM off: not as ESC O A          : OK
+DECKPAM/DECKPNM are consumed silently: OK
+
+RESULT: PASS
+<== PASS test/appcursor_test.py (12.9s)
+
+==> test/late_dsr_test.py (timeout 900s)
+session exists                      : OK
+creator has one pane                : OK
+client actually receives DSR request: OK
+late DSR client attaches            : OK
+late DSR creates no phantom pane    : OK
+input after late DSR is intact      : OK
+
+RESULT: PASS
+<== PASS test/late_dsr_test.py (6.0s)
+
+==> test/terminal_encoding_test.py (timeout 900s)
+UTF-8 startup performs exactly three CPR queries: OK
+UTF-8 probe marker is between baseline and result queries: OK
+one-cell client keeps UTF-8 box drawing: OK
+typeahead interleaved with CPR is preserved byte-for-byte: OK
+one canonical encoding-test session exists: OK
+legacy startup performs exactly three CPR queries: OK
+two-cell decoding selects 7-bit DEC ACS: OK
+legacy renderer emits no UTF-8 box/block bytes: OK
+every ACS selection is returned to ASCII: OK
+documented Windows ACS renderer shows the complete IDE: OK
+both encodings observe one shared pane output: OK
+UTF-8 client retains raw fullscreen fidelity: OK
+legacy client stays on safe rendered fullscreen path: OK
+result timeout still issued the complete three-query probe: OK
+result timeout conservatively keeps UTF-8: OK
+late CPR never leaks into pane text : OK
+one canonical encoding-test session exists: OK
+late CPR cannot trigger F3 or create a pane: OK
+baseline timeout stops before marker/result query: OK
+baseline timeout keeps existing UTF-8 renderer: OK
+very late baseline was held past the old expiry: OK
+input remains live after a very late baseline CPR: OK
+one canonical encoding-test session exists: OK
+very late baseline cannot become F3 and split the pane: OK
+
+RESULT: PASS
+<== PASS test/terminal_encoding_test.py (14.5s)
+
+==> test/scrollback_test.py (timeout 900s)
+scrollbar is there before there is any history: OK
+output scrolled (300 at the bottom) : OK
+scrollbar appears once there is history: OK
+wheel up shows earlier lines        : OK
+another notch: three more           : OK
+Alt-PgUp pages back                 : OK
+output injected                     : OK
+new output does not move a scrolled-back view: OK
+typing returns to live              : OK
+scrolled back again                 : OK
+Alt-PgDn pages forward (to live here): OK
+Ctrl-PgUp pages back too            : OK
+Alt-Home goes to the oldest line    : OK
+Alt-End returns to live             : OK
+no scrollbar on the alternate screen: OK
+wheel on the alternate screen sends Up arrows: OK
+scrollbar is back after the alternate screen: OK
+clicking the up arrow scrolls back  : OK
+clicking the trough pages back      : OK
+the bar still drives this pane after renumbering: OK
+
+RESULT: PASS
+<== PASS test/scrollback_test.py (29.3s)
+
+==> test/nesting_test.py (timeout 900s)
+outer session up                    : OK
+the sidecar carries an id           : OK
+the pane knows its session chain    : OK
+attaching to the own session is refused: OK
+...and says why                     : OK
+the control CLI works from a pane   : OK
+auto-pick finds nothing safe        : OK
+second session up                   : OK
+nested client publishes exact process identity: OK
+a nested client attached to the other session: OK
+the nested client is on screen      : OK
+nested-session host resize is presentation-only: OK
+escaped prefix uses nested logical desktop: OK
+mixed nested fullscreen stays in renderer: OK
+escaped prefix restores nested IDE  : OK
+the ancestor two hops up is refused : OK
+other session killed                : OK
+nested client receives shutdown notice: OK
+outside client receives shutdown notice: OK
+acknowledged nested client returns to its shell: OK
+outer pane is usable after nested shutdown: OK
+outside clients exit after nested shutdown: OK
+
+RESULT: PASS
+<== PASS test/nesting_test.py (34.0s)
+
+==> test/mouseforward_test.py (timeout 900s)
+with reporting off nothing reaches the application: OK
+press reaches the application in SGR: OK
+release too                         : OK
+right button is button 2            : OK
+wheel up reaches the application as button 64: OK
+a click on the frame does not reach the application: OK
+a click on the menu bar does not reach the application: OK
+drag motion reaches the application : OK
+the drag ends with a release where it stopped: OK
+X10 encoding when SGR is off        : OK
+with reporting off the wheel scrolls the history again: OK
+
+RESULT: PASS
+<== PASS test/mouseforward_test.py (26.7s)
+
+==> test/remote_newpane_test.py (timeout 900s)
+attached to the session             : OK
+three panes to start with           : OK
+focus first pane accepted           : OK
+first pane focused before insert    : OK
+new pane accepted                   : OK
+the daemon has four panes           : OK
+every pane has its own window       : OK
+close accepted                      : OK
+client survived the close           : OK
+three panes left                    : OK
+the surviving panes still run       : OK
+
+RESULT: PASS
+<== PASS test/remote_newpane_test.py (16.3s)
+
+==> test/fullscreen_test.py (timeout 900s)
+the IDE is up                       : OK
+fullscreen chord is advertised      : OK
+F5 is not advertised as fullscreen  : OK
+maximise keeps the menu bar         : OK
+maximise keeps the status line      : OK
+maximise keeps the window frame     : OK
+windowed F5 byte reader is ready    : OK
+physical F5 reaches the pane        : OK
+physical F5 keeps the IDE visible   : OK
+fullscreen F5 byte reader is ready  : OK
+fullscreen hides the menu bar       : OK
+fullscreen hides the status line    : OK
+fullscreen physical F5 reaches the pane: OK
+fullscreen exit brings the menu bar back: OK
+fullscreen exit brings the status line back: OK
+fullscreen exit brings the window back: OK
+the pane still runs                 : OK
+
+RESULT: PASS
+<== PASS test/fullscreen_test.py (7.4s)
+
+==> test/empty_desktop_test.py (timeout 900s)
+session starts with one pane        : OK
+both clients start attached         : OK
+both clients render the pane        : OK
+baseline rename succeeds            : OK
+baseline title reaches both clients : OK
+Panes menu can close the last pane  : OK
+both clients apply the empty desktop: OK
+empty desktop keeps both clients alive: OK
+closed title disappears everywhere  : OK
+Classes menu works with zero panes  : OK
+one UI request creates one pane     : OK
+recreated pane accepts both clients : OK
+recreated output reaches both clients: OK
+temporal case baseline renamed      : OK
+close+new UI burst was queued       : OK
+close+new burst recreates first pane: OK
+close+new burst pane is usable      : OK
+second client can close the last pane: OK
+second close reaches zero everywhere: OK
+first zero-pane client detaches     : OK
+second zero-pane client detaches    : OK
+empty session survives zero viewers : OK
+two fresh clients attach to zero panes: OK
+reattached clients receive empty desktop: OK
+cycle 1 concurrent menus opened     : OK
+cycle 1 concurrent requests delivered: OK
+cycle 1 FIFO creates both panes     : OK
+cycle 1 alternating UI fill reaches 16: OK
+cycle 1 all 16 panes renamed        : OK
+cycle 1 all 16 visible in both UIs  : OK
+cycle 1 frame numbers 10..16 exact  : OK
+cycle 1 17th opens maximum dialog   : OK
+cycle 1 17th leaves exactly 16 panes: OK
+cycle 1 alternating closes reach zero: OK
+cycle 2 concurrent menus opened     : OK
+cycle 2 concurrent requests delivered: OK
+cycle 2 FIFO creates both panes     : OK
+cycle 2 alternating UI fill reaches 16: OK
+cycle 2 all 16 panes renamed        : OK
+cycle 2 all 16 visible in both UIs  : OK
+cycle 2 frame numbers 10..16 exact  : OK
+cycle 2 17th opens maximum dialog   : OK
+cycle 2 17th leaves exactly 16 panes: OK
+cycle 2 alternating closes reach zero: OK
+post-cycle clients remain alive     : OK
+post-cycle first client detaches with status 0: OK
+post-cycle second client detaches with status 0: OK
+
+RESULT: PASS
+<== PASS test/empty_desktop_test.py (36.6s)
+
+==> test/max_panes_test.py (timeout 900s)
+fifteen additional panes created    : OK
+daemon reaches sixteen panes        : OK
+client mirrors all sixteen panes    : OK
+top borders show pane numbers 10-16 : OK
+local-shell menu is available       : OK
+local shell reports maximum         : OK
+local rejection stays at sixteen    : OK
+configured-class menu is available  : OK
+configured class reports maximum    : OK
+class rejection stays at sixteen    : OK
+one pane closed for race setup      : OK
+first client observes fifteen       : OK
+second client attaches at fifteen   : OK
+both race menus are open            : OK
+concurrent class requests delivered : OK
+race accepts exactly pane sixteen   : OK
+only race loser sees maximum dialog : OK
+
+RESULT: PASS
+<== PASS test/max_panes_test.py (16.2s)
+
+==> test/close_all_panes_test.py (timeout 900s)
+sixteen-pane setup succeeds         : OK
+actor visibly tiles sixteen panes   : OK
+observer attaches to all sixteen    : OK
+Windows menu exposes Close all      : OK
+actor presents one 16-to-0 paint    : OK
+observer presents one 16-to-0 paint : OK
+both clients stay attached at zero  : OK
+both rendered desktops are empty    : OK
+daemon publishes canonical empty layout: OK
+observer can recreate Local shell   : OK
+first pane reappears in both clients: OK
+recreated pane is canonical and focused: OK
+recreated pane output reaches both  : OK
+local branch starts with four panes : OK
+local Windows menu exposes Close all: OK
+local presents one 4-to-0 paint     : OK
+local UI stays alive and empty      : OK
+local zero desktop can create pane  : OK
+local recreated pane is usable      : OK
+local recreated shell receives input: OK
+
+RESULT: PASS
+<== PASS test/close_all_panes_test.py (17.9s)
+
+==> test/mousemode_test.py (timeout 900s)
+the host is asked for any-motion    : OK
+any-motion is taken back            : OK
+base tracking is re-asserted        : OK
+a click still opens the menu        : OK
+
+RESULT: PASS
+<== PASS test/mousemode_test.py (10.0s)
+
+==> test/dialog_opaque_test.py (timeout 900s)
+color: the picture is on the desktop: OK
+color: filled art is emitted without font glyphs: OK
+color: Classes menu is addressable by label: OK
+color: the class manager is opaque  : OK
+color: Profiles menu is addressable by label: OK
+color: the profile manager is opaque: OK
+color: Sessions menu is addressable by label: OK
+color: the wizard is opaque         : OK
+mono: the picture is on the desktop : OK
+mono: filled art is emitted without font glyphs: OK
+mono: Classes menu is addressable by label: OK
+mono: the class manager is opaque   : OK
+mono: Profiles menu is addressable by label: OK
+mono: the profile manager is opaque : OK
+mono: Sessions menu is addressable by label: OK
+mono: the wizard is opaque          : OK
+
+RESULT: PASS
+<== PASS test/dialog_opaque_test.py (51.7s)
+
+==> test/background_assets_test.py (timeout 900s)
+alien source is the optimized RGBA asset  : OK
+alien source contains real transparency   : OK
+all four outer edges fade to transparent  : OK
+legacy goody identifier regenerates exactly: OK
+every generated background is reproducible: OK
+visible names identify the original artwork: OK
+generator targets an exact 128x46 grid    : OK
+real Pascal loader sees exact 128x46 canvas: OK
+terminal palette fits the 62-index format : OK
+terminal artwork emits exactly 46 row pairs: OK
+transparent edge has an explicit logical width: OK
+terminal glyph grid uses only filled cell or empty: OK
+every occupied cell has a valid palette index: OK
+cell fade leaves every outer boundary empty: OK
+cell fade keeps a substantial central subject: OK
+desktop is a real 128x48 Konsole capture  : OK
+standalone art is an exact 128x46 cell grid: OK
+standalone art is exact filled cells without seams: OK
+background menu is a real 128x48 capture  : OK
+options menu is a real 128x48 capture     : OK
+background animation keeps its real capture geometry: OK
+static documentation renders this exact artwork: OK
+animation starts with the empty desktop   : OK
+every Goody animation frame is exact      : OK
+every London animation frame is exact     : OK
+
+RESULT: PASS
+<== PASS test/background_assets_test.py (5.8s)
+
+==> test/fresh_install_defaults_test.py (timeout 900s)
+fixture begins without user configuration: OK
+fresh daemon owns a 120x50 canonical desktop: OK
+fresh daemon owns exactly one pane  : OK
+initial PTY is exactly 80x25        : OK
+initial normal rectangle preserves its exact PTY size: OK
+initial pane is alive, focused and minimized: OK
+initial pane is presented in stable minimized slot zero: OK
+first presentation contains only one final synchronized surface: OK
+compiled UI default is monochrome   : OK
+minimized pane chrome follows the monochrome palette: OK
+compiled background default renders the alien artwork: OK
+observing defaults does not manufacture a user INI: OK
+restoring the installation pane succeeds: OK
+restore returns to the exact 80x25 PTY and saved rectangle: OK
+restored frame is centred at its advertised dimensions: OK
+
+RESULT: PASS
+<== PASS test/fresh_install_defaults_test.py (0.5s)
+
+==> test/badclass_test.py (timeout 900s)
+session up                          : OK
+the unreachable class was requested : OK
+the client survived opening it      : OK
+the client survived closing a pane  : OK
+the client survived saving          : OK
+
+RESULT: PASS
+<== PASS test/badclass_test.py (12.8s)
+
+==> test/passthrough_modes_test.py (timeout 900s)
+passthrough released the mouse      : OK
+the inner reset reached the host    : OK
+reclaiming re-enables normal tracking: OK
+reclaiming re-enables button tracking: OK
+reclaiming re-enables SGR reporting : OK
+the client still runs after the click: OK
+
+RESULT: PASS
+<== PASS test/passthrough_modes_test.py (9.2s)
+
+==> test/resize_keep_test.py (timeout 900s)
+initial PTY size is reported exactly: OK
+the token is on the visible screen  : OK
+the token is in the scrollback      : OK
+the token survives the small attach : OK
+and is still in the scrollback      : OK
+small attach preserves exact PTY WxH: OK
+the pane is still alive             : OK
+
+RESULT: PASS
+<== PASS test/resize_keep_test.py (12.3s)
+
+==> test/config_concurrency_test.py (timeout 900s)
+concurrency helper compiles cleanly : OK
+initial concurrency fixture is strictly parseable: OK
+distinct workers reach common barrier: OK
+distinct publishes only parseable generations: OK
+distinct workers all finish cleanly : OK
+all distinct profiles survive       : OK
+all distinct classes survive        : OK
+stale field-scoped config writes merge: OK
+unrelated section survives every rewrite: OK
+same-class workers reach common barrier: OK
+same-class publishes only parseable generations: OK
+same-class workers all finish cleanly: OK
+same class generation has exactly one writer: OK
+same class losers reload the winning generation: OK
+same-profile workers reach common barrier: OK
+same-profile publishes only parseable generations: OK
+same-profile workers all finish cleanly: OK
+same profile generation has exactly one writer: OK
+same profile losers reload the winning generation: OK
+class-delete-conflict workers reach common barrier: OK
+class-delete-conflict publishes only parseable generations: OK
+class-delete-conflict workers all finish cleanly: OK
+stale class delete cannot erase a newer edit: OK
+class-rename-conflict workers reach common barrier: OK
+class-rename-conflict publishes only parseable generations: OK
+class-rename-conflict workers all finish cleanly: OK
+stale class rename cannot relabel a newer edit: OK
+profile-delete-conflict workers reach common barrier: OK
+profile-delete-conflict publishes only parseable generations: OK
+profile-delete-conflict workers all finish cleanly: OK
+stale profile delete cannot erase a newer edit: OK
+profile-rename-conflict workers reach common barrier: OK
+profile-rename-conflict publishes only parseable generations: OK
+profile-rename-conflict workers all finish cleanly: OK
+stale profile rename cannot relabel a newer edit: OK
+default-window-compare workers reach common barrier: OK
+default-window-compare publishes only parseable generations: OK
+default-window-compare workers all finish cleanly: OK
+default-window-compare never publishes a split default pair: OK
+default-window-compare observes both complete generations: OK
+stale alpha window cannot cross into fresh beta default: OK
+default-profile-fresh-window workers reach common barrier: OK
+default-profile-fresh-window publishes only parseable generations: OK
+default-profile-fresh-window workers all finish cleanly: OK
+default-profile-fresh-window never publishes a split default pair: OK
+default profile resolves window from fresh generation: OK
+default-profile-deleted-race workers reach common barrier: OK
+default-profile-deleted-race publishes only parseable generations: OK
+default-profile-deleted-race workers all finish cleanly: OK
+default-profile-deleted-race never publishes a split default pair: OK
+deleted profile cannot become stale default: OK
+unrelated-profile-create workers reach common barrier: OK
+unrelated-profile-create publishes only parseable generations: OK
+unrelated-profile-create workers all finish cleanly: OK
+unrelated-profile-create never publishes a split default pair: OK
+unrelated-profile-create observes both complete generations: OK
+unrelated profile create preserves fresh default: OK
+unrelated-profile-edit workers reach common barrier: OK
+unrelated-profile-edit publishes only parseable generations: OK
+unrelated-profile-edit workers all finish cleanly: OK
+unrelated-profile-edit never publishes a split default pair: OK
+unrelated-profile-edit observes both complete generations: OK
+unrelated profile edit preserves fresh default: OK
+select-shared-default workers reach common barrier: OK
+select-shared-default publishes only parseable generations: OK
+select-shared-default workers all finish cleanly: OK
+shared profile becomes complete default pair: OK
+rename-default-profile workers reach common barrier: OK
+rename-default-profile publishes only parseable generations: OK
+rename-default-profile workers all finish cleanly: OK
+rename-default-profile never publishes a split default pair: OK
+rename-default-profile observes both complete generations: OK
+rename remaps default profile in its profile commit: OK
+delete-default-profile workers reach common barrier: OK
+delete-default-profile publishes only parseable generations: OK
+delete-default-profile workers all finish cleanly: OK
+delete-default-profile never publishes a split default pair: OK
+delete-default-profile observes both complete generations: OK
+delete clears default profile and window in its profile commit: OK
+collision workers reach common barrier: OK
+collision publishes only parseable generations: OK
+collision workers all finish cleanly: OK
+case-insensitive profile identity has one winner: OK
+collision writes exactly one profile section: OK
+invalid workers reach common barrier: OK
+invalid publishes only parseable generations: OK
+invalid workers all finish cleanly  : OK
+invalid names are rejected without exceptions: OK
+invalid names never reach disk      : OK
+configuration lock closes across exec: OK
+symlinked configuration lock is rejected: OK
+no rewrite temporary is left behind : OK
+
+RESULT: PASS
+<== PASS test/config_concurrency_test.py (6.5s)
+
+==> test/pane_reaper_test.py (timeout 900s)
+entry normalizes inherited SIGCHLD exactly: OK
+four-pane session promoted          : OK
+all pane leaders published PIDs     : OK
+orphan candidate publishes child PID: OK
+daemon restores and unblocks inherited SIGCHLD: OK
+initial panes are daemon children   : OK
+initial panes lead private process groups: OK
+orphan child starts in leader group : OK
+daemon initially owns four panes    : OK
+creator stays attached after promotion: OK
+short pane exits voluntarily        : OK
+leader exits while child holds slave: OK
+daemon reaps while creator is stopped: OK
+WNOWAIT seals descendants before reap: OK
+exited leader and orphan child are gone: OK
+creator survives child reap         : OK
+daemon accepts resistant pane close : OK
+TERM-resistant pane group disappears: OK
+daemon reaps killed pane leader     : OK
+  observed transient resistant-pane zombie before creator reap
+creator survives daemon-side pane kill: OK
+close compacts only the requested pane: OK
+stable pane process remains unchanged: OK
+stable pane still accepts input     : OK
+stable pane still produces canonical output: OK
+attached creator receives stable output: OK
+
+RESULT: PASS
+<== PASS test/pane_reaper_test.py (6.4s)
+
+==> test/pty_spawn_safety_test.py (timeout 900s)
+base daemon publishes one session   : OK
+base daemon starts with one stable pane: OK
+base daemon has a birth identity    : OK
+non-reading sshpass is bounded      : OK
+incomplete password rejects pane    : OK
+failed password pane is never published: OK
+failed spawn keeps exact daemon generation: OK
+daemon remains responsive after rejected spawn: OK
+closed password fd is bounded       : OK
+closed password fd rejects pane     : OK
+closed password pane is never published: OK
+closed password fd keeps daemon alive: OK
+reading sshpass pane is accepted    : OK
+password reader receives every byte exactly: OK
+successful password pane is published once: OK
+closed fd cannot SIGPIPE local UI   : OK
+failed local secret creates no daemon: OK
+failed local class uses explicit fallback: OK
+resistant direct child starts       : OK
+waitpid authority bounds local shutdown: OK
+waitpid authority reaps exact child : OK
+empty birth identity fails within bound: OK
+empty birth identity publishes no session: OK
+empty birth identity publishes no sidecar: OK
+
+RESULT: PASS
+<== PASS test/pty_spawn_safety_test.py (6.1s)
+
+==> test/session_startup_atomic_test.py (timeout 900s)
+intermediate-hang startup returns within bound: OK
+intermediate-hang keeps original client alive: OK
+intermediate-hang leaves no published session: OK
+intermediate-hang keeps original PTY writable: OK
+daemon-hang-pre startup returns within bound: OK
+daemon-hang-pre keeps original client alive: OK
+daemon-hang-pre leaves no published session: OK
+daemon-hang-pre keeps original PTY writable: OK
+constructor-partial startup returns within bound: OK
+constructor-partial keeps original client alive: OK
+constructor-partial leaves no published session: OK
+constructor-partial keeps original PTY writable: OK
+daemon-hang-post startup returns within bound: OK
+daemon-hang-post keeps original client alive: OK
+daemon-hang-post leaves no published session: OK
+daemon-hang-post keeps original PTY writable: OK
+
+RESULT: PASS
+<== PASS test/session_startup_atomic_test.py (11.9s)
+
+==> test/stlib_crash_audit_test.py (timeout 900s)
+dead generation leaves live index   : OK
+dead generation remains auditable   : OK
+recycled PID is never signalled     : OK
+historical crash report fails audit : OK
+
+RESULT: PASS
+<== PASS test/stlib_crash_audit_test.py (0.1s)
+
+==> test/stlib_transition_capture_test.py (timeout 900s)
+split DEC reset completes one frame : OK
+nested DEC start exposes truncated frame: OK
+
+RESULT: PASS
+<== PASS test/stlib_transition_capture_test.py (0.1s)
+
+==> test/daemon_identity_safety_test.py (timeout 900s)
+stlib parses adversarial stat comm  : OK
+runner parses adversarial stat comm : OK
+malformed identities fail validation: OK
+Darwin zombie status is an exit oracle: OK
+zombie observation is birth-qualified: OK
+zero-time wait still probes child once: OK
+  process pid=87654322 label=missing-identity-probe has no birth identity
+empty process identity fails registration: OK
+birth identity helper compiles cleanly: OK
+Pascal birth identity matches kernel: OK
+  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/incomplete.ini reason=missing [session] section or pid
+  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/malformed.ini reason=MissingSectionHeaderError: File contains no section headers.
+file: '/tmp/opencode/st-7b3zvhl3/.superterm/sessions/malformed.ini', line: 1
+'[session\n'
+  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/mismatch.ini pid=2733686 session=mismatch reason=identity does not match the live PID
+  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/old.ini pid=2733686 session=old reason=missing or malformed identity
+old and mismatched sidecars untrusted: OK
+every invalid sidecar fails harness once: OK
+untrusted sidecars never signal     : OK
+old sidecar still receives FRAME_CLOSE: OK
+socket symlink is never followed for close: OK
+runner rejects old and mismatched sidecars: OK
+runner reports every invalid sidecar once: OK
+runner still attempts FRAME_CLOSE   : OK
+daemon_done is generation-qualified : OK
+bare daemon_done cannot erase qualified owner: OK
+
+RESULT: PASS
+<== PASS test/daemon_identity_safety_test.py (0.4s)
+
+==> test/new_session_profile_test.py (timeout 900s)
+default alpha starts                : OK
+alpha daemon starts                 : OK
+second client starts with old profile snapshot: OK
+new-empty profile menu item         : OK
+empty-profile name prompt           : OK
+empty profile persisted as a complete section: OK
+profile creation keeps workspace    : FAIL
+profile creation keeps daemon       : OK
+other client sees newly created profile immediately: OK
+catalogue peer detaches without closing alpha: OK
+new-session menu item               : OK
+single creation dialog              : OK
+empty choice suggests session       : OK
+old alpha and new empty live        : OK
+empty session has zero panes        : OK
+empty session has no profile        : OK
+empty UI has no windows             : OK
+old alpha remains exact             : OK
+first pane created from zero        : OK
+first pane accepts and executes input: OK
+non-empty profile is selected by default: OK
+profile-backed session joins previous live sessions: OK
+profile-backed sidecar records profile and pane: OK
+profile-backed command reaches its pane: OK
+profile-backed capture contains configured command output: OK
+previous populated session remains live after profile creation: OK
+profile choice suggests scratch     : OK
+all four sessions remain live       : OK
+scratch profile recorded            : OK
+scratch starts with zero panes      : OK
+previous session kept its pane      : OK
+empty client detaches cleanly       : OK
+zero-pane session survives detach   : OK
+alpha reattaches                    : OK
+reattached alpha detaches cleanly   : OK
+previous session reattaches         : OK
+reattached previous session detaches cleanly: OK
+fixture has 53 profiles and 53 classes: OK
+53-object catalogue session starts  : OK
+large profile menu advertises bounded direct list: OK
+profile Manage command does not collide at slot 51: OK
+profile manager contains all 53 catalogue rows: OK
+large profile direct menu remains reachable: OK
+profile New empty command does not collide at slot 52: OK
+large-catalogue New empty commits complete profile: OK
+large class direct menu remains reachable: OK
+class Manage command does not collide at slot 21: OK
+class manager contains all 53 catalogue rows: OK
+large class Open action remains reachable: OK
+class Open picker does not collide at slot 20: OK
+class picker keeps disabled-row mapping through catalogue end: OK
+large-catalogue client detaches cleanly: OK
+
+RESULT: FAIL (1): profile creation keeps workspace
+<== FAIL test/new_session_profile_test.py (exit status 1, 14.8s)
+
+==> test/ssh_server_config_test.py (timeout 900s)
+all SSH admin aliases reject extra argv before effects: OK
+isolated setup succeeds             : OK
+service action is test-only         : OK
+all persistent paths isolated       : OK
+directory permissions               : OK
+configuration permissions           : OK
+setup enables all authentication sources by default: OK
+host-key permissions                : OK
+private service descriptor          : OK
+generated policy is fail-closed     : OK
+systemd preserves session daemons   : OK
+service validates then execs accepted sshd: OK
+real sshd is available              : OK
+real sshd accepts generated file    : OK
+real sshd confirms configurable authentication defaults: OK
+real sshd confirms forced command   : OK
+usrmerge selects canonical /usr/bin/sshd: OK
+setup is idempotent                 : OK
+host identity is never replaced     : OK
+check validates current install     : OK
+global OpenSSH sshrc is rejected before publication: OK
+held administration lock has bounded failure: OK
+symlinked administration lock is rejected: OK
+captured helper leader is reserved until pipe cleanup: OK
+failed keygen removes both temporary halves: OK
+set-ID forced-command binary is rejected: OK
+check never mutates accepted configuration: OK
+restart atomically accepts pending configuration: OK
+multiple interfaces and ports       : OK
+root remains public-key-only opt-in : OK
+authentication matrix accepts keys only: OK
+authentication matrix accepts password only: OK
+authentication matrix accepts central keys only: OK
+authentication matrix accepts user keys only: OK
+authentication matrix accepts password or public key: OK
+configuration with no authentication method is rejected atomically: OK
+root opt-in without a public-key source is rejected atomically: OK
+default authentication policy recovers after rejected updates: OK
+legacy version-1 auth omission remains central-key-only: OK
+explicit default auth restores after legacy compatibility check: OK
+unknown/injected key rejected       : OK
+invalid update is atomic            : OK
+enable uses last accepted config, not invalid pending: OK
+strict parser rejects duplicate key : OK
+strict parser rejects duplicate section: OK
+strict parser rejects foreign section: OK
+strict parser rejects missing version: OK
+strict parser rejects invalid boolean: OK
+strict parser rejects invalid password boolean: OK
+strict parser rejects invalid managed-key boolean: OK
+strict parser rejects invalid user-key boolean: OK
+strict parser rejects duplicate authentication key: OK
+strict parser rejects wildcard listener: OK
+unsafe public config mode rejected  : OK
+valid config recovers               : OK
+failed service activation is reported: OK
+failed activation restores accepted files exactly: OK
+rollback restarts previously active service: OK
+rollback preserves pending public edit: OK
+accepted state recovers after rollback: OK
+failed enable is reported (enabled=0,active=0): OK
+failed enable restores files (enabled=0,active=0): OK
+failed enable restores exact manager state (enabled=0,active=0): OK
+fault and rollback paths were exercised (enabled=0,active=0): OK
+failed enable is reported (enabled=0,active=1): OK
+failed enable restores files (enabled=0,active=1): OK
+failed enable restores exact manager state (enabled=0,active=1): OK
+fault and rollback paths were exercised (enabled=0,active=1): OK
+failed enable is reported (enabled=1,active=0): OK
+failed enable restores files (enabled=1,active=0): OK
+failed enable restores exact manager state (enabled=1,active=0): OK
+fault and rollback paths were exercised (enabled=1,active=0): OK
+failed enable is reported (enabled=1,active=1): OK
+failed enable restores files (enabled=1,active=1): OK
+failed enable restores exact manager state (enabled=1,active=1): OK
+fault and rollback paths were exercised (enabled=1,active=1): OK
+mismatched host public key rejected : OK
+setup repairs only public half      : OK
+real ssh-keygen is available        : OK
+host key type uses actual public-key prefix: OK
+client test key generated           : OK
+central authorization succeeds      : OK
+authorized-key comments cannot spoof admin output: OK
+duplicate authorization is idempotent: OK
+list reports SHA256 fingerprint     : OK
+fingerprints are matched case-sensitively: OK
+symlinked public-key source rejected: OK
+public-key source must contain exactly one key: OK
+authorized-key options rejected     : OK
+revoke by fingerprint succeeds      : OK
+server.ini symlink rejected         : OK
+filesystem root override rejected   : OK
+accepted config prepared for wrapper: OK
+wrapper rejects extra effective AuthorizedKeysFile: OK
+wrapper rejects disabled StrictModes: OK
+wrapper rejects incoherent authentication methods: OK
+wrapper rejects accepted client environment: OK
+wrapper rejects forced environment  : OK
+wrapper rejects SFTP subsystem      : OK
+wrapper rejects trusted user CA     : OK
+wrapper rejects conditional Match override: OK
+wrapper rejects external Include    : OK
+plain sshd -T misses conditional Match override: OK
+service wrapper execs accepted sshd in place: OK
+service wrapper ignores invalid pending file: OK
+
+RESULT: PASS
+<== PASS test/ssh_server_config_test.py (10.1s)
+
+==> test/ssh_release_boundary_test.py (timeout 900s)
+unprivileged release boundary         : SKIP (run as non-root)
+
+RESULT: PASS
+<== PASS test/ssh_release_boundary_test.py (0.1s)
+
+==> test/ssh_service_uninstall_test.py (timeout 900s)
+missing descriptor removal is idempotent: OK
+missing removal creates no persistent root: OK
+missing removal never calls service manager: OK
+isolated SSH fixture is prepared    : OK
+generic Generated-by descriptor without managed marker is refused: OK
+generic Generated-by descriptor without managed marker remains byte-for-byte: OK
+generic Generated-by descriptor without managed marker causes no manager action: OK
+generic Generated-by descriptor without managed marker preserves persistent SSH state: OK
+descriptor with a foreign managed-service identity is refused: OK
+descriptor with a foreign managed-service identity remains byte-for-byte: OK
+descriptor with a foreign managed-service identity causes no manager action: OK
+descriptor with a foreign managed-service identity preserves persistent SSH state: OK
+descriptor with a changed entry command is refused: OK
+descriptor with a changed entry command remains byte-for-byte: OK
+descriptor with a changed entry command causes no manager action: OK
+descriptor with a changed entry command preserves persistent SSH state: OK
+symlink descriptor is refused       : OK
+symlink target and link remain untouched: OK
+symlink descriptor causes no manager action: OK
+stop-disable failure is reported    : OK
+stop-disable failure keeps descriptor: OK
+stop-disable failure restores service state: OK
+stop-disable failure preserves persistent SSH state: OK
+post-remove systemd reload failure is reported: OK
+reload failure restores exact descriptor: OK
+reload failure restores exact service state: OK
+reload rollback exercised both reload paths: OK
+reload failure preserves persistent SSH state: OK
+verified descriptor is uninstalled  : OK
+successful uninstall removes only descriptor: OK
+successful uninstall stops and disables service: OK
+systemd removal disables now then reloads: OK
+repeated service uninstall succeeds : OK
+repeated service uninstall is manager-free: OK
+isolated SSH fixture is prepared    : OK
+older-release descriptor really differs from current descriptor: OK
+recognised older-release descriptor is uninstalled: OK
+older-release uninstall removes only its descriptor: OK
+older-release uninstall stops and disables service: OK
+older-release uninstall reaches the service manager: OK
+isolated SSH fixture is prepared    : OK
+make uninstall propagates service-removal failure: OK
+failed make uninstall keeps installed binary and descriptor: OK
+failed make uninstall preserves package SSH state: OK
+isolated SSH fixture is prepared    : OK
+make uninstall performs verified service removal: OK
+make uninstall removes descriptor before binary handoff: OK
+make uninstall preserves all persistent SSH material: OK
+make uninstall leaves fake service disabled and stopped: OK
+DESTDIR staging uninstall succeeds  : OK
+DESTDIR never executes host or staged binaries: OK
+DESTDIR removes only staged binary  : OK
+DESTDIR leaves simulated host descriptor unchanged: OK
+DESTDIR never calls a host service manager: OK
+
+RESULT: PASS
+<== PASS test/ssh_service_uninstall_test.py (1.9s)
+
+==> test/ssh_entry_test.py (timeout 900s)
+direct entry without SSH rejected   : OK
+SSH request without PTY rejected    : OK
+SSH original command rejected       : OK
+present empty original command is still an exec request: OK
+malformed reserved SSH entry cannot reach TUI: OK
+symlink creation lock rejected      : OK
+fifo creation lock rejected         : OK
+group-writable creation lock rejected: OK
+accepted silent session has bounded attach: OK
+silent listener cannot publish a daemon: OK
+fault creator reaches unpublished listener: OK
+waiter recovers failed publication  : OK
+failed publication recovery is bounded: OK
+failed creator exits without stealing session: OK
+SSH forces persistent server mode   : OK
+configured profile starts           : OK
+exact session/profile sidecar       : OK
+creator establishes pane geometry   : OK
+later SSH login attaches same daemon: OK
+later login receives existing screen: OK
+attach never changes canonical geometry: OK
+profile command executed exactly once: OK
+pane output reaches every SSH viewer: OK
+lost SSH client exits               : OK
+lost SSH client only detaches       : OK
+remaining client stays writable     : OK
+explicit detach exits entry client  : OK
+default session survives no viewers : OK
+SSH reattach restores live contents : OK
+reattach still preserves geometry   : OK
+last-route default session starts   : OK
+home route accepts input            : OK
+successful SSH creation records initial route: OK
+SSH client exposes new-session action: OK
+SSH new-session dialog selects configured profile: OK
+SSH client switches without closing old session: OK
+new SSH session accepts input       : OK
+session switch atomically updates last route: OK
+routing write preserves configured profile: OK
+last-route client detaches          : OK
+both routed sessions survive detach : OK
+next SSH login resumes session created in menu: OK
+resumed SSH login did not fall back to default: OK
+resumed last-route client detaches  : OK
+fixed routing ignores last-session pointer: OK
+fixed routing did not attach alternate session: OK
+simultaneous logins all attach      : OK
+race creates one exact session      : OK
+race executes profile once          : OK
+race records every viewer           : OK
+missing profile creates empty session: OK
+empty session draws no pane frame   : OK
+empty SSH session accepts first pane: OK
+
+RESULT: PASS
+<== PASS test/ssh_entry_test.py (33.2s)
+
+==> test/ssh_transport_test.py (timeout 900s)
+transport client key generated      : OK
+transport client key generated      : OK
+isolated production config generated: OK
+transport key centrally authorized  : OK
+production transport keeps StrictModes: OK
+isolated HOME belongs to SSH user   : OK
+transport harness config accepted   : OK
+non-root SSH privilege descent      : SKIP (SUPERTERM_TEST_SSH_USER not set; root compatibility run)
+isolated sshd listens on TCP        : OK
+first standard ssh opens SuperTerm  : OK
+forced command creates one session  : OK
+session daemon uses selected real UID: OK
+forced command uses selected real UID: OK
+creator geometry is explicit        : OK
+second standard ssh attaches same session: OK
+live SSH descendants strongly claimed: OK
+attach preserves canonical geometry : OK
+pane output reaches both SSH clients: OK
+abrupt SSH client is reaped         : OK
+network loss only detaches first viewer: OK
+remaining SSH viewer stays writable : OK
+SIGWINCH updates only the SSH client viewport: OK
+non-PTY remote shell rejected       : OK
+PTY remote exec rejected without attach: OK
+unauthorized key rejected without attach: OK
+SFTP subsystem rejected without attach: OK
+remote TCP forwarding rejected immediately: OK
+clean SSH detach exits second client: OK
+clean detach leaves zero viewers and live socket: OK
+third standard ssh reattaches live daemon: OK
+third viewer restores shared output : OK
+reattach preserves canonical geometry after SIGWINCH: OK
+third viewer detaches cleanly       : OK
+SSH connection descendants exit     : OK
+exact SSH descendant cleanup succeeds: OK
+
+RESULT: PASS
+<== PASS test/ssh_transport_test.py (16.8s)
+
+---------------------------------------------
+FAILED suites (of 97):
+  test/restore_test.py: recorded failed assertion
+  test/sysconfig_test.py: recorded failed assertion
+  test/global_lock_queue_test.py: exit status 1
+  test/multiclient_intensive_test.py: exit status 1
+  test/wireframe_preview_test.py: exit status 1
+  test/new_session_profile_test.py: exit status 1
+completed in 1381.7s
