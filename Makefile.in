@@ -56,7 +56,7 @@ SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.inc)
 
 TESTS := suite_manifest_test.py wire_constants_test.py \
-  stlib_reaping_test.py \
+  architecture_boundary_test.py stlib_reaping_test.py \
   drive_test.py large_screen_test.py mouse_test.py \
   mouse_focus_test.py focus_color_test.py palette_resize_transition_test.py \
   class_creation_transition_test.py \
