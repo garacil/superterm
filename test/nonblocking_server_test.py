@@ -10,33 +10,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, pas_string, raw_frame, read_frame
+from stlib import (FRAME_CTL_CAPTURE, FRAME_CTL_DATA, FRAME_CTL_END,
+                   FRAME_CTL_INFO, FRAME_CTL_WINOP, FRAME_DETACH, FRAME_INPUT,
+                   FRAME_READY, FRAME_SCREEN, FRAME_SESSION, WINOP_RENAME,
+                   check, pas_string, raw_frame, read_frame)
 
-FRAME_INPUT = 2
-FRAME_DETACH = 4
-FRAME_CTL_CAPTURE = 13
-FRAME_CTL_WINOP = 14
-FRAME_CTL_INFO = 15
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
-WINOP_RENAME = 9
-
-
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
+PROTO_VER = stlib.attach_proto_ver()
 
 
 def start_detached(home):

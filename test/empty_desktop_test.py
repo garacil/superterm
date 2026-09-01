@@ -28,7 +28,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, run_cli
+from stlib import (FRAME_ATTACH, FRAME_DETACH, FRAME_READY, FRAME_SCREEN,
+                   FRAME_SESSION, check, run_cli)
 
 
 HOME = stlib.fresh_home('emptydesk')
@@ -50,23 +51,7 @@ def write_config(class_enabled):
 write_config(False)
 
 
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
+PROTO_VER = stlib.attach_proto_ver()
 
 
 def drain_all(clients, seconds=0.8):

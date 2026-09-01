@@ -108,10 +108,7 @@ class ProbeClient(stlib.Client):
                 self.answer_query()
                 start = pos + len(DSR)
             self.query_tail = combined[-(len(DSR) - 1):]
-            try:
-                self.stream.feed(data)
-            except Exception:
-                pass
+            stlib.feed_pyte(self.stream, data, 'terminal_encoding')
             if self._transition_capture:
                 self._feed_transition_capture(data)
 
@@ -133,10 +130,8 @@ class ProbeClient(stlib.Client):
             b'\x1b(B', b'\x0f\x1b%G')
         screen = pyte.Screen(self.w, self.h)
         stream = pyte.ByteStream(screen)
-        try:
-            stream.feed(wire)
-        except Exception:
-            pass
+        stlib.feed_pyte(stream, wire, 'terminal_encoding wire')
+        stlib.flush_pyte(stream, 'terminal_encoding wire')
         return '\n'.join(row.rstrip() for row in screen.display)
 
 

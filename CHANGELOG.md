@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Reproducible engineering and performance baseline
+
+The build now treats every visible Free Pascal warning, note, and hint as an
+error in release, debug, and test-runtime modes. The only suppressed compiler
+messages are the two FPC 3.2.2 hints that announce reading its global
+configuration file.
+
+The regression harness now enforces one exact suite inventory, maps every suite
+to a frozen behavior contract, reports uncatalogued pyte parser defects, records
+distinct child-reaping outcomes, and checks the public wire constants against
+the server declarations. A primary-reference catalogue records provenance,
+redistribution policy, and checksums for locally stored material.
+
+A permanent interleaved performance harness records raw latency, settling time,
+emitted bytes, changed cells, and frame count for keyboard, mouse, UI, resize,
+bulk-output, reconnect, and slow-client workloads at 100x30, 200x50, and
+400x100. Performance regressions are rejection conditions.
+
+The first measured parser optimization removes the managed-string allocation
+previously performed for every printable ASCII byte. A focused 16 MiB parser
+probe improved from a 874 ms median to 195 ms on the development host while
+preserving pending wrap, disabled autowrap, indexed/direct-RGB rendition, wide
+UTF-8, and combining-character behaviour. Non-ASCII input continues through
+the existing general path.
+
+The detached-server worker-result drain now has a per-reactor-pass budget, so
+continuously readable pane PTYs cannot prevent socket, control, output, or
+lifecycle work from receiving another readiness pass. A write-side client
+disconnect is retained until the UI receives its single loss event, including
+when the socket was closed outside the ordinary poll path.
+
 ## 4.2.1 - 2026-08
 
 ### Native Windows is now a first-class documented target

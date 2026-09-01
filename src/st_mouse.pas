@@ -52,7 +52,7 @@ procedure HostMouseOff;
 implementation
 
 uses
-  SysUtils, BaseUnix, Sockets, Mouse;
+  SysUtils, BaseUnix, Sockets, Mouse, st_video;
 
 var
   SysDriver: TMouseDriver;   // the RTL's, kept for the console
@@ -134,16 +134,14 @@ begin
   // 223-column limit). Any-motion tracking (?1003) is not asked for: the
   // RTL queue holds 16 events and FreeVision drains one per loop, so a
   // sweep of the pointer under ?1003 overflows it for nothing.
-  Write(#27'[?1000h'#27'[?1002h'#27'[?1006h');
-  Flush(Output);
+  WriteRaw(#27'[?1000h'#27'[?1002h'#27'[?1006h');
 end;
 
 procedure HostMouseOff;
 begin
   if OnLinuxConsole then
     Exit;
-  Write(#27'[?1006l'#27'[?1002l'#27'[?1000l');
-  Flush(Output);
+  WriteRaw(#27'[?1006l'#27'[?1002l'#27'[?1000l');
 end;
 
 procedure OurDoneDriver;

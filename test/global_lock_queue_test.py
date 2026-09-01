@@ -32,7 +32,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_CLIENT_SIZE, FRAME_DETACH,
+                   FRAME_HOST_SUMMARY_EV, FRAME_LAYOUT_EV, FRAME_LAYOUT_LOCK,
+                   FRAME_LAYOUT_LOCK_REPLY, FRAME_LAYOUT_PEER_EV,
+                   FRAME_LAYOUT_PREVIEW, FRAME_LAYOUT_UNLOCK, FRAME_READY,
+                   FRAME_SCREEN, FRAME_SESSION, PREVIEW_OP_BOUNDS, check,
+                   raw_frame, read_frame, run_cli)
 
 
 WIDTH, HEIGHT = 112, 36
@@ -41,21 +46,6 @@ TITLES = ('QUEUE_PANE_ZERO', 'QUEUE_PANE_ONE', 'QUEUE_PANE_TWO')
 STALE_LOCK_PAIRS = 17
 IDLE_FRAME_BUDGET = 32
 
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_LAYOUT_LOCK = 17
-FRAME_LAYOUT_UNLOCK = 18
-FRAME_CLIENT_SIZE = 19
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_LAYOUT_EV = 26
-FRAME_LAYOUT_LOCK_REPLY = 33
-FRAME_HOST_SUMMARY_EV = 34
-FRAME_LAYOUT_PREVIEW = 35
-FRAME_LAYOUT_PEER_EV = 37
-
-PREVIEW_OP_BOUNDS = 1
 PREVIEW_FORMAT = '<QQQB3xiiii'
 
 FRAME_CORNERS = frozenset(('╔', '┌', '░', '▒', '▓'))
@@ -64,14 +54,7 @@ CLEAR_RE = re.compile(br'\x1b\[[0-?]*[ -/]*[JK]|\x1bc|\x1b#8')
 
 
 def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
+    return stlib.attach_proto_ver()
 
 
 PROTO_VER = attach_proto_ver()
@@ -584,6 +567,7 @@ except FileNotFoundError:
     pass
 with open(ini, 'w', encoding='utf-8') as stream:
     stream.write('[ui]\nlanguage=en\npalette=mono\nbackground=none\n'
+                 'desktop_notifications=0\n'
                  '[session]\nserver=always\nautosave=0\nautorestore=0\n'
                  'dragcontent=1\nzoomanim=0\n')
 env = {'SUPERTERM_DEBUG': log, 'SUPERTERM_DEBUG_FULL': '1',

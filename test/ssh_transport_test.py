@@ -577,10 +577,7 @@ class SshPty:
                     os.write(self.fd, b'\x1b[5;1R')
                 except OSError:
                     break
-            try:
-                self.stream.feed(data)
-            except Exception:
-                pass
+            stlib.feed_pyte(self.stream, data, 'ssh_transport')
 
     def text(self):
         return '\n'.join(row.rstrip() for row in self.screen.display)

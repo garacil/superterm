@@ -72,7 +72,7 @@ second = None
 exit_client = None
 try:
     first = stlib.Client(HOME, w=W, h=H, dsr_row=10, dsr_col=20)
-    first.stream.feed(b'\033[10;20H')
+    stlib.feed_pyte(first.stream, b'\033[10;20H', 'detach seed')
     first.drain(1.5)
     stlib.check('detach menu is visible', 'Detach' in first.text())
     first.send(f'echo $$ > {PIDFILE}; sleep 1; echo DETACHED_OUTPUT\r'.encode(),
@@ -134,7 +134,7 @@ try:
         stlib.check('permanent close terminates pane', not pane_alive)
 
     exit_client = stlib.Client(HOME, w=W, h=H, dsr_row=10, dsr_col=20)
-    exit_client.stream.feed(b'\033[10;20H')
+    stlib.feed_pyte(exit_client.stream, b'\033[10;20H', 'detach seed')
     exit_client.drain(1.5)
     exit_client.send(b'\x1bx', 1.0)
     exit_status = exit_client.wait_exit(6.0)

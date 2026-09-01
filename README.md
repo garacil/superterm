@@ -561,6 +561,15 @@ server.
 make test
 ```
 
+The suite inventory and the user-visible contract frozen by every suite are in
+[`test/README.md`](test/README.md). The build treats every Free Pascal warning,
+note, and hint as an error, and foundation guards prevent suite-list drift,
+uncatalogued terminal-emulator parse failures, ambiguous child reaping, and
+wire-constant drift. Performance evidence is collected separately with the
+interleaved harness documented in
+[`docs/BUILDING.md`](docs/BUILDING.md#tests); no accepted change may regress
+main's measured p50, p95, desktop-area scaling, native bytes, or frame count.
+
 The suite covers pane operations, large terminal sizes, xterm and tmux mouse
 input, focus routing, session restore, configured terminals, templates,
 SQLite templates, the session wizard, language switching, window controls, and

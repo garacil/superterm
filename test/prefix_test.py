@@ -15,6 +15,7 @@ W, H = 100, 30
 sys.path.insert(0, os.path.dirname(__file__))
 import socket as _socket
 import pyte
+import stlib
 
 fails = []
 def check(name, cond):
@@ -49,13 +50,11 @@ class Client:
             if r:
                 try:
                     data = os.read(self.fd, 65536)
-                    if not data:
-                        return
-                    self.stream.feed(data)
                 except OSError:
                     return
-                except Exception:
-                    pass
+                if not data:
+                    return
+                stlib.feed_pyte(self.stream, data, 'prefix')
 
     def send(self, data, seconds=0.6):
         os.write(self.fd, data)

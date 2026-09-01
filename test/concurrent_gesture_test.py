@@ -23,52 +23,29 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_CTL_DATA, FRAME_CTL_END,
+                   FRAME_CTL_LIST, FRAME_DETACH, FRAME_LAYOUT,
+                   FRAME_LAYOUT_EV, FRAME_LAYOUT_LOCK,
+                   FRAME_LAYOUT_LOCK_REPLY, FRAME_LAYOUT_PEER_EV,
+                   FRAME_LAYOUT_PREVIEW, FRAME_LAYOUT_PREVIEW_EV, FRAME_READY,
+                   FRAME_SCREEN, FRAME_SESSION, PREVIEW_OP_BOUNDS,
+                   PREVIEW_OP_CLEAR, PREVIEW_OP_WIREFRAME, check, raw_frame,
+                   read_frame, run_cli)
 
 
 WIDTH, HEIGHT = 110, 34
 TITLES = ('CONCURRENT_PANE_ZERO', 'CONCURRENT_PANE_ONE')
 
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_LAYOUT = 7
-FRAME_LAYOUT_LOCK = 17
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_LAYOUT_EV = 26
-FRAME_LAYOUT_LOCK_REPLY = 33
-FRAME_LAYOUT_PREVIEW = 35
-FRAME_LAYOUT_PREVIEW_EV = 36
-FRAME_LAYOUT_PEER_EV = 37
-
-PREVIEW_OP_BOUNDS = 1
-PREVIEW_OP_WIREFRAME = 2
-PREVIEW_OP_CLEAR = 7
 PREVIEW_FORMAT = '<QQQB3xiiii'
 PREVIEW_SIZE = struct.calcsize(PREVIEW_FORMAT)
 
-FRAME_CTL_LIST = 11
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
 FRAME_LEFT = ('╔', '┌', '░', '▒', '▓')
 FRAME_RIGHT = ('╗', '┐', '░', '▒', '▓')
 SHADE = frozenset(('░', '▒', '▓'))
 CLEAR_RE = re.compile(br'\x1b\[[0-?]*[ -/]*J|\x1bc|\x1b#8')
 
 
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
+PROTO_VER = stlib.attach_proto_ver()
 
 
 def unpack_from(fmt, payload, offset):

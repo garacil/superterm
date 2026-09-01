@@ -762,6 +762,11 @@ begin
     SuppressFlush := False;
     FBootLocked := False;
   end;
+  // From this point onward one dedicated client reactor owns physical output.
+  // Startup CPR/encoding probes deliberately stayed on the old synchronous
+  // path; interactive Free Vision, keyboard and mouse must never wait for a
+  // slow terminal write.
+  StartAsyncVideoOutput;
   HostPasteOn;
   UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
   if not PassthroughActive then
@@ -10299,9 +10304,77 @@ var
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
+
+  procedure WaitForActivity(AMaxMs: LongInt);
+  var
+    PollFds: array[0..MAX_PANES + 2] of TPollFD;
+    Count, J, Fd: integer;
+
+    procedure AddFd(AFd: cint; AEvents: cshort);
+    var
+      K: integer;
+    begin
+      if (AFd < 0) or (Count > High(PollFds)) then
+        Exit;
+      for K := 0 to Count - 1 do
+        if PollFds[K].fd = AFD then
+        begin
+          PollFds[K].events := PollFds[K].events or AEvents;
+          Exit;
+        end;
+      PollFds[Count] := Default(TPollFD);
+      PollFds[Count].fd := AFD;
+      PollFds[Count].events := AEvents;
+      Inc(Count);
+    end;
+
+  begin
+    Count := 0;
+    AddFd(StdInputHandle, POLLIN);
+    Fd := VideoOutputWaitHandle;
+    AddFd(Fd, POLLIN);
+    if RemoteMode and (Remote <> nil) then
+    begin
+      Fd := Remote.WaitHandle;
+      if Remote.WantsWrite then
+        AddFd(Fd, POLLIN or POLLOUT)
+      else
+        AddFd(Fd, POLLIN);
+    end
+    else
+      for J := 0 to MAX_PANES - 1 do
+        if (Panes[J] <> nil) and Panes[J].Alive then
+        begin
+          if Panes[J].InputPending then
+            AddFd(Panes[J].Master, POLLIN or POLLOUT)
+          else
+            AddFd(Panes[J].Master, POLLIN);
+        end;
+    if Count > 0 then
+      repeat
+        J := fpPoll(@PollFds[0], Count, AMaxMs);
+      until (J >= 0) or (fpGetErrNo <> ESysEINTR);
+  end;
 begin
   HostPaste := '';
-    inherited Idle;
+  // TProgram.Idle performs these two useful Free Vision duties and then a
+  // blind 10 ms nanosleep. Preserve the duties, replace the sleep below with
+  // a descriptor-driven wait that wakes immediately for real work.
+  if StatusLine <> nil then
+    StatusLine^.Update;
+  if CommandSetChanged then
+  begin
+    Message(@Self, evBroadcast, cmCommandSetChanged, nil);
+    CommandSetChanged := False;
+  end;
+  if PumpVideoOutput then
+    Video.UpdateScreen(False);
+  if VideoOutputHasFailed then
+  begin
+    DebugLog('video: output reactor failed; closing client cleanly');
+    Message(@Self, evCommand, cmQuit, nil);
+    Exit;
+  end;
   if Current = PView(Desktop) then
     while TakeHostPaste(HostPaste) do
     begin
@@ -10595,6 +10668,7 @@ begin
          (Win[i]^.Term <> nil) then
         RepaintPane(i);
     end;
+    WaitForActivity(10);
     Exit;
   end;
   // poll ptys
@@ -10610,7 +10684,7 @@ begin
   if maxfd >= 0 then
   begin
     tv.tv_sec := 0;
-    tv.tv_usec := 8000;
+    tv.tv_usec := 0;
     if fpSelect(maxfd + 1, @fdset, nil, nil, @tv) > 0 then
       for i := 0 to MAX_PANES - 1 do
         if (Panes[i] <> nil) and Panes[i].Alive and
@@ -10642,8 +10716,7 @@ begin
           end;
         end;
   end
-  else
-    Sleep(8);
+  else ;
   // Reap only leaders owned by the current local workspace. waitpid(-1)
   // could collect a child whose PTY was transferred to an older daemon and
   // make that daemon's still-stored PGID reusable before it observes EOF.
@@ -10692,6 +10765,7 @@ begin
           Win[i]^.SetTitle(' ' + Copy(ExtractFileName(Panes[i].TitleCwd), 1, 24));
       end;
   end;
+  WaitForActivity(10);
 end;
 
 // informational menu row: always gray, never dispatchable (TV

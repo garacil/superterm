@@ -145,6 +145,7 @@ type
     procedure CopyGrid(const Source: TGridArray; out Target: TGridArray);
     procedure BlankRow(y: integer; AAttr: word);
     procedure AppendZeroWidth(const S: RawByteString);
+    procedure PutAsciiChar(b: byte; AAttr: word);
     procedure PutRawChar(const b: TCharBuf; alen: byte; AAttr: word);
     procedure ScrollUp(n: integer);
     procedure ScrollDown(n: integer);
@@ -1172,20 +1173,65 @@ begin
   Dirty := True;
 end;
 
+// Printable ASCII is the overwhelmingly common terminal-output path. Going
+// through PutRawChar used to allocate a managed RawByteString for every byte,
+// only for CellWidth to return 1 immediately and SetCellStr to copy that byte
+// back into the fixed-size cell. Keep the exact one-column semantics in-place:
+// pending wrap, no-wrap overwrite, rendition, cursor and dirty state all match
+// the general path, while ordinary output performs no managed allocation.
+procedure TScreen.PutAsciiChar(b: byte; AAttr: word);
+begin
+  if FPendingWrap then
+  begin
+    CursorX := 0;
+    LineFeed;
+  end;
+  if CursorX + 1 > Width then
+  begin
+    if not FAutoWrap then
+    begin
+      CursorX := Width - 1;
+      if CursorX < 0 then CursorX := 0;
+    end
+    else
+    begin
+      CursorX := 0;
+      LineFeed;
+    end;
+  end;
+  ClearCell(FGrid[CursorY][CursorX]);
+  FGrid[CursorY][CursorX].Txt[0] := AnsiChar(b);
+  FGrid[CursorY][CursorX].Len := 1;
+  FGrid[CursorY][CursorX].Attr := AAttr;
+  FGrid[CursorY][CursorX].FgRGB := AttrFgRGB;
+  FGrid[CursorY][CursorX].BgRGB := AttrBgRGB;
+  Inc(CursorX);
+  if CursorX >= Width then
+  begin
+    CursorX := Width - 1;
+    if FAutoWrap then
+      FPendingWrap := True
+    else
+      FPendingWrap := False;
+  end
+  else
+    FPendingWrap := False;
+  Dirty := True;
+end;
+
 procedure TScreen.PutCharByte(b: byte);
 var
   arr: TCharBuf;
   i: integer;
 begin
+  if (FUtfLen = 0) and (b < $80) then
+  begin
+    PutAsciiChar(b, Attr);
+    Exit;
+  end;
   arr := Default(TCharBuf);
   if FUtfLen = 0 then
   begin
-    if b < $80 then
-    begin
-      arr[0] := AnsiChar(b);
-      PutRawChar(arr, 1, Attr);
-      Exit;
-    end;
     FUtfBuf[0] := b;
     FUtfLen := 1;
     if b < $C0 then FUtfNeed := 1
