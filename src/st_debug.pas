@@ -286,6 +286,9 @@ end;
 // and a short tag drawn from the clock, so two crashes in the same second --
 // a client and its daemon going down together, or a fast retry -- both
 // survive to be read.
+var
+  PrevExitProc: Pointer = nil;
+
 function ReportPath: string;
 var
   Tag: string;
@@ -383,11 +386,38 @@ begin
   FpKill(FpGetPid, ASig);
 end;
 
+// A runtime error or an unhandled exception does NOT raise a signal, so the
+// handlers below never see it and no report was written. That is exactly how
+// a client died leaving nothing but a truncated trace: the process was gone,
+// the daemon carried on, and there was no backtrace to read. FPC sets
+// ErrorAddr for both cases before running the exit chain, so the exit hook
+// below turns them into the same report a signal would have produced.
+procedure CrashExitHook;
+var
+  Code: LongInt;
+  Addr: Pointer;
+begin
+  ExitProc := PrevExitProc;
+  Code := ExitCode;
+  Addr := ErrorAddr;
+  // ErrorAddr is set for a plain runtime error, but an UNHANDLED EXCEPTION
+  // reaches here with ErrorAddr nil and only ExitCode to go on. FPC reserves
+  // 200..255 for runtime errors (217 = unhandled exception), while this
+  // program's own failures exit 1 or 2, so the range separates the two
+  // cleanly and an ordinary CLI error never writes a report.
+  if (Addr <> nil) or ((Code >= 200) and (Code <= 255)) then
+    DumpNow(Format('abnormal exit: runtime error %d at $%p', [Code, Addr]));
+  if PrevExitProc <> nil then
+    TProcedure(PrevExitProc);
+end;
+
 procedure InstallCrashHandler;
 begin
   if HandlerInstalled then
     Exit;
   HandlerInstalled := True;
+  PrevExitProc := ExitProc;
+  ExitProc := @CrashExitHook;
   FpSignal(SIGSEGV, @CrashHandler);
   FpSignal(SIGBUS, @CrashHandler);
   FpSignal(SIGFPE, @CrashHandler);

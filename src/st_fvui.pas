@@ -360,6 +360,14 @@ type
     // bounds (tile -> final geometry) and must NOT request transient
     // sizes from the daemon nor resize the snapshot screen every step
     RemoteAttachSettling: boolean;
+    // A live move/resize passes through every intermediate rectangle. Asking
+    // the daemon to resize the PTY at each one turned one gesture into a
+    // storm: a real drag measured 429 resize requests in five seconds, ~86 a
+    // second, each of them a round trip that resizes the pane's PTY and makes
+    // every program inside it reflow. The mirror never caught up, the single
+    // client thread never got ahead, and the desktop looked dead for a minute.
+    // So a gesture now marks its pane here and commits ONE size when it ends.
+    PaneSizeDeferred: array[0..MAX_PANES - 1] of boolean;
     // passthrough: when a pane is maximized it owns the whole host
     // terminal and its raw PTY bytes are written straight through, so a
     // truecolor/emoji TUI renders untouched. PassPane = that pane (-1 off).
@@ -529,6 +537,8 @@ type
     // authoritative answer, so it never grows on a request the daemon then
     // trims -- which pushed the top rows of the mirror into its history.
     procedure RequestPaneSize(i, ACols, ARows: integer);
+    // Commits the size of any pane whose live gesture has just ended.
+    procedure FlushDeferredPaneSizes;
     procedure FitSessionToWindow;
     procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
@@ -2257,7 +2267,41 @@ begin
       DebugLog(Format('resize: pane=%d window %dx%d -> request %dx%d (mirror %dx%d)',
         [PaneIdx, Size.X, Size.Y, pw, ph, App^.Scr[PaneIdx].Width,
          App^.Scr[PaneIdx].Height]));
-    App^.RequestPaneSize(PaneIdx, pw, ph);
+    // While the gesture is live only the outline moves. Committing the size
+    // here would ask the daemon to resize the PTY once per pointer step; the
+    // final rectangle is the only one the user actually chose, and Idle sends
+    // it as soon as no window is being dragged any more.
+    if GetState(sfDragging) then
+      App^.PaneSizeDeferred[PaneIdx] := True
+    else
+      App^.RequestPaneSize(PaneIdx, pw, ph);
+  end;
+end;
+
+// One commit per gesture: called when no window is being dragged any more.
+procedure TSuperApp.FlushDeferredPaneSizes;
+var
+  i, pw, ph: integer;
+begin
+  for i := 0 to MAX_PANES - 1 do
+  begin
+    if not PaneSizeDeferred[i] then
+      Continue;
+    PaneSizeDeferred[i] := False;
+    if (Win[i] = nil) or (Scr[i] = nil) or Win[i]^.Minimized or
+       (PassPane = i) then
+      Continue;
+    pw := Win[i]^.Size.X - 2;
+    ph := Win[i]^.Size.Y - 2;
+    if pw < 4 then pw := 4;
+    if ph < 2 then ph := 2;
+    if (pw <> Scr[i].Width) or (ph <> Scr[i].Height) then
+    begin
+      if DebugActive then
+        DebugLog(Format('resize: pane=%d gesture committed %dx%d (mirror %dx%d)',
+          [i, pw, ph, Scr[i].Width, Scr[i].Height]));
+      RequestPaneSize(i, pw, ph);
+    end;
   end;
 end;
 
@@ -10766,6 +10810,9 @@ begin
         LocalGestureActive := True;
         Break;
       end;
+    // The gesture is over: send the one size the user actually chose.
+    if not LocalGestureActive then
+      FlushDeferredPaneSizes;
     // Debounced shared-layout push. The daemon orders and echoes one
     // authoritative state to every client. Never turn a modal pane lease into
     // a zero-change global commit while its mouse button is still held.
