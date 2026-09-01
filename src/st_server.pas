@@ -7781,7 +7781,20 @@ begin
              (Length(FClients[I].OutBuf) - FClients[I].OutPos >
                LAG_MIN_PENDING) and
              (NowTick - FClients[I].LastProgress > LAG_GRACE_MS) then
+          begin
+            // Say so. Without this the eviction was invisible: the viewer
+            // reported only "the connection was lost", the daemon logged
+            // nothing at all, and the two looked like an unexplained crash.
+            // A viewer is dropped because it stopped reading, and the reason
+            // belongs in the trace where it can be recognised.
+            if DebugActive then
+              DebugLog(Format('daemon: dropping client %d as a lagging reader'
+                + ' (%d bytes pending, no progress for %d ms; limits %d/%d)',
+                [I, Length(FClients[I].OutBuf) - FClients[I].OutPos,
+                 NowTick - FClients[I].LastProgress,
+                 LAG_MIN_PENDING, LAG_GRACE_MS]));
             DropClient(I);
+          end;
         // First-frame slowloris and abandoned one-shot control replies.
         for I := 0 to MAX_PENDING_CONNECTIONS - 1 do
           if (FPending[I].Fd >= 0) and (FPending[I].Deadline <> 0) and
