@@ -25,11 +25,8 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame, read_pas_string, run_cli
+from stlib import (FRAME_CTL_LIST, FRAME_CTL_DATA, FRAME_CTL_END)
 
-
-FRAME_CTL_LIST = 11
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
 
 CREATOR_SIZE = (96, 28)
 OBSERVER_SIZE = (118, 36)

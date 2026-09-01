@@ -18,6 +18,7 @@ import fcntl
 import glob
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -40,6 +41,128 @@ BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
 # same public input path.  Tests for a configured non-default prefix use their
 # explicit byte instead.
 FULLSCREEN_CHORD = b'\x11f'  # default Ctrl-Q, then f
+
+# Sequences the installed pyte cannot parse, removed before it ever sees them.
+#
+# pyte 0.8.2 implements no INTERMEDIATE-byte handling in its ESC or CSI
+# parsers, so each family below is either mis-dispatched or raises.  A raise is
+# the damaging case: pyte aborts the WHOLE feed() call and silently discards
+# the rest of that chunk, so every later assertion reads a stale screen.  That
+# is why the swallowing `except Exception: pass` around every feed is gone.
+#
+# NOTE for this branch: the emitters named below live in the pane-contract
+# work (milestone NS04-A3); this branch's src/st_video.pas does not emit any of
+# them yet -- verified by grep.  The entries are therefore pre-emptive here,
+# and the live win is the loud reporting: an UNCATALOGUED mis-parse now fails
+# the suite instead of corrupting it in silence.
+_PYTE_SCRUB = (
+    # DEC locator family -- "CSI Pt;Pl;Pb;Pr ' w" (DECEFR), "CSI Ps;Pu ' z"
+    # (DECELR), "CSI Pm ' {" (DECSLE), "CSI Ps ' |" (DECRQLP), "CSI Ps ' }"
+    # (DECIC) and "CSI Ps ' ~" (DECDC); xterm ctlseqs lists exactly these six.
+    # pyte maps the "'" INTERMEDIATE to HPA (escape.py: HPA = "'") and calls
+    # Screen.cursor_to_column with every collected parameter.  Two parameters
+    # raise TypeError; one parameter moves the cursor to column 0 and then
+    # draws the real final byte as text.
+    (re.compile(rb"\x1b\[[0-9;]*'[wz{|}~]"), "DEC locator (CSI ... ' Pf)"),
+    # kitty keyboard protocol -- "CSI = flags ; mode u".  pyte has no handler
+    # for the "=" private parameter prefix, dispatches on it, and then paints
+    # the flags and the "u" as text.
+    (re.compile(rb"\x1b\[=[0-9;]*u"), 'kitty keyboard (CSI = Ps u)'),
+    # xterm modifyOtherKeys -- "CSI > Ps ; Ps m".  pyte skips ">" and then
+    # applies the parameters as an SGR, so "CSI > 4 ; 0 m" really does set
+    # underline and then reset every attribute pyte was holding.
+    (re.compile(rb'\x1b\[>[0-9;]*m'), 'modifyOtherKeys (CSI > Ps ; Ps m)'),
+    # S7C1T / S8C1T -- "ESC SP F" and "ESC SP G" (xterm ctlseqs, VT220).
+    # pyte's ESC branch dispatches the SPACE and draws the "F"/"G" as text.
+    (re.compile(rb'\x1b [FG]'), 'S7C1T/S8C1T (ESC SP F|G)'),
+)
+
+# A tail which is still a PROPER PREFIX of some catalogued sequence.  PTY reads
+# split wherever the kernel buffer happens to end, so half of a "CSI 0;0'z" can
+# arrive in one chunk and the rest in the next; feeding the halves separately
+# puts pyte mid-CSI and reproduces the very crash the catalogue prevents.  Such
+# a tail is held back until its next chunk completes it, and flushed
+# unconditionally when the read loop finishes.
+_PYTE_SCRUB_PREFIX = re.compile(rb"\x1b(?:\[(?:[=>]?[0-9;]*'?)?| )?$")
+# Nothing catalogued is longer than this, so a pathological run of parameter
+# bytes can never stall the stream.
+_PYTE_HOLD_MAX = 32
+
+# Uncatalogued pyte failures seen this run, reported once each by report().
+_pyte_defects = []
+
+
+def scrub_for_pyte(data):
+    """Remove the catalogued sequences the installed pyte cannot parse.
+
+    Everything else is left byte-for-byte intact: the point of the catalogue
+    is that an UNKNOWN mis-parse still reaches pyte and gets reported.
+    """
+    for pattern, _reason in _PYTE_SCRUB:
+        data = pattern.sub(b'', data)
+    return data
+
+
+def _pyte_hold(data):
+    """Split scrubbed bytes into (feed now, hold for the next chunk)."""
+    match = _PYTE_SCRUB_PREFIX.search(data)
+    if match is None:
+        return data, b''
+    start = match.start()
+    if len(data) - start > _PYTE_HOLD_MAX:
+        return data, b''
+    return data[:start], data[start:]
+
+
+def _pyte_report(where, exc):
+    detail = f'{where}: {type(exc).__name__}: {exc}'
+    if detail not in _pyte_defects:
+        _pyte_defects.append(detail)
+
+
+def feed_pyte(stream, data, where='pyte'):
+    """Feed a pyte stream through the scrub, failing loudly on anything else.
+
+    pyte aborts the entire feed() call when it raises, discarding the rest of
+    the chunk, so a swallowed exception silently corrupts every later
+    assertion.  Catalogued sequences never reach pyte; anything which still
+    raises is a defect this fixture does not yet know about and must be seen.
+    """
+    if stream is None:
+        return True
+    pending = getattr(stream, '_st_pyte_pending', b'')
+    ready, held = _pyte_hold(scrub_for_pyte(pending + data))
+    stream._st_pyte_pending = held
+    if not ready:
+        return True
+    try:
+        stream.feed(ready)
+        return True
+    except Exception as exc:                      # noqa: BLE001 -- reported
+        _pyte_report(where, exc)
+        return False
+
+
+def flush_pyte(stream, where='pyte'):
+    """Feed anything held back for a possible continuation which never came."""
+    if stream is None:
+        return True
+    ready = getattr(stream, '_st_pyte_pending', b'')
+    if not ready:
+        return True
+    stream._st_pyte_pending = b''
+    try:
+        stream.feed(ready)
+        return True
+    except Exception as exc:                      # noqa: BLE001 -- reported
+        _pyte_report(where, exc)
+        return False
+
+
+def pyte_defects():
+    """Uncatalogued pyte parse failures recorded so far."""
+    return list(_pyte_defects)
+
 
 _fails = []
 _registered_homes = []
@@ -292,6 +415,14 @@ def fails():
 
 def report():
     """Final verdict; also fails if any daemon outlived the test."""
+    # A pyte parse error used to be swallowed, which silently discarded the
+    # rest of that chunk and made every later assertion read a stale screen.
+    # Catalogued sequences never reach pyte (see _PYTE_SCRUB), so anything
+    # recorded here is a mis-parse this fixture does not know about yet.
+    if _pyte_defects:
+        check('no uncatalogued pyte parse errors', False)
+        for detail in _pyte_defects:
+            print(f'  {detail}')
     leftovers = []
     for home in _registered_homes:
         leftovers += _live_daemons(home)
@@ -372,11 +503,153 @@ def fresh_home(testname, base=None):
 
 # ---------------------------------------------------------------- protocol
 
+# The daemon's frame numbering, frozen here on purpose and checked against
+# src/st_server.pas by wire_constants_test. It lived in ten different suite
+# files, so a wire change had ten places to miss.
+
+# client -> daemon
 FRAME_ATTACH = 1
 FRAME_INPUT = 2
 FRAME_RESIZE = 3
 FRAME_DETACH = 4
 FRAME_CLOSE = 5
+FRAME_KILLPANE = 6
+FRAME_LAYOUT = 7
+FRAME_NEWPANE = 8
+FRAME_FOCUS = 9
+FRAME_RENAME = 10
+FRAME_DESKTOP_RESIZE = 16
+FRAME_LAYOUT_LOCK = 17
+FRAME_LAYOUT_UNLOCK = 18
+FRAME_CLIENT_SIZE = 19
+
+# one-shot control frames; these never take a client slot
+FRAME_CTL_LIST = 11
+FRAME_CTL_SEND = 12
+FRAME_CTL_CAPTURE = 13
+FRAME_CTL_WINOP = 14
+FRAME_CTL_INFO = 15
+
+# daemon -> client
+FRAME_SESSION = 20
+FRAME_SCREEN = 21
+FRAME_READY = 22
+FRAME_OUTPUT = 23
+FRAME_EXIT = 24
+FRAME_ERROR = 25
+
+# daemon -> client events; sent only to a client which declared the capability
+FRAME_LAYOUT_EV = 26
+FRAME_KILLPANE_EV = 27
+FRAME_NEWPANE_EV = 28
+FRAME_RESIZE_EV = 29
+FRAME_TITLE_EV = 30
+FRAME_FOCUS_EV = 31
+FRAME_SHUTDOWN_EV = 32
+FRAME_LAYOUT_LOCK_REPLY = 33
+FRAME_HOST_SUMMARY_EV = 34
+FRAME_LAYOUT_PREVIEW = 35
+FRAME_LAYOUT_PREVIEW_EV = 36
+FRAME_LAYOUT_PEER_EV = 37
+
+# control replies
+FRAME_CTL_OK = 40
+FRAME_CTL_ERR = 41
+FRAME_CTL_DATA = 42
+FRAME_CTL_END = 43
+
+# FRAME_LAYOUT_PREVIEW operations
+PREVIEW_OP_BOUNDS = 1
+PREVIEW_OP_WIREFRAME = 2
+PREVIEW_OP_OUTLINE_SHOW = 3
+PREVIEW_OP_OUTLINE_HIDE = 4
+PREVIEW_OP_TAIL_BEGIN = 5
+PREVIEW_OP_TAIL_END = 6
+PREVIEW_OP_CLEAR = 7
+PREVIEW_OP_END = PREVIEW_OP_CLEAR
+
+# FRAME_CTL_CAPTURE modes
+CAPTURE_VISIBLE = 0
+CAPTURE_ALL = 1
+CAPTURE_LAST_N = 2
+
+# FRAME_CTL_WINOP sub-operations (7 is deliberately unused)
+WINOP_NEWPANE = 1
+WINOP_KILL = 2
+WINOP_FOCUS = 3
+WINOP_MINIMIZE = 4
+WINOP_RESTORE = 5
+WINOP_ZOOM = 6
+WINOP_ORGANIZE = 8
+WINOP_RENAME = 9
+WINOP_RESIZE = 10
+
+ATTACH_CAP_EVENTS = 1
+
+# Every name above which wire_constants_test must find in the Pascal unit
+# with the same value.  Kept as an explicit tuple so that deleting a constant
+# from either side is also caught, not only a changed number.
+WIRE_CONSTANT_NAMES = (
+    'FRAME_ATTACH', 'FRAME_INPUT', 'FRAME_RESIZE', 'FRAME_DETACH',
+    'FRAME_CLOSE', 'FRAME_KILLPANE', 'FRAME_LAYOUT', 'FRAME_NEWPANE',
+    'FRAME_FOCUS', 'FRAME_RENAME', 'FRAME_DESKTOP_RESIZE',
+    'FRAME_LAYOUT_LOCK', 'FRAME_LAYOUT_UNLOCK', 'FRAME_CLIENT_SIZE',
+    'FRAME_CTL_LIST', 'FRAME_CTL_SEND', 'FRAME_CTL_CAPTURE',
+    'FRAME_CTL_WINOP', 'FRAME_CTL_INFO',
+    'FRAME_SESSION', 'FRAME_SCREEN', 'FRAME_READY', 'FRAME_OUTPUT',
+    'FRAME_EXIT', 'FRAME_ERROR',
+    'FRAME_LAYOUT_EV', 'FRAME_KILLPANE_EV', 'FRAME_NEWPANE_EV',
+    'FRAME_RESIZE_EV', 'FRAME_TITLE_EV', 'FRAME_FOCUS_EV',
+    'FRAME_SHUTDOWN_EV', 'FRAME_LAYOUT_LOCK_REPLY', 'FRAME_HOST_SUMMARY_EV',
+    'FRAME_LAYOUT_PREVIEW', 'FRAME_LAYOUT_PREVIEW_EV', 'FRAME_LAYOUT_PEER_EV',
+    'FRAME_CTL_OK', 'FRAME_CTL_ERR', 'FRAME_CTL_DATA', 'FRAME_CTL_END',
+    'PREVIEW_OP_BOUNDS', 'PREVIEW_OP_WIREFRAME', 'PREVIEW_OP_OUTLINE_SHOW',
+    'PREVIEW_OP_OUTLINE_HIDE', 'PREVIEW_OP_TAIL_BEGIN', 'PREVIEW_OP_TAIL_END',
+    'PREVIEW_OP_CLEAR',
+    'CAPTURE_VISIBLE', 'CAPTURE_ALL', 'CAPTURE_LAST_N',
+    'WINOP_NEWPANE', 'WINOP_KILL', 'WINOP_FOCUS', 'WINOP_MINIMIZE',
+    'WINOP_RESTORE', 'WINOP_ZOOM', 'WINOP_ORGANIZE', 'WINOP_RENAME',
+    'WINOP_RESIZE',
+    'ATTACH_CAP_EVENTS',
+)
+
+SERVER_SOURCE = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), 'src', 'st_server.pas')
+
+
+def pascal_constants(names, path=None):
+    """Read the named integer consts out of a Pascal unit.
+
+    Only simple "NAME = <int>;" declarations are recognised, which is what the
+    wire constants are. A name the unit does not declare that way is absent
+    from the result, so the caller can report it as missing rather than
+    silently comparing against a default.
+    """
+    if path is None:
+        path = SERVER_SOURCE
+    wanted = set(names)
+    found = {}
+    pattern = re.compile(r'^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(-?\d+)\s*;')
+    with open(path, encoding='utf-8') as handle:
+        for line in handle:
+            match = pattern.match(line)
+            if match is not None and match.group(1) in wanted:
+                found.setdefault(match.group(1), int(match.group(2)))
+    return found
+
+
+def attach_proto_ver(path=None):
+    """The daemon's current ATTACH_PROTO_VER.
+
+    Deliberately derived rather than frozen: a client which speaks the wire
+    must follow a version bump, and the daemon refuses any other value on
+    both sides. The frame NUMBERING above is the opposite case.
+    """
+    values = pascal_constants(('ATTACH_PROTO_VER',), path)
+    if 'ATTACH_PROTO_VER' not in values:
+        raise RuntimeError('ATTACH_PROTO_VER not found in ' +
+                           (path or SERVER_SOURCE))
+    return values['ATTACH_PROTO_VER']
 
 
 def raw_frame(kind, pane, payload=b''):
@@ -698,6 +971,17 @@ def close_all_daemons(home):
 
 # ---------------------------------------------------------------- processes
 
+# ECHILD from waitpid does not mean "still running": it means the child is
+# gone and something else collected it. That is an exit, and reporting it as
+# anything else turns a dead process into an apparently hung one.
+#
+# The three reapers in this file used to disagree about that: _wait_pid_until
+# returned 0, while Client.alive recorded no status at all and Client.wait_exit
+# returned None -- which every caller reads as "did not exit". They now share
+# this constant.
+REAPED_ELSEWHERE = 0
+
+
 def _wait_pid_until(pid, deadline):
     """Return a wait status before *deadline*, or None without blocking."""
     while True:
@@ -705,7 +989,7 @@ def _wait_pid_until(pid, deadline):
             waited, status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
             # The process was already reaped by its owner.
-            return 0
+            return REAPED_ELSEWHERE
         if waited:
             return status
         remaining = deadline - time.monotonic()
@@ -936,10 +1220,8 @@ class Client:
         """
         self._transition_screen = pyte.Screen(self.w, self.h)
         self._transition_stream = pyte.ByteStream(self._transition_screen)
-        try:
-            self._transition_stream.feed(self._raw)
-        except Exception:
-            pass
+        feed_pyte(self._transition_stream, self._raw, 'transition baseline')
+        flush_pyte(self._transition_stream, 'transition baseline')
         self._transition_pending = b''
         self._transition_in_frame = False
         self._transition_raw = b''
@@ -968,10 +1250,8 @@ class Client:
         if self._transition_capture and self._transition_pending:
             part = self._transition_pending
             self._transition_pending = b''
-            try:
-                self._transition_stream.feed(part)
-            except Exception:
-                pass
+            feed_pyte(self._transition_stream, part, 'transition tail')
+            flush_pyte(self._transition_stream, 'transition tail')
             if self._transition_in_frame:
                 self._transition_raw += part
             else:
@@ -1047,10 +1327,8 @@ class Client:
                 if safe:
                     part = self._transition_pending[:safe]
                     self._transition_pending = self._transition_pending[safe:]
-                    try:
-                        self._transition_stream.feed(part)
-                    except Exception:
-                        pass
+                    feed_pyte(self._transition_stream, part,
+                              'transition part')
                     if self._transition_in_frame:
                         self._transition_raw += part
                     else:
@@ -1061,10 +1339,8 @@ class Client:
             part = self._transition_pending[:end]
             self._transition_pending = self._transition_pending[end:]
             if self._transition_in_frame:
-                try:
-                    self._transition_stream.feed(part)
-                except Exception:
-                    pass
+                feed_pyte(self._transition_stream, part, 'transition frame')
+                flush_pyte(self._transition_stream, 'transition frame')
                 self._transition_raw += part
                 self._save_transition('sync', self._transition_raw)
                 self._transition_raw = b''
@@ -1074,46 +1350,45 @@ class Client:
                 # the synchronized transaction itself starts at the marker.
                 before = part[:-len(token)]
                 if before:
-                    try:
-                        self._transition_stream.feed(before)
-                    except Exception:
-                        pass
+                    feed_pyte(self._transition_stream, before,
+                              'transition direct')
+                    flush_pyte(self._transition_stream, 'transition direct')
                     self._transition_direct_raw += before
                 if self._transition_direct_raw:
                     self._save_transition('direct',
                                           self._transition_direct_raw)
                     self._transition_direct_raw = b''
-                try:
-                    self._transition_stream.feed(token)
-                except Exception:
-                    pass
+                feed_pyte(self._transition_stream, token,
+                          'transition token')
                 self._transition_raw = token
                 self._transition_in_frame = True
 
     def drain(self, seconds):
         end = time.time() + seconds
-        while time.time() < end:
-            r, _, _ = select.select([self.fd], [], [], 0.05)
-            if r:
-                try:
-                    d = os.read(self.fd, 65536)
-                    if not d:
-                        return
-                except OSError:
-                    return
-                self._raw += d
-                if b'\x1b[6n' in d:
-                    row, col = self.dsr
+        try:
+            while time.time() < end:
+                r, _, _ = select.select([self.fd], [], [], 0.05)
+                if r:
                     try:
-                        os.write(self.fd, f'\x1b[{row};{col}R'.encode())
+                        d = os.read(self.fd, 65536)
+                        if not d:
+                            return
                     except OSError:
-                        pass
-                try:
-                    self.stream.feed(d)
-                except Exception:
-                    pass
-                if self._transition_capture:
-                    self._feed_transition_capture(d)
+                        return
+                    self._raw += d
+                    if b'\x1b[6n' in d:
+                        row, col = self.dsr
+                        try:
+                            os.write(self.fd, f'\x1b[{row};{col}R'.encode())
+                        except OSError:
+                            pass
+                    feed_pyte(self.stream, d, 'client drain')
+                    if self._transition_capture:
+                        self._feed_transition_capture(d)
+        finally:
+            # Bytes the scrub held back waiting for a continuation which never
+            # arrived still belong to the state this drain is asked about.
+            flush_pyte(self.stream, 'client drain')
 
     def send(self, data, seconds=0.8):
         try:
@@ -1144,10 +1419,24 @@ class Client:
                 return True
         return pred(self.text())
 
+    def _mark_reaped(self, status):
+        """Record an exit exactly once, never losing it to a later probe."""
+        self._reaped = True
+        if self._wait_status is None:
+            self._wait_status = status
+        unregister_process(self.pid)
+        return self._wait_status
+
     def wait_exit(self, timeout=5.0):
-        """Wait for the child to exit; returns exit status or None."""
+        """Wait for the child to exit; returns its status, or None if it did not.
+
+        None means "still running" and nothing else. It used to also mean
+        "exited, but someone else reaped it first" and "exited, but an earlier
+        alive() noticed without recording a status" -- both of which are dead
+        processes, and both of which every caller reads as a failure.
+        """
         if self._reaped:
-            return self._wait_status
+            return self._mark_reaped(REAPED_ELSEWHERE)
         deadline = time.monotonic() + max(0.0, timeout)
         first_probe = True
         while first_probe or time.monotonic() < deadline:
@@ -1155,18 +1444,23 @@ class Client:
             try:
                 pid, st = os.waitpid(self.pid, os.WNOHANG)
             except ChildProcessError:
-                self._reaped = True
-                unregister_process(self.pid)
-                return self._wait_status
+                return self._mark_reaped(REAPED_ELSEWHERE)
             if pid:
-                self._reaped = True
-                self._wait_status = st
-                unregister_process(self.pid)
-                return st
+                return self._mark_reaped(st)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             self.drain(min(0.1, remaining))
+        # Say "still running" only after establishing that it is. A silent
+        # None for a process which is already gone is indistinguishable from a
+        # hung client, and that is precisely the report that has to be
+        # trustworthy -- these deadlines exist to catch a client that hangs.
+        try:
+            os.kill(self.pid, 0)
+        except ProcessLookupError:
+            return self._mark_reaped(REAPED_ELSEWHERE)
+        except PermissionError:
+            pass
         return None
 
     def alive(self):
@@ -1175,14 +1469,14 @@ class Client:
         try:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
         except ChildProcessError:
-            self._reaped = True
-            unregister_process(self.pid)
+            # Learning here that the child is gone must not throw the fact
+            # away: a later wait_exit takes the already-reaped fast path and
+            # can only report what this call recorded.
+            self._mark_reaped(REAPED_ELSEWHERE)
             return False
         if pid == 0:
             return True
-        self._reaped = True
-        self._wait_status = status
-        unregister_process(self.pid)
+        self._mark_reaped(status)
         return False
 
     def close(self):

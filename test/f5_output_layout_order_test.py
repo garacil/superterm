@@ -35,16 +35,9 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_DETACH, FRAME_CTL_CAPTURE, FRAME_SCREEN,
+    FRAME_READY, FRAME_CTL_DATA, FRAME_CTL_END, CAPTURE_VISIBLE)
 
-
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_CTL_CAPTURE = 13
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
-CAPTURE_VISIBLE = 0
 
 WIDTH = 100
 HEIGHT = 30

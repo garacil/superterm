@@ -13,19 +13,11 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame
+from stlib import (FRAME_ATTACH, FRAME_INPUT, FRAME_DETACH, FRAME_CTL_SEND,
+    FRAME_CTL_CAPTURE, FRAME_CTL_INFO, FRAME_READY, FRAME_CTL_OK,
+    FRAME_CTL_ERR, FRAME_CTL_DATA, FRAME_CTL_END)
 
 
-FRAME_ATTACH = 1
-FRAME_INPUT = 2
-FRAME_DETACH = 4
-FRAME_CTL_SEND = 12
-FRAME_CTL_CAPTURE = 13
-FRAME_CTL_INFO = 15
-FRAME_READY = 22
-FRAME_CTL_OK = 40
-FRAME_CTL_ERR = 41
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
 CLIENTS = 3
 TOKENS_PER_CLIENT = 40
 DEBUG_LOG = '/tmp/superterm-global-command-fifo.log'

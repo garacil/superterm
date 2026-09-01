@@ -30,11 +30,8 @@ PROTO_VER = attach_proto_ver()
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_SESSION, FRAME_SCREEN, FRAME_READY)
 
-FRAME_ATTACH = 1
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
 
 HOME = stlib.fresh_home('multiclient')
 with open(HOME + '/.superterm/superterm.ini', 'w') as config:

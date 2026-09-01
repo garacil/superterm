@@ -18,14 +18,12 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, run_cli
+from stlib import (FRAME_CTL_LIST, FRAME_CTL_DATA, FRAME_CTL_END)
 
 
 WIDTH, HEIGHT = 110, 34
 TITLE = 'WIRE_PREVIEW_TARGET'
 OTHER = 'WIRE_PREVIEW_OTHER'
-FRAME_CTL_LIST = 11
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
 RING_GLYPHS = frozenset('┌─┐│└┘')
 FRAME_LEFT = ('╔', '┌', '░', '▒', '▓')
 FRAME_RIGHT = ('╗', '┐', '░', '▒', '▓')

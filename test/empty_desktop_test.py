@@ -29,6 +29,8 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, run_cli
+from stlib import (FRAME_ATTACH, FRAME_DETACH, FRAME_SESSION, FRAME_SCREEN,
+    FRAME_READY)
 
 
 HOME = stlib.fresh_home('emptydesk')
@@ -62,11 +64,6 @@ def attach_proto_ver():
 
 
 PROTO_VER = attach_proto_ver()
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
 
 
 def drain_all(clients, seconds=0.8):

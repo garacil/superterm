@@ -11,18 +11,9 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, pas_string, raw_frame, read_frame
-
-FRAME_INPUT = 2
-FRAME_DETACH = 4
-FRAME_CTL_CAPTURE = 13
-FRAME_CTL_WINOP = 14
-FRAME_CTL_INFO = 15
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
-WINOP_RENAME = 9
+from stlib import (FRAME_INPUT, FRAME_DETACH, FRAME_CTL_CAPTURE,
+    FRAME_CTL_WINOP, FRAME_CTL_INFO, FRAME_SESSION, FRAME_SCREEN, FRAME_READY,
+    FRAME_CTL_DATA, FRAME_CTL_END, WINOP_RENAME)
 
 
 def attach_proto_ver():

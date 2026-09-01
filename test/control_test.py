@@ -13,19 +13,11 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame, read_pas_string
+from stlib import (FRAME_CTL_LIST, FRAME_CTL_SEND, FRAME_CTL_CAPTURE,
+    FRAME_CTL_WINOP, FRAME_CTL_INFO, FRAME_CTL_OK, FRAME_CTL_ERR,
+    FRAME_CTL_DATA, FRAME_CTL_END, CAPTURE_VISIBLE, CAPTURE_ALL,
+    CAPTURE_LAST_N)
 
-FRAME_CTL_LIST = 11
-FRAME_CTL_SEND = 12
-FRAME_CTL_CAPTURE = 13
-FRAME_CTL_WINOP = 14
-FRAME_CTL_INFO = 15
-FRAME_CTL_OK = 40
-FRAME_CTL_ERR = 41
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
-CAPTURE_VISIBLE = 0
-CAPTURE_ALL = 1
-CAPTURE_LAST_N = 2
 
 HOME = stlib.fresh_home('control')
 with open(HOME + '/.superterm/superterm.ini', 'w') as config:

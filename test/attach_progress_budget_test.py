@@ -18,12 +18,10 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check
+from stlib import (FRAME_ATTACH, FRAME_SESSION, FRAME_READY)
 
 
 PROJECT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-FRAME_ATTACH = 1
-FRAME_SESSION = 20
-FRAME_READY = 22
 DEADLINE_RE = re.compile(
     r'test-attach-deadline: ready=(\d+) reached=([01]) success=([01])')
 

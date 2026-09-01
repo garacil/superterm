@@ -22,13 +22,10 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
 from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_DETACH, FRAME_SESSION, FRAME_SCREEN,
+    FRAME_READY)
 
 
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
 STRESS_SECONDS = 2.2
 CHURNERS = 2
 CLI_READERS = 3
