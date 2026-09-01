@@ -11,7 +11,13 @@ itself or is rejected.
 
 ## Behaviour baseline
 
-97 suites, **91 pass / 6 fail**, 1381.7 s.
+99 suites, **93 pass / 6 fail**, 1369.3 s, at commit `58384f8`.
+
+The suite count grew from main's 94 as this work added guards: the suite
+manifest, the wire constants, the fixture reaping, the architecture boundary
+and the terminal replies. The binaries were verified unchanged across the run
+(`sha256_test` in `environment.txt` matches the tree), because an earlier
+attempt was invalidated by rebuilding mid-run and had to be discarded.
 
 The six failures are **pre-existing on this branch**, proven rather than
 assumed: each was re-run at `a7ae1a5` (before the fixture work landed) with the
