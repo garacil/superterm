@@ -2309,15 +2309,21 @@ procedure TSuperApp.WaitForActivity(ABudgetMs: integer);
 var
   Fds: TFDSet;
   Timeout: TTimeVal;
-  MaxFd, i: cint;
+  MaxFd, i, InputFd: cint;
 begin
   if ABudgetMs <= 0 then
     Exit;
+  // A byte is already buffered: there is nothing to wait for.
+  if st_kbd.InputBuffered then
+    Exit;
   fpFD_ZERO(Fds);
-  // stdin: the keyboard and the mouse. Always watched -- being able to answer
-  // the user is the whole point.
-  fpFD_SET(0, Fds);
-  MaxFd := 0;
+  // The keyboard and the mouse. Always watched -- being able to answer the
+  // user is the whole point. Once the input pump owns stdin this is its
+  // notification pipe instead: the pump has already drained fd 0, so a wait
+  // on fd 0 would never fire again.
+  InputFd := cint(InputWakeupFd);
+  fpFD_SET(InputFd, Fds);
+  MaxFd := InputFd;
   if RemoteMode then
   begin
     if (Remote <> nil) and Remote.Connected and (Remote.SocketFd >= 0) then

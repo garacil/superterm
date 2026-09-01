@@ -260,6 +260,12 @@ var
   fds: TFDSet;
   tv: TTimeVal;
 begin
+  // Once the input pump owns stdin the tty is drained continuously, so asking
+  // the descriptor would answer "nothing waiting" forever and both callers of
+  // this -- frame coalescing and the drag outline step -- would stop skipping
+  // work that is about to be superseded. The pump's buffer is the answer then.
+  if InputPumpActive then
+    Exit(InputBuffered);
   fpFD_ZERO(fds);
   fpFD_SET(StdInputHandle, fds);
   tv.tv_sec := 0;

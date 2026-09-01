@@ -323,7 +323,19 @@ begin
       if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
       STApp^.FinishBoot;   // release the boot lock and paint ONCE
       if not STApp^.AbortRun then
-        STApp^.Run;
+      begin
+        // Every synchronous probe of the host terminal is done, so stdin can
+        // now belong to the pump for as long as the event loop runs: input is
+        // then drained continuously and a repaint can never cost a keystroke
+        // or a mouse press. It must be stopped before ReleaseConsoleInput,
+        // which flushes stdin itself.
+        StartInputPump;
+        try
+          STApp^.Run;
+        finally
+          StopInputPump;
+        end;
+      end;
     end;
   end;
   // Covers constructor cancellation and existing-session attach; idempotent.

@@ -38,10 +38,45 @@ function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
 // item to the focused pane.
 function TakeHostPaste(out AText: RawByteString): boolean;
 
+// Input pump. The decoder below only reads stdin when the single UI thread
+// asks it for a byte, and under a flood that thread is busy parsing pane
+// output and repainting. Meanwhile the host terminal keeps reporting: with
+// button-event tracking a drag emits one ~13 byte report per pointer step.
+// Nobody is draining, the tty input buffer fills, and the kernel discards the
+// newest bytes in silence -- a press on a window title simply never happens
+// as far as the application is concerned, which is why one window answered
+// the mouse and another ignored it. The pump is a thread that does nothing
+// but move stdin into a large ring, so input survives however long a repaint
+// takes. Start it only once every synchronous probe has finished: while it
+// runs it is the sole reader of fd 0.
+procedure StartInputPump;
+procedure StopInputPump;
+// Descriptor to wait on for input once the pump owns stdin. A caller that
+// selects must use this instead of fd 0, which the pump has already drained.
+// Falls back to fd 0 when the pump is not running, so a caller needs no branch.
+function InputWakeupFd: longint;
+// Whether the pump owns stdin. Callers that ask the tty about pending input
+// must ask this first: under the pump the tty is always drained.
+function InputPumpActive: boolean;
+// True when a byte is already buffered, so the caller must not block at all.
+// Named apart from st_video.InputPending on purpose: that one asks the tty,
+// which the pump has already drained.
+function InputBuffered: boolean;
+// Bytes the pump had to discard because the application never consumed them.
+// Zero unless the UI thread stalled for longer than the ring can absorb.
+function InputPumpDropped: QWord;
+
 implementation
 
 uses
-  BaseUnix, termio, SysUtils, Keyboard, Mouse, Drivers;
+  BaseUnix, termio, SysUtils, Classes, Keyboard, Mouse, Drivers;
+
+const
+  // Large enough that a stall of a whole second under button-event tracking
+  // still fits: a drag reports ~13 bytes per pointer step.
+  PUMP_RING_SIZE = 64 * 1024;
+  PUMP_CHUNK = 4096;
+  PUMP_TICK_MS = 40;     // bounded wait so Terminate is honoured at shutdown
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
@@ -342,6 +377,217 @@ begin
   PasteTail := (PasteTail + 1) mod HOST_PASTE_QUEUE;
 end;
 
+type
+  TInputPump = class(TThread)
+  protected
+    procedure Execute; override;
+  end;
+
+var
+  Pump: TInputPump = nil;
+  PumpLock: TRTLCriticalSection;
+  PumpLockReady: boolean = False;
+  PumpRing: array[0..PUMP_RING_SIZE - 1] of byte;
+  PumpHead: integer = 0;      // written by the pump, read by the UI thread
+  PumpTail: integer = 0;      // written by the UI thread
+  PumpCount: integer = 0;
+  PumpDropped: QWord = 0;
+  PumpPipe: TFildes = (-1, -1);
+  PumpSignalled: boolean = False;
+  PumpRunning: boolean = False;
+
+// FPC declares fpRead/fpWrite with untyped buffers and marks them inline; at
+// call sites 3.2.2 reports a compiler implementation note with nothing
+// actionable behind it. Keep that noise inside these two wrappers, exactly as
+// st_server does for its own self-pipe, so the build stays diagnostic clean.
+{$push}{$notes off}{$hints off}
+function PumpSignalWrite(AFd: longint): boolean;
+var
+  Value: byte;
+begin
+  Value := 1;
+  Result := (AFd >= 0) and (FpWrite(AFd, Value, SizeOf(Value)) = 1);
+end;
+
+procedure PumpSignalDrain(AFd: longint);
+var
+  Buf: array[0..63] of byte;
+begin
+  FillChar(Buf, SizeOf(Buf), 0);
+  if AFd < 0 then
+    Exit;
+  while FpRead(AFd, Buf, SizeOf(Buf)) > 0 do ;
+end;
+{$pop}
+
+// The pump reads stdin and nothing else. It never touches the decoder state,
+// FreeVision, or the screen: the only thing it shares with the UI thread is
+// the ring below and the pipe that says the ring stopped being empty.
+procedure TInputPump.Execute;
+var
+  Chunk: array[0..PUMP_CHUNK - 1] of byte;
+  Fds: TFDSet;
+  N: cint;
+  I: integer;
+begin
+  while not Terminated do
+  begin
+    fpFD_ZERO(Fds);
+    fpFD_SET(0, Fds);
+    // A bounded wait, so Terminate is noticed even on a silent terminal.
+    N := fpSelect(1, @Fds, nil, nil, PUMP_TICK_MS);
+    if Terminated then
+      Break;
+    if N <= 0 then
+      Continue;                       // timeout or EINTR: look again
+    N := FileRead(0, Chunk, SizeOf(Chunk));
+    if N <= 0 then
+    begin
+      if N = 0 then
+        Break;                        // stdin closed: there is nothing to pump
+      Continue;
+    end;
+    EnterCriticalSection(PumpLock);
+    try
+      for I := 0 to N - 1 do
+      begin
+        if PumpCount >= PUMP_RING_SIZE then
+        begin
+          // The UI thread has not consumed anything for a very long time.
+          // Account for it: a silent loss here is the bug this unit exists
+          // to remove, so it must be visible in the trace.
+          Inc(PumpDropped, QWord(N - I));
+          Break;
+        end;
+        PumpRing[PumpHead] := Chunk[I];
+        PumpHead := (PumpHead + 1) mod PUMP_RING_SIZE;
+        Inc(PumpCount);
+      end;
+      // One byte at a time in the pipe, gated by PumpSignalled, so the write
+      // can never block and the reader can never miss a transition.
+      if not PumpSignalled then
+        PumpSignalled := PumpSignalWrite(PumpPipe[1]);
+    finally
+      LeaveCriticalSection(PumpLock);
+    end;
+  end;
+end;
+
+// Moves what the pump has collected into the decoder's own buffer. Only ever
+// called by the UI thread, and only with RBuf empty.
+function PumpTake: boolean;
+var
+  N, I: integer;
+begin
+  Result := False;
+  EnterCriticalSection(PumpLock);
+  try
+    N := PumpCount;
+    if N > Length(RBuf) - 1 then
+      N := Length(RBuf) - 1;          // a full RBuf would read back as empty
+    if N > 0 then
+    begin
+      for I := 0 to N - 1 do
+      begin
+        RBuf[I] := PumpRing[PumpTail];
+        PumpTail := (PumpTail + 1) mod PUMP_RING_SIZE;
+        Dec(PumpCount);
+      end;
+      RTail := 0;
+      RHead := N;
+      Result := True;
+    end;
+    if (PumpCount = 0) and PumpSignalled then
+    begin
+      PumpSignalled := False;
+      PumpSignalDrain(PumpPipe[0]);
+    end;
+  finally
+    LeaveCriticalSection(PumpLock);
+  end;
+end;
+
+procedure StartInputPump;
+begin
+  if PumpRunning then
+    Exit;
+  if not PumpLockReady then
+  begin
+    InitCriticalSection(PumpLock);
+    PumpLockReady := True;
+  end;
+  if fpPipe(PumpPipe) <> 0 then
+    Exit;                             // no pipe: keep reading stdin inline
+  fpfcntl(PumpPipe[0], F_SETFL, fpfcntl(PumpPipe[0], F_GETFL) or O_NONBLOCK);
+  fpfcntl(PumpPipe[1], F_SETFL, fpfcntl(PumpPipe[1], F_GETFL) or O_NONBLOCK);
+  PumpHead := 0;
+  PumpTail := 0;
+  PumpCount := 0;
+  PumpDropped := 0;
+  PumpSignalled := False;
+  PumpRunning := True;
+  Pump := TInputPump.Create(False);
+end;
+
+procedure StopInputPump;
+begin
+  if not PumpRunning then
+    Exit;
+  if Pump <> nil then
+  begin
+    Pump.Terminate;
+    Pump.WaitFor;                     // no reader of fd 0 survives this call
+    FreeAndNil(Pump);
+  end;
+  PumpRunning := False;
+  if PumpPipe[0] >= 0 then
+    fpClose(PumpPipe[0]);
+  if PumpPipe[1] >= 0 then
+    fpClose(PumpPipe[1]);
+  PumpPipe[0] := -1;
+  PumpPipe[1] := -1;
+end;
+
+function InputPumpActive: boolean;
+begin
+  Result := PumpRunning and (PumpPipe[0] >= 0);
+end;
+
+function InputWakeupFd: longint;
+begin
+  if PumpRunning and (PumpPipe[0] >= 0) then
+    Result := longint(PumpPipe[0])
+  else
+    Result := 0;
+end;
+
+function InputBuffered: boolean;
+begin
+  if RHead <> RTail then
+    Exit(True);
+  Result := False;
+  if not PumpRunning then
+    Exit;
+  EnterCriticalSection(PumpLock);
+  try
+    Result := PumpCount > 0;
+  finally
+    LeaveCriticalSection(PumpLock);
+  end;
+end;
+
+function InputPumpDropped: QWord;
+begin
+  if not PumpRunning then
+    Exit(0);
+  EnterCriticalSection(PumpLock);
+  try
+    Result := PumpDropped;
+  finally
+    LeaveCriticalSection(PumpLock);
+  end;
+end;
+
 // waits up to TimeoutMs (negative = forever) for bytes in the buffer
 function FillBuf(TimeoutMs: integer): boolean;
 type
@@ -355,6 +601,20 @@ var
 begin
   if RHead <> RTail then
     Exit(True);
+  if PumpRunning then
+  begin
+    if PumpTake then
+      Exit(True);
+    fpFD_ZERO(fds);
+    fpFD_SET(PumpPipe[0], fds);
+    if TimeoutMs < 0 then
+      n := fpSelect(PumpPipe[0] + 1, @fds, nil, nil, nil)
+    else
+      n := fpSelect(PumpPipe[0] + 1, @fds, nil, nil, TimeoutMs);
+    if n <= 0 then
+      Exit(False);
+    Exit(PumpTake);
+  end;
   fpFD_ZERO(fds);
   fpFD_SET(0, fds);
   if TimeoutMs < 0 then
