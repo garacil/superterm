@@ -18,12 +18,14 @@ Remaining macOS follow-ups:
 
 ## Compiler Diagnostics
 
-- A clean Free Pascal build still emits 28 `Note` diagnostics. They are not
-  warnings or errors, but should be removed or deliberately suppressed if a
-  completely quiet build is required.
-- The notes come from legacy FreeVision code in `vendor/fv322`, inline calls
-  that FPC 3.2.2 does not inline, and `FpRead`/`FpWrite` calls in project
-  PTY/server/video code.
+- Resolved. This entry used to claim 28 standing `Note` diagnostics from
+  `vendor/fv322`, non-inlined inline calls and `FpRead`/`FpWrite`. Measured on
+  2026-09-01 against the current tree, all four build modes (release, debug,
+  test-runtime, debug-heap) compile 63089 lines with **zero** errors, warnings,
+  notes and hints. The count was stale, not the code.
+- `-Sewnh` now makes any diagnostic fatal, so the property is enforced instead
+  of merely reported. If a future FPC introduces a new note, the build stops
+  and it is fixed or suppressed with `-vm<number>` and a comment saying why.
 
 ## Test Coverage
 
