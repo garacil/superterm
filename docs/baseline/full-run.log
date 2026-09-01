@@ -71,7 +71,7 @@ bw=108
 bh=32
 argc=0
 
-<== PASS test/drive_test.py (7.1s)
+<== PASS test/drive_test.py (7.0s)
 
 ==> test/large_screen_test.py (timeout 900s)
 4096x35 startup settles             : OK
@@ -112,7 +112,7 @@ RESULT: PASS
 mouse frame starts on fixed desktop: OK
 mouse resize changes exact fixed-desktop frame: OK
 mouse resize keeps statusline     : OK
-<== PASS test/mouse_test.py (5.2s)
+<== PASS test/mouse_test.py (5.1s)
 
 ==> test/mouse_focus_test.py (timeout 900s)
 menu bar becomes visible            : OK
@@ -150,7 +150,7 @@ second right focus keeps pane 2 RGB : OK
 second right focus sends chrome only: OK
 
 RESULT: PASS
-<== PASS test/focus_color_test.py (13.0s)
+<== PASS test/focus_color_test.py (12.7s)
 
 ==> test/palette_resize_transition_test.py (timeout 900s)
 colour workspace is ready           : OK
@@ -238,7 +238,7 @@ C: lower-left returns to shell: OK
 D: moved window at saved pos: OK
 D: bounds round-trip      : OK
 D: DeskW/H round-trip     : OK
-<== FAIL test/restore_test.py (recorded failed assertion, 16.0s)
+<== FAIL test/restore_test.py (recorded failed assertion, 15.9s)
 
 ==> test/sysconfig_test.py (timeout 900s)
 daemon sidecar is complete and verifiable: FAIL
@@ -260,7 +260,7 @@ autosave=0 sigue sin sesion   : OK
 Alt-X guarda sesion           : OK
 session referencia term=solo  : OK
 restaura terminal por nombre  : OK
-<== FAIL test/sysconfig_test.py (recorded failed assertion, 16.8s)
+<== FAIL test/sysconfig_test.py (recorded failed assertion, 16.7s)
 
 ==> test/template_test.py (timeout 900s)
 template starts two panes     : OK
@@ -314,7 +314,7 @@ local wizard keeps both pane windows: OK
 wizard replacement leaves no hidden daemon: OK
 
 RESULT: PASS
-<== PASS test/wizard_test.py (17.6s)
+<== PASS test/wizard_test.py (17.7s)
 
 ==> test/language_test.py (timeout 900s)
 Spanish config selects Spanish UI   : OK
@@ -331,7 +331,7 @@ English switch persists             : OK
 Spanish switch updates the UI       : OK
 Spanish message dialog is localized : OK
 Spanish help shows fullscreen chord : OK
-<== PASS test/language_test.py (11.7s)
+<== PASS test/language_test.py (11.8s)
 
 ==> test/clipboard_test.py (timeout 900s)
 Clipboard top-level menu            : OK
@@ -364,7 +364,7 @@ Spanish menu returns to compact form: OK
 English 80-column menu keeps every full name: OK
 
 RESULT: PASS
-<== PASS test/clipboard_test.py (25.0s)
+<== PASS test/clipboard_test.py (25.1s)
 
 ==> test/window_test.py (timeout 900s)
 window shortcuts visible          : OK
@@ -445,7 +445,7 @@ captured switches away        : OK
 captured repl prompt          : OK
 captured restores pane title  : OK
 captured activates            : OK
-<== PASS test/profile_test.py (20.5s)
+<== PASS test/profile_test.py (20.6s)
 
 ==> test/profile_default_test.py (timeout 900s)
 alpha profile starts                : OK
@@ -522,7 +522,7 @@ sessions dir empty            : OK
 stale list exit 0             : OK
 zombi not listed              : OK
 zombi purged                  : OK
-<== PASS test/multisession_test.py (14.6s)
+<== PASS test/multisession_test.py (14.5s)
 
 ==> test/prefix_test.py (timeout 900s)
 default Ctrl-Q separa             : OK
@@ -547,7 +547,7 @@ custom title restored after save  : OK
 class default title on window     : OK
 
 RESULT: PASS
-<== PASS test/title_test.py (13.3s)
+<== PASS test/title_test.py (13.2s)
 
 ==> test/detach_test.py (timeout 900s)
 detach menu is visible              : OK
@@ -707,7 +707,7 @@ complete help is stable after live session and pane mutations: OK
 help truth fixture closes cleanly   : OK
 
 RESULT: PASS
-<== PASS test/cli_help_test.py (4.4s)
+<== PASS test/cli_help_test.py (4.5s)
 
 ==> test/control_wm_test.py (timeout 900s)
 new without session exit 2          : OK
@@ -978,7 +978,7 @@ client B exited cleanly after shutdown: OK
 session gone                        : OK
 
 RESULT: PASS
-<== PASS test/multiclient_test.py (30.6s)
+<== PASS test/multiclient_test.py (30.7s)
 
 ==> test/multiclient_close_test.py (timeout 900s)
 creator session exists              : OK
@@ -1156,7 +1156,7 @@ race 3 shared winner geometry       : OK
 race 3 releases every lease         : OK
 
 RESULT: PASS
-<== PASS test/zoom_exclusive_switch_test.py (17.5s)
+<== PASS test/zoom_exclusive_switch_test.py (17.4s)
 
 ==> test/host_summary_lease_test.py (timeout 900s)
 one session exists                  : OK
@@ -1181,7 +1181,7 @@ membership change does not bounce renderer back to raw: OK
 detach metadata leaves canonical geometry unchanged: OK
 
 RESULT: PASS
-<== PASS test/host_summary_lease_test.py (11.2s)
+<== PASS test/host_summary_lease_test.py (11.1s)
 
 ==> test/client_notifications_test.py (timeout 900s)
 one daemon session exists           : OK
@@ -1438,12 +1438,12 @@ final focus survives all detach     : OK
 final viewer detach exits cleanly   : OK
 
 RESULT: PASS
-<== PASS test/shared_state_stress_test.py (45.9s)
+<== PASS test/shared_state_stress_test.py (45.5s)
 
 ==> test/multiclient_intensive_test.py (timeout 900s)
 stress seed=0x3515a11
-action log=/tmp/opencode/st-f47468s9/actions.log
-flow log=/tmp/opencode/st-f47468s9/superterm-full.log
+action log=/tmp/opencode/st-_4nonx7i/actions.log
+flow log=/tmp/opencode/st-_4nonx7i/superterm-full.log
 intensive session exists            : OK
 rename pane 1                       : OK
 rename pane 2                       : OK
@@ -1921,98 +1921,9 @@ restore pane 1 after burst          : OK
 restore pane 2 after burst          : OK
 restore pane 3 after burst          : OK
 canonical tile after burst          : OK
-canonical tile is visible in every client: OK
-round 4 snapshot tokens submitted   : OK
-round 4 snapshot tokens canonical   : OK
-round 4 snapshot tokens rendered before attach: OK
-round 4 snapshot layout is non-empty: OK
-round 4 reads PTY sizes before attach: OK
-round 4 churn receives snapshot tokens: OK
-round 4 churn renders snapshot tokens: OK
-round 4 churn receives snapshot layout: OK
-round 4 select exact pane 1         : OK
-round 4 exact focus sync 1          : OK
-round 4 select exact pane 2         : OK
-round 4 exact focus sync 2          : OK
-round 4 select exact pane 3         : OK
-round 4 exact focus sync 3          : OK
-round 4 exact locks released        : OK
-round 4 canonical pane 1            : OK
-round 4 P1 visible C1               : OK
-round 4 P1 visible C2               : OK
-round 4 P1 visible C3               : OK
-round 4 P1 visible C4               : OK
-round 4 owns exact foreground 1     : OK
-round 4 canonical pane 2            : OK
-round 4 P2 visible C1               : OK
-round 4 P2 visible C2               : OK
-round 4 P2 visible C3               : OK
-round 4 P2 visible C4               : OK
-round 4 owns exact foreground 2     : OK
-round 4 canonical pane 3            : OK
-round 4 P3 visible C1               : OK
-round 4 P3 visible C2               : OK
-round 4 P3 visible C3               : OK
-round 4 P3 visible C4               : OK
-round 4 owns exact foreground 3     : OK
-round 4 churn renders every live exact token: OK
-round 4 select cursor pane 1        : OK
-round 4 cursor focus sync 1         : OK
-round 4 focus P1 cursor C1          : OK
-round 4 focus P1 cursor C2          : OK
-round 4 focus P1 cursor C3          : OK
-round 4 focus P1 cursor C4          : OK
-round 4 churn cursor exact P1       : OK
-round 4 stops exact foreground 1    : OK
-round 4 select cursor pane 2        : OK
-round 4 cursor focus sync 2         : OK
-round 4 focus P2 cursor C1          : OK
-round 4 focus P2 cursor C2          : OK
-round 4 focus P2 cursor C3          : OK
-round 4 focus P2 cursor C4          : OK
-round 4 churn cursor exact P2       : OK
-round 4 stops exact foreground 2    : OK
-round 4 select cursor pane 3        : OK
-round 4 cursor focus sync 3         : OK
-round 4 focus P3 cursor C1          : OK
-round 4 focus P3 cursor C2          : OK
-round 4 focus P3 cursor C3          : OK
-round 4 focus P3 cursor C4          : OK
-round 4 churn cursor exact P3       : OK
-round 4 stops exact foreground 3    : OK
-round 4 select ordered pane         : OK
-round 4 ordered focus sync          : OK
-round 4 raw reader ready            : OK
-round 4 concurrent writers finish   : OK
-round 4 client 1 writes complete burst: OK
-round 4 client 2 writes complete burst: OK
-round 4 client 3 writes complete burst: OK
-round 4 complete concurrent FIFO stream: OK
-round 4 client 1 FIFO projection    : OK
-round 4 client 2 FIFO projection    : OK
-round 4 client 3 FIFO projection    : OK
-round 4 ordered output C1           : OK
-round 4 ordered output C2           : OK
-round 4 ordered output C3           : OK
-round 4 ordered output C4           : OK
-round 4 churn renders complete live FIFO output: OK
-round 4 raw reader exits and restores tty: OK
-round 4 churn client alive          : OK
-round 4 attach keeps PTYs           : OK
-round 4 churn applies live shared layout: OK
-round 4 concurrent geometry writers finish: OK
-round 4 concurrent geometry writes complete: OK
-round 4 churn detach command written: OK
-round 4 churn detaches cleanly      : OK
-round 4 shared layout is non-empty  : OK
-round 4 shared geometry converges   : OK
-round 4 shared layout converges     : OK
-round 4 shared pane/icon identity converges: FAIL
-round 4 canonical flags match every rendered pane/icon: OK
-round 4 geometry burst changes material state: OK
-round 4 reactor stays responsive    : OK
-stress fail-fast at round 4 final invariants: round 4 shared pane/icon identity converges
-<== FAIL test/multiclient_intensive_test.py (exit status 1, 100.8s)
+canonical tile is visible in every client: FAIL
+stress fail-fast at restore and tile: canonical tile is visible in every client
+<== FAIL test/multiclient_intensive_test.py (exit status 1, 89.0s)
 
 ==> test/multiclient_focus_test.py (timeout 900s)
 session server exists               : OK
@@ -2051,7 +1962,7 @@ restore after minimize button       : OK
 restored button window visible in both clients: OK
 
 RESULT: PASS
-<== PASS test/multiclient_focus_test.py (24.9s)
+<== PASS test/multiclient_focus_test.py (24.6s)
 
 ==> test/multiclient_minimize_test.py (timeout 900s)
 session server exists               : OK
@@ -2157,7 +2068,7 @@ minimize all keeps shared focus     : OK
 all minimized icons remain unique and shared: OK
 
 RESULT: PASS
-<== PASS test/multiclient_minimize_test.py (18.0s)
+<== PASS test/multiclient_minimize_test.py (17.8s)
 
 ==> test/layout_transition_test.py (timeout 900s)
 transition session exists           : OK
@@ -2244,7 +2155,7 @@ resize actor has no rollback or duplicate paint: OK
 resize observer previews all steps locked then unlocks final: OK
 
 RESULT: PASS
-<== PASS test/layout_transition_test.py (38.3s)
+<== PASS test/layout_transition_test.py (38.0s)
 
 ==> test/layout_preview_protocol_test.py (timeout 900s)
 detached protocol session exists    : OK
@@ -2313,7 +2224,7 @@ mouse resize baseline has no geometry status: OK
 keyboard resize Esc baseline exists : FAIL
 
 RESULT: FAIL (6): wireframe baseline shared focus, mouse move has identical baseline, mouse move uses same monochrome frame attribute, mouse resize has identical baseline, mouse resize uses same monochrome frame attribute, keyboard resize Esc baseline exists
-<== FAIL test/wireframe_preview_test.py (exit status 1, 6.7s)
+<== FAIL test/wireframe_preview_test.py (exit status 1, 6.8s)
 
 ==> test/concurrent_gesture_test.py (timeout 900s)
 raw protocol v15+ fixture exists    : OK
@@ -2436,7 +2347,7 @@ physical wire 0->1 emits no destructive physical clear: OK
 physical wire 0->1 trace commits same-base gestures at base+1,+2: OK
 
 RESULT: PASS
-<== PASS test/concurrent_gesture_test.py (54.5s)
+<== PASS test/concurrent_gesture_test.py (54.1s)
 
 ==> test/restore_focus_test.py (timeout 900s)
 restore-focus session exists        : OK
@@ -2562,7 +2473,7 @@ wireframe-on remote focus wins held move log never restores actor focus: OK
 wireframe-on remote focus wins held move commits movement without changing focus: OK
 
 RESULT: PASS
-<== PASS test/title_hold_focus_test.py (41.5s)
+<== PASS test/title_hold_focus_test.py (40.7s)
 
 ==> test/alwaysserver_test.py (timeout 900s)
 socket exists at launch             : OK
@@ -2595,7 +2506,7 @@ cleanup kill exit 0                 : OK
 all gone                            : OK
 
 RESULT: PASS
-<== PASS test/alwaysserver_test.py (27.2s)
+<== PASS test/alwaysserver_test.py (27.1s)
 
 ==> test/passthrough_test.py (timeout 900s)
 windowed keeps truecolor fg         : OK
@@ -2645,7 +2556,7 @@ mixed-size fullscreen exit keeps safe crop: OK
 mixed-size fullscreen exit restores canonical PTY: OK
 
 RESULT: PASS
-<== PASS test/passthrough_multiclient_test.py (20.2s)
+<== PASS test/passthrough_multiclient_test.py (20.1s)
 
 ==> test/f5_output_layout_order_test.py (timeout 900s)
 one session exists                  : OK
@@ -2687,7 +2598,7 @@ detach: ?1006 SGR reporting off     : OK
 detach: ?2004 bracketed paste off   : OK
 
 RESULT: PASS
-<== PASS test/exit_clean_test.py (11.6s)
+<== PASS test/exit_clean_test.py (11.4s)
 
 ==> test/newwindow_test.py (timeout 900s)
 starts with one window              : OK
@@ -2720,7 +2631,7 @@ DECCKM off: not as ESC O A          : OK
 DECKPAM/DECKPNM are consumed silently: OK
 
 RESULT: PASS
-<== PASS test/appcursor_test.py (12.9s)
+<== PASS test/appcursor_test.py (12.8s)
 
 ==> test/late_dsr_test.py (timeout 900s)
 session exists                      : OK
@@ -2785,7 +2696,7 @@ clicking the trough pages back      : OK
 the bar still drives this pane after renumbering: OK
 
 RESULT: PASS
-<== PASS test/scrollback_test.py (29.3s)
+<== PASS test/scrollback_test.py (29.4s)
 
 ==> test/nesting_test.py (timeout 900s)
 outer session up                    : OK
@@ -2918,7 +2829,7 @@ post-cycle first client detaches with status 0: OK
 post-cycle second client detaches with status 0: OK
 
 RESULT: PASS
-<== PASS test/empty_desktop_test.py (36.6s)
+<== PASS test/empty_desktop_test.py (37.2s)
 
 ==> test/max_panes_test.py (timeout 900s)
 fifteen additional panes created    : OK
@@ -2940,7 +2851,7 @@ race accepts exactly pane sixteen   : OK
 only race loser sees maximum dialog : OK
 
 RESULT: PASS
-<== PASS test/max_panes_test.py (16.2s)
+<== PASS test/max_panes_test.py (16.1s)
 
 ==> test/close_all_panes_test.py (timeout 900s)
 sixteen-pane setup succeeds         : OK
@@ -2965,7 +2876,7 @@ local recreated pane is usable      : OK
 local recreated shell receives input: OK
 
 RESULT: PASS
-<== PASS test/close_all_panes_test.py (17.9s)
+<== PASS test/close_all_panes_test.py (17.8s)
 
 ==> test/mousemode_test.py (timeout 900s)
 the host is asked for any-motion    : OK
@@ -3055,7 +2966,7 @@ the client survived closing a pane  : OK
 the client survived saving          : OK
 
 RESULT: PASS
-<== PASS test/badclass_test.py (12.8s)
+<== PASS test/badclass_test.py (12.7s)
 
 ==> test/passthrough_modes_test.py (timeout 900s)
 passthrough released the mouse      : OK
@@ -3175,7 +3086,7 @@ symlinked configuration lock is rejected: OK
 no rewrite temporary is left behind : OK
 
 RESULT: PASS
-<== PASS test/config_concurrency_test.py (6.5s)
+<== PASS test/config_concurrency_test.py (6.6s)
 
 ==> test/pane_reaper_test.py (timeout 900s)
 entry normalizes inherited SIGCHLD exactly: OK
@@ -3256,7 +3167,7 @@ daemon-hang-post leaves no published session: OK
 daemon-hang-post keeps original PTY writable: OK
 
 RESULT: PASS
-<== PASS test/session_startup_atomic_test.py (11.9s)
+<== PASS test/session_startup_atomic_test.py (11.8s)
 
 ==> test/stlib_crash_audit_test.py (timeout 900s)
 dead generation leaves live index   : OK
@@ -3285,12 +3196,12 @@ zero-time wait still probes child once: OK
 empty process identity fails registration: OK
 birth identity helper compiles cleanly: OK
 Pascal birth identity matches kernel: OK
-  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/incomplete.ini reason=missing [session] section or pid
-  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/malformed.ini reason=MissingSectionHeaderError: File contains no section headers.
-file: '/tmp/opencode/st-7b3zvhl3/.superterm/sessions/malformed.ini', line: 1
+  sidecar=/tmp/opencode/st-ny141gqs/.superterm/sessions/incomplete.ini reason=missing [session] section or pid
+  sidecar=/tmp/opencode/st-ny141gqs/.superterm/sessions/malformed.ini reason=MissingSectionHeaderError: File contains no section headers.
+file: '/tmp/opencode/st-ny141gqs/.superterm/sessions/malformed.ini', line: 1
 '[session\n'
-  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/mismatch.ini pid=2733686 session=mismatch reason=identity does not match the live PID
-  sidecar=/tmp/opencode/st-7b3zvhl3/.superterm/sessions/old.ini pid=2733686 session=old reason=missing or malformed identity
+  sidecar=/tmp/opencode/st-ny141gqs/.superterm/sessions/mismatch.ini pid=2766853 session=mismatch reason=identity does not match the live PID
+  sidecar=/tmp/opencode/st-ny141gqs/.superterm/sessions/old.ini pid=2766853 session=old reason=missing or malformed identity
 old and mismatched sidecars untrusted: OK
 every invalid sidecar fails harness once: OK
 untrusted sidecars never signal     : OK
@@ -3470,7 +3381,7 @@ service wrapper execs accepted sshd in place: OK
 service wrapper ignores invalid pending file: OK
 
 RESULT: PASS
-<== PASS test/ssh_server_config_test.py (10.1s)
+<== PASS test/ssh_server_config_test.py (10.0s)
 
 ==> test/ssh_release_boundary_test.py (timeout 900s)
 unprivileged release boundary         : SKIP (run as non-root)
@@ -3535,7 +3446,7 @@ DESTDIR leaves simulated host descriptor unchanged: OK
 DESTDIR never calls a host service manager: OK
 
 RESULT: PASS
-<== PASS test/ssh_service_uninstall_test.py (1.9s)
+<== PASS test/ssh_service_uninstall_test.py (1.5s)
 
 ==> test/ssh_entry_test.py (timeout 900s)
 direct entry without SSH rejected   : OK
@@ -3593,7 +3504,7 @@ empty session draws no pane frame   : OK
 empty SSH session accepts first pane: OK
 
 RESULT: PASS
-<== PASS test/ssh_entry_test.py (33.2s)
+<== PASS test/ssh_entry_test.py (33.1s)
 
 ==> test/ssh_transport_test.py (timeout 900s)
 transport client key generated      : OK
@@ -3633,7 +3544,7 @@ SSH connection descendants exit     : OK
 exact SSH descendant cleanup succeeds: OK
 
 RESULT: PASS
-<== PASS test/ssh_transport_test.py (16.8s)
+<== PASS test/ssh_transport_test.py (16.5s)
 
 ---------------------------------------------
 FAILED suites (of 97):
@@ -3643,4 +3554,4 @@ FAILED suites (of 97):
   test/multiclient_intensive_test.py: exit status 1
   test/wireframe_preview_test.py: exit status 1
   test/new_session_profile_test.py: exit status 1
-completed in 1381.7s
+completed in 1366.0s

@@ -122,7 +122,18 @@ var
 implementation
 
 uses
-  SysUtils, termio, BaseUnix, Video, st_debug, st_kbd, st_perf;
+  SysUtils, termio, BaseUnix, Video, st_debug, st_kbd
+  // Telemetry is a COMPILE-TIME option, not a runtime one. Measuring it as a
+  // runtime check was inconclusive: run-to-run variance of the same binary
+  // (17.1 vs 14.5 ms at 100x30) swamped the effect, so two honest A/B runs
+  // disagreed. Rather than argue from noisy numbers on the one path the whole
+  // project exists to keep fast, the release binary carries no instrumentation
+  // at all and is byte-identical to one built without this unit. The separate
+  // `make perf` binary carries it. Same reasoning as debug-heap.
+  {$IFDEF SUPERTERM_PERF_BUILD}
+  , st_perf
+  {$ENDIF}
+  ;
 
 var
   SavedDriver: TVideoDriver;
@@ -1175,9 +1186,9 @@ var
   Body, Frame, CurSGR, LastSGR, OverlayGlyph, CellGlyph: AnsiString;
   OverlayAttr: Byte;
   ChangedCells, Runs, RHit, RMiss: LongInt;
-  // Opt-in telemetry (SUPERTERM_PERF=1). Zero cost when disabled: the observe
-  // call returns on one cached atomic test before reading the clock.
+  {$IFDEF SUPERTERM_PERF_BUILD}
   PerfScanStart, PerfWriteStart: QWord;
+  {$ENDIF}
 begin
   if PassthroughActive then
   begin
@@ -1210,12 +1221,13 @@ begin
   // them separately would be an invented split. Its units are the cells that
   // actually changed, which is what makes "cost follows changed cells, not
   // desktop area" a checkable claim rather than an assertion.
-  // Guard the clock read behind the cached atomic test: this is the hot path
-  // the damage-tracking work will optimize, so the instrumentation must not
-  // put an unmeasured syscall in it when it is switched off.
+  {$IFDEF SUPERTERM_PERF_BUILD}
+  // Even in the perf build the clock read stays behind the cached atomic test,
+  // so a perf binary with SUPERTERM_PERF unset still measures the real path.
   PerfScanStart := 0;
   if SuperTermPerfEnabled then
     PerfScanStart := SuperTermPerfNowMicros;
+  {$ENDIF}
 
   RichEnsureSize;
   // TransientOutlineCell initializes both out parameters on every call.  Set
@@ -1415,15 +1427,19 @@ begin
   else
     // nothing changed: only keep the hardware cursor in sync (cheap)
     Frame := CursorPosition(OutCursorX, OutCursorY);
+  {$IFDEF SUPERTERM_PERF_BUILD}
   if PerfScanStart <> 0 then
     SuperTermPerfObserve(stpsFrameCompare, PerfScanStart, QWord(ChangedCells));
   PerfWriteStart := 0;
   if PerfScanStart <> 0 then
     PerfWriteStart := SuperTermPerfNowMicros;
+  {$ENDIF}
   WriteRaw(Frame);
+  {$IFDEF SUPERTERM_PERF_BUILD}
   if PerfWriteStart <> 0 then
     SuperTermPerfObserve(stpsPhysicalWrite, PerfWriteStart,
       QWord(Length(Frame)));
+  {$ENDIF}
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
   // per-frame detail is FULL-mode only: a blinking cursor alone writes two
   // lines every half second, which buried everything worth reading

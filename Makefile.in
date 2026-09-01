@@ -103,7 +103,7 @@ TESTS := suite_manifest_test.py wire_constants_test.py \
   ssh_service_uninstall_test.py ssh_entry_test.py \
   ssh_transport_test.py
 
-.PHONY: all release debug debug-heap test-runtime test install uninstall install-deps clean distclean info
+.PHONY: all release debug debug-heap perf test-runtime test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
@@ -139,6 +139,24 @@ test-runtime:
 	$(MAKE) MODE=release TARGET=$(TEST_TARGET) \
 		UNITDIR=$(PROJECT_DIR)/build/units/test-runtime \
 		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -dSUPERTERM_TEST_BUILD' all
+
+# Performance telemetry binary. Separate for the same reason debug-heap is:
+# instrumentation must never sit in the path it is measuring. The release
+# binary contains no st_perf code at all -- not a guarded branch, not a unit
+# initializer -- and that is PROVEN, not assumed: building this tree twice in
+# the same directory with the same flags, once with the pre-instrumentation
+# st_video.pas and once with the current one, yields a byte-identical .text
+# section (1870944 bytes, same SHA-256). Whole-file identity is not the test,
+# because -gl embeds line numbers and the added comments move them.
+#
+# The runtime-guarded version this replaces could not be cleared that way: two
+# honest A/B runs disagreed (+1.4% then +27%) because run-to-run variance of
+# the SAME binary was larger than the effect being measured. On the one path
+# the project exists to keep fast, "probably free" is not good enough.
+perf:
+	$(MAKE) MODE=release TARGET=$(PROJECT_DIR)/bin/superterm-perf \
+		UNITDIR=$(PROJECT_DIR)/build/units/perf \
+		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -dSUPERTERM_TEST_BUILD -dSUPERTERM_PERF_BUILD' all
 
 test: release test-runtime
 	@if [ -z "$(PYTHON)" ]; then \

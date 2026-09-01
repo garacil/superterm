@@ -22,7 +22,9 @@ CELLS, not desktop area. Run three geometries and watch whether bytes and time
 stay flat while the area grows 13x.
 
 Usage:  python3 test/perf_baseline.py [--out docs/baseline/performance.md]
-Requires the test-runtime binary (make test-runtime).
+Requires the telemetry binary: make perf. The release and test-runtime
+binaries deliberately contain no instrumentation at all, so the stage table
+is empty when this is pointed at them.
 """
 import argparse
 import os
@@ -154,10 +156,13 @@ def main():
         ROOT, 'docs', 'baseline', 'performance.md'))
     args = ap.parse_args()
 
-    if not os.path.exists(stlib.BIN):
-        print(f'missing binary {stlib.BIN}; run make test-runtime',
+    perf_bin = os.environ.get(
+        'SUPERTERM_PERF_BIN', os.path.join(ROOT, 'bin', 'superterm-perf'))
+    if not os.path.exists(perf_bin):
+        print(f'missing telemetry binary {perf_bin}; run make perf',
               file=sys.stderr)
         return 2
+    stlib.BIN = perf_bin
 
     results = [measure(w, h) for w, h in GEOMETRIES]
 

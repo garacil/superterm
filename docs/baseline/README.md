@@ -69,6 +69,27 @@ changed. This turns the source-level claim into a fact and sizes the work:
 Percentiles come from a power-of-two histogram, so `p50_le_us` is an upper
 bucket bound: read them as "at or below", never as exact times.
 
+## The telemetry costs the release binary nothing — proven, not measured
+
+Instrumentation was first added to `WideUpdateScreen` behind a runtime check.
+Two honest A/B runs against a binary built without it **disagreed**: +1.4% at
+100x30 in the first, +27% in the second, because run-to-run variance of the
+*same* binary (17.1 ms then 14.5 ms) was larger than the effect being measured.
+A measurement that cannot resolve the question does not settle it.
+
+So the instrumentation moved behind `{$IFDEF SUPERTERM_PERF_BUILD}` and into a
+separate `make perf` binary, exactly as `debug-heap` already does for heap
+tracing. The claim is now checkable without any timing at all: building this
+tree twice in the same directory with the same flags, once with the
+pre-instrumentation `st_video.pas` and once with the current one, produces a
+**byte-identical `.text` section** — 1 870 944 bytes, same SHA-256. Whole-file
+identity is not the test, because `-gl` embeds line numbers and the added
+comments move them.
+
+`bin/superterm` and `bin/superterm-test` contain no telemetry code, no guarded
+branch and no unit initializer; `bin/superterm-perf` carries it. Point
+`perf_baseline.py` at the perf binary — it refuses to run otherwise.
+
 ## Reproducing
 
 ```sh
