@@ -540,9 +540,6 @@ type
     procedure RequestPaneSize(i, ACols, ARows: integer);
     // Commits the size of any pane whose live gesture has just ended.
     procedure FlushDeferredPaneSizes;
-    // Waits until something can actually produce work -- a keystroke, the
-    // session socket, or a local pane -- instead of sleeping a fixed quantum.
-    procedure WaitForActivity(ABudgetMs: integer);
     procedure FitSessionToWindow;
     procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
@@ -794,6 +791,11 @@ begin
     SuppressFlush := False;
     FBootLocked := False;
   end;
+  // From this point onward one dedicated client reactor owns physical output.
+  // Startup CPR/encoding probes deliberately stayed on the old synchronous
+  // path; interactive Free Vision, keyboard and mouse must never wait for a
+  // slow terminal write.
+  StartAsyncVideoOutput;
   HostPasteOn;
   UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
   if not PassthroughActive then
@@ -2293,57 +2295,6 @@ begin
     else
       App^.RequestPaneSize(PaneIdx, pw, ph);
   end;
-end;
-
-// One commit per gesture: called when no window is being dragged any more.
-// Replaces the vendored 10 ms GiveUpTimeSlice. Free Vision only reaches Idle
-// when it has no event to dispatch, so this is exactly the moment to sleep --
-// but sleeping blind meant a keystroke already sitting in the terminal buffer
-// still waited out the quantum. Waiting on the descriptors themselves returns
-// the moment one is ready, and still yields the CPU when nothing is happening.
-//
-// The budget stays small because Idle also drives timers this does not watch:
-// the cursor blink, the periodic title probe and the host size check. It is a
-// ceiling on how long to sleep, not a delay that is always paid.
-procedure TSuperApp.WaitForActivity(ABudgetMs: integer);
-var
-  Fds: TFDSet;
-  Timeout: TTimeVal;
-  MaxFd, i, InputFd: cint;
-begin
-  if ABudgetMs <= 0 then
-    Exit;
-  // A byte is already buffered: there is nothing to wait for.
-  if st_kbd.InputBuffered then
-    Exit;
-  fpFD_ZERO(Fds);
-  // The keyboard and the mouse. Always watched -- being able to answer the
-  // user is the whole point. Once the input pump owns stdin this is its
-  // notification pipe instead: the pump has already drained fd 0, so a wait
-  // on fd 0 would never fire again.
-  InputFd := cint(InputWakeupFd);
-  fpFD_SET(InputFd, Fds);
-  MaxFd := InputFd;
-  if RemoteMode then
-  begin
-    if (Remote <> nil) and Remote.Connected and (Remote.SocketFd >= 0) then
-    begin
-      fpFD_SET(Remote.SocketFd, Fds);
-      if Remote.SocketFd > MaxFd then
-        MaxFd := Remote.SocketFd;
-    end;
-  end
-  else
-    for i := 0 to MAX_PANES - 1 do
-      if (Panes[i] <> nil) and Panes[i].Alive and (Panes[i].Master >= 0) then
-      begin
-        fpFD_SET(Panes[i].Master, Fds);
-        if Panes[i].Master > MaxFd then
-          MaxFd := Panes[i].Master;
-      end;
-  Timeout.tv_sec := ABudgetMs div 1000;
-  Timeout.tv_usec := (ABudgetMs mod 1000) * 1000;
-  fpSelect(MaxFd + 1, @Fds, nil, nil, @Timeout);
 end;
 
 procedure TSuperApp.FlushDeferredPaneSizes;
@@ -10609,6 +10560,63 @@ var
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
+
+  procedure WaitForActivity(AMaxMs: LongInt);
+  var
+    PollFds: array[0..MAX_PANES + 2] of TPollFD;
+    Count, J, Fd: integer;
+
+    procedure AddFd(AFd: cint; AEvents: cshort);
+    var
+      K: integer;
+    begin
+      if (AFd < 0) or (Count > High(PollFds)) then
+        Exit;
+      for K := 0 to Count - 1 do
+        if PollFds[K].fd = AFD then
+        begin
+          PollFds[K].events := PollFds[K].events or AEvents;
+          Exit;
+        end;
+      PollFds[Count] := Default(TPollFD);
+      PollFds[Count].fd := AFD;
+      PollFds[Count].events := AEvents;
+      Inc(Count);
+    end;
+
+  begin
+    // A byte is already decoded or buffered: waiting would only add latency.
+    if st_kbd.InputBuffered then
+      Exit;
+    Count := 0;
+    // The keyboard and the mouse. NOT fd 0: the input pump owns stdin and has
+    // already drained it, so a wait on fd 0 would never fire again. This is
+    // the pump's notification pipe, and falls back to fd 0 when no pump runs.
+    AddFd(cint(InputWakeupFd), POLLIN);
+    Fd := VideoOutputWaitHandle;
+    AddFd(Fd, POLLIN);
+    if RemoteMode and (Remote <> nil) then
+    begin
+      Fd := Remote.WaitHandle;
+      if Remote.WantsWrite then
+        AddFd(Fd, POLLIN or POLLOUT)
+      else
+        AddFd(Fd, POLLIN);
+    end
+    else
+      for J := 0 to MAX_PANES - 1 do
+        if (Panes[J] <> nil) and Panes[J].Alive then
+        begin
+          if Panes[J].InputPending then
+            AddFd(Panes[J].Master, POLLIN or POLLOUT)
+          else
+            AddFd(Panes[J].Master, POLLIN);
+        end;
+    if Count > 0 then
+      repeat
+        J := fpPoll(@PollFds[0], Count, AMaxMs);
+      until (J >= 0) or (fpGetErrNo <> ESysEINTR);
+  end;
 begin
   HostPaste := '';
   // NOT "inherited Idle". TProgram.Idle does two useful things and then calls
@@ -10625,6 +10633,14 @@ begin
   begin
     Message(@Self, evBroadcast, cmCommandSetChanged, nil);
     CommandSetChanged := False;
+  end;
+  if PumpVideoOutput then
+    Video.UpdateScreen(False);
+  if VideoOutputHasFailed then
+  begin
+    DebugLog('video: output reactor failed; closing client cleanly');
+    Message(@Self, evCommand, cmQuit, nil);
+    Exit;
   end;
   if Current = PView(Desktop) then
     while TakeHostPaste(HostPaste) do
@@ -10932,6 +10948,7 @@ begin
          (Win[i]^.Term <> nil) then
         RepaintPane(i);
     end;
+    WaitForActivity(10);
     Exit;
   end;
   // poll ptys
@@ -10947,7 +10964,7 @@ begin
   if maxfd >= 0 then
   begin
     tv.tv_sec := 0;
-    tv.tv_usec := 8000;
+    tv.tv_usec := 0;
     if fpSelect(maxfd + 1, @fdset, nil, nil, @tv) > 0 then
       for i := 0 to MAX_PANES - 1 do
         if (Panes[i] <> nil) and Panes[i].Alive and
@@ -10982,9 +10999,10 @@ begin
         end;
   end
   else
-    // No live pane to watch: still wait on the keyboard rather than burn a
-    // fixed sleep, so a keystroke is answered the moment it arrives.
-    WaitForActivity(8);
+    // No live pane to watch. Nothing to do here: the single WaitForActivity at
+    // the end of Idle already waits on the keyboard, so waiting twice would
+    // only add latency.
+    ;
   // Reap only leaders owned by the current local workspace. waitpid(-1)
   // could collect a child whose PTY was transferred to an older daemon and
   // make that daemon's still-stored PGID reusable before it observes EOF.
@@ -11035,10 +11053,9 @@ begin
   end;
   // The wait that replaces the vendored fixed sleep. Everything above has
   // already been done; this yields the CPU until a keystroke, the session
-  // socket or a local pane has something, or the budget expires so the blink
-  // and title timers still run.
+  // socket, a local pane or the output reactor has something, or the budget
+  // expires so the blink and title timers still run.
   WaitForActivity(10);
-
 end;
 
 // informational menu row: always gray, never dispatchable (TV
