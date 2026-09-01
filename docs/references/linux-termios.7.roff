@@ -1,0 +1,68 @@
+.\" Copyright 2006-2015, Michael Kerrisk <mtk.manpages@gmail.com>
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: GPL-2.0-or-later
+.\"
+.TH termios 7 (date) "Linux man-pages (unreleased)"
+.SH NAME
+termios
+\-
+terminal input/output settings
+.SH LIBRARY
+Standard C library
+.RI ( libc ,\~ \-lc )
+.SH SYNOPSIS
+.nf
+.B #include <termios.h>
+.fi
+.SH DESCRIPTION
+The termios functions describe a general terminal interface that is
+provided to control asynchronous communications ports.
+.SS Retrieving and changing terminal settings
+.TP
+.BR tcgetattr (3)
+.TQ
+.BR tcsetattr (3)
+.SS Canonical and noncanonical mode
+See
+.BR termios (3type).
+.SS Raw mode
+.TP
+.BR cfmakeraw (3)
+.SS Line control
+.TP
+.BR tcsendbreak (3)
+.TQ
+.BR tcdrain (3)
+.TQ
+.BR tcflush (3)
+.TQ
+.BR tcflow (3)
+.SS Line speed
+.TP
+.BR cfgetospeed (3)
+.TQ
+.BR cfsetospeed (3)
+.TQ
+.BR cfgetispeed (3)
+.TQ
+.BR cfsetispeed (3)
+.TQ
+.BR cfsetspeed (3)
+.SH STANDARDS
+POSIX.1-2024.
+.SH HISTORY
+POSIX.1-2001, BSD.
+.SH SEE ALSO
+.BR reset (1),
+.BR setterm (1),
+.BR stty (1),
+.BR tput (1),
+.BR tset (1),
+.BR tty (1),
+.BR ioctl_console (2),
+.BR ioctl_tty (2),
+.BR cc_t (3type),
+.BR speed_t (3type),
+.BR tcflag_t (3type),
+.BR setserial (8)

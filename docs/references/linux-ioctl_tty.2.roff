@@ -1,0 +1,194 @@
+.\" Copyright 2002, Walter Harms <walter.harms@informatik.uni-oldenburg.de>
+.\" Copyright 2002, Andries Brouwer <aeb@cwi.nl>
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: GPL-1.0-or-later
+.\"
+.TH ioctl_tty 2 (date) "Linux man-pages (unreleased)"
+.SH NAME
+ioctl_tty \- ioctls for terminals and serial lines
+.SH LIBRARY
+Standard C library
+.RI ( libc ,\~ \-lc )
+.SH SYNOPSIS
+.nf
+.BR "#include <asm/termbits.h>" "  /* Definition of constants */"
+.B #include <sys/ioctl.h>
+.P
+.BI "int ioctl(int " fd ", int " op ", ...);"
+.fi
+.SH DESCRIPTION
+The
+.BR ioctl (2)
+call for terminals and serial ports accepts many possible operation arguments.
+Most require a third argument, of varying type, here called
+.I argp
+or
+.IR arg .
+.P
+Use of
+.BR ioctl ()
+makes for nonportable programs.
+Use the POSIX interface described in
+.BR termios (7)
+whenever possible.
+.SS Get and set terminal attributes
+.TP
+.BR TCGETS (2const)
+.TQ
+.BR TCSETS (2const)
+.TQ
+.BR TCSETSW (2const)
+.TQ
+.BR TCSETSF (2const)
+.TP
+.BR TCGETS2 (2const)
+.TQ
+.BR TCSETS2 (2const)
+.TQ
+.BR TCSETSW2 (2const)
+.TQ
+.BR TCSETSF2 (2const)
+.TP
+.BR TCGETA (2const)
+.TQ
+.BR TCSETA (2const)
+.TQ
+.BR TCSETAW (2const)
+.TQ
+.BR TCSETAF (2const)
+.SS Locking the termios structure
+.TP
+.BR TIOCGLCKTRMIOS (2const)
+.TQ
+.BR TIOCSLCKTRMIOS (2const)
+.SS Get and set window size
+.TP
+.BR TIOCGWINSZ (2const)
+.TQ
+.BR TIOCSWINSZ (2const)
+.SS Sending a break
+.TP
+.BR TCSBRK (2const)
+.TQ
+.BR TCSBRKP (2const)
+.TQ
+.BR TIOCSBRK (2const)
+.TQ
+.BR TIOCCBRK (2const)
+.SS Software flow control
+.TP
+.BR TCXONC (2const)
+.SS Buffer count and flushing
+.TP
+.BR FIONREAD (2const)
+.TQ
+.BR TIOCINQ (2const)
+.TQ
+.BR TIOCOUTQ (2const)
+.TQ
+.BR TCFLSH (2const)
+.TQ
+.BR TIOCSERGETLSR (2const)
+.SS Faking input
+.TP
+.BR TIOCSTI (2const)
+.SS Redirecting console output
+.TP
+.BR TIOCCONS (2const)
+.SS Controlling terminal
+.TP
+.BR TIOCSCTTY (2const)
+.TQ
+.BR TIOCNOTTY (2const)
+.SS Process group and session ID
+.TP
+.BR TIOCGPGRP (2const)
+.TQ
+.BR TIOCSPGRP (2const)
+.TQ
+.BR TIOCGSID (2const)
+.SS Exclusive mode
+.TP
+.BR TIOCEXCL (2const)
+.TQ
+.BR TIOCGEXCL (2const)
+.TQ
+.BR TIOCNXCL (2const)
+.SS Line discipline
+.TP
+.BR TIOCGETD (2const)
+.TQ
+.BR TIOCSETD (2const)
+.SS Pseudoterminal ioctls
+.TP
+.BR TIOCPKT (2const)
+.TQ
+.BR TIOCGPKT (2const)
+.TP
+.BR TIOCSPTLCK (2const)
+.TQ
+.BR TIOCGPTLCK (2const)
+.TP
+.BR TIOCGPTPEER (2const)
+.SS Modem control
+.TP
+.BR TIOCMGET (2const)
+.TQ
+.BR TIOCMSET (2const)
+.TQ
+.BR TIOCMBIC (2const)
+.TQ
+.BR TIOCMBIS (2const)
+.TP
+.BR TIOCMIWAIT (2const)
+.TP
+.BR TIOCGICOUNT (2const)
+.SS Marking a line as local
+.TP
+.BR TIOCGSOFTCAR (2const)
+.TQ
+.BR TIOCSSOFTCAR (2const)
+.SS Linux-specific
+For the
+.BR TIOCLINUX (2const)
+ioctl, see
+.BR ioctl_console (2).
+.SS Kernel debugging
+.TP
+.BR TIOCTTYGSTRUCT (2const)
+.\" .SS Serial info
+.\" .BR "#include <linux/serial.h>"
+.\" .P
+.\" .TP
+.\" .BI "TIOCGSERIAL	struct serial_struct *" argp
+.\" Get serial info.
+.\" .TP
+.\" .BI "TIOCSSERIAL	const struct serial_struct *" argp
+.\" Set serial info.
+.SH RETURN VALUE
+On success,
+0 is returned.
+On error,
+\-1 is returned, and
+.I errno
+is set to indicate the error.
+.SH SEE ALSO
+.BR ioctl (2),
+.BR ldattach (8),
+.BR ioctl_console (2),
+.BR termios (7),
+.BR pty (7)
+.\"
+.\" FIONBIO			const int *
+.\" FIONCLEX			void
+.\" FIOCLEX			void
+.\" FIOASYNC			const int *
+.\" from serial.c:
+.\" TIOCSERCONFIG		void
+.\" TIOCSERGWILD		int *
+.\" TIOCSERSWILD		const int *
+.\" TIOCSERGSTRUCT		struct async_struct *
+.\" TIOCSERGETMULTI		struct serial_multiport_struct *
+.\" TIOCSERSETMULTI		const struct serial_multiport_struct *
+.\" TIOCGSERIAL, TIOCSSERIAL (see above)

@@ -1,0 +1,72 @@
+'\" t
+.\" Copyright 2006-2015, Michael Kerrisk <mtk.manpages@gmail.com>
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: GPL-2.0-or-later
+.\"
+.TH cfmakeraw 3 (date) "Linux man-pages (unreleased)"
+.SH NAME
+cfmakeraw
+\-
+set terminal raw mode
+.SH LIBRARY
+Standard C library
+.RI ( libc ,\~ \-lc )
+.SH SYNOPSIS
+.nf
+.BR #define\~_DEFAULT_SOURCE "  /* See feature_test_macros(7) */"
+.B #include <termios.h>
+.P
+.BI "void cfmakeraw(struct termios *" termios_p );
+.fi
+.SH DESCRIPTION
+.BR cfmakeraw ()
+sets the terminal to something like the
+"raw" mode of the old Version 7 terminal driver:
+input is available character by character,
+echoing is disabled,
+and all special processing of terminal input and output characters is disabled.
+.P
+The terminal attributes are set as follows:
+.P
+.in +4n
+.EX
+termios_p\->c_iflag &= \[ti](IGNBRK | BRKINT | PARMRK | ISTRIP
+                | INLCR | IGNCR | ICRNL | IXON);
+termios_p\->c_oflag &= \[ti]OPOST;
+termios_p\->c_lflag &= \[ti](ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+termios_p\->c_cflag &= \[ti](CSIZE | PARENB);
+termios_p\->c_cflag |= CS8;
+.EE
+.in
+.SH RETURN VALUE
+.TP
+.B 0
+on success.
+.TP
+.B \-1
+on failure and set
+.I errno
+to indicate the error.
+.SH ATTRIBUTES
+For an explanation of the terms used in this section,
+see
+.BR attributes (7).
+.TS
+allbox;
+lbx lb lb
+l l l.
+Interface	Attribute	Value
+T{
+.na
+.nh
+.BR cfmakeraw ()
+T}	Thread safety	MT-Safe
+.TE
+.SH STANDARDS
+BSD.
+.SH HISTORY
+BSD.
+.SH SEE ALSO
+.BR termios (3type),
+.BR termios (7)

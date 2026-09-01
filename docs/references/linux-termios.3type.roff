@@ -1,0 +1,917 @@
+.\" Copyright 2006-2015, Michael Kerrisk <mtk.manpages@gmail.com>
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: GPL-2.0-or-later
+.\"
+.TH termios 3type (date) "Linux man-pages (unreleased)"
+.SH NAME
+termios
+\-
+terminal input/output settings
+.SH LIBRARY
+Standard C library
+.RI ( libc )
+.SH SYNOPSIS
+.nf
+.B #include <termios.h>
+.fi
+.P
+.EX
+struct termios {
+	// At least these members, in no particular order
+	tcflag_t  c_iflag;
+	tcflag_t  c_oflag;
+	tcflag_t  c_cflag;
+	tcflag_t  c_lflag;
+	cc_t      c_cc[NCCS];
+};
+.EE
+.SH DESCRIPTION
+.TP
+.I .c_iflag
+Input modes.
+.TP
+.I .c_oflag
+Output modes.
+.TP
+.I .c_cflag
+Control modes.
+.TP
+.I .c_lflag
+Local modes.
+.TP
+.I .c_cc
+Special characters.
+.P
+The values that may be assigned to these fields are described below.
+In the case of the first four bit-mask fields,
+the definitions of some of the associated flags that may be set are
+exposed only if a specific feature test macro (see
+.BR feature_test_macros (7))
+is defined, as noted in brackets ("[]").
+.P
+In the descriptions below, "not in POSIX" means that the
+value is not specified in POSIX.1-2001,
+and "XSI" means that the value is specified in POSIX.1-2001
+as part of the XSI extension.
+.P
+The below symbolic subscript values are all different,
+except that
+.BR VTIME ,
+.B VMIN
+may have the same value as
+.BR VEOL ,
+.BR VEOF ,
+respectively.
+In noncanonical mode,
+the special character meaning
+is replaced by the timeout meaning.
+For an explanation of
+.B VMIN
+and
+.BR VTIME ,
+see the description of
+noncanonical mode
+below.
+.SS \f[I].c_iflag\f[] flag constants
+.TP
+.B IGNBRK
+Ignore BREAK condition on input.
+.TP
+.B BRKINT
+If
+.B IGNBRK
+is set, a BREAK is ignored.
+If it is not set
+but
+.B BRKINT
+is set, then a BREAK causes the input and output
+queues to be flushed, and if the terminal is the controlling
+terminal of a foreground process group, it will cause a
+.B SIGINT
+to be sent to this foreground process group.
+When neither
+.B IGNBRK
+nor
+.B BRKINT
+are set, a BREAK
+reads as a null byte
+.RB ( \[aq]\[rs]0\[aq] ),
+except when
+.B PARMRK
+is set,
+in which case it reads as the sequence \[rs]377 \[rs]0 \[rs]0.
+.TP
+.B IGNPAR
+Ignore framing errors and parity errors.
+.TP
+.B PARMRK
+If this bit is set, input bytes with parity or framing errors are
+marked when passed to the program.
+This bit is meaningful only when
+.B INPCK
+is set and
+.B IGNPAR
+is not set.
+The way erroneous bytes are marked is with two preceding bytes,
+\[rs]377 and \[rs]0.
+Thus, the program actually reads three bytes for one
+erroneous byte received from the terminal.
+If a valid byte has the value \[rs]377,
+and
+.B ISTRIP
+(see below) is not set,
+the program might confuse it with the prefix that marks a
+parity error.
+Therefore, a valid byte \[rs]377 is passed to the program as two
+bytes, \[rs]377 \[rs]377, in this case.
+.IP
+If neither
+.B IGNPAR
+nor
+.B PARMRK
+is set, read a character with a parity error or framing error
+as \[rs]0.
+.TP
+.B INPCK
+Enable input parity checking.
+.TP
+.B ISTRIP
+Strip off eighth bit.
+.TP
+.B INLCR
+Translate NL to CR on input.
+.TP
+.B IGNCR
+Ignore carriage return on input.
+.TP
+.B ICRNL
+Translate carriage return to newline on input (unless
+.B IGNCR
+is set).
+.TP
+.B IUCLC
+(not in POSIX) Map uppercase characters to lowercase on input.
+.TP
+.B IXON
+Enable XON/XOFF flow control on output.
+.TP
+.B IXANY
+(XSI) Typing any character will restart stopped output.
+(The default is to allow just the START character to restart output.)
+.TP
+.B IXOFF
+Enable XON/XOFF flow control on input.
+.TP
+.B IMAXBEL
+(not in POSIX) Ring bell when input queue is full.
+Linux does not implement this bit, and acts as if it is always set.
+.TP
+.BR IUTF8 " (since Linux 2.6.4)"
+(not in POSIX) Input is UTF8;
+this allows character-erase to be correctly performed in cooked mode.
+.SS \f[I].c_oflag\f[] flag constants
+.TP
+.B OPOST
+Enable implementation-defined output processing.
+.TP
+.B OLCUC
+(not in POSIX) Map lowercase characters to uppercase on output.
+.TP
+.B ONLCR
+(XSI) Map NL to CR-NL on output.
+.TP
+.B OCRNL
+Map CR to NL on output.
+.TP
+.B ONOCR
+Don't output CR at column 0.
+.TP
+.B ONLRET
+The NL character is assumed to do the carriage-return function;
+the kernel's idea of the current column is set to 0
+after both NL and CR.
+.TP
+.B OFILL
+Send fill characters for a delay, rather than using a timed delay.
+.TP
+.B OFDEL
+Fill character is ASCII DEL (0177).
+If unset, fill character is ASCII NUL (\[aq]\[rs]0\[aq]).
+(Not implemented on Linux.)
+.TP
+.B NLDLY
+Newline delay mask.
+Values are
+.B NL0
+and
+.BR NL1 .
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.TP
+.B CRDLY
+Carriage return delay mask.
+Values are
+.BR CR0 ,
+.BR CR1 ,
+.BR CR2 ,
+or
+.BR CR3 .
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.TP
+.B TABDLY
+Horizontal tab delay mask.
+Values are
+.BR TAB0 ,
+.BR TAB1 ,
+.BR TAB2 ,
+.B TAB3
+(or
+.BR XTABS ,
+but see the
+.B BUGS
+section).
+A value of TAB3, that is, XTABS, expands tabs to spaces
+(with tab stops every eight columns).
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.TP
+.B BSDLY
+Backspace delay mask.
+Values are
+.B BS0
+or
+.BR BS1 .
+(Has never been implemented.)
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.TP
+.B VTDLY
+Vertical tab delay mask.
+Values are
+.B VT0
+or
+.BR VT1 .
+.TP
+.B FFDLY
+Form feed delay mask.
+Values are
+.B FF0
+or
+.BR FF1 .
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.SS \f[I].c_cflag\f[] flag constants
+.TP
+.B CBAUD
+(not in POSIX) Baud speed mask (4+1 bits).
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B CBAUDEX
+(not in POSIX) Extra baud speed mask (1 bit), included in
+.BR CBAUD .
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.IP
+(POSIX says that the baud speed is stored in the
+.I termios
+structure without specifying where precisely, and provides
+.BR cfgetispeed ()
+and
+.BR cfsetispeed ()
+for getting at it.
+Some systems use bits selected by
+.B CBAUD
+in
+.IR .c_cflag ,
+other systems use separate fields, for example,
+.I sg_ispeed
+and
+.IR sg_ospeed .)
+.TP
+.B CSIZE
+Character size mask.
+Values are
+.BR CS5 ,
+.BR CS6 ,
+.BR CS7 ,
+or
+.BR CS8 .
+.TP
+.B CSTOPB
+Set two stop bits, rather than one.
+.TP
+.B CREAD
+Enable receiver.
+.TP
+.B PARENB
+Enable parity generation on output and parity checking for input.
+.TP
+.B PARODD
+If set, then parity for input and output is odd;
+otherwise even parity is used.
+.TP
+.B HUPCL
+Lower modem control lines after last process closes the device (hang up).
+.TP
+.B CLOCAL
+Ignore modem control lines.
+.TP
+.B LOBLK
+(not in POSIX) Block output from a noncurrent shell layer.
+For use by
+.B shl
+(shell layers).
+(Not implemented on Linux.)
+.TP
+.B CIBAUD
+(not in POSIX) Mask for input speeds.
+The values for the
+.B CIBAUD
+bits are
+the same as the values for the
+.B CBAUD
+bits, shifted left
+.B IBSHIFT
+bits.
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+(Not implemented in glibc, supported on Linux via
+.BR TCGET *
+and
+.BR TCSET *
+ioctls;
+see
+.BR ioctl_tty (2))
+.TP
+.B CMSPAR
+(not in POSIX)
+Use "stick" (mark/space) parity
+(supported on certain serial devices):
+if
+.B PARODD
+is set,
+the parity bit is always 1;
+if
+.B PARODD
+is not set,
+then the parity bit is always 0.
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B CRTSCTS
+(not in POSIX)
+Enable RTS/CTS (hardware) flow control.
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.SS \f[I].c_lflag\f[] flag constants
+.TP
+.B ISIG
+When any of the characters INTR, QUIT, SUSP, or DSUSP are received,
+generate the corresponding signal.
+.TP
+.B ICANON
+Enable canonical mode (described below).
+.TP
+.B XCASE
+(not in POSIX;
+not supported under Linux)
+If
+.B ICANON
+is also set,
+terminal is uppercase only.
+Input is converted to lowercase,
+except for characters preceded by \[rs].
+On output,
+uppercase characters are preceded by \[rs]
+and lowercase characters are converted to uppercase.
+[requires
+.B _BSD_SOURCE
+or
+.B _SVID_SOURCE
+or
+.BR _XOPEN_SOURCE ]
+.\" glibc is probably now wrong to allow
+.\" Define
+.\" .B _XOPEN_SOURCE
+.\" to expose
+.\" .BR XCASE .
+.TP
+.B ECHO
+Echo input characters.
+.TP
+.B ECHOE
+If
+.B ICANON
+is also set, the ERASE character erases the preceding
+input character, and WERASE erases the preceding word.
+.TP
+.B ECHOK
+If
+.B ICANON
+is also set, the KILL character erases the current line.
+.TP
+.B ECHONL
+If
+.B ICANON
+is also set, echo the NL character even if ECHO is not set.
+.TP
+.B ECHOCTL
+(not in POSIX)
+If
+.B ECHO
+is also set,
+terminal special characters other than
+TAB, NL, START, and STOP are echoed as
+.BR \[ha]X ,
+where X is the character with
+ASCII code 0x40 greater than the special character.
+For example, character
+0x08 (BS) is echoed as
+.BR \[ha]H .
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B ECHOPRT
+(not in POSIX) If
+.B ICANON
+and
+.B ECHO
+are also set,
+characters are printed as they are being erased.
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B ECHOKE
+(not in POSIX) If
+.B ICANON
+is also set,
+KILL is echoed by erasing
+each character on the line,
+as specified by
+.B ECHOE
+and
+.BR ECHOPRT .
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B DEFECHO
+(not in POSIX)
+Echo only when a process is reading.
+(Not implemented on Linux.)
+.TP
+.B FLUSHO
+(not in POSIX;
+not supported under Linux)
+Output is being flushed.
+This flag is toggled by typing
+the DISCARD character.
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B NOFLSH
+Disable flushing the input and output queues when generating signals for the
+INT, QUIT, and SUSP characters.
+.\" Stevens lets SUSP only flush the input queue
+.TP
+.B TOSTOP
+Send the
+.B SIGTTOU
+signal to the process group of a background process
+which tries to write to its controlling terminal.
+.TP
+.B PENDIN
+(not in POSIX;
+not supported under Linux)
+All characters in the input queue are reprinted
+when the next character is read.
+.RB ( bash (1)
+handles typeahead this way.)
+[requires
+.B _BSD_SOURCE
+or
+.BR _SVID_SOURCE ]
+.TP
+.B IEXTEN
+Enable implementation-defined input processing.
+This flag, as well as
+.B ICANON
+must be enabled for the
+special characters EOL2, LNEXT, REPRINT, WERASE to be interpreted,
+and for the
+.B IUCLC
+flag to be effective.
+.SS \f[I].c_cc\f[] array indices
+The
+.I .c_cc
+array defines the terminal special characters.
+The symbolic indices (initial values) and meaning are:
+.TP
+.B VDISCARD
+(not in POSIX;
+not supported under Linux;
+017, SI, Ctrl-O)
+Toggle: start/stop discarding pending output.
+Recognized when
+.B IEXTEN
+is set, and then not passed as input.
+.TP
+.B VDSUSP
+(not in POSIX;
+not supported under Linux;
+031, EM, Ctrl-Y)
+Delayed suspend character (DSUSP):
+send
+.B SIGTSTP
+signal when the character is read by the user program.
+Recognized when
+.B IEXTEN
+and
+.B ISIG
+are set,
+and the system supports job control,
+and then not passed as input.
+.TP
+.B VEOF
+(004, EOT, Ctrl-D)
+End-of-file character (EOF).
+More precisely:
+this character causes the pending tty buffer to be sent
+to the waiting user program
+without waiting for end-of-line.
+If it is the first character of the line,
+the
+.BR read (2)
+in the user program returns 0,
+which signifies end-of-file.
+Recognized when
+.B ICANON
+is set,
+and then not passed as input.
+.TP
+.B VEOL
+(0, NUL)
+Additional end-of-line character (EOL).
+Recognized when
+.B ICANON
+is set.
+.TP
+.B VEOL2
+(not in POSIX;
+0, NUL)
+Yet another end-of-line character (EOL2).
+Recognized when
+.B ICANON
+is set.
+.TP
+.B VERASE
+(0177, DEL, rubout, or 010, BS, Ctrl-H, or also #)
+Erase character (ERASE).
+This erases the previous not-yet-erased character,
+but does not erase past EOF or beginning-of-line.
+Recognized when
+.B ICANON
+is set,
+and then not passed as input.
+.TP
+.B VINTR
+(003, ETX, Ctrl-C, or also 0177, DEL, rubout)
+Interrupt character (INTR).
+Send a
+.B SIGINT
+signal.
+Recognized when
+.B ISIG
+is set,
+and then not passed as input.
+.TP
+.B VKILL
+(025, NAK, Ctrl-U, or Ctrl-X, or also @)
+Kill character (KILL).
+This erases the input since the last EOF or beginning-of-line.
+Recognized when
+.B ICANON
+is set,
+and then not passed as input.
+.TP
+.B VLNEXT
+(not in POSIX;
+026, SYN, Ctrl-V)
+Literal next (LNEXT).
+Quotes the next input character,
+depriving it of a possible special meaning.
+Recognized when
+.B IEXTEN
+is set,
+and then not passed as input.
+.TP
+.B VMIN
+Minimum number of characters for noncanonical read (MIN).
+.TP
+.B VQUIT
+(034, FS, Ctrl-\[rs])
+Quit character (QUIT).
+Send
+.B SIGQUIT
+signal.
+Recognized when
+.B ISIG
+is set,
+and then not passed as input.
+.TP
+.B VREPRINT
+(not in POSIX;
+022, DC2, Ctrl-R)
+Reprint unread characters (REPRINT).
+Recognized when
+.B ICANON
+and
+.B IEXTEN
+are set,
+and then not passed as input.
+.TP
+.B VSTART
+(021, DC1, Ctrl-Q)
+Start character (START).
+Restarts output stopped by the Stop character.
+Recognized when
+.B IXON
+is set,
+and then not passed as input.
+.TP
+.B VSTATUS
+(not in POSIX;
+not supported under Linux;
+status request:
+024, DC4, Ctrl-T).
+Status character (STATUS).
+Display status information at terminal,
+including state of foreground process and amount of CPU time it has consumed.
+Also sends a
+.B SIGINFO
+signal
+(not supported on Linux)
+to the foreground process group.
+.TP
+.B VSTOP
+(023, DC3, Ctrl-S)
+Stop character (STOP).
+Stop output until Start character typed.
+Recognized when
+.B IXON
+is set,
+and then not passed as input.
+.TP
+.B VSUSP
+(032, SUB, Ctrl-Z)
+Suspend character (SUSP).
+Send
+.B SIGTSTP
+signal.
+Recognized when
+.B ISIG
+is set,
+and then not passed as input.
+.TP
+.B VSWTCH
+(not in POSIX;
+not supported under Linux;
+0, NUL)
+Switch character (SWTCH).
+Used in System V to switch shells in
+.IR "shell layers" ,
+a predecessor to shell job control.
+.TP
+.B VTIME
+Timeout in deciseconds for noncanonical read (TIME).
+.TP
+.B VWERASE
+(not in POSIX;
+027, ETB, Ctrl-W)
+Word erase (WERASE).
+Recognized when
+.B ICANON
+and
+.B IEXTEN
+are set,
+and then not passed as input.
+.P
+An individual terminal special character can be disabled
+by setting the value of the corresponding
+.I .c_cc
+element to
+.BR _POSIX_VDISABLE .
+.SS Canonical and noncanonical mode
+The setting of the
+.B ICANON
+canon flag in
+.I .c_lflag
+determines whether the terminal is operating
+in canonical mode
+.RB ( ICANON
+set)
+or noncanonical mode
+.RB ( ICANON
+unset).
+By default,
+.B ICANON
+is set.
+.P
+In canonical mode:
+.IP \[bu] 3
+Input is made available line by line.
+An input line is available when one of the line delimiters is typed
+(NL, EOL, EOL2;
+or EOF at the start of line).
+Except in the case of EOF,
+the line delimiter is included
+in the buffer returned by
+.BR read (2).
+.IP \[bu]
+Line editing is enabled
+(ERASE, KILL;
+and if the
+.B IEXTEN
+flag is set: WERASE, REPRINT, LNEXT).
+A
+.BR read (2)
+returns at most one line of input;
+if the
+.BR read (2)
+requested fewer bytes than are available in the current line of input,
+then only as many bytes as requested are read,
+and the remaining characters will be available for a future
+.BR read (2).
+.IP \[bu]
+The maximum line length is 4096 chars
+(including the terminating newline character);
+lines longer than 4096 chars are truncated.
+After 4095 characters,
+input processing
+(e.g.,
+.B ISIG
+and
+.B ECHO*
+processing)
+continues,
+but any input data after 4095 characters
+up to (but not including) any terminating newline
+is discarded.
+This ensures that
+the terminal can always receive more input
+until at least one line can be read.
+.P
+In noncanonical mode input is available immediately
+(without the user having to type a line-delimiter character),
+no input processing is performed,
+and line editing is disabled.
+The read buffer will only accept 4095 chars;
+this provides the necessary space for a newline char
+if the input mode is switched to canonical.
+The settings of MIN
+.RI ( .c_cc[VMIN] )
+and TIME
+.RI ( .c_cc[VTIME] )
+determine the circumstances in which a
+.BR read (2)
+completes;
+there are four distinct cases:
+.TP
+MIN == 0, TIME == 0 (polling read)
+If data is available,
+.BR read (2)
+returns immediately,
+with the lesser of the number of bytes available,
+or the number of bytes requested.
+If no data is available,
+.BR read (2)
+returns 0.
+.TP
+MIN > 0, TIME == 0 (blocking read)
+.BR read (2)
+blocks until MIN bytes are available,
+and returns up to the number of bytes requested.
+.TP
+MIN == 0, TIME > 0 (read with timeout)
+TIME specifies the limit for a timer in tenths of a second.
+The timer is started when
+.BR read (2)
+is called.
+.BR read (2)
+returns either when at least one byte of data is available,
+or when the timer expires.
+If the timer expires without any input becoming available,
+.BR read (2)
+returns 0.
+If data is already available at the time of the call to
+.BR read (2),
+the call behaves as though the data was received immediately after the call.
+.TP
+MIN > 0, TIME > 0 (read with interbyte timeout)
+TIME specifies the limit for a timer in tenths of a second.
+Once an initial byte of input becomes available,
+the timer is restarted after each further byte is received.
+.BR read (2)
+returns when any of the following conditions is met:
+.RS
+.IP \[bu] 3
+MIN bytes have been received.
+.IP \[bu]
+The interbyte timer expires.
+.IP \[bu]
+The number of bytes requested by
+.BR read (2)
+has been received.
+(POSIX does not specify this termination condition,
+and on some other implementations
+.\" e.g., Solaris
+.BR read (2)
+does not return in this case.)
+.RE
+.IP
+Because the timer is started only after the initial byte becomes available,
+at least one byte will be read.
+If data is already available at the time of the call to
+.BR read (2),
+the call behaves as though the data was received immediately after the call.
+.P
+POSIX
+.\" POSIX.1-2008 XBD 11.1.7
+does not specify whether the setting of the
+.B O_NONBLOCK
+file status flag takes precedence over the MIN and TIME settings.
+If
+.B O_NONBLOCK
+is set, a
+.BR read (2)
+in noncanonical mode may return immediately,
+regardless of the setting of MIN or TIME.
+Furthermore,
+if no data is available,
+POSIX permits a
+.BR read (2)
+in noncanonical mode to return either 0, or \-1 with
+.I errno
+set to
+.BR EAGAIN .
+.SH STANDARDS
+POSIX.1-2024.
+.SH HISTORY
+POSIX.1-2001.
+.SH BUGS
+.\" kernel 77e5bff1640432f28794a00800955e646dcd7455
+.\" glibc 573963e32ffac46d9891970ddebde2ac3212c5c0
+On the Alpha architecture before Linux 4.16 (and glibc before glibc 2.28), the
+.B XTABS
+value was different from
+.B TAB3
+and it was ignored by the
+.B N_TTY
+line discipline code of the terminal driver as a result
+(because as it wasn't part of the
+.B TABDLY
+mask).
+.SH SEE ALSO
+.BR cc_t (3type),
+.BR tcflag_t (3type),
+.BR termios (7)

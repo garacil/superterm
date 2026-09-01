@@ -1,0 +1,175 @@
+'\" t
+.\" Copyright, OpenBSD Group
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: BSD-3-Clause
+.\"
+.TH openpty 3 (date) "Linux man-pages (unreleased)"
+.SH NAME
+openpty, login_tty, forkpty \- terminal utility functions
+.SH LIBRARY
+System utilities library
+.RI ( libutil ,\~ \-lutil )
+.SH SYNOPSIS
+.nf
+.B #include <pty.h>
+.P
+.BI "int openpty(int *" amaster ", int *" aslave ", char *" name ,
+.BI "              const struct termios *" termp ,
+.BI "              const struct winsize *" winp );
+.BI "pid_t forkpty(int *" amaster ", char *" name ,
+.BI "              const struct termios *" termp ,
+.BI "              const struct winsize *" winp );
+.P
+.B #include <utmp.h>
+.P
+.BI "int login_tty(int " fd );
+.fi
+.SH DESCRIPTION
+The
+.BR openpty ()
+function finds an available pseudoterminal and returns file descriptors
+for the master and slave in
+.I amaster
+and
+.IR aslave .
+If
+.I name
+is not NULL, the filename of the slave is returned in
+.IR name .
+If
+.I termp
+is not NULL, the terminal parameters of the slave will be set to the
+values in
+.IR termp .
+If
+.I winp
+is not NULL, the window size of the slave will be set to the values in
+.IR winp .
+.P
+The
+.BR login_tty ()
+function prepares for a login on the terminal
+referred to by the file descriptor
+.I fd
+(which may be a real terminal device, or the slave of a pseudoterminal as
+returned by
+.BR openpty ())
+by creating a new session, making
+.I fd
+the controlling terminal for the calling process, setting
+.I fd
+to be the standard input, output, and error streams of the current
+process, and closing
+.IR fd .
+.P
+The
+.BR forkpty ()
+function combines
+.BR openpty (),
+.BR fork (2),
+and
+.BR login_tty ()
+to create a new process operating in a pseudoterminal.
+A file descriptor referring to
+master side of the pseudoterminal is returned in
+.IR amaster .
+If
+.I name
+is not NULL, the buffer it points to is used to return the
+filename of the slave.
+The
+.I termp
+and
+.I winp
+arguments, if not NULL,
+will determine the terminal attributes and window size of the slave
+side of the pseudoterminal.
+.SH RETURN VALUE
+If a call to
+.BR openpty (),
+.BR login_tty (),
+or
+.BR forkpty ()
+is not successful, \-1 is returned and
+.I errno
+is set to indicate the error.
+Otherwise,
+.BR openpty (),
+.BR login_tty (),
+and the child process of
+.BR forkpty ()
+return 0, and the parent process of
+.BR forkpty ()
+returns the process ID of the child process.
+.SH ERRORS
+.BR openpty ()
+fails if:
+.TP
+.B ENOENT
+There are no available terminals.
+.P
+.BR login_tty ()
+fails if
+.BR ioctl (2)
+fails to set
+.I fd
+to the controlling terminal of the calling process.
+.P
+.BR forkpty ()
+fails if either
+.BR openpty ()
+or
+.BR fork (2)
+fails.
+.SH ATTRIBUTES
+For an explanation of the terms used in this section, see
+.BR attributes (7).
+.TS
+allbox;
+lbx lb lb
+l l l.
+Interface	Attribute	Value
+T{
+.na
+.nh
+.BR forkpty (),
+.BR openpty ()
+T}	Thread safety	MT-Safe locale
+T{
+.na
+.nh
+.BR login_tty ()
+T}	Thread safety	MT-Unsafe race:ttyname
+.TE
+.SH STANDARDS
+BSD.
+.SH HISTORY
+The
+.B const
+modifiers were added to the structure pointer arguments of
+.BR openpty ()
+and
+.BR forkpty ()
+in glibc 2.8.
+.P
+Before glibc 2.0.92,
+.BR openpty ()
+returns file descriptors for a BSD pseudoterminal pair;
+since glibc 2.0.92,
+it first attempts to open a UNIX 98 pseudoterminal pair,
+and falls back to opening a BSD pseudoterminal pair if that fails.
+.SH BUGS
+Nobody knows how much space should be reserved for
+.IR name .
+So, calling
+.BR openpty ()
+or
+.BR forkpty ()
+with non-NULL
+.I name
+may not be secure.
+.SH SEE ALSO
+.BR fork (2),
+.BR ttyname (3),
+.BR pty (7)

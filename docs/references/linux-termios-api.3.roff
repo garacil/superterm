@@ -1,0 +1,104 @@
+'\" t
+.\" Copyright 2006-2015, Michael Kerrisk <mtk.manpages@gmail.com>
+.\" Copyright, the authors of the Linux man-pages project
+.\"
+.\" SPDX-License-Identifier: GPL-2.0-or-later
+.\"
+.TH tcsetattr 3 (date) "Linux man-pages (unreleased)"
+.SH NAME
+tcgetattr, tcsetattr
+\-
+get and set terminal attributes
+.SH LIBRARY
+Standard C library
+.RI ( libc ,\~ \-lc )
+.SH SYNOPSIS
+.nf
+.B #include <termios.h>
+.P
+.BI "int tcgetattr(int " fd ", struct termios *" termios_p );
+.BI "int tcsetattr(int " fd ", int " optional_actions ,
+.BI "              const struct termios *" termios_p );
+.fi
+.SH DESCRIPTION
+.BR tcgetattr ()
+gets the parameters associated with the object referred by
+.IR fd ,
+and stores them in the
+.I termios
+structure referenced by
+.IR termios_p .
+This function may be invoked from a background process;
+however,
+the terminal attributes may be subsequently changed
+by a foreground process.
+.P
+.BR tcsetattr ()
+sets the parameters associated with the terminal
+(unless support is required from the underlying hardware that is not available)
+from the
+.I termios
+structure referred to by
+.IR termios_p .
+.I optional_actions
+specifies when the changes take effect:
+.TP
+.B TCSANOW
+the change occurs immediately.
+.TP
+.B TCSADRAIN
+the change occurs after all output written to
+.I fd
+has been transmitted.
+This option should be used when changing
+parameters that affect output.
+.TP
+.B TCSAFLUSH
+the change occurs after all output written to the object referred by
+.I fd
+has been transmitted,
+and all input that has been received but not read
+will be discarded before the change is made.
+.SH RETURN VALUE
+.TP
+.B 0
+on success.
+.TP
+.B \-1
+on failure and set
+.I errno
+to indicate the error.
+.SH ATTRIBUTES
+For an explanation of the terms used in this section,
+see
+.BR attributes (7).
+.TS
+allbox;
+lbx lb lb
+l l l.
+Interface	Attribute	Value
+T{
+.na
+.nh
+.BR tcgetattr (),
+.BR tcsetattr ()
+T}	Thread safety	MT-Safe
+.TE
+.SH STANDARDS
+POSIX.1-2008.
+.SH HISTORY
+POSIX.1-2001.
+.SH CAVEATS
+.BR tcsetattr ()
+returns success if
+.I any
+of the requested changes could be
+successfully carried out.
+Therefore,
+when making multiple changes,
+it may be necessary to follow this call with a further call to
+.BR tcgetattr ()
+to check that all changes have been performed successfully.
+.SH SEE ALSO
+.BR termios (3type),
+.BR termios (7)
