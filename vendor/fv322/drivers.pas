@@ -932,7 +932,13 @@ begin
 {$ENDIF}
   if WantMouse and (not TmuxMouseEnabled) then
   begin
-    Write(#27'[?1000h'#27'[?1002h'#27'[?1003h'#27'[?1006h');
+    { ?1003 (any-motion) is deliberately NOT among these. The RTL event queue
+      holds 16 slots and Free Vision drains one per loop, so a pointer sweep
+      under any-motion overflows it for nothing. st_fvui turns ?1003 on only
+      while a pane application actually asks for it (SyncHostMouse) and off
+      again afterwards. Enabling it unconditionally here, at startup, for every
+      tmux session bypassed that policy and left it on permanently. }
+    Write(#27'[?1000h'#27'[?1002h'#27'[?1006h');
     Flush(Output);
     TmuxMouseEnabled := True;
   end;
