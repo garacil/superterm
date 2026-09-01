@@ -83,6 +83,21 @@ type
   end;
   TOsc52EventArray = array of TOsc52Event;
 
+  // Answers this terminal owes the program in the pane. A pane is launched
+  // with a fixed TERM=xterm-256color contract, so it may interrogate the
+  // terminal (DA, DSR, DECRQM, XTGETTCAP) and wait for a reply; the exact
+  // bytes are specified in test/vtreplies.py.
+  //
+  // Only the process that OWNS the PTY may drain this queue. Every viewer
+  // parses the same byte stream into its own mirror and therefore queues the
+  // same answers, so a viewer that sent them would reply once per attached
+  // client to a query that was asked once. A mirror simply leaves them here;
+  // the bound below is what makes that safe.
+  TReplyArray = array of RawByteString;
+  // Identifies one borrowed reply. Zero means "nothing on loan"; a real token
+  // is never reused, so a stale acknowledgement cannot retire a later reply.
+  TScreenReplyToken = type QWord;
+
   TScreen = class
   private
     FGrid: TGridArray;
@@ -105,6 +120,10 @@ type
     FPColon: array[0..15] of boolean;
     FPPriv: boolean;
     FPrivOther: boolean;    // CSI private intro < = > (consumed but NOT acted on)
+    // Which of '<' '=' '>' introduced the current private CSI. Almost all of
+    // them stay ignored; the exception is "CSI > c" (Secondary DA), which is
+    // a query the terminal owes an answer to.
+    FPrivIntro: AnsiChar;
     FUtfBuf: array[0..7] of byte;
     FUtfLen: byte;
     FUtfNeed: byte;
@@ -137,7 +156,19 @@ type
     FMouseBits: word;          // bit0 ?9, bit1 ?1000, bit2 ?1002, bit3 ?1003
     FMouseProto: TMouseProto;
     FOscOverflow: boolean;
+    // DCS payload. SOS, PM and APC strings are still discarded unread; only
+    // a real DCS (ESC P) is captured, because XTGETTCAP arrives that way and
+    // is a query the terminal owes an answer to.
+    FDcsBuf: RawByteString;
+    FDcsLen: integer;
+    FDcsOverflow: boolean;
+    FDcsCapture: boolean;
     FOsc52Queue: TOsc52EventArray;
+    FReplyQueue: TReplyArray;
+    // Loan state for PeekReply/AcknowledgeReply. Only one reply is on loan at
+    // a time, and only the exact token that borrowed it may retire it.
+    FReplyLoanToken: TScreenReplyToken;
+    FLastReplyToken: QWord;
     function GetMouseTrack: TMouseTrack;
     procedure ClearCell(var C: TCell);
     procedure ResizeGrid(var AGrid: TGridArray; OldWidth, OldHeight,
@@ -151,14 +182,24 @@ type
     procedure LineFeed;
     procedure PutCharByte(b: byte);
     procedure DoCSI(final: AnsiChar);
+    procedure DoPrivateCSI(final: AnsiChar);
+    function ModeState(APrivate: boolean; AMode: integer): integer;
     procedure DispatchEsc(c: AnsiChar);
     procedure FinishOsc;
+    procedure FinishDcs;
+    procedure AnswerXtGetTcap(const ARequest: RawByteString);
     procedure QueueOsc52(const ASelection, APayload: RawByteString);
     function GetParam(i, def: integer): integer;
     procedure SetCellStr(x, y: integer; const S: RawByteString; AAttr: word);
     function CellWidth(const S: RawByteString): integer;
     procedure EraseRange(x1, y1, x2, y2: integer; AAttr: word);
     procedure PushScrollRow(const R: TRow);
+  protected
+    // Owe the pane one answer. Protected rather than private so the queue's
+    // contract -- FIFO order, the per-answer size limit, and dropping the
+    // OLDEST entry on overflow -- can be exercised on its own, independently
+    // of whichever handler happens to produce an answer.
+    procedure QueueReply(const AReply: RawByteString);
   public
     Width, Height: integer;
     CursorX, CursorY: integer;
@@ -204,6 +245,24 @@ type
     function RenderSelection(AStartRow, AStartCol, AEndRow,
       AEndCol: integer): RawByteString;
     function TakeOsc52(out ASelection, APayload: RawByteString): boolean;
+    // Oldest pending answer to a query the pane made, removed from the queue.
+    // False when there is nothing owed. See TReplyArray: only the process
+    // holding the PTY may call this.
+    function TakeReply(out AReply: RawByteString): boolean;
+    // Borrow the oldest owed answer WITHOUT removing it, together with a token.
+    // A drain writes the bytes to the PTY and only then acknowledges: if the
+    // write fails, is partial, or the process dies mid-way, the reply is still
+    // queued and the next drain retries it. TakeReply cannot offer that,
+    // because it has already destroyed the reply by the time the write fails.
+    function PeekReply(var AToken: TScreenReplyToken;
+      var AReply: RawByteString): boolean;
+    // Retire the borrowed reply. Only the exact outstanding token works, so a
+    // late acknowledgement from an abandoned drain cannot drop a reply that a
+    // later drain has since borrowed.
+    function AcknowledgeReply(AToken: TScreenReplyToken): boolean;
+    // Answers still owed. A mirror never drains, so this is also how a test
+    // observes what the terminal WOULD have replied.
+    function PendingReplies: integer;
     property Grid: TGridArray read FGrid;
   end;
 
@@ -212,6 +271,42 @@ implementation
 const
   MAX_OSC_BYTES = 2 * 1024 * 1024;
   MAX_OSC52_EVENTS = 16;
+  // A well-formed answer is a few dozen bytes; the largest is an XTGETTCAP
+  // reply carrying several hex-encoded name/value pairs. Anything past this
+  // is malformed and is not queued at all.
+  MAX_REPLY_BYTES = 4096;
+  // A capability request is a short list of two-to-six letter names in hex.
+  // Anything longer is not a request this terminal can answer, and capturing
+  // it would only cost memory for a payload that ends up discarded.
+  MAX_DCS_BYTES = 4096;
+  // Deep enough that a program interrogating the terminal at startup -- the
+  // realistic burst -- is answered in full, and bounded because a mirror
+  // never drains and a pane could otherwise queue answers without limit.
+  //
+  // On overflow the OLDEST answer is dropped, not the newest: the query a
+  // program is currently blocked on is the most recent one, so discarding
+  // the front keeps the reply it is actually waiting for.
+  MAX_REPLY_EVENTS = 32;
+
+  // What this terminal says when a pane interrogates it. The full table, with
+  // a citation into docs/references/xterm-ctlseqs.txt for every value and the
+  // reasoning for each capability deliberately NOT claimed, is
+  // test/vtreplies.py; keep the two in step.
+  //
+  // Replies use 7-bit controls: the client asserts S7C1T on its host, and a
+  // pane handed 8-bit C1 bytes would have to guess an encoding for them.
+  //
+  // Primary DA: VT220-class, and of the VT220 feature list only 22 (ANSI
+  // colour), because that is all the screen model implements. Claiming more
+  // would invite sequences this parser would then mis-handle.
+  REPLY_DA1 = #27'[?62;22c';
+  // Secondary DA: VT220, firmware version 0, cartridge 0. Programs read the
+  // version field as xterm's patch level and unlock xterm extensions above
+  // known thresholds; superterm implements none of them, so zero asks for
+  // nothing.
+  REPLY_DA2 = #27'[>1;0;0c';
+  // DSR 5: "ready, no malfunctions".
+  REPLY_DSR_OK = #27'[0n';
   MAX_SELECTION_BYTES = 1024 * 1024 - 16;
 
 // history rows are stored without their trailing blanks (see below)
@@ -249,7 +344,14 @@ begin
   FMouseProto := mpX10;
   FOscOverflow := False;
   FOscLen := 0;
+  FDcsBuf := '';
+  FDcsLen := 0;
+  FDcsOverflow := False;
+  FDcsCapture := False;
   FOsc52Queue := nil;
+  FReplyQueue := nil;
+  FReplyLoanToken := TScreenReplyToken(0);
+  FPrivIntro := #0;
   FInterm := #0;
   MaxScrollBack := AMaxScrollBack;
   if MaxScrollBack < 0 then
@@ -673,6 +775,90 @@ begin
   FOsc52Queue[N].Payload := APayload;
 end;
 
+procedure TScreen.QueueReply(const AReply: RawByteString);
+var
+  I, N: integer;
+begin
+  if (AReply = '') or (Length(AReply) > MAX_REPLY_BYTES) then
+    Exit;
+  N := Length(FReplyQueue);
+  if N >= MAX_REPLY_EVENTS then
+  begin
+    for I := 1 to N - 1 do
+      FReplyQueue[I - 1] := FReplyQueue[I];
+    SetLength(FReplyQueue, N - 1);
+    N := N - 1;
+    // Overflow dropped the entry a drain may be holding, so its token must
+    // stop working: acknowledging it now would retire an unrelated reply.
+    FReplyLoanToken := TScreenReplyToken(0);
+  end;
+  SetLength(FReplyQueue, N + 1);
+  FReplyQueue[N] := AReply;
+end;
+
+function TScreen.TakeReply(out AReply: RawByteString): boolean;
+var
+  I, N: integer;
+begin
+  N := Length(FReplyQueue);
+  Result := N > 0;
+  if not Result then
+  begin
+    AReply := '';
+    Exit;
+  end;
+  AReply := FReplyQueue[0];
+  for I := 1 to N - 1 do
+    FReplyQueue[I - 1] := FReplyQueue[I];
+  SetLength(FReplyQueue, N - 1);
+  // The borrowed entry is gone; the loan cannot survive it.
+  FReplyLoanToken := TScreenReplyToken(0);
+end;
+
+function TScreen.PeekReply(var AToken: TScreenReplyToken;
+  var AReply: RawByteString): boolean;
+var
+  ReplyCopy: RawByteString;
+begin
+  Result := Length(FReplyQueue) > 0;
+  if not Result then
+    Exit;
+  // The only allocating step happens BEFORE a token is issued, so a failure
+  // here can never leave a token outstanding with no bytes behind it.
+  ReplyCopy := Copy(FReplyQueue[0], 1, Length(FReplyQueue[0]));
+  if QWord(FReplyLoanToken) = 0 then
+  begin
+    if FLastReplyToken = High(QWord) then
+      // Unreachable in practice (one reply per nanosecond would take
+      // centuries), but refusing beats silently reusing a token.
+      Exit(False);
+    Inc(FLastReplyToken);
+    FReplyLoanToken := TScreenReplyToken(FLastReplyToken);
+  end;
+  AReply := ReplyCopy;
+  AToken := FReplyLoanToken;
+end;
+
+function TScreen.AcknowledgeReply(AToken: TScreenReplyToken): boolean;
+var
+  I, N: integer;
+begin
+  N := Length(FReplyQueue);
+  Result := (N > 0) and (QWord(FReplyLoanToken) <> 0) and
+    (AToken = FReplyLoanToken);
+  if not Result then
+    Exit;
+  for I := 1 to N - 1 do
+    FReplyQueue[I - 1] := FReplyQueue[I];
+  SetLength(FReplyQueue, N - 1);
+  FReplyLoanToken := TScreenReplyToken(0);
+end;
+
+function TScreen.PendingReplies: integer;
+begin
+  Result := Length(FReplyQueue);
+end;
+
 function TScreen.TakeOsc52(out ASelection, APayload: RawByteString): boolean;
 var
   I, N: integer;
@@ -690,6 +876,138 @@ begin
   for I := 1 to N - 1 do
     FOsc52Queue[I - 1] := FOsc52Queue[I];
   SetLength(FOsc52Queue, N - 1);
+end;
+
+// XTGETTCAP: "ESC P + q <name>[;<name>...] ESC \", every name hex-encoded
+// with two digits per character. The answer is
+// "ESC P 1 + r <name>=<value>[;...] ESC \" when every name is known, and
+// "ESC P 0 + r ESC \" otherwise -- an unknown name ends processing of the
+// list, so one bad name makes the whole request fail.
+//
+// Only the capabilities that are not names of special keys are answered, and
+// the full table with its reasoning lives in test/vtreplies.py. The important
+// one is what is deliberately NOT answered: RGB. Publishing RGB tells ncurses
+// this is a direct-colour terminal, after which setaf carries a packed RGB
+// value that this parser would read as a palette index. Truecolor is offered
+// through COLORTERM, exactly as it is alongside any 256-colour description.
+procedure TScreen.AnswerXtGetTcap(const ARequest: RawByteString);
+const
+  HEX: array[0..15] of AnsiChar = '0123456789ABCDEF';
+
+  function HexToName(const S: RawByteString; out AName: string): boolean;
+  var
+    I, Hi, Lo: integer;
+
+    function Digit(C: AnsiChar; out AValue: integer): boolean;
+    begin
+      Result := True;
+      case C of
+        '0'..'9': AValue := Ord(C) - Ord('0');
+        'a'..'f': AValue := Ord(C) - Ord('a') + 10;
+        'A'..'F': AValue := Ord(C) - Ord('A') + 10;
+      else
+        AValue := 0;
+        Result := False;
+      end;
+    end;
+
+  begin
+    AName := '';
+    Result := (S <> '') and (Length(S) mod 2 = 0);
+    if not Result then
+      Exit;
+    I := 1;
+    while I < Length(S) do
+    begin
+      if not Digit(S[I], Hi) or not Digit(S[I + 1], Lo) then
+        Exit(False);
+      AName := AName + AnsiChar((Hi shl 4) or Lo);
+      Inc(I, 2);
+    end;
+  end;
+
+  function NameToHex(const S: string): RawByteString;
+  var
+    I: integer;
+  begin
+    Result := '';
+    for I := 1 to Length(S) do
+      Result := Result + HEX[Ord(S[I]) shr 4] + HEX[Ord(S[I]) and $0F];
+  end;
+
+  // The capabilities superterm answers, all of them dynamic values a
+  // terminal description cannot be trusted for. The name MUST be the pane's
+  // own TERM (st_pty.pas BuildEnv): a program uses it to look up the static
+  // capability set it will then rely on.
+  function Capability(const AName: string; out AValue: string): boolean;
+  begin
+    AValue := '';
+    Result := True;
+    if (AName = 'TN') or (AName = 'name') then
+      AValue := 'xterm-256color'
+    else if (AName = 'Co') or (AName = 'colors') then
+      AValue := '256'
+    else
+      Result := False;
+  end;
+
+var
+  Body, Item, Pairs: RawByteString;
+  Name, Value: string;
+  P: integer;
+begin
+  // The nested helpers assign these before use, but the compiler's data-flow
+  // analysis does not follow an `out` parameter across a nested call.
+  Name := '';
+  Value := '';
+  Body := Copy(ARequest, 3, MaxInt);   // past the "+q"
+  Pairs := '';
+  // An empty request names nothing, which is not a valid request.
+  if Body = '' then
+  begin
+    QueueReply(#27'P0+r'#27'\');
+    Exit;
+  end;
+  while Body <> '' do
+  begin
+    P := Pos(';', Body);
+    if P > 0 then
+    begin
+      Item := Copy(Body, 1, P - 1);
+      Body := Copy(Body, P + 1, MaxInt);
+    end
+    else
+    begin
+      Item := Body;
+      Body := '';
+    end;
+    if not HexToName(Item, Name) or not Capability(Name, Value) then
+    begin
+      QueueReply(#27'P0+r'#27'\');
+      Exit;
+    end;
+    if Pairs <> '' then
+      Pairs := Pairs + ';';
+    Pairs := Pairs + NameToHex(Name) + '=' + NameToHex(Value);
+  end;
+  QueueReply(#27'P1+r' + Pairs + #27'\');
+end;
+
+procedure TScreen.FinishDcs;
+var
+  Payload: RawByteString;
+begin
+  SetLength(FDcsBuf, FDcsLen);
+  Payload := FDcsBuf;
+  FDcsBuf := '';
+  FDcsLen := 0;
+  FPState := psGround;
+  // A truncated request cannot be answered correctly, and answering it
+  // wrongly is worse than the program's own timeout.
+  if FDcsCapture and (not FDcsOverflow) and (Copy(Payload, 1, 2) = '+q') then
+    AnswerXtGetTcap(Payload);
+  FDcsOverflow := False;
+  FDcsCapture := False;
 end;
 
 procedure TScreen.FinishOsc;
@@ -861,6 +1179,11 @@ begin
     end;
     if MaxScrollBack > 0 then
       FSBHead := FSBCount mod MaxScrollBack;
+    // Answers owed belong to the process that owns the PTY, never to a
+    // snapshot: they are not serialized, and loading one over a mirror that
+    // has already been parsing must not leave that mirror's own queue behind.
+    FReplyQueue := nil;
+  FReplyLoanToken := TScreenReplyToken(0);
     // tolerant tail (see SaveToStream): absent in a snapshot from an older
     // daemon, in which case the modes are learned from the live stream
     FAppCursor := False;
@@ -1600,6 +1923,45 @@ begin
           CursorY := ScrollTop;
         end;
       end;
+    'c':
+      begin
+        // Primary Device Attributes. Only the DEC private form "CSI ? ... c"
+        // is a REPLY; "CSI Ps c" from the application is the request, and
+        // only Ps = 0 (or omitted) asks for attributes.
+        if (not FPPriv) and (GetParam(0, 0) = 0) then
+          QueueReply(REPLY_DA1);
+      end;
+    'p':
+      begin
+        // DECRQM: "CSI Ps $ p" and "CSI ? Ps $ p". The '$' is an intermediate
+        // byte, so the final 'p' alone is ambiguous -- without this guard,
+        // XTPUSHSGR's "CSI # p" would be answered as a mode request.
+        if FInterm = '$' then
+        begin
+          n := GetParam(0, 0);
+          if FPPriv then
+            QueueReply(#27'[?' + IntToStr(n) + ';' +
+              IntToStr(ModeState(True, n)) + '$y')
+          else
+            QueueReply(#27'[' + IntToStr(n) + ';' +
+              IntToStr(ModeState(False, n)) + '$y');
+        end;
+      end;
+    'n':
+      begin
+        // Device Status Report. The DEC private form "CSI ? Ps n" asks about
+        // printer/UDK/keyboard status this terminal does not have, so it is
+        // deliberately left unanswered rather than answered wrongly.
+        if not FPPriv then
+          case GetParam(0, 0) of
+            5: QueueReply(REPLY_DSR_OK);
+            // Cursor Position Report. The grid cursor is 0-based and the
+            // report is 1-based. Origin mode is not implemented, so there is
+            // no margin-relative form to account for.
+            6: QueueReply(#27'[' + IntToStr(CursorY + 1) + ';' +
+                 IntToStr(CursorX + 1) + 'R');
+          end;
+      end;
     's':
       begin
         // CSI s (SCP) is xterm's save-cursor: same slot and same payload as
@@ -1716,6 +2078,67 @@ begin
   Dirty := True;
 end;
 
+// The DECRQM answer for one mode: 0 not recognized, 1 set, 2 reset. This
+// terminal has no permanently-set or permanently-reset mode, so 3 and 4 are
+// never used.
+//
+// "Recognized" means this screen model really implements the mode. Reporting
+// a mode it does not implement is worse than reporting 0: the program stops
+// working around a missing feature and starts relying on one.
+function TScreen.ModeState(APrivate: boolean; AMode: integer): integer;
+
+  function OnOff(AValue: boolean): integer;
+  begin
+    if AValue then Result := 1 else Result := 2;
+  end;
+
+begin
+  Result := 0;
+  if APrivate then
+    case AMode of
+      1: Result := OnOff(FAppCursor);
+      7: Result := OnOff(FAutoWrap);
+      9: Result := OnOff((FMouseBits and 1) <> 0);
+      25: Result := OnOff(CursorVisible);
+      // 47, 1047 and 1049 differ in xterm only in what they do to the cursor
+      // and to the screen on the way in and out; there is one alternate
+      // buffer and this reports whether the terminal is on it.
+      47, 1047, 1049: Result := OnOff(FUsingAlt);
+      1000: Result := OnOff((FMouseBits and 2) <> 0);
+      1002: Result := OnOff((FMouseBits and 4) <> 0);
+      1003: Result := OnOff((FMouseBits and 8) <> 0);
+      1005: Result := OnOff(FMouseProto = mpUtf8);
+      1006: Result := OnOff(FMouseProto = mpSGR);
+      1015: Result := OnOff(FMouseProto = mpUrxvt);
+      1016: Result := OnOff(FMouseProto = mpPixel);
+      2004: Result := OnOff(FBracketedPaste);
+    end
+  else
+    case AMode of
+      // IRM and LNM are not implemented yet, and both are answered
+      // "recognized, reset" because that is what the terminal's observable
+      // behaviour already is: writes replace rather than insert, and a line
+      // feed does not also return the carriage. This stops being a fixed
+      // answer and starts being tracked state when the modes land.
+      4, 20: Result := 2;
+    end;
+end;
+
+// A CSI introduced by '<', '=' or '>'. These are private sequences and stay
+// deliberately unhandled -- acting on "CSI > 4 ; 2 m" as an SGR would set
+// underline, and on the kitty "CSI > 1 u" would set nothing useful. The one
+// exception is a QUERY: a program that asks and is not answered blocks until
+// its own timeout, which is indistinguishable from a hung terminal.
+procedure TScreen.DoPrivateCSI(final: AnsiChar);
+begin
+  // Secondary Device Attributes: "CSI > Ps c", Ps = 0 or omitted.
+  if (final = 'c') and (FPrivIntro = '>') and (GetParam(0, 0) = 0) then
+    QueueReply(REPLY_DA2);
+  // "CSI = Ps c" (Tertiary DA) would have to answer DECRPTUI with a unit ID
+  // this terminal does not have, so it is left unanswered on purpose.
+  Dirty := True;
+end;
+
 procedure TScreen.DispatchEsc(c: AnsiChar);
 var
   i: integer;
@@ -1732,6 +2155,7 @@ begin
         end;
         FPPriv := False;
         FPrivOther := False;
+        FPrivIntro := #0;
         FInterm := #0;
         Exit;
       end;
@@ -1751,7 +2175,15 @@ begin
       end;
     'P', 'X', '^', '_':
       begin
-        // DCS/SOS/PM/APC: swallow the whole string until ST (ESC \) or BEL
+        // DCS/SOS/PM/APC: consume the whole string until ST (ESC \) or BEL,
+        // so no payload leaks onto the grid. Only a real DCS is CAPTURED --
+        // XTGETTCAP arrives as "ESC P + q ... ST" and is a query the terminal
+        // owes an answer to. SOS, PM and APC carry nothing this terminal
+        // implements and are still read past without being kept.
+        FDcsBuf := '';
+        FDcsLen := 0;
+        FDcsOverflow := False;
+        FDcsCapture := c = 'P';
         FPState := psDcs;
         Exit;
       end;
@@ -1854,13 +2286,22 @@ begin
   FPCount := 0;
   FPPriv := False;
   FPrivOther := False;
+  FPrivIntro := #0;
   FInterm := #0;
   FUtfLen := 0;
   FUtfNeed := 0;
   FOscBuf := '';
   FOscLen := 0;
   FOscOverflow := False;
+  FDcsBuf := '';
+  FDcsLen := 0;
+  FDcsOverflow := False;
+  FDcsCapture := False;
   FOsc52Queue := nil;
+  { RIS is a full reset: an answer queued for a query the program made before
+    it reset the terminal is no longer owed to anyone. }
+  FReplyQueue := nil;
+  FReplyLoanToken := TScreenReplyToken(0);
   FSaveX := 0;
   FSaveY := 0;
   FSaveAttr := A_FGDEF or A_BGDEF;
@@ -1943,22 +2384,32 @@ begin
             // '?' = DEC private: DECSET/DECRST (?1049h, ?25h...) ARE handled
             FPPriv := True
           else if (b >= $3C) and (b <= $3E) then
+          begin
             // '<' '=' '>' introduce OTHER private CSIs -- modifyOtherKeys
             // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" Claude emits.
             // Consume them so the params/final byte do NOT leak as "4m"/"u",
             // but do NOT act on them (applying "m" would wrongly set underline).
-            FPrivOther := True
+            // The intro byte itself is remembered because a few of these are
+            // QUERIES the terminal owes an answer to -- "CSI > c" is Secondary
+            // Device Attributes -- and those must be told apart from the rest,
+            // which stay ignored.
+            FPrivOther := True;
+            FPrivIntro := AnsiChar(b);
+          end
           else if (b >= $20) and (b <= $2F) then
           begin
             FInterm := AnsiChar(b);   // intermediate: ' ' of DECSCUSR etc.
           end
           else if (b >= $40) and (b <= $7E) then
           begin
-            if not FPrivOther then
-              DoCSI(AnsiChar(b));   // private < = > sequences are ignored
+            if FPrivOther then
+              DoPrivateCSI(AnsiChar(b))   // answers queries, ignores the rest
+            else
+              DoCSI(AnsiChar(b));
             FPState := psGround;
             FPPriv := False;
             FPrivOther := False;
+            FPrivIntro := #0;
             FInterm := #0;
           end
           else
@@ -1966,6 +2417,7 @@ begin
             FPState := psGround;
             FPPriv := False;
             FPrivOther := False;
+            FPrivIntro := #0;
             FInterm := #0;
           end;
         end;
@@ -2011,16 +2463,44 @@ begin
       psDcs:
         begin
           if b = 7 then
-            FPState := psGround     // BEL ends the string
+            FinishDcs               // BEL ends the string
           else if b = 27 then
-            FPState := psDcsEsc;    // maybe ST (ESC \)
-          // any other byte is part of the payload: discard it
+            FPState := psDcsEsc     // maybe ST (ESC \)
+          else if FDcsCapture then
+          begin
+            if FDcsLen < MAX_DCS_BYTES then
+            begin
+              if FDcsLen = Length(FDcsBuf) then
+              begin
+                NewCap := Length(FDcsBuf);
+                if NewCap = 0 then NewCap := 256
+                else NewCap := NewCap * 2;
+                if NewCap > MAX_DCS_BYTES then NewCap := MAX_DCS_BYTES;
+                SetLength(FDcsBuf, NewCap);
+              end;
+              Inc(FDcsLen);
+              FDcsBuf[FDcsLen] := AnsiChar(b);
+            end
+            else
+              FDcsOverflow := True;
+          end;
+          // an uncaptured string's bytes are read past without being kept
         end;
       psDcsEsc:
         begin
-          // ESC \ = ST (end). A bare ESC starts a new sequence, but for a
-          // discarded string just return to ground either way.
-          FPState := psGround;
+          // ESC \ = ST, the proper end. A bare ESC is not legal inside a
+          // control string; the string ends either way, and a captured one
+          // is only acted on when it ended properly.
+          if b <> Ord('\') then
+          begin
+            FDcsBuf := '';
+            FDcsLen := 0;
+            FDcsOverflow := False;
+            FDcsCapture := False;
+            FPState := psGround;
+          end
+          else
+            FinishDcs;
         end;
     end;
   end;

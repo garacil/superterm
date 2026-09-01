@@ -110,7 +110,7 @@ const
 
 type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
-    pfsDropOsc, pfsDropOscEsc);
+    pfsDropOsc, pfsDropOscEsc, pfsCsi, pfsDcs, pfsDcsEsc);
   TIconSlotUsed = array[0..MAX_PANES - 1] of boolean;
   TMemberNoticeKind = (mnConnected, mnDisconnected);
   TMemberNotice = record
@@ -546,6 +546,11 @@ type
       AStart, ACommit: boolean);
     function ClipboardCellMarked(APane, AAbsRow, ACol: integer): boolean;
     function HandleCopyKey(var Event: TEvent): boolean;
+    // Answer the queries this pane made. LOCAL WORKSPACE ONLY: here the
+    // client owns the PTY, so it is the terminal. When attached to a daemon
+    // the daemon owns the PTY and answers; a viewer that also answered would
+    // reply once per attached client to a question asked once.
+    procedure DeliverPaneReply(APane: integer);
     procedure DrainPaneOsc52(i: integer; AAlreadyPassed: boolean);
     function AttachRemoteSession(const APath: string): boolean;
     // server-always promotion keeps the already final local windows/screens;
@@ -4996,6 +5001,90 @@ begin
     Panes[i].WriteStr(S);
 end;
 
+
+// Exactly the query families src/st_screen.pas answers itself. In passthrough
+// the pane's bytes reach the physical terminal too, so a query left in the
+// stream is answered TWICE: once by this terminal core and once by the host.
+// Measured before writing this: a pane asking CSI 6 n in fullscreen received
+// the core's correct "ESC [ 6;1 R" followed by the host's reply arriving as
+// "ESC O R" -- decoded as the F3 key, so the duplicate was not merely noise
+// but injected a keypress the user never made.
+//
+// The list is deliberately no wider than what the core answers. CSI = Ps c
+// (Tertiary DA) and the private CSI ? Ps n stay in the stream precisely
+// because the core stays silent about them, and a host that can answer should.
+// A capability request the core answers: DCS + q <hex names> ST.
+function PassthroughWithholdsDcs(const ASeq: RawByteString): boolean;
+begin
+  Result := (Length(ASeq) >= 4) and (ASeq[1] = #27) and (ASeq[2] = 'P') and
+    (ASeq[3] = '+') and (ASeq[4] = 'q');
+end;
+
+function PassthroughWithholdsQuery(const ASeq: RawByteString): boolean;
+var
+  I, N: integer;
+  Intro, Final: AnsiChar;
+  Params, Inter: RawByteString;
+  FirstParam: LongInt;
+  HasDigits: boolean;
+begin
+  Result := False;
+  N := Length(ASeq);
+  // ESC [ ... final
+  if (N < 3) or (ASeq[1] <> #27) or (ASeq[2] <> '[') then
+    Exit;
+  Final := ASeq[N];
+  I := 3;
+  Intro := #0;
+  if (I <= N - 1) and (ASeq[I] in ['<', '=', '>', '?']) then
+  begin
+    Intro := ASeq[I];
+    Inc(I);
+  end;
+  Params := '';
+  while (I <= N - 1) and (ASeq[I] in ['0'..'9', ';', ':']) do
+  begin
+    Params := Params + ASeq[I];
+    Inc(I);
+  end;
+  Inter := '';
+  while (I <= N - 1) and (ASeq[I] >= ' ') and (ASeq[I] <= '/') do
+  begin
+    Inter := Inter + ASeq[I];
+    Inc(I);
+  end;
+  if I <> N then
+    Exit;   // unparsed bytes before the final: not a shape we recognise
+  // first parameter, 0 when omitted, as the core reads it
+  FirstParam := 0;
+  HasDigits := False;
+  for I := 1 to Length(Params) do
+    if Params[I] in ['0'..'9'] then
+    begin
+      HasDigits := True;
+      FirstParam := FirstParam * 10 + (Ord(Params[I]) - Ord('0'));
+      if FirstParam > 65535 then
+        Exit;   // absurd parameter: leave it alone
+    end
+    else
+      Break;
+  if not HasDigits then
+    FirstParam := 0;
+  case Final of
+    'c':
+      // DA1 "CSI Ps c" and DA2 "CSI > Ps c", both only for Ps = 0/omitted.
+      Result := (Inter = '') and (FirstParam = 0) and
+        ((Intro = #0) or (Intro = '>'));
+    'n':
+      // DSR "CSI 5 n" and CPR "CSI 6 n"; the private form is not answered.
+      Result := (Inter = '') and (Intro = #0) and
+        ((FirstParam = 5) or (FirstParam = 6));
+    'p':
+      // DECRQM "CSI Ps $ p" and "CSI ? Ps $ p".
+      Result := (Inter = '$') and ((Intro = #0) or (Intro = '?'));
+  end;
+end;
+
 // Raw passthrough keeps terminal output except host-read queries which cannot
 // have one coherent answer in a shared session. OSC 52 could expose an outer
 // clipboard; OSC 10..19 would make every attached terminal answer separately
@@ -5004,6 +5093,9 @@ end;
 procedure TSuperApp.PassthroughFiltered(const Data; ALen: integer);
 const
   MAX_PASS_OSC = 2 * 1024 * 1024;
+  // A control sequence longer than this is not a query; stop buffering and
+  // pass the bytes on rather than hold them for a final that never comes.
+  MAX_PASS_CSI = 64;
 var
   P: PByte;
   B: byte;
@@ -5150,6 +5242,16 @@ begin
           BufferByte(B);
           PassFilterState := pfsOsc;
         end
+        else if B = Ord('[') then
+        begin
+          BufferByte(B);
+          PassFilterState := pfsCsi;
+        end
+        else if B = Ord('P') then
+        begin
+          BufferByte(B);
+          PassFilterState := pfsDcs;
+        end
         else if B = 27 then
         begin
           SetLength(PassFilterBuf, PassFilterLen);
@@ -5195,6 +5297,68 @@ begin
       pfsDropOscEsc:
         if B = Ord('\') then PassFilterState := pfsGround
         else if B <> 27 then PassFilterState := pfsDropOsc;
+      pfsCsi:
+        begin
+          BufferByte(B);
+          // A CSI ends at the first byte in 0x40..0x7E. Only then is there
+          // enough of it to tell a query from an ordinary control sequence,
+          // which is why the whole sequence is buffered rather than streamed.
+          if (B >= $40) and (B <= $7E) then
+          begin
+            SetLength(PassFilterBuf, PassFilterLen);
+            if not PassthroughWithholdsQuery(PassFilterBuf) then
+              EmitString(PassFilterBuf)
+            else if DebugFull then
+              DebugLog(Format('pass: withheld %d query bytes the core answers',
+                [PassFilterLen]));
+            ResetPassBuffer;
+            PassFilterState := pfsGround;
+          end
+          else if PassFilterLen >= MAX_PASS_CSI then
+          begin
+            // Not a CSI any sane program emits. Stop interpreting it and let
+            // the terminal have the bytes rather than swallow them.
+            SetLength(PassFilterBuf, PassFilterLen);
+            EmitString(PassFilterBuf);
+            ResetPassBuffer;
+            PassFilterState := pfsGround;
+          end;
+        end;
+      pfsDcs:
+        begin
+          BufferByte(B);
+          if B = 7 then
+          begin
+            SetLength(PassFilterBuf, PassFilterLen);
+            if not PassthroughWithholdsDcs(PassFilterBuf) then
+              EmitString(PassFilterBuf);
+            ResetPassBuffer;
+            PassFilterState := pfsGround;
+          end
+          else if B = 27 then
+            PassFilterState := pfsDcsEsc
+          else if PassFilterLen >= MAX_PASS_OSC then
+          begin
+            SetLength(PassFilterBuf, PassFilterLen);
+            EmitString(PassFilterBuf);
+            ResetPassBuffer;
+            PassFilterState := pfsGround;
+          end;
+        end;
+      pfsDcsEsc:
+        begin
+          BufferByte(B);
+          if B = Ord('\') then
+          begin
+            SetLength(PassFilterBuf, PassFilterLen);
+            if not PassthroughWithholdsDcs(PassFilterBuf) then
+              EmitString(PassFilterBuf);
+            ResetPassBuffer;
+            PassFilterState := pfsGround;
+          end
+          else if B <> 27 then
+            PassFilterState := pfsDcs;
+        end;
     end;
   end;
   if OutLen > 0 then
@@ -5493,6 +5657,38 @@ begin
     kbCtrlEnd: MoveCopyCursor(0, +MaxInt);
   end;
   ClearEvent(Event);
+end;
+
+procedure TSuperApp.DeliverPaneReply(APane: integer);
+var
+  Reply: RawByteString;
+  ReplyToken: TScreenReplyToken;
+begin
+  // The daemon is the terminal for its panes. A remote viewer must stay silent
+  // even though its mirror parsed the very same query bytes.
+  if RemoteMode then
+    Exit;
+  if (APane < 0) or (APane >= MAX_PANES) or
+     (Scr[APane] = nil) or (Panes[APane] = nil) then
+    Exit;
+  Reply := '';
+  ReplyToken := TScreenReplyToken(0);
+  while Scr[APane].PeekReply(ReplyToken, Reply) do
+  begin
+    if not Panes[APane].WriteStr(Reply) then
+    begin
+      // Still owed; the next poll retries it.
+      DebugLog(Format('reply: pane=%d deferred %d bytes', [APane, Length(Reply)]));
+      Exit;
+    end;
+    if not Scr[APane].AcknowledgeReply(ReplyToken) then
+    begin
+      DebugLog(Format('reply: pane=%d acknowledgement lost its token', [APane]));
+      Exit;
+    end;
+    Reply := '';
+    ReplyToken := TScreenReplyToken(0);
+  end;
 end;
 
 procedure TSuperApp.DrainPaneOsc52(i: integer; AAlreadyPassed: boolean);
@@ -10624,12 +10820,14 @@ begin
             begin
               Scr[i].WriteBytes(Buf, n);
               DrainPaneOsc52(i, True);
+              DeliverPaneReply(i);
               PassthroughFiltered(Buf[0], n);
             end
             else
             begin
               Scr[i].WriteBytes(Buf, n);
               DrainPaneOsc52(i, False);
+              DeliverPaneReply(i);
               if Win[i] <> nil then
                 RepaintPane(i);
             end;

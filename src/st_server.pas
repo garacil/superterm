@@ -804,6 +804,10 @@ type
       const Data: TByteArray): boolean;
     function SendFrameToIdx(AIdx: integer; AKind: byte; APane: integer;
       const Buffer; ASize: integer): boolean;
+    // Write out every answer the pane's terminal owes it. Peek/acknowledge,
+    // not take: if the PTY queue refuses the bytes the reply stays owed and
+    // the next read retries it, instead of being lost by a failed write.
+    procedure DeliverPaneReply(APane: integer);
     function SendSnapshot(AIdx: integer): boolean;
     procedure Broadcast(AKind: byte; APane: integer; const Buffer;
       ASize: integer; ANeedCaps: boolean; AExcept: integer);
@@ -7332,6 +7336,44 @@ begin
     end;
 end;
 
+procedure TDetachedSession.DeliverPaneReply(APane: integer);
+var
+  Reply: RawByteString;
+  ReplyToken: TScreenReplyToken;
+begin
+  if (APane < 0) or (APane >= FPaneCount) or
+     (FScreens[APane] = nil) or (FPanes[APane] = nil) then
+    Exit;
+  Reply := '';
+  ReplyToken := TScreenReplyToken(0);
+  while FScreens[APane].PeekReply(ReplyToken, Reply) do
+  begin
+    if not FPanes[APane].WriteStr(Reply) then
+    begin
+      // Ordinary backpressure, or a dead pane. Either way the reply is still
+      // queued: stop here and let the next read try again.
+      if DebugActive then
+        DebugLog(Format('reply: pane=%d deferred %d bytes (pty busy or gone)',
+          [APane, Length(Reply)]));
+      Exit;
+    end;
+    // WriteStr accepting means the whole reply now belongs to the PTY's own
+    // bounded queue. Only that edge may retire it from the terminal core.
+    if not FScreens[APane].AcknowledgeReply(ReplyToken) then
+    begin
+      // The queue head moved between peek and acknowledge. The bytes are
+      // already on their way, so retrying would answer twice; stop draining
+      // this pane for now rather than risk a duplicate answer.
+      if DebugActive then
+        DebugLog(Format('reply: pane=%d acknowledgement lost its token',
+          [APane]));
+      Exit;
+    end;
+    Reply := '';
+    ReplyToken := TScreenReplyToken(0);
+  end;
+end;
+
 function TDetachedSession.ReadPaneEvent(APane: integer; out AKind: byte;
   out AData: TByteArray): boolean;
 var
@@ -7359,6 +7401,11 @@ begin
         OscSelection := '';
         OscPayload := '';
         while FScreens[APane].TakeOsc52(OscSelection, OscPayload) do ;
+        // Answer whatever the pane just asked the terminal. This is the ONLY
+        // place it may happen: the daemon holds the PTY, so it is the only
+        // process that can write back, and a query must be answered exactly
+        // once however many viewers are attached.
+        DeliverPaneReply(APane);
       end;
       SetLength(AData, N);
       Move(Buf[0], AData[0], N);
