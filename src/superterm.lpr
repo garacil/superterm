@@ -285,6 +285,16 @@ begin
   // useful and costs nothing when nothing goes wrong
   DebugSetRole('client');
   InstallCrashHandler;
+  // A viewer that falls too far behind is dropped on purpose by the daemon
+  // (the lagging-reader rule in st_server). When that happens this process
+  // usually reads EOF and reports "the connection was lost" -- but if it
+  // WRITES first it gets SIGPIPE, whose default action kills it outright: no
+  // message, no crash report, not even a trace line. That is exactly how it
+  // was seen to exit "sin mas" in the field, and why no report ever appeared.
+  // The daemon has ignored SIGPIPE since it was written; the client never did.
+  // A failed write now returns EPIPE to the caller, so every disconnection
+  // reaches the one path that tells the user what happened.
+  FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
   // st_mouse already decided whether there is a mouse (see that unit); what
   // is left is to say so in the trace, which is the one line that explains a
   // machine where the mouse is missing
