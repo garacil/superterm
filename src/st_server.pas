@@ -383,6 +383,9 @@ type
     function SendFocus(APane: integer): boolean;
     function SendRename(APane: integer; const ATitle: string): boolean;
     property Connected: boolean read FConnected;
+    // The session socket, so a viewer can wait on it instead of polling. Read
+    // only: ownership stays here, and nothing outside may read or close it.
+    property SocketFd: cint read FSocket;
     property AttachError: string read FAttachError;
     // version of the daemon we are attached to (0 = pre-v2)
     property ServerProto: Longint read FServerProto;

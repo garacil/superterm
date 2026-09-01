@@ -191,6 +191,34 @@ begin
   Result := Cell^;
 end;
 
+// Can the terminal accept anything right now, without waiting for it?
+//
+// This exists because it was measured: with panes flooding, one frame reached
+// 60704 bytes, the host terminal did not drain it, and the client sat inside
+// write() for as long as that lasted -- /proc showed state S, syscall 1,
+// wchan wait_woken, and eleven trace lines in four seconds against 328 in the
+// two seconds after reading resumed. The client is single threaded, so a
+// blocked write stops everything: it stops reading the session socket, stops
+// answering the keyboard and the mouse, and its queue on the daemon grows
+// until the lagging-reader rule evicts it. The hang the user reported was that
+// write, and the eviction was only its last act.
+//
+// select() with a zero timeout ASKS instead of committing. It deliberately
+// does not set O_NONBLOCK: standard output is inherited from the user's shell
+// and descriptor flags are shared, so leaving it non-blocking would hand the
+// shell EAGAIN after superterm exits.
+function TerminalAcceptsOutput: Boolean;
+var
+  Fds: TFDSet;
+  Timeout: TTimeVal;
+begin
+  fpFD_ZERO(Fds);
+  fpFD_SET(StdOutputHandle, Fds);
+  Timeout.tv_sec := 0;
+  Timeout.tv_usec := 0;
+  Result := fpSelect(StdOutputHandle + 1, nil, @Fds, nil, @Timeout) > 0;
+end;
+
 procedure WriteRaw(const S: AnsiString);
 var
   Offset, Remaining: LongInt;
@@ -1434,6 +1462,27 @@ begin
   if PerfScanStart <> 0 then
     PerfWriteStart := SuperTermPerfNowMicros;
   {$ENDIF}
+  // Drop this frame rather than block inside write() waiting for a terminal
+  // that is not draining. Safe HERE and only here, because this frame is a
+  // DELTA against EffOld: invalidating that baseline makes the next frame a
+  // complete repaint, so the screen heals itself and no information is lost --
+  // the truth lives in the buffer, not in the bytes that were in flight.
+  //
+  // Only whole frames are dropped, never a partial one: a half-written escape
+  // sequence would leave the terminal in a state no repaint could correct.
+  // Once WriteRaw has begun it finishes, so this decision is taken before it.
+  //
+  // Passthrough is deliberately excluded (it returns far above): there the
+  // bytes belong to the pane's own program, superterm is not the one painting,
+  // and dropping them would corrupt a display no repaint of ours can fix.
+  if (Length(Frame) > 0) and (not TerminalAcceptsOutput) then
+  begin
+    InvalidateFrame;
+    if DebugActive then
+      DebugLog(Format('video: frame dropped, terminal not draining ' +
+        '(%d bytes); next update repaints in full', [Length(Frame)]));
+    Exit;
+  end;
   WriteRaw(Frame);
   {$IFDEF SUPERTERM_PERF_BUILD}
   if PerfWriteStart <> 0 then

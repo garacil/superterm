@@ -15,7 +15,8 @@ uses
   SysUtils, Classes, baseunix, unix, termio, Video,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
-  st_mouse, st_clipboard;
+  st_mouse, st_clipboard
+  {$IFDEF SUPERTERM_PERF_BUILD}, st_perf{$ENDIF};
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -539,6 +540,9 @@ type
     procedure RequestPaneSize(i, ACols, ARows: integer);
     // Commits the size of any pane whose live gesture has just ended.
     procedure FlushDeferredPaneSizes;
+    // Waits until something can actually produce work -- a keystroke, the
+    // session socket, or a local pane -- instead of sleeping a fixed quantum.
+    procedure WaitForActivity(ABudgetMs: integer);
     procedure FitSessionToWindow;
     procedure ResetSizeRequests;
     procedure WritePaneInput(i: integer; const S: RawByteString);
@@ -747,12 +751,25 @@ end;
 // (drawscreenbuf TRUE, forced) does. Reserve the sledgehammer for real
 // video-mode/size changes and coming back from raw passthrough.
 procedure TSuperApp.RepaintPane(i: integer);
+{$IFDEF SUPERTERM_PERF_BUILD}
+var
+  PerfDrawStart: QWord;
+{$ENDIF}
 begin
+  {$IFDEF SUPERTERM_PERF_BUILD}
+  PerfDrawStart := 0;
+  if SuperTermPerfEnabled then
+    PerfDrawStart := SuperTermPerfNowMicros;
+  {$ENDIF}
   if (i < 0) or (i >= MAX_PANES) or (Win[i] = nil) then
     Exit;
   Win[i]^.SyncScrollBar(False);
   if Win[i]^.Term <> nil then
     Win[i]^.Term^.DrawView;
+  {$IFDEF SUPERTERM_PERF_BUILD}
+  if PerfDrawStart <> 0 then
+    SuperTermPerfObserve(stpsFVDraw, PerfDrawStart);
+  {$ENDIF}
 end;
 
 procedure TSuperApp.RepaintChanges;
@@ -2279,6 +2296,50 @@ begin
 end;
 
 // One commit per gesture: called when no window is being dragged any more.
+// Replaces the vendored 10 ms GiveUpTimeSlice. Free Vision only reaches Idle
+// when it has no event to dispatch, so this is exactly the moment to sleep --
+// but sleeping blind meant a keystroke already sitting in the terminal buffer
+// still waited out the quantum. Waiting on the descriptors themselves returns
+// the moment one is ready, and still yields the CPU when nothing is happening.
+//
+// The budget stays small because Idle also drives timers this does not watch:
+// the cursor blink, the periodic title probe and the host size check. It is a
+// ceiling on how long to sleep, not a delay that is always paid.
+procedure TSuperApp.WaitForActivity(ABudgetMs: integer);
+var
+  Fds: TFDSet;
+  Timeout: TTimeVal;
+  MaxFd, i: cint;
+begin
+  if ABudgetMs <= 0 then
+    Exit;
+  fpFD_ZERO(Fds);
+  // stdin: the keyboard and the mouse. Always watched -- being able to answer
+  // the user is the whole point.
+  fpFD_SET(0, Fds);
+  MaxFd := 0;
+  if RemoteMode then
+  begin
+    if (Remote <> nil) and Remote.Connected and (Remote.SocketFd >= 0) then
+    begin
+      fpFD_SET(Remote.SocketFd, Fds);
+      if Remote.SocketFd > MaxFd then
+        MaxFd := Remote.SocketFd;
+    end;
+  end
+  else
+    for i := 0 to MAX_PANES - 1 do
+      if (Panes[i] <> nil) and Panes[i].Alive and (Panes[i].Master >= 0) then
+      begin
+        fpFD_SET(Panes[i].Master, Fds);
+        if Panes[i].Master > MaxFd then
+          MaxFd := Panes[i].Master;
+      end;
+  Timeout.tv_sec := ABudgetMs div 1000;
+  Timeout.tv_usec := (ABudgetMs mod 1000) * 1000;
+  fpSelect(MaxFd + 1, @Fds, nil, nil, @Timeout);
+end;
+
 procedure TSuperApp.FlushDeferredPaneSizes;
 var
   i, pw, ph: integer;
@@ -10533,6 +10594,9 @@ var
   Deadline: QWord;
   Touched: TTouchedPanes;
   FullRedraw, LocalGestureActive: boolean;
+  {$IFDEF SUPERTERM_PERF_BUILD}
+  PerfParseStart: QWord;
+  {$ENDIF}
   HostPaste: RawByteString;
   const
     LastTitle: cardinal = 0;
@@ -10541,7 +10605,21 @@ var
     LastLayoutSync: cardinal = 0;
 begin
   HostPaste := '';
-    inherited Idle;
+  // NOT "inherited Idle". TProgram.Idle does two useful things and then calls
+  // GiveUpTimeSlice, which is an unconditional 10 ms nanosleep
+  // (vendor/fv322/drivers.pas). That sleep was the floor under every keystroke:
+  // nothing woke the loop early, so input waited for the quantum to expire even
+  // when the byte had already arrived. The two useful things are done here and
+  // the sleep is replaced by WaitForActivity at the end of this method, which
+  // waits on the descriptors that can actually produce work and returns the
+  // instant one of them is ready.
+  if StatusLine <> nil then
+    StatusLine^.Update;
+  if CommandSetChanged then
+  begin
+    Message(@Self, evBroadcast, cmCommandSetChanged, nil);
+    CommandSetChanged := False;
+  end;
   if Current = PView(Desktop) then
     while TakeHostPaste(HostPaste) do
     begin
@@ -10610,8 +10688,18 @@ begin
             end
             else if Scr[RemoteEvent.Pane] <> nil then
             begin
+              {$IFDEF SUPERTERM_PERF_BUILD}
+              PerfParseStart := 0;
+              if SuperTermPerfEnabled then
+                PerfParseStart := SuperTermPerfNowMicros;
+              {$ENDIF}
               Scr[RemoteEvent.Pane].WriteBytes(RemoteEvent.Data[0],
                 Length(RemoteEvent.Data));
+              {$IFDEF SUPERTERM_PERF_BUILD}
+              if PerfParseStart <> 0 then
+                SuperTermPerfObserve(stpsScreenParse, PerfParseStart,
+                  QWord(Length(RemoteEvent.Data)));
+              {$ENDIF}
               DrainPaneOsc52(RemoteEvent.Pane, False);
               // mark, do not draw: one repaint after the batch instead of one
               // per 64 KB frame, each of which is a blocking write to the tty
@@ -10888,7 +10976,9 @@ begin
         end;
   end
   else
-    Sleep(8);
+    // No live pane to watch: still wait on the keyboard rather than burn a
+    // fixed sleep, so a keystroke is answered the moment it arrives.
+    WaitForActivity(8);
   // Reap only leaders owned by the current local workspace. waitpid(-1)
   // could collect a child whose PTY was transferred to an older daemon and
   // make that daemon's still-stored PGID reusable before it observes EOF.
@@ -10937,6 +11027,12 @@ begin
           Win[i]^.SetTitle(' ' + Copy(ExtractFileName(Panes[i].TitleCwd), 1, 24));
       end;
   end;
+  // The wait that replaces the vendored fixed sleep. Everything above has
+  // already been done; this yields the CPU until a keystroke, the session
+  // socket or a local pane has something, or the budget expires so the blink
+  // and title timers still run.
+  WaitForActivity(10);
+
 end;
 
 // informational menu row: always gray, never dispatchable (TV

@@ -191,6 +191,9 @@ type
     procedure QueueOsc52(const ASelection, APayload: RawByteString);
     function GetParam(i, def: integer): integer;
     procedure SetCellStr(x, y: integer; const S: RawByteString; AAttr: word);
+    // One ASCII byte into one cell, without building a string for it. Same
+    // result as SetCellStr with a one-character narrow string.
+    procedure SetCellByte(x, y: integer; AByte: byte; AAttr: word);
     function CellWidth(const S: RawByteString): integer;
     procedure EraseRange(x1, y1, x2, y2: integer; AAttr: word);
     procedure PushScrollRow(const R: TRow);
@@ -1278,6 +1281,18 @@ begin
     Result := 2;
 end;
 
+procedure TScreen.SetCellByte(x, y: integer; AByte: byte; AAttr: word);
+begin
+  if (x < 0) or (x >= Width) or (y < 0) or (y >= Height) then
+    Exit;
+  ClearCell(FGrid[y][x]);
+  FGrid[y][x].Len := 1;
+  FGrid[y][x].Txt[0] := AnsiChar(AByte);
+  FGrid[y][x].Attr := AAttr;
+  FGrid[y][x].FgRGB := AttrFgRGB;
+  FGrid[y][x].BgRGB := AttrBgRGB;
+end;
+
 procedure TScreen.SetCellStr(x, y: integer; const S: RawByteString; AAttr: word);
 var
   i: integer;
@@ -1454,6 +1469,44 @@ begin
     CursorX := 0;
     LineFeed;
   end;
+  // Fast path for a single-byte ASCII glyph, which is what ordinary program
+  // output is almost entirely made of. The general path below allocates a
+  // RawByteString for EVERY printable character: a 64 KB batch of `ls -R` cost
+  // ~65000 heap allocations, and measurement put pane parsing at 1166 us per
+  // batch -- eight times the cost of drawing the frame it produced. Nothing
+  // here decides anything the general path would decide differently: a byte
+  // below $80 is always exactly one column wide, is never a combining mark or
+  // a variation selector and never forms a wide pair, so CellWidth would
+  // return 1 and SetCellStr would take its narrow branch.
+  {$IFNDEF SUPERTERM_NO_ASCII_FAST}
+  if (alen = 1) and (byte(b[0]) < $80) then
+  begin
+    if CursorX + 1 > Width then
+    begin
+      if not FAutoWrap then
+      begin
+        CursorX := Width - 1;
+        if CursorX < 0 then CursorX := 0;
+      end
+      else
+      begin
+        CursorX := 0;
+        LineFeed;
+      end;
+    end;
+    SetCellByte(CursorX, CursorY, byte(b[0]), AAttr);
+    Inc(CursorX);
+    if CursorX >= Width then
+    begin
+      CursorX := Width - 1;
+      FPendingWrap := FAutoWrap;
+    end
+    else
+      FPendingWrap := False;
+    Dirty := True;
+    Exit;
+  end;
+  {$ENDIF}
   S := Default(RawByteString);
   SetLength(S, alen);
   for i := 0 to alen - 1 do
