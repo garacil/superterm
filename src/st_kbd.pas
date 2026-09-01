@@ -65,6 +65,13 @@ function InputBuffered: boolean;
 // Bytes the pump had to discard because the application never consumed them.
 // Zero unless the UI thread stalled for longer than the ring can absorb.
 function InputPumpDropped: QWord;
+// A session daemon is forked WITHOUT exec, so the child continues in this
+// address space and inherits every lock a thread happened to hold, with no
+// owner left to release it. Stop the pump around such a fork. Whatever it had
+// already collected is carried over in order rather than thrown away: losing
+// input silently is the exact defect the pump exists to remove.
+procedure QuiesceInputForFork;
+procedure ResumeInputAfterFork;
 
 implementation
 
@@ -395,6 +402,7 @@ var
   PumpPipe: TFildes = (-1, -1);
   PumpSignalled: boolean = False;
   PumpRunning: boolean = False;
+  PumpForkQuiesced: boolean = False;
 
 // FPC declares fpRead/fpWrite with untyped buffers and marks them inline; at
 // call sites 3.2.2 reports a compiler implementation note with nothing
@@ -527,6 +535,52 @@ begin
   PumpSignalled := False;
   PumpRunning := True;
   Pump := TInputPump.Create(False);
+end;
+
+// Everything still undecoded, in the order it arrived: what the decoder has
+// buffered first, then what the pump collected after that.
+function DrainBufferedInput: RawByteString;
+begin
+  Result := '';
+  while RHead <> RTail do
+  begin
+    Result := Result + AnsiChar(RBuf[RTail]);
+    RTail := (RTail + 1) mod Length(RBuf);
+  end;
+  if not PumpRunning then
+    Exit;
+  EnterCriticalSection(PumpLock);
+  try
+    while PumpCount > 0 do
+    begin
+      Result := Result + AnsiChar(PumpRing[PumpTail]);
+      PumpTail := (PumpTail + 1) mod PUMP_RING_SIZE;
+      Dec(PumpCount);
+    end;
+  finally
+    LeaveCriticalSection(PumpLock);
+  end;
+end;
+
+procedure QuiesceInputForFork;
+var
+  Carried: RawByteString;
+begin
+  if not PumpRunning then
+    Exit;
+  StopInputPump;
+  Carried := DrainBufferedInput;
+  if Carried <> '' then
+    AppendDeferredInput(Carried);   // consumed before any newly read byte
+  PumpForkQuiesced := True;
+end;
+
+procedure ResumeInputAfterFork;
+begin
+  if not PumpForkQuiesced then
+    Exit;
+  PumpForkQuiesced := False;
+  StartInputPump;
 end;
 
 procedure StopInputPump;

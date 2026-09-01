@@ -70,6 +70,23 @@ begin
 end;
 {$ENDIF}
 
+// Creating a session forks this process with no exec, so the daemon child
+// continues inside this address space. A thread does not survive that fork
+// but the locks it held do, with nobody left alive to release them, and the
+// child then blocks forever on its first allocation. Quiesce everything of
+// ours around it; both routines are no-ops when nothing is running.
+procedure QuiesceClientThreadsForFork;
+begin
+  QuiesceInputForFork;
+  QuiesceVideoOutputForFork;
+end;
+
+procedure ResumeClientThreadsAfterFork;
+begin
+  ResumeVideoOutputAfterFork;
+  ResumeInputAfterFork;
+end;
+
 procedure Main;
 var
   STApp: PSuperApp;
@@ -302,6 +319,9 @@ begin
     DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d',
       [GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
        Drivers.ButtonCount]));
+  // Mouse tracking joins everything else on the client's single emitter,
+  // without st_mouse depending on st_video: see HostMouseEmit.
+  HostMouseEmit := @WriteRaw;
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
@@ -330,9 +350,13 @@ begin
         // or a mouse press. It must be stopped before ReleaseConsoleInput,
         // which flushes stdin itself.
         StartInputPump;
+        BeforeSessionFork := @QuiesceClientThreadsForFork;
+        AfterSessionFork := @ResumeClientThreadsAfterFork;
         try
           STApp^.Run;
         finally
+          BeforeSessionFork := nil;
+          AfterSessionFork := nil;
           StopInputPump;
         end;
       end;

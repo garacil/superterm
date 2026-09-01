@@ -39,6 +39,18 @@ interface
 // True on a Linux virtual console (TERM=linux), where the only possible
 // mouse is gpm.
 function OnLinuxConsole: boolean;
+// Tracking is enabled through the client's central emitter so it cannot be
+// interleaved with the frames that emitter queues. It is reached by a hook
+// rather than by USING st_video, which would be a dependency cycle in spirit
+// and a real one in effect: st_video reaches Drivers and Mouse through st_kbd,
+// so this unit would then initialise AFTER them. The main program's uses
+// clause states why that must never happen -- this driver has to register
+// before the Drivers unit asks the RTL whether a mouse exists. Measured when
+// it was inverted: the RTL installed its own console driver and the client
+// blocked forever in connect() to /dev/gpmctl.
+var
+  HostMouseEmit: procedure(const S: AnsiString) = nil;
+
 
 // The exact set of modes this driver wants the host terminal in, and the way
 // back. One place decides, so anything that hands the terminal to a pane and
@@ -52,11 +64,12 @@ procedure HostMouseOff;
 implementation
 
 uses
-  SysUtils, BaseUnix, Sockets, Mouse, st_video;
+  SysUtils, BaseUnix, Sockets, Mouse;
 
 var
   SysDriver: TMouseDriver;   // the RTL's, kept for the console
   OurDriver: TMouseDriver;
+
 
 function OnLinuxConsole: boolean;
 var
@@ -125,6 +138,17 @@ begin
   end;
   HostMouseOn;
 end;
+procedure EmitToHost(const S: AnsiString);
+begin
+  if Assigned(HostMouseEmit) then
+    HostMouseEmit(S)
+  else
+  begin
+    Write(S);
+    Flush(Output);
+  end;
+end;
+
 
 procedure HostMouseOn;
 begin
@@ -134,14 +158,14 @@ begin
   // 223-column limit). Any-motion tracking (?1003) is not asked for: the
   // RTL queue holds 16 events and FreeVision drains one per loop, so a
   // sweep of the pointer under ?1003 overflows it for nothing.
-  WriteRaw(#27'[?1000h'#27'[?1002h'#27'[?1006h');
+  EmitToHost(#27'[?1000h'#27'[?1002h'#27'[?1006h');
 end;
 
 procedure HostMouseOff;
 begin
   if OnLinuxConsole then
     Exit;
-  WriteRaw(#27'[?1006l'#27'[?1002l'#27'[?1000l');
+  EmitToHost(#27'[?1006l'#27'[?1002l'#27'[?1000l');
 end;
 
 procedure OurDoneDriver;

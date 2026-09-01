@@ -10,6 +10,15 @@ procedure InstallWideVideoOutput;
 // does not change O_NONBLOCK on the stdout file description inherited by the
 // caller's shell. Startup probes remain synchronous until this is enabled.
 procedure StartAsyncVideoOutput;
+// A session daemon is created with a double fork and NO exec (st_server,
+// StartDetachedServer), so the child continues inside this address space. A
+// thread does not survive fork but the locks it held do, with no owner left
+// alive to release them, and the child then blocks forever on its first use.
+// Measured: seven daemons stuck in futex_do_wait with a single thread and no
+// listening socket, which left every client hanging in connect(). Nothing may
+// be running when that fork happens.
+procedure QuiesceVideoOutputForFork;
+procedure ResumeVideoOutputAfterFork;
 // Make bounded progress on queued physical output. True means a renderer
 // update was coalesced while the terminal was busy and must now be retried.
 function PumpVideoOutput: Boolean;
@@ -189,6 +198,7 @@ var
   OutputWakePipe: TFilDes = (-1, -1);
   OutputProgressPipe: TFilDes = (-1, -1);
   OutputReactor: TClientOutputReactor = nil;
+  OutputForkQuiesced: Boolean = False;
 
 function HostUtf8Output: Boolean;
 begin
@@ -2145,6 +2155,28 @@ begin
       [OutputHandle, Length(OutputRing)]));
 end;
 {$pop}
+
+procedure QuiesceVideoOutputForFork;
+begin
+  if not AsyncOutputActive then
+    Exit;
+  StopAsyncVideoOutput;
+  // Stop keeps the descriptor open when it had to abandon a backlog, because a
+  // blocking teardown on it would be unsafe. Across a fork that does not
+  // apply: the parent opens a fresh one and the child must inherit nothing.
+  CloseOutputDescriptor(OutputHandle);
+  BlockingTeardownUnsafe := False;
+  AsyncOutputEverStarted := False;   // Start refuses to run twice otherwise
+  OutputForkQuiesced := True;
+end;
+
+procedure ResumeVideoOutputAfterFork;
+begin
+  if not OutputForkQuiesced then
+    Exit;
+  OutputForkQuiesced := False;
+  StartAsyncVideoOutput;
+end;
 
 function StopAsyncVideoOutput: Boolean;
 var

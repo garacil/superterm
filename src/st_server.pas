@@ -536,6 +536,21 @@ var
   // handlers.
   DetachedServerChildFinished: boolean = False;
 
+type
+  // A session daemon is created by StartDetachedServer with a double fork and
+  // NO exec, so the child continues inside this very address space. A thread
+  // does not survive fork; the locks it held do, and they stay locked forever
+  // with no owner left alive to release them. The child then blocks on its
+  // first allocation or first use of that lock. Measured as seven daemons
+  // stuck in futex_do_wait with a single thread and no listening socket, which
+  // in turn left every client hanging in connect(). The client registers these
+  // so nothing of its own is running while that fork happens.
+  TSessionForkHook = procedure;
+
+var
+  BeforeSessionFork: TSessionForkHook = nil;
+  AfterSessionFork: TSessionForkHook = nil;
+
 implementation
 
 uses
@@ -8323,6 +8338,9 @@ begin
     ReadyPipe := Default(TFilDes);
     if FpPipe(ReadyPipe) <> 0 then
       Exit;
+    // No thread of ours may be alive across this fork: see TSessionForkHook.
+    if Assigned(BeforeSessionFork) then
+      BeforeSessionFork;
     Pid := FpFork;
     if Pid = 0 then
     begin
@@ -8457,6 +8475,10 @@ begin
       Result := dssChildFinished;
       Exit;
     end;
+    // Parent only. The child never reaches here: every one of its paths above
+    // ends in FpExit or in the dssChildFinished return.
+    if Assigned(AfterSessionFork) then
+      AfterSessionFork;
     FpClose(ReadyPipe[1]);
     if Pid < 0 then
     begin
