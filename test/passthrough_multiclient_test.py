@@ -96,17 +96,31 @@ def probe_private_terminal_reply(actor, observer):
     query = b'\x1b[c'
     response = b'\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c'
     leaked_tail = response[3:]
+    # DELIBERATE CONTRACT CHANGE (milestone NS04-I4). This used to assert that
+    # the DA query REACHED both raw viewers, because nothing answered it and a
+    # host was the only possible source of a reply. The terminal core answers
+    # DA itself now, so forwarding the query as well would have every attached
+    # host answer too: one question, N+1 answers, all arriving as pane keyboard
+    # input. Measured before this changed -- a pane asking CSI 6 n in
+    # fullscreen received the core's reply AND the host's, and the host's
+    # arrived as ESC O R, which the keyboard decoder reads as F3. The duplicate
+    # did not merely add noise, it injected a keypress nobody made.
+    #
+    # The purpose of this probe is unchanged and still enforced below: a host
+    # DA reply must never become shared pane input.
     offsets = {client: len(client.raw()) for client in clients}
-    os.write(actor.fd, b"printf '\\033[c'\r")
+    # A real program reads the answer it asked for. A shell that does not is
+    # simply left holding it on its command line, exactly as under xterm.
+    os.write(actor.fd, b"printf '\\033[c'; IFS= read -r -t 1 -d c _\r")
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         drain_all(clients, 0.08)
-        if all(query in client.raw()[offsets[client]:]
+        if any(query in client.raw()[offsets[client]:]
                for client in clients):
             break
-    check('DA query reaches both equal-size raw viewers',
-          all(query in client.raw()[offsets[client]:]
-              for client in clients))
+    check('DA query is withheld from every raw viewer, the core answers it',
+          not any(query in client.raw()[offsets[client]:]
+                  for client in clients))
 
     offsets = {client: len(client.raw()) for client in clients}
     os.write(actor.fd, response)
