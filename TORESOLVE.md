@@ -147,36 +147,64 @@ a size — `ReadTerminalSize` asks the console what the user already made the
 window — so every size is valid and nothing must be resized back. Reporting
 success lets the RTL reallocate the buffer, which was the only missing step.
 
-**Status: validated as a large improvement, not yet complete.** Driven
-interactively against the 5.2.2 Win64 build: resizing no longer breaks the
-interface, which it reliably did before. Something still needs work — the
-remaining defect has not been characterised yet, so the next step is to pin down
-exactly what still goes wrong and when.
+**Status of the video-mode fix: validated interactively.** Resizing no longer
+breaks the interface, which it reliably did before. A second, smaller defect
+remained on top of it, diagnosed below.
 
-What to establish, in order:
+### 2.1b The settled resize was never repainted
 
-1. Which gesture reproduces it — maximize, restore, slow drag, fast drag, or a
-   font-size change (which changes the cell grid without a mouse resize).
-2. Whether it depends on direction: growing, shrinking, or only one axis.
-3. Whether it survives a forced full repaint, which separates a stale-tracking
-   problem from a wrong-geometry one.
-4. Whether pane count matters, and whether a maximized pane or an active
-   passthrough behaves differently.
+**Symptom after the video-mode fix:** a resize still left the screen looking
+wrong, but pressing any key or clicking repainted it correctly, and
+`Desktop -> adapt size` always produced a perfect screen.
 
-Two places are worth suspecting first. `WaitForActivity` waits on the console
-input handle, and a window resize is delivered as a `WINDOW_BUFFER_SIZE_RECORD`
-that the VT input path does not consume — so a resize may be signalling the
-handle repeatedly without anything draining it. And `ApplyTerminalSize` is
-driven by a 250 ms poll, so a continuous drag produces a burst of intermediate
-sizes; the last one is correct, but each intermediate one reallocates the
-buffer and forces a full repaint.
+That pattern says the geometry ends up right and only the *painting* is missing,
+which is exactly what the code did:
 
-*Relevance to `main`:* the bug is Windows-only — the Unix video drivers do not
-resize the terminal and do not reject sizes — so the fix itself does not belong
-upstream. What might: `ApplyTerminalSize` currently trusts `SetScreenVideoMode`
+- A console resize announces itself to nobody. `KInit` clears
+  `ENABLE_WINDOW_INPUT`, so `WINDOW_BUFFER_SIZE_EVENT` records are never queued,
+  and the VT input stream has no resize sequence. (This also disproves the
+  earlier suspicion that unconsumed resize records were waking or blocking the
+  input handle — with that flag off there are no such records.) The only way to
+  see a resize is to ask the console.
+- `Idle` asked every 250 ms. A drag walks through many geometries, so each poll
+  applied an intermediate one and emitted a frame into a console that was
+  already reflowing to the next size.
+- Worst at the end: when the gesture stops on a size that was already applied,
+  `ApplyTerminalSize` finds nothing to do and returns **without painting**. So
+  the last frame on screen was one emitted mid-reflow, and nothing repainted it
+  until an unrelated key or click did.
+
+**Fix (in `src/st_fvui.pas`, `TSuperApp.Idle`, Windows only).** Sample the
+console size on every idle pass — it is one `GetConsoleScreenBufferInfo` call —
+but only *record* it. When the geometry has held still for `RESIZE_SETTLE_MS`
+(120 ms), apply it once and repaint unconditionally, since the surface is
+usually already correct and it is the terminal's contents that are not. A drag
+that never pauses still refreshes every `RESIZE_REFRESH_MS` (750 ms). The
+rebuild is wrapped in `SuppressFlush` so `ApplyTerminalSize`'s own final paint
+stays buffered and the whole settled screen leaves as a single physical frame.
+
+The Unix path is untouched: it keeps the 250 ms `SyncTerminalSize` poll, since
+`SIGWINCH`-era terminals behave differently and none of this applies there.
+
+**Status: NOT yet validated interactively.** Build is clean at `-Sewnh` and the
+CLI smoke checks pass. Next: maximize, restore, slow drag, fast drag, drag with
+several panes open, with one maximized, and during passthrough. Also worth
+checking a font-size change, which alters the cell grid without a mouse resize.
+
+*Relevance to `main`:* the settle-then-repaint idea is not Windows-specific —
+any host whose resize arrives as a stream of intermediate sizes has the same
+problem — but on Unix `SIGWINCH` already coalesces and the 250 ms poll has not
+misbehaved, so there is nothing to fix upstream today. Two things might be worth
+carrying up if that ever changes: the settle window itself, and the invariant
+below.
+
+*Relevance to `main` (from 2.1):* the video-mode bug is Windows-only — the Unix
+video drivers neither resize the terminal nor reject sizes — so that fix does
+not belong upstream. What might: `ApplyTerminalSize` trusts `SetScreenVideoMode`
 without checking that `Video.ScreenWidth` actually became what was asked for. A
 cheap post-condition there would have turned this into a visible failure instead
-of silent corruption, on any platform whose driver can refuse.
+of silent corruption, on any platform whose driver can refuse a mode. That is a
+real hardening candidate for `main`, independent of Windows.
 
 ### 2.2 The idle wait, generalised
 

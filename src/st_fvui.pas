@@ -9937,6 +9937,8 @@ var
   {$ENDIF}
   {$IFDEF WINDOWS}
   AnyLocalOutput: boolean;
+  SizeCols, SizeRows: integer;
+  SizeSuppress: boolean;
   {$ENDIF}
   i, n: integer;
   Buf: array[0..MAXREAD - 1] of byte;
@@ -9954,8 +9956,22 @@ var
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
+    {$IFNDEF WINDOWS}
     LastSizeCheck: cardinal = 0;
+    {$ENDIF}
     LastLayoutSync: cardinal = 0;
+    {$IFDEF WINDOWS}
+    // How long the console geometry must hold still before the resize counts
+    // as finished, and the longest a continuous drag may go without any
+    // refresh at all. See the sampling block below.
+    RESIZE_SETTLE_MS = 120;
+    RESIZE_REFRESH_MS = 750;
+    SeenCols: integer = 0;
+    SeenRows: integer = 0;
+    SizeStillTick: cardinal = 0;
+    SizeMovingSince: cardinal = 0;
+    SizeMoving: boolean = False;
+    {$ENDIF}
 
   procedure WaitForActivity(AMaxMs: LongInt);
   {$IFDEF WINDOWS}
@@ -10059,11 +10075,63 @@ begin
   Tick := GetTickCount64;
   RemoteEvent.Data := nil;
   RemoteEvent.Text := '';
+  {$IFDEF WINDOWS}
+  // A console resize announces itself to nobody. KInit clears
+  // ENABLE_WINDOW_INPUT, so WINDOW_BUFFER_SIZE_EVENT records are never queued,
+  // and the VT byte stream has no resize sequence either. Asking the console
+  // is the only way to see it -- one GetConsoleScreenBufferInfo call, so
+  // sample on every idle pass rather than four times a second.
+  //
+  // Acting on each size seen is what looked wrong. Dragging the window walks
+  // through many geometries, and a frame painted for one of them is emitted
+  // into a console already reflowing to the next. Worse at the end: when the
+  // gesture stops on a size that was already applied, ApplyTerminalSize has
+  // nothing to do and returns without painting, so the mangled frame stayed on
+  // screen until some unrelated key or click forced a redraw.
+  //
+  // So watch the geometry instead of reacting to it: once it holds still,
+  // apply it and repaint unconditionally -- the surface may well be right
+  // already, and it is what the terminal is showing that is not. A drag that
+  // never pauses still gets a refresh every RESIZE_REFRESH_MS.
+  if ReadTerminalSize(SizeCols, SizeRows) then
+  begin
+    if (SizeCols <> SeenCols) or (SizeRows <> SeenRows) then
+    begin
+      SeenCols := SizeCols;
+      SeenRows := SizeRows;
+      SizeStillTick := Tick;
+      if not SizeMoving then
+      begin
+        SizeMoving := True;
+        SizeMovingSince := Tick;
+      end;
+    end
+    else if SizeMoving and
+            ((Tick - SizeStillTick >= RESIZE_SETTLE_MS) or
+             (Tick - SizeMovingSince >= RESIZE_REFRESH_MS)) then
+    begin
+      SizeMoving := False;
+      // Hold the writes across the rebuild so this settles into exactly one
+      // physical frame: ApplyTerminalSize's own final paint stays buffered,
+      // and the single emit below carries the whole settled screen.
+      SizeSuppress := SuppressFlush;
+      SuppressFlush := True;
+      try
+        ApplyTerminalSize(SizeCols, SizeRows);
+      finally
+        SuppressFlush := SizeSuppress;
+      end;
+      InvalidateFrame;
+      ReDraw;
+    end;
+  end;
+  {$ELSE}
   if Tick - LastSizeCheck >= 250 then
   begin
     LastSizeCheck := Tick;
     SyncTerminalSize;
   end;
+  {$ENDIF}
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
   SyncHostMouse;
