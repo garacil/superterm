@@ -12,3 +12,6 @@ AUDIT-3x.md
 *.ppu
 *.a
 *.compiled
+
+# local working notes, never published
+/notes/local/
