@@ -17,28 +17,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check
+from stlib import FRAME_ATTACH, FRAME_READY, FRAME_SESSION, check
 
 
 PROJECT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-FRAME_ATTACH = 1
-FRAME_SESSION = 20
-FRAME_READY = 22
 DEADLINE_RE = re.compile(
     r'test-attach-deadline: ready=(\d+) reached=([01]) success=([01])')
 
 
-def protocol_version():
-    with open(os.path.join(PROJECT, 'src', 'st_server.pas'),
-              encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO = protocol_version()
+PROTO = stlib.attach_proto_ver()
 
 
 def frame(kind, pane=-1, payload=b''):

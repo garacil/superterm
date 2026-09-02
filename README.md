@@ -2,6 +2,27 @@
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
+> ### 🎆 This is what AIs *really* do when you're not looking
+>
+> We left an AI alone with a SuperTerm session for five minutes. It threw a
+> full Valencian fireworks show inside a pane — countdown, crescendo, grand
+> finale, official anthem and all — and slammed the panic button the moment
+> the boss walked back in.
+>
+> [![An AI celebrating Fallas inside a SuperTerm pane — open the video player](screenshots/ai-fireworks-play.jpg)](https://garacil.github.io/superterm/video.html)
+>
+> **[▶ Open the video player — WITH SOUND](https://garacil.github.io/superterm/video.html)** · [Download the original MP4 (4.6 MB)](https://github.com/garacil/superterm/releases/download/v4.2.1/VideoCastilloIAJugando.mp4)
+
+> ### 🖥️ Real demonstration · 3:08 — SuperTerm doing real work with Pizarra and Tiza
+>
+> A complete, non-mock recording: the console, `masterp` and `s-masterp` exchange
+> messages through Tiza and Pizarra inside a SuperTerm desktop. It is the text
+> workspace turned into an operations centre for agent teams.
+>
+> [![SuperTerm doing real work with Pizarra and Tiza — open the video player](https://raw.githubusercontent.com/garacil/pizarra/main/screenshots/pizarra-superterm-complete-video-cover.png)](https://garacil.github.io/pizarra/video.html)
+>
+> **[▶ Open the video player](https://garacil.github.io/pizarra/video.html)** · [Download the original MP4 (96 MB)](https://github.com/garacil/pizarra/releases/download/v1.1.22/pizarra-superterm-complete-demo.mp4)
+
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
@@ -278,6 +299,22 @@ superterm listar prod                           # the same CLI, en español
   per-pane reactors can parse independent PTY streams on multiple CPU cores;
   `multithread=1` preserves the single reactor, while `auto` or a total thread
   limit enables dynamic workers on GNU/Linux and macOS.
+- The interactive UI waits on keyboard, session-socket or PTY activity and
+  physical-output progress. It wakes for real work immediately; its bounded
+  timeout exists only to service UI and terminal timers, not as a fixed sleep
+  before every event.
+- A dedicated client output reactor owns a separately opened, nonblocking
+  `/dev/tty` descriptor and an 8 MiB bounded queue. Complete ANSI frames remain
+  indivisible, superseded framebuffer states coalesce, and a slow terminal
+  cannot prevent keyboard, mouse, menu, detach, or session-lifecycle handling.
+- Detached-daemon creation pauses that reactor across `fork` and recreates it
+  only in the interactive parent, so no child inherits a thread object without
+  its POSIX thread. Intentional zoom-animation frames retain their exact order;
+  ordinary intermediate frames still collapse to the latest visible state.
+- On a GNU/Linux virtual console, mouse availability is proved with the kernel
+  console ioctl and GPM wakes the UI through its connected descriptor. A PTY
+  never attempts GPM merely because `TERM` says `linux`; xterm/SGR mouse input
+  continues to arrive through the terminal descriptor.
 - GNU/Linux and macOS share the UI, VT engine, layout, configuration, session
   protocol and control CLI. Platform-specific PTY/process and service-manager
   adapters are selected at compile time.
@@ -436,6 +473,16 @@ for native build, terminal and platform details. Windows Terminal and the
 Microsoft OpenSSH client also work as standard SSH viewers of a GNU/Linux or
 macOS SuperTerm server.
 
+### Branch direction
+
+`newfeatures` is the development branch and is promoted into `main` only after
+review and validation. `macos-support` and `windows-support` are downstream
+platform branches: they receive the tested changes from `main`, then add only
+their platform-specific build or backend work. They are **never** pull-request
+sources for `main` and are never merged back into it. GitHub may offer a
+generic “Compare & pull request” button after a platform-branch push; that is
+an automatic GitHub prompt, not the project integration direction.
+
 ## Why Free Pascal
 
 Free Pascal is part of SuperTerm's runtime design, not just its implementation
@@ -551,6 +598,15 @@ server.
 make test
 ```
 
+The suite inventory and the user-visible contract frozen by every suite are in
+[`test/README.md`](test/README.md). The build treats every Free Pascal warning,
+note, and hint as an error, and foundation guards prevent suite-list drift,
+uncatalogued terminal-emulator parse failures, ambiguous child reaping, and
+wire-constant drift. Performance evidence is collected separately with the
+interleaved harness documented in
+[`docs/BUILDING.md`](docs/BUILDING.md#tests); no accepted change may regress
+main's measured p50, p95, desktop-area scaling, native bytes, or frame count.
+
 The suite covers pane operations, large terminal sizes, xterm and tmux mouse
 input, focus routing, session restore, configured terminals, templates,
 SQLite templates, the session wizard, language switching, window controls, and
@@ -565,6 +621,7 @@ Individual tests are also runnable directly:
 ```sh
 python3 test/drive_test.py
 python3 test/large_screen_test.py
+python3 test/mouse_backend_test.py
 python3 test/mouse_test.py
 SUPERTERM_TEST_TERM=tmux-256color python3 test/mouse_test.py
 python3 test/mouse_focus_test.py
@@ -822,7 +879,10 @@ cmd=htop
 For SSH classes, `postconnect` is passed as the remote command, making
 `tmux new -A` natural; `password` (base64) is supported through `sshpass`
 but keys or an agent are preferred. For command and local classes,
-`postconnect` is fed through the connection's standard input.
+`postconnect` is fed through the connection's standard input. A configured
+local/free command is supervised: normal completion, Ctrl-C, or Ctrl-\ ends
+that command and leaves a usable interactive local shell in the pane instead
+of closing its PTY.
 
 ### Profiles
 
@@ -891,7 +951,8 @@ src/
 ├── st_config.pas   User settings, prefix key, palette, and paths.
 ├── st_templates.pas Legacy INI and SQLite template loading.
 ├── st_kbd.pas      Custom keyboard driver (ESC timeout, CSI/SS3, mouse).
-├── st_video.pas    Wide video output, CP437 glyph mapping, cursor restore.
+├── st_mouse.pas    PTY/xterm and GNU/Linux virtual-console mouse selection.
+├── st_video.pas    Wide renderer, nonblocking output reactor, cursor restore.
 ├── st_keys.pas     FreeVision key codes to terminal escape sequences.
 └── st_debug.pas    Optional runtime logging.
 ```

@@ -7,34 +7,16 @@ geometry, laggard disconnection and the shutdown notice.
 """
 import os
 import socket
-import re
 import struct
 import sys
 import time
 
-def attach_proto_ver():
-    """Protocol version the daemon currently requires, read from the source so
-    this test does not silently rot when the wire format changes."""
-    src = os.path.join(os.path.dirname(__file__), '..', 'src', 'st_server.pas')
-    with open(src, encoding='utf-8', errors='replace') as fh:
-        for line in fh:
-            m = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if m:
-                return int(m.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found in st_server.pas')
-
-
-PROTO_VER = attach_proto_ver()
-
-
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_READY, FRAME_SCREEN, FRAME_SESSION,
+                   check, raw_frame, read_frame, run_cli)
 
-FRAME_ATTACH = 1
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
+PROTO_VER = stlib.attach_proto_ver()
 
 HOME = stlib.fresh_home('multiclient')
 with open(HOME + '/.superterm/superterm.ini', 'w') as config:

@@ -776,6 +776,19 @@ def cells_difference(before_cells, after_cells):
     }
 
 
+def cursor_toggle_positions(record):
+    """Return only exact FreeVision software-cursor reverse toggles."""
+    result = set()
+    for y, (before_row, after_row) in enumerate(
+            zip(record['before_cells'], record['cells'])):
+        for x, (before, after) in enumerate(zip(before_row, after_row)):
+            if (before != after and before.reverse != after.reverse and
+                    before._replace(reverse=False) ==
+                    after._replace(reverse=False)):
+                result.add((x, y))
+    return result
+
+
 def ring_transition(record, rect):
     """Recognize one composited show/hide from its presented cell grids."""
     if record['kind'] != 'sync' or record['changed_cells'] <= 0:
@@ -1002,16 +1015,30 @@ def ring_pair_problems(events, old_rect, allow_first_lock_merge=False):
         if held_changes & ring_edge:
             problems.append(f'step {index + 1}: live output changed held ring '
                             f'{sorted(held_changes & ring_edge)[:8]}')
-        if not changed_positions(hide_record) <= ring_edge:
-            extra = sorted(changed_positions(hide_record) - ring_edge)
+        hide_extra = (changed_positions(hide_record) - ring_edge -
+                      cursor_toggle_positions(hide_record))
+        if hide_extra:
+            extra = sorted(hide_extra)
             problems.append(f'step {index + 1}: hide changed outside ring '
                             f'{extra[:8]}')
-        show_extra = changed_positions(show_record) - ring_edge
+        # The focused pane's software cursor toggles reverse every 530 ms.
+        # It may legitimately share the atomic terminal transaction which
+        # presents a ring; exclude only that exact attribute-only change, as
+        # stlib.cursor_only_transition does for a standalone blink.
+        show_extra = (changed_positions(show_record) - ring_edge -
+                      cursor_toggle_positions(show_record))
         if show_extra:
             if not (allow_first_lock_merge and index == 0 and
                     show_extra <= old_edge and has_lock(hide_record)):
+                details = []
+                for x, y in sorted(show_extra)[:8]:
+                    before = show_record['before_cells'][y][x]
+                    after = show_record['cells'][y][x]
+                    details.append(
+                        f'({x},{y}) {before.data!r}/{char_attr(before)!r}'
+                        f'->{after.data!r}/{char_attr(after)!r}')
                 problems.append(f'step {index + 1}: show changed outside ring '
-                                f'{sorted(show_extra)[:8]}')
+                                f'{details}')
     return problems
 
 
@@ -1152,14 +1179,20 @@ observer_layout_check('restore observer lock then final', restore_b,
 # The only actor-side updates outside the geometry sequence are FreeVision's
 # exact one-cell zoom-button press and release. Assert them explicitly, then
 # audit the animation independently.
+maximize_feedback = [
+    zoom_control_token(record, before_zoom) for record in zoom_a
+    if zoom_control_token(record, before_zoom) is not None]
+unzoom_feedback = [
+    zoom_control_token(record, after_zoom) for record in unzoom_a
+    if zoom_control_token(record, after_zoom) is not None]
+if maximize_feedback != ['sync-zoom-down', 'sync-zoom-up']:
+    print('  maximize native zoom feedback:', maximize_feedback)
+if unzoom_feedback != ['sync-zoom-down', 'sync-zoom-up']:
+    print('  unzoom native zoom feedback:', unzoom_feedback)
 check('maximize native zoom feedback is exact',
-      [zoom_control_token(record, before_zoom) for record in zoom_a
-       if zoom_control_token(record, before_zoom) is not None] ==
-      ['sync-zoom-down', 'sync-zoom-up'])
+      maximize_feedback == ['sync-zoom-down', 'sync-zoom-up'])
 check('unzoom native zoom feedback is exact',
-      [zoom_control_token(record, after_zoom) for record in unzoom_a
-       if zoom_control_token(record, after_zoom) is not None] ==
-      ['sync-zoom-down', 'sync-zoom-up'])
+      unzoom_feedback == ['sync-zoom-down', 'sync-zoom-up'])
 
 # Expansion paints each ring over the old surface, removes it back to old, then
 # publishes the canonical final geometry. Contraction publishes final first,

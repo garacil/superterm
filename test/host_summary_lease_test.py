@@ -25,35 +25,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_CLIENT_SIZE, FRAME_DETACH,
+                   FRAME_HOST_SUMMARY_EV, FRAME_LAYOUT, FRAME_LAYOUT_EV,
+                   FRAME_LAYOUT_LOCK, FRAME_LAYOUT_LOCK_REPLY, FRAME_READY,
+                   FRAME_RESIZE_EV, FRAME_SCREEN, FRAME_SESSION, check,
+                   raw_frame, read_frame, run_cli)
 
 
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_LAYOUT = 7
-FRAME_LAYOUT_LOCK = 17
-FRAME_CLIENT_SIZE = 19
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_LAYOUT_EV = 26
-FRAME_RESIZE_EV = 29
-FRAME_LAYOUT_LOCK_REPLY = 33
-FRAME_HOST_SUMMARY_EV = 34
-
-
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
+PROTO_VER = stlib.attach_proto_ver()
 
 
 def configure(home):

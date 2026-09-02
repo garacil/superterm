@@ -4,7 +4,7 @@ import configparser
 import os, pty, time, select, sys, fcntl, termios, struct, shutil, re, shlex
 import pyte
 
-from stlib import wait_pid
+from stlib import feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
@@ -114,10 +114,7 @@ class Session:
                     d = os.read(self.fd, 65536)
                 except OSError:
                     return
-                try:
-                    self.stream.feed(d)
-                except Exception:
-                    pass
+                feed_pyte(self.stream, d, 'profile')
     def send(self, s, t=1.0):
         os.write(self.fd, s)
         self.drain(t)

@@ -583,11 +583,17 @@ begin
   // shells that require `exit` twice.
   if EndsText(Tail, Result) or EndsText(RawTail, Result) then
     Exit;
-  // Run the application in a subshell. A saved launcher may itself start
-  // with `exec` (tmux profiles commonly do); without this boundary it
-  // replaces the only shell and the pane dies as soon as the application
-  // exits. The outer shell always survives to become an interactive prompt.
-  Result := '( ' + Result + ' )' + Tail;
+  // Keep the supervising shell alive when the terminal sends SIGINT or
+  // SIGQUIT to its whole foreground process group. A non-interactive `-c`
+  // shell and its command normally share that group, so plain `( command )`
+  // lets Ctrl-C kill both and the pane reaches EOF. The supervisor ignores
+  // only these two interactive interrupts while it waits; the command
+  // subshell restores their default dispositions and therefore still stops.
+  // Afterwards the supervisor restores both signals before becoming the
+  // ordinary interactive shell. A saved launcher may itself start with
+  // `exec` (tmux profiles commonly do), so the subshell boundary remains.
+  Result := 'trap '''' INT QUIT; ( trap - INT QUIT; ' + Result +
+    ' ); trap - INT QUIT' + Tail;
 end;
 
 function ComposePaneCommand(const C: TWindowClass;

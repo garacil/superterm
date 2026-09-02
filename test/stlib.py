@@ -18,6 +18,7 @@ import fcntl
 import glob
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -40,6 +41,90 @@ BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
 # same public input path.  Tests for a configured non-default prefix use their
 # explicit byte instead.
 FULLSCREEN_CHORD = b'\x11f'  # default Ctrl-Q, then f
+
+# pyte 0.8.2 has no intermediate-byte state in its ESC/CSI parser. These are
+# standard sequences emitted by SuperTerm which that exact parser either
+# paints as text, applies as an unrelated command, or rejects with TypeError.
+# Keep the list closed: anything not catalogued reaches pyte and is reported.
+_PYTE_SCRUB = (
+    # DEC locator family: DECEFR, DECELR, DECSLE, DECRQLP, DECIC and DECDC.
+    (re.compile(rb"\x1b\[[0-9;]*'[wz{|}~]"),
+     "DEC locator (CSI ... ' Pf)"),
+    # Kitty keyboard protocol reset/flags.
+    (re.compile(rb'\x1b\[=[0-9;]*u'), 'kitty keyboard (CSI = Ps u)'),
+    # xterm modifyOtherKeys. pyte otherwise interprets this as ordinary SGR.
+    (re.compile(rb'\x1b\[>[0-9;]*m'),
+     'modifyOtherKeys (CSI > Ps ; Ps m)'),
+    # S7C1T/S8C1T. pyte otherwise paints the final F/G.
+    (re.compile(rb'\x1b [FG]'), 'S7C1T/S8C1T (ESC SP F|G)'),
+)
+
+# Hold a proper prefix across arbitrary PTY read boundaries. The upper bound
+# prevents a malformed parameter run from retaining unbounded input.
+_PYTE_SCRUB_PREFIX = re.compile(rb"\x1b(?:\[(?:[=>]?[0-9;]*'?)?| )?$")
+_PYTE_HOLD_MAX = 32
+_pyte_defects = []
+
+
+def scrub_for_pyte(data):
+    """Remove only the closed catalogue of known pyte deficiencies."""
+    for pattern, _reason in _PYTE_SCRUB:
+        data = pattern.sub(b'', data)
+    return data
+
+
+def _pyte_hold(data):
+    match = _PYTE_SCRUB_PREFIX.search(data)
+    if match is None:
+        return data, b''
+    start = match.start()
+    if len(data) - start > _PYTE_HOLD_MAX:
+        return data, b''
+    return data[:start], data[start:]
+
+
+def _pyte_report(where, exc):
+    detail = f'{where}: {type(exc).__name__}: {exc}'
+    if detail not in _pyte_defects:
+        _pyte_defects.append(detail)
+
+
+def feed_pyte(stream, data, where='pyte'):
+    """Feed catalogued output and record every unknown parser failure."""
+    if stream is None:
+        return True
+    pending = getattr(stream, '_st_pyte_pending', b'')
+    ready, held = _pyte_hold(scrub_for_pyte(pending + data))
+    stream._st_pyte_pending = held
+    if not ready:
+        return True
+    try:
+        stream.feed(ready)
+        return True
+    except Exception as exc:  # pyte is an external parser; report exact type
+        _pyte_report(where, exc)
+        return False
+
+
+def flush_pyte(stream, where='pyte'):
+    """Feed a retained tail when the caller has reached a visible barrier."""
+    if stream is None:
+        return True
+    ready = getattr(stream, '_st_pyte_pending', b'')
+    if not ready:
+        return True
+    stream._st_pyte_pending = b''
+    try:
+        stream.feed(ready)
+        return True
+    except Exception as exc:  # pyte is an external parser; report exact type
+        _pyte_report(where, exc)
+        return False
+
+
+def pyte_defects():
+    """Return uncatalogued parser failures recorded by this process."""
+    return list(_pyte_defects)
 
 _fails = []
 _registered_homes = []
@@ -292,6 +377,10 @@ def fails():
 
 def report():
     """Final verdict; also fails if any daemon outlived the test."""
+    if _pyte_defects:
+        check('no uncatalogued pyte parse errors', False)
+        for detail in _pyte_defects:
+            print(f'  {detail}')
     leftovers = []
     for home in _registered_homes:
         leftovers += _live_daemons(home)
@@ -371,12 +460,137 @@ def fresh_home(testname, base=None):
 
 
 # ---------------------------------------------------------------- protocol
+#
+# This is a deliberately frozen copy of src/st_server.pas's public wire
+# numbering. Deriving the client table at runtime would make an accidental
+# renumbering invisible. wire_constants_test.py compares both declarations.
 
+# client -> daemon
 FRAME_ATTACH = 1
 FRAME_INPUT = 2
 FRAME_RESIZE = 3
 FRAME_DETACH = 4
 FRAME_CLOSE = 5
+FRAME_KILLPANE = 6
+FRAME_LAYOUT = 7
+FRAME_NEWPANE = 8
+FRAME_FOCUS = 9
+FRAME_RENAME = 10
+FRAME_DESKTOP_RESIZE = 16
+FRAME_LAYOUT_LOCK = 17
+FRAME_LAYOUT_UNLOCK = 18
+FRAME_CLIENT_SIZE = 19
+
+# ephemeral control
+FRAME_CTL_LIST = 11
+FRAME_CTL_SEND = 12
+FRAME_CTL_CAPTURE = 13
+FRAME_CTL_WINOP = 14
+FRAME_CTL_INFO = 15
+
+# daemon -> client snapshot and events
+FRAME_SESSION = 20
+FRAME_SCREEN = 21
+FRAME_READY = 22
+FRAME_OUTPUT = 23
+FRAME_EXIT = 24
+FRAME_ERROR = 25
+FRAME_LAYOUT_EV = 26
+FRAME_KILLPANE_EV = 27
+FRAME_NEWPANE_EV = 28
+FRAME_RESIZE_EV = 29
+FRAME_TITLE_EV = 30
+FRAME_FOCUS_EV = 31
+FRAME_SHUTDOWN_EV = 32
+FRAME_LAYOUT_LOCK_REPLY = 33
+FRAME_HOST_SUMMARY_EV = 34
+FRAME_LAYOUT_PREVIEW = 35
+FRAME_LAYOUT_PREVIEW_EV = 36
+FRAME_LAYOUT_PEER_EV = 37
+
+# control replies
+FRAME_CTL_OK = 40
+FRAME_CTL_ERR = 41
+FRAME_CTL_DATA = 42
+FRAME_CTL_END = 43
+
+# preview operations
+PREVIEW_OP_BOUNDS = 1
+PREVIEW_OP_WIREFRAME = 2
+PREVIEW_OP_OUTLINE_SHOW = 3
+PREVIEW_OP_OUTLINE_HIDE = 4
+PREVIEW_OP_TAIL_BEGIN = 5
+PREVIEW_OP_TAIL_END = 6
+PREVIEW_OP_CLEAR = 7
+PREVIEW_OP_END = PREVIEW_OP_CLEAR
+
+# capture modes
+CAPTURE_VISIBLE = 0
+CAPTURE_ALL = 1
+CAPTURE_LAST_N = 2
+
+# control window operations; value 7 is intentionally unused
+WINOP_NEWPANE = 1
+WINOP_KILL = 2
+WINOP_FOCUS = 3
+WINOP_MINIMIZE = 4
+WINOP_RESTORE = 5
+WINOP_ZOOM = 6
+WINOP_ORGANIZE = 8
+WINOP_RENAME = 9
+WINOP_RESIZE = 10
+
+ATTACH_CAP_EVENTS = 1
+
+WIRE_CONSTANT_NAMES = (
+    'FRAME_ATTACH', 'FRAME_INPUT', 'FRAME_RESIZE', 'FRAME_DETACH',
+    'FRAME_CLOSE', 'FRAME_KILLPANE', 'FRAME_LAYOUT', 'FRAME_NEWPANE',
+    'FRAME_FOCUS', 'FRAME_RENAME', 'FRAME_DESKTOP_RESIZE',
+    'FRAME_LAYOUT_LOCK', 'FRAME_LAYOUT_UNLOCK', 'FRAME_CLIENT_SIZE',
+    'FRAME_CTL_LIST', 'FRAME_CTL_SEND', 'FRAME_CTL_CAPTURE',
+    'FRAME_CTL_WINOP', 'FRAME_CTL_INFO',
+    'FRAME_SESSION', 'FRAME_SCREEN', 'FRAME_READY', 'FRAME_OUTPUT',
+    'FRAME_EXIT', 'FRAME_ERROR',
+    'FRAME_LAYOUT_EV', 'FRAME_KILLPANE_EV', 'FRAME_NEWPANE_EV',
+    'FRAME_RESIZE_EV', 'FRAME_TITLE_EV', 'FRAME_FOCUS_EV',
+    'FRAME_SHUTDOWN_EV', 'FRAME_LAYOUT_LOCK_REPLY', 'FRAME_HOST_SUMMARY_EV',
+    'FRAME_LAYOUT_PREVIEW', 'FRAME_LAYOUT_PREVIEW_EV', 'FRAME_LAYOUT_PEER_EV',
+    'FRAME_CTL_OK', 'FRAME_CTL_ERR', 'FRAME_CTL_DATA', 'FRAME_CTL_END',
+    'PREVIEW_OP_BOUNDS', 'PREVIEW_OP_WIREFRAME', 'PREVIEW_OP_OUTLINE_SHOW',
+    'PREVIEW_OP_OUTLINE_HIDE', 'PREVIEW_OP_TAIL_BEGIN', 'PREVIEW_OP_TAIL_END',
+    'PREVIEW_OP_CLEAR',
+    'CAPTURE_VISIBLE', 'CAPTURE_ALL', 'CAPTURE_LAST_N',
+    'WINOP_NEWPANE', 'WINOP_KILL', 'WINOP_FOCUS', 'WINOP_MINIMIZE',
+    'WINOP_RESTORE', 'WINOP_ZOOM', 'WINOP_ORGANIZE', 'WINOP_RENAME',
+    'WINOP_RESIZE', 'ATTACH_CAP_EVENTS',
+)
+
+SERVER_SOURCE = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), 'src', 'st_server.pas')
+
+
+def pascal_constants(names, path=None):
+    """Return simple integer constants declared by the Pascal server unit."""
+    if path is None:
+        path = SERVER_SOURCE
+    wanted = set(names)
+    found = {}
+    pattern = re.compile(r'^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(-?\d+)\s*;')
+    with open(path, encoding='utf-8') as handle:
+        for line in handle:
+            match = pattern.match(line)
+            if match is not None and match.group(1) in wanted:
+                found.setdefault(match.group(1), int(match.group(2)))
+    return found
+
+
+def attach_proto_ver(path=None):
+    """Return the current attach version, which clients must follow."""
+    values = pascal_constants(('ATTACH_PROTO_VER',), path)
+    if 'ATTACH_PROTO_VER' not in values:
+        raise RuntimeError('ATTACH_PROTO_VER not found in ' +
+                           (path or SERVER_SOURCE))
+    return values['ATTACH_PROTO_VER']
 
 
 def raw_frame(kind, pane, payload=b''):
@@ -698,6 +912,12 @@ def close_all_daemons(home):
 
 # ---------------------------------------------------------------- processes
 
+REAP_REAPED = 'reaped'
+REAP_REAPED_ELSEWHERE = 'reaped_elsewhere'
+REAP_VANISHED = 'vanished'
+REAP_LEAKED = 'leaked'
+
+
 def _wait_pid_until(pid, deadline):
     """Return a wait status before *deadline*, or None without blocking."""
     while True:
@@ -902,6 +1122,7 @@ class Client:
         register_process(self.pid, 'superterm-client')
         self._reaped = False
         self._wait_status = None
+        self._reap_disposition = None
         try:
             fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
                         struct.pack('HHHH', h, w, 0, 0))
@@ -936,10 +1157,8 @@ class Client:
         """
         self._transition_screen = pyte.Screen(self.w, self.h)
         self._transition_stream = pyte.ByteStream(self._transition_screen)
-        try:
-            self._transition_stream.feed(self._raw)
-        except Exception:
-            pass
+        feed_pyte(self._transition_stream, self._raw, 'transition baseline')
+        flush_pyte(self._transition_stream, 'transition baseline')
         self._transition_pending = b''
         self._transition_in_frame = False
         self._transition_raw = b''
@@ -968,10 +1187,8 @@ class Client:
         if self._transition_capture and self._transition_pending:
             part = self._transition_pending
             self._transition_pending = b''
-            try:
-                self._transition_stream.feed(part)
-            except Exception:
-                pass
+            feed_pyte(self._transition_stream, part, 'transition tail')
+            flush_pyte(self._transition_stream, 'transition tail')
             if self._transition_in_frame:
                 self._transition_raw += part
             else:
@@ -1047,10 +1264,8 @@ class Client:
                 if safe:
                     part = self._transition_pending[:safe]
                     self._transition_pending = self._transition_pending[safe:]
-                    try:
-                        self._transition_stream.feed(part)
-                    except Exception:
-                        pass
+                    feed_pyte(self._transition_stream, part,
+                              'transition part')
                     if self._transition_in_frame:
                         self._transition_raw += part
                     else:
@@ -1061,10 +1276,8 @@ class Client:
             part = self._transition_pending[:end]
             self._transition_pending = self._transition_pending[end:]
             if self._transition_in_frame:
-                try:
-                    self._transition_stream.feed(part)
-                except Exception:
-                    pass
+                feed_pyte(self._transition_stream, part, 'transition frame')
+                flush_pyte(self._transition_stream, 'transition frame')
                 self._transition_raw += part
                 self._save_transition('sync', self._transition_raw)
                 self._transition_raw = b''
@@ -1074,27 +1287,26 @@ class Client:
                 # the synchronized transaction itself starts at the marker.
                 before = part[:-len(token)]
                 if before:
-                    try:
-                        self._transition_stream.feed(before)
-                    except Exception:
-                        pass
+                    feed_pyte(self._transition_stream, before,
+                              'transition direct')
+                    flush_pyte(self._transition_stream, 'transition direct')
                     self._transition_direct_raw += before
                 if self._transition_direct_raw:
                     self._save_transition('direct',
                                           self._transition_direct_raw)
                     self._transition_direct_raw = b''
-                try:
-                    self._transition_stream.feed(token)
-                except Exception:
-                    pass
+                feed_pyte(self._transition_stream, token,
+                          'transition marker')
                 self._transition_raw = token
                 self._transition_in_frame = True
 
     def drain(self, seconds):
         end = time.time() + seconds
-        while time.time() < end:
-            r, _, _ = select.select([self.fd], [], [], 0.05)
-            if r:
+        try:
+            while time.time() < end:
+                r, _, _ = select.select([self.fd], [], [], 0.05)
+                if not r:
+                    continue
                 try:
                     d = os.read(self.fd, 65536)
                     if not d:
@@ -1108,12 +1320,11 @@ class Client:
                         os.write(self.fd, f'\x1b[{row};{col}R'.encode())
                     except OSError:
                         pass
-                try:
-                    self.stream.feed(d)
-                except Exception:
-                    pass
+                feed_pyte(self.stream, d, 'client drain')
                 if self._transition_capture:
                     self._feed_transition_capture(d)
+        finally:
+            flush_pyte(self.stream, 'client drain')
 
     def send(self, data, seconds=0.8):
         try:
@@ -1144,9 +1355,32 @@ class Client:
                 return True
         return pred(self.text())
 
+    def _mark_reaped(self, status, disposition):
+        """Record one terminal process outcome without losing prior evidence."""
+        self._reaped = True
+        if self._wait_status is None:
+            self._wait_status = status
+        if getattr(self, '_reap_disposition', None) in (None, REAP_LEAKED):
+            self._reap_disposition = disposition
+        unregister_process(self.pid)
+        return self._wait_status
+
+    @property
+    def reap_disposition(self):
+        """Return the last explicit wait-accounting outcome for this client."""
+        return getattr(self, '_reap_disposition', None)
+
     def wait_exit(self, timeout=5.0):
-        """Wait for the child to exit; returns exit status or None."""
+        """Wait for exit; return status, or None only for a live deadline leak.
+
+        The conventional zero wait status represents a process whose status
+        another owner already collected, or one which vanished between the
+        wait and existence probes. ``reap_disposition`` keeps those outcomes
+        distinct instead of pretending that either was an observed clean exit.
+        """
         if self._reaped:
+            if self._wait_status is None:
+                return self._mark_reaped(0, REAP_REAPED_ELSEWHERE)
             return self._wait_status
         deadline = time.monotonic() + max(0.0, timeout)
         first_probe = True
@@ -1155,18 +1389,23 @@ class Client:
             try:
                 pid, st = os.waitpid(self.pid, os.WNOHANG)
             except ChildProcessError:
-                self._reaped = True
-                unregister_process(self.pid)
-                return self._wait_status
+                return self._mark_reaped(0, REAP_REAPED_ELSEWHERE)
             if pid:
-                self._reaped = True
-                self._wait_status = st
-                unregister_process(self.pid)
-                return st
+                return self._mark_reaped(st, REAP_REAPED)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             self.drain(min(0.1, remaining))
+        # None is the harness verdict "still live at the deadline", not a
+        # synonym for ECHILD or an unobserved disappearance. Confirm that
+        # premise immediately before publishing it to the suite.
+        try:
+            os.kill(self.pid, 0)
+        except ProcessLookupError:
+            return self._mark_reaped(0, REAP_VANISHED)
+        except PermissionError:
+            pass
+        self._reap_disposition = REAP_LEAKED
         return None
 
     def alive(self):
@@ -1175,14 +1414,11 @@ class Client:
         try:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
         except ChildProcessError:
-            self._reaped = True
-            unregister_process(self.pid)
+            self._mark_reaped(0, REAP_REAPED_ELSEWHERE)
             return False
         if pid == 0:
             return True
-        self._reaped = True
-        self._wait_status = status
-        unregister_process(self.pid)
+        self._mark_reaped(status, REAP_REAPED)
         return False
 
     def close(self):
@@ -1196,8 +1432,7 @@ class Client:
             # reserved throughout TERM/KILL escalation, so reuse is impossible.
             status = wait_pid(self.pid, timeout=2.0, terminate=True)
             if status is not None:
-                self._reaped = True
-                self._wait_status = status
-                unregister_process(self.pid)
+                self._mark_reaped(status, REAP_REAPED)
             else:
+                self._reap_disposition = REAP_LEAKED
                 check('client process terminates during close', False)

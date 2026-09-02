@@ -18,29 +18,16 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
+from stlib import (FRAME_ATTACH, FRAME_DETACH, FRAME_LAYOUT, FRAME_LAYOUT_EV,
+                   FRAME_LAYOUT_LOCK, FRAME_LAYOUT_LOCK_REPLY,
+                   FRAME_LAYOUT_PREVIEW, FRAME_LAYOUT_PREVIEW_EV,
+                   FRAME_LAYOUT_UNLOCK, FRAME_READY, FRAME_SCREEN,
+                   FRAME_SESSION, PREVIEW_OP_BOUNDS, PREVIEW_OP_CLEAR,
+                   PREVIEW_OP_OUTLINE_HIDE, PREVIEW_OP_OUTLINE_SHOW,
+                   PREVIEW_OP_TAIL_BEGIN, PREVIEW_OP_TAIL_END,
+                   PREVIEW_OP_WIREFRAME, check, raw_frame, read_frame, run_cli)
 
 
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_LAYOUT = 7
-FRAME_LAYOUT_LOCK = 17
-FRAME_LAYOUT_UNLOCK = 18
-FRAME_SESSION = 20
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_LAYOUT_EV = 26
-FRAME_LAYOUT_LOCK_REPLY = 33
-FRAME_LAYOUT_PREVIEW = 35
-FRAME_LAYOUT_PREVIEW_EV = 36
-
-PREVIEW_OP_BOUNDS = 1
-PREVIEW_OP_WIREFRAME = 2
-PREVIEW_OP_OUTLINE_SHOW = 3
-PREVIEW_OP_OUTLINE_HIDE = 4
-PREVIEW_OP_TAIL_BEGIN = 5
-PREVIEW_OP_TAIL_END = 6
-PREVIEW_OP_CLEAR = 7
 PREVIEW_FORMAT = '<QQQB3xiiii'
 PREVIEW_SIZE = struct.calcsize(PREVIEW_FORMAT)
 
@@ -48,18 +35,7 @@ HOST_W = 100
 HOST_H = 30
 
 
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
+PROTO_VER = stlib.attach_proto_ver()
 
 
 def unpack_from(fmt, payload, offset):

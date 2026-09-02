@@ -452,7 +452,13 @@ recommended.
 A local class runs `cmd` under `shell` in `cwd`. If `postconnect` is also
 set, it is fed to `cmd` through standard input as above. If only
 `postconnect` is set, it runs first and then leaves an interactive shell in
-the same pane (`exec <shell> -l` for a login shell, `-i` otherwise).
+the same pane (`exec <shell> -l` for a login shell, `-i` otherwise). The same
+shell fallback follows every local/free configured command. While the command
+runs, its supervisor ignores SIGINT and SIGQUIT but the command restores their
+normal dispositions; Ctrl-C or Ctrl-\ therefore stops the command without
+closing the pane. The supervisor restores both dispositions before entering
+the interactive shell. HUP and TERM retain their ordinary pane-lifecycle
+meaning.
 
 ### Pane overrides
 

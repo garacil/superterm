@@ -20,12 +20,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, run_cli
-
-
-FRAME_CTL_LIST = 11
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
+from stlib import FRAME_CTL_DATA, FRAME_CTL_END, FRAME_CTL_LIST, check, run_cli
 TITLES = ('HOLD_FOCUS_P0', 'HOLD_FOCUS_P1')
 FRAME_LEFT = ('╔', '┌', '░', '▒', '▓')
 FRAME_RIGHT = ('╗', '┐', '░', '▒', '▓')
