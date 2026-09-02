@@ -858,7 +858,10 @@ cmd=htop
 For SSH classes, `postconnect` is passed as the remote command, making
 `tmux new -A` natural; `password` (base64) is supported through `sshpass`
 but keys or an agent are preferred. For command and local classes,
-`postconnect` is fed through the connection's standard input.
+`postconnect` is fed through the connection's standard input. A configured
+local/free command is supervised: normal completion, Ctrl-C, or Ctrl-\ ends
+that command and leaves a usable interactive local shell in the pane instead
+of closing its PTY.
 
 ### Profiles
 

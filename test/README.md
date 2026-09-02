@@ -80,6 +80,7 @@ enforces the mapping and the required coverage areas.
 | profile_shell_fallback_test.py | configuration, lifecycle | A restored console application returns to a live shell. |
 | profile_switch_transition_test.py | configuration, rendering | Live profile switch closes one complete workspace before presenting the replacement. |
 | profile_test.py | configuration, UI | Profiles, flattened legacy templates, and saving retain their documented model. |
+| profile_command_interrupt_test.py | configuration, input, lifecycle | Ctrl-C stops a command recreated from a persisted profile while its pane remains alive in a usable interactive shell. |
 | pty_spawn_safety_test.py | lifecycle, cleanup | PTY publication is bounded and binds to a verifiable child generation. |
 | pyte_scrub_test.py | foundation, rendering | The closed emulator-compatibility catalogue retains split suffixes and rejects unknown parser defects. |
 | reference_index_test.py | foundation | Primary references record provenance, redistribution policy, and verified catalogue checksums. |

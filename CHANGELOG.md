@@ -74,6 +74,17 @@ stacks and owned crash artifacts on failure. A closed session now prioritizes
 its explicit shutdown notice, or one loss event, over obsolete pane-output
 backlog, so a flooded client leaves remote mode and is reaped cleanly.
 
+### Profile commands survive an interactive interrupt
+
+A local or free-command pane recreated from a profile now keeps its supervising
+shell alive while the configured command runs. The command restores normal
+SIGINT and SIGQUIT handling, so Ctrl-C or Ctrl-\ still stops it; only the
+supervisor ignores that same group-directed signal while waiting. It then
+restores the signal dispositions and becomes the configured interactive shell.
+An interrupted command such as `cat /dev/random` therefore returns to a usable
+prompt instead of turning the pane into an exited window. HUP and TERM
+lifecycle handling are unchanged.
+
 ## 4.2.1 - 2026-08
 
 ### Native Windows is now a first-class documented target
