@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 5.2.2 - 2026-09
+
+### One architecture, chosen by measurement
+
+This release closes a deliberate competition. Four branches were opened from
+the same commit and each implemented client responsiveness and the surrounding
+architecture differently: a threaded client which moved keyboard, mouse and
+output onto dedicated threads; a daemon-first thin client with per-client
+mirrors, an isolated compositor and a transport-neutral attach contract; the
+event-driven single-reactor line kept here; and the integration branch which
+carried the winner. They were judged on the same frozen behaviour contracts and
+the same interleaved performance harness rather than on preference, and the
+line with the best measured results was the one merged.
+
+The intent is normalisation: from 5.2.2 onward there is one architecture to
+extend instead of four candidate designs, and the discarded branches remain
+readable history rather than parallel futures. The selected work is
+`e581f9d`, `b27f4a1`, `947982b` and `b609745`, promoted through `newfeatures`
+and merged into `main` as `e1181c0`, on top of `dbcc21f`.
 
 ### Reproducible engineering and performance baseline
 

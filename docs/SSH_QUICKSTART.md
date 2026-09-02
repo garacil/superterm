@@ -101,7 +101,7 @@ replacement utility merely to make these examples run.
 
 ## 1. Install the prerequisites
 
-The 4.2.1 GNU/Linux packages are for `x86_64`. Confirm the architecture and
+The 5.2.2 GNU/Linux packages are for `x86_64`. Confirm the architecture and
 identify the distribution without changing it:
 
 ```sh
@@ -111,23 +111,23 @@ sed -n '1,80p' /etc/os-release
 
 Stop if `uname -m` is not `x86_64`; do not install a package for the wrong
 architecture. Download the package **and its matching `.sha256` file** from
-the [v4.2.1 release](https://github.com/garacil/superterm/releases/tag/v4.2.1)
+the [v5.2.2 release](https://github.com/garacil/superterm/releases/tag/v5.2.2)
 into a new temporary directory. Use exactly one of these package pairs:
 
 | Distribution family | Package | Checksum file |
 |---|---|---|
-| Debian/Ubuntu | `superterm_4.2.1_amd64.deb` | `superterm_4.2.1_amd64.deb.sha256` |
-| Fedora/RHEL | `superterm-4.2.1-1.x86_64.rpm` | `superterm-4.2.1-1.x86_64.rpm.sha256` |
-| Arch Linux | `superterm-4.2.1-1-x86_64.pkg.tar.zst` | `superterm-4.2.1-1-x86_64.pkg.tar.zst.sha256` |
+| Debian/Ubuntu | `superterm_5.2.2_amd64.deb` | `superterm_5.2.2_amd64.deb.sha256` |
+| Fedora/RHEL | `superterm-5.2.2-1.x86_64.rpm` | `superterm-5.2.2-1.x86_64.rpm.sha256` |
+| Arch Linux | `superterm-5.2.2-1-x86_64.pkg.tar.zst` | `superterm-5.2.2-1-x86_64.pkg.tar.zst.sha256` |
 
 For example, the Debian/Ubuntu download and mandatory integrity check are:
 
 ```sh
-ST_INSTALL_DIR="$(mktemp -d /tmp/superterm-4.2.1-install.XXXXXX)"
+ST_INSTALL_DIR="$(mktemp -d /tmp/superterm-5.2.2-install.XXXXXX)"
 cd "$ST_INSTALL_DIR"
-curl -fLO https://github.com/garacil/superterm/releases/download/v4.2.1/superterm_4.2.1_amd64.deb
-curl -fLO https://github.com/garacil/superterm/releases/download/v4.2.1/superterm_4.2.1_amd64.deb.sha256
-sha256sum -c superterm_4.2.1_amd64.deb.sha256
+curl -fLO https://github.com/garacil/superterm/releases/download/v5.2.2/superterm_5.2.2_amd64.deb
+curl -fLO https://github.com/garacil/superterm/releases/download/v5.2.2/superterm_5.2.2_amd64.deb.sha256
+sha256sum -c superterm_5.2.2_amd64.deb.sha256
 ```
 
 For RPM or Arch, download the two exact filenames from the table and run
@@ -143,15 +143,15 @@ service:
 # Debian or Ubuntu
 sudo apt-get update
 sudo apt-get install -y openssh-server
-sudo apt-get install -y ./superterm_4.2.1_amd64.deb
+sudo apt-get install -y ./superterm_5.2.2_amd64.deb
 
 # Fedora or RHEL (run this pair instead)
 sudo dnf install -y openssh-server
-sudo dnf install -y ./superterm-4.2.1-1.x86_64.rpm
+sudo dnf install -y ./superterm-5.2.2-1.x86_64.rpm
 
 # Arch Linux (run this pair instead)
 sudo pacman -S --needed openssh
-sudo pacman -U ./superterm-4.2.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./superterm-5.2.2-1-x86_64.pkg.tar.zst
 ```
 
 Run only the block matching `/etc/os-release`. On another package family,
@@ -166,7 +166,7 @@ command -v superterm
 superterm --version
 ```
 
-The version must be `4.2.1`, and the executable must be in a protected,
+The version must be `5.2.2`, and the executable must be in a protected,
 root-owned system path.
 
 Do not configure the privileged service from a user-owned source checkout:

@@ -1,17 +1,6 @@
-# superterm 4.2.1
+# superterm 5.2.2
 
 > **One live terminal workspace. Every SSH-capable screen.**
-
-> ### 🎆 This is what AIs *really* do when you're not looking
->
-> We left an AI alone with a SuperTerm session for five minutes. It threw a
-> full Valencian fireworks show inside a pane — countdown, crescendo, grand
-> finale, official anthem and all — and slammed the panic button the moment
-> the boss walked back in.
->
-> [![An AI celebrating Fallas inside a SuperTerm pane — open the video player](screenshots/ai-fireworks-play.jpg)](https://garacil.github.io/superterm/video.html)
->
-> **[▶ Open the video player — WITH SOUND](https://garacil.github.io/superterm/video.html)** · [Download the original MP4 (4.6 MB)](https://github.com/garacil/superterm/releases/download/v4.2.1/VideoCastilloIAJugando.mp4)
 
 > ### 🖥️ Real demonstration · 3:08 — SuperTerm doing real work with Pizarra and Tiza
 >
@@ -39,7 +28,7 @@ changes or custom network clients to install on that device:
 ssh -p 8022 user@server
 ```
 
-**[Download 4.2.1](https://github.com/garacil/superterm/releases/latest)** ·
+**[Download 5.2.2](https://github.com/garacil/superterm/releases/latest)** ·
 **[Run it locally](#run-locally)** ·
 **[Publish it over SSH](#publish-it-over-ssh)** ·
 **[AI-ready SSH deployment](docs/SSH_QUICKSTART.md)** ·
