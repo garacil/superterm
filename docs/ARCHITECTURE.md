@@ -93,8 +93,16 @@ Free Vision draws into the video buffer as usual. The flush is
 `WideUpdateScreen` (`src/st_video.pas:1178`), and it is where this project's
 performance lives:
 
-- **One write per frame.** Everything accumulates into a body string and leaves
-  in a single `WriteRaw(Frame)` (`src/st_video.pas:1437`).
+- **One write per frame, and the UI thread never waits for it.** Everything
+  accumulates into a body string and is handed to the client output reactor
+  (`TClientOutputReactor`, `src/st_video.pas:159`), a thread owning a separately
+  opened non-blocking `/dev/tty` and the only writer to the terminal. Queue
+  bounded at `OUTPUT_QUEUE_CAPACITY = 8 MiB` (`src/st_video.pas:178`);
+  superseded frames coalesce, never mid-ANSI-transaction, and `EffOld` does not
+  advance while a physical frame is pending. Inherited stdout stays blocking and
+  untouched. Teardown drains for at most `OUTPUT_TEARDOWN_DRAIN_MS = 500`
+  (`src/st_video.pas:179`) rather than hang on a terminal that never reads.
+
 - **A cell diff, not a repaint.** The comparison is against `EffOld`, an array
   of resolved effective cells (`src/st_video.pas:500`) — the rich pane overlay
   and the chrome after resolution, not the raw VGA buffer.
@@ -102,8 +110,12 @@ performance lives:
   for an unconditional update; honouring it resent every cell on every mouse
   move. The flag survives only in a debug line (`src/st_video.pas:1447`).
 - **Input-aware coalescing.** If more input is already queued the frame is
-  skipped, bounded by `COALESCE_MS = 40` (`src/st_video.pas:484`) so continuous
-  input still presents at ~25 fps.
+  skipped, bounded by `COALESCE_MS = 40` (`src/st_video.pas:959`) so continuous
+  input still presents at ~25 fps. `InputPending` (`src/st_video.pas:258`) asks
+  the input pump rather than the tty whenever the pump is running: the pump
+  drains fd 0 continuously, so the descriptor would answer "nothing waiting"
+  forever and both callers of this -- coalescing here and the drag outline step
+  in `src/st_fvui.pas` -- would stop skipping work already superseded.
 - **The rich overlay carries colour.** A pane cell is emitted with its true
   colour when its oracle still stands in the video buffer (`RichStands`,
   `src/st_video.pas:694`); otherwise the cell falls back to chrome. This is how
@@ -121,8 +133,17 @@ capability work must preserve this.
 `WideUpdateScreen` scans the whole surface every frame. Measured with
 `make perf` (see `docs/baseline/`): 120 µs at 100x30, 254 µs at 200x50,
 2 243 µs at 400x100 — roughly 19x for 13x the area — while bytes per frame stay
-flat. Removing that scan is milestone NS05-I3 (damage tracking); the larger
-latency term today is the fixed idle sleep (§5), which is NS05-I1.
+flat. Removing that scan is milestone NS05-I3 (damage tracking) and is now the
+largest remaining term: the fixed idle sleep that used to dominate is gone
+(§5).
+
+Pane parsing has a fast path for printable ASCII, which is nearly all ordinary
+program output. `PutCharByte` (`src/st_screen.pas:1583`) routes a byte below
+`$80` straight to `PutAsciiChar` (`src/st_screen.pas:1543`), which writes the
+cell in place. The general path allocates a managed string per character; a
+64 KB batch of `ls -R` cost roughly 65 000 heap allocations. Nothing is decided
+differently: a byte below `$80` is always one column, never a combining mark or
+a variation selector, and never half of a wide pair.
 
 ---
 
@@ -130,12 +151,33 @@ latency term today is the fixed idle sleep (§5), which is NS05-I1.
 
 A custom keyboard driver decodes stdin itself (`src/st_kbd.pas`), because the
 RTL driver treats a lone ESC as an Alt prefix and blocks; `ESC_TIMEOUT_MS = 50`
-(`src/st_kbd.pas:47`) and the CSI/SS3 decoders live there, with bracketed paste
-captured whole. The mouse has its own driver (`src/st_mouse.pas`) registered
-before `Drivers`, and it enables exactly `?1000 ?1002 ?1006`
-(`src/st_mouse.pas:137`) — any-motion tracking is deliberately not among them,
-because the RTL event queue is small and Free Vision drains one event per loop,
-so a pointer sweep would overflow it for nothing.
+(`src/st_kbd.pas:89`) and the CSI/SS3 decoders live there, with bracketed paste
+captured whole.
+
+**Nothing may depend on the UI thread to read stdin.** A dedicated input pump
+(`TInputPump`, `src/st_kbd.pas:388`, started by `StartInputPump`,
+`src/st_kbd.pas:52`) is the sole reader of fd 0 while the event loop runs,
+moving bytes into a `PUMP_RING_SIZE = 64 KiB` ring (`src/st_kbd.pas:84`) and
+signalling a pipe. It touches no decoder state, no Free Vision, no screen.
+Without it the tty input buffer fills while the UI thread parses and repaints,
+and the kernel discards the newest bytes with no error anywhere — a mouse press
+on a window title simply never reaches the application. What the pump cannot
+hold is counted (`InputPumpDropped`), never dropped quietly.
+
+Because the pump owns fd 0, every wait for input must use `InputWakeupFd`
+(`src/st_kbd.pas:56`); a wait on fd 0 would never fire again. It falls back to
+fd 0 when no pump runs, so callers need no branch.
+
+The mouse has its own driver (`src/st_mouse.pas`) registered before `Drivers`,
+and it enables exactly `?1000 ?1002 ?1006` (`src/st_mouse.pas:161`) — any-motion
+tracking is deliberately not among them, because the RTL event queue is small
+and Free Vision drains one event per loop, so a pointer sweep would overflow it
+for nothing. Those sequences go out through `HostMouseEmit` (`src/st_mouse.pas:52`), a hook
+the client points at the central emitter. It is a hook and **not** a `uses` of
+`st_video` on purpose: `st_video` reaches `Drivers` and `Mouse` through
+`st_kbd`, so that dependency inverts this unit's initialisation order and lets
+the RTL install its own console driver instead — measured as a client blocked
+forever in `connect()` to `/dev/gpmctl`.
 
 Keys, paste and synthesized mouse reports funnel to one place and are sent to
 the daemon as input frames; the daemon writes them to the pane's PTY.
@@ -144,14 +186,62 @@ the daemon as input frames; the daemon writes them to the pane's PTY.
 
 ## 5. Scheduling and latency
 
-The client loop is Free Vision's: `TProgram.Idle` ends in `GiveUpTimeSlice`
-(`vendor/fv322/app.pas:847`, `vendor/fv322/drivers.pas:785`), which is an
-unconditional 10 ms sleep, and `TSuperApp.Idle` (`src/st_fvui.pas:10273`) runs
-on top of it. Socket readability does not wake the loop today. Together with
-the bounded socket drain (32 frames, `src/st_fvui.pas:10351`) and the 40 ms
-coalescing window, that is the dominant term in key-to-paint latency —
-measured 12-18 ms end to end. Replacing it with an event-driven wake is
-NS05-I1 and is the single largest improvement available.
+The client loop is Free Vision's, but it no longer inherits Free Vision's
+sleep. `TProgram.Idle` ends in `GiveUpTimeSlice` (`vendor/fv322/app.pas:847`,
+`vendor/fv322/drivers.pas:785`), an unconditional 10 ms `nanosleep` that was
+the floor under every keystroke: nothing woke the loop early, so a byte that
+had already arrived still waited for the quantum to expire. `TSuperApp.Idle`
+therefore performs that method's two useful duties itself — the status line
+update and the `cmCommandSetChanged` broadcast — and does not call it.
+
+In its place, `WaitForActivity` (`src/st_fvui.pas:10564`, called at
+`src/st_fvui.pas:11058`) waits with `fpPoll` on the descriptors that can
+actually produce work: the input pump's pipe, the session socket in remote mode
+or every live pane master locally, and the output reactor's progress pipe. It
+returns the instant one is ready and exits immediately when a byte is already
+buffered.
+
+**The budget is a ceiling, not a toll.** `Idle` also drives timers no
+descriptor reports — the cursor blink, the periodic title probe and the host
+size check — so a bound is still needed; it is simply never paid when there is
+work.
+
+Measured with `test/perf_baseline.py`, key echo p50 before and after:
+
+| Geometry | Before | After |
+| --- | ---: | ---: |
+| 100x30 | 12.1 ms | **6.0 ms** |
+| 200x50 | 12.9 ms | **7.3 ms** |
+| 400x100 | 17.8 ms | **10.6 ms** |
+
+p95 at 100x30 fell from 14.1 ms to 6.6 ms: the variance of waiting out a
+scheduling quantum is gone as well. Painted frames over the same run rose from
+~36 to ~150 — the client now paints when there is something to paint rather
+than when a timer expires.
+
+---
+
+## 5b. Threads, and the one rule about them
+
+The client runs two threads besides the UI thread: the output reactor (§3) and
+the input pump (§4). The daemon optionally runs per-pane poll workers (§6).
+
+**No thread of ours may be alive across the fork that creates a session.**
+`StartDetachedServer` (`src/st_server.pas`) builds the daemon with a double fork
+and **no `exec`**, so the child continues in this address space. A thread does
+not survive `fork`; the locks it held do, with no owner left to release them,
+and the child blocks forever on its first allocation. Measured when it was
+violated: seven daemons in `futex_do_wait`, one thread each, no listening
+socket, every client behind them hanging in `connect()`.
+
+Enforced by `BeforeSessionFork` / `AfterSessionFork` (`TSessionForkHook`,
+`src/st_server.pas:548`, invoked at `src/st_server.pas:8343`). The client
+registers `QuiesceClientThreadsForFork` / `ResumeClientThreadsAfterFork`
+(`src/superterm.lpr:78`), which stop and restart both of its threads; buffered
+input carries over in order. `st_server` calls through the hooks and never
+learns about video or keyboard, so the layering stands.
+
+Anything that adds a client thread in future must go through those hooks.
 
 ---
 
@@ -249,13 +339,3 @@ colour approximation — are preserved on purpose so that ownership and transpor
 work cannot silently change what users see. Correcting one is a separate,
 explicitly approved change with its own regression and a deliberate update of
 every affected visible oracle.
-
----
-
-## 9. Where the milestones live
-
-The executable plan is `newsuperterm_plan.db` (SQLite) in the repository root:
-phases, tasks, dependencies, acceptance criteria and current state. This
-document says what the architecture *is*; that database says what is being done
-about it and how far it has got. `newsuperterm_v2.md` carries the reasoning and
-the evidence behind both.

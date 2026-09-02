@@ -59,6 +59,16 @@ Remaining macOS follow-ups:
 - Plain interactive `top`: manually passing in an isolated PTY; no `nice`
   wrapper was used.
 
+## Client threading (branch `newsupertermc`)
+
+- `test/layout_transition_test.py` counts the intermediate frames of a maximize
+  (8 show + 8 hide rings). The client output reactor may now legitimately
+  coalesce superseded frames, so the count is no longer guaranteed. Decide
+  which it is by watching the animation, not the log: either the test is
+  asserting an implementation detail the reactor is entitled to collapse, or
+  the zoom is genuinely dropping visible steps. Everything else the reactor
+  regressed is fixed; this is the last open item.
+
 ## Resolved Quirks
 
 - The RTL unix keyboard driver treated a lone ESC as an Alt prefix and
