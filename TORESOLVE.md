@@ -147,11 +147,29 @@ a size — `ReadTerminalSize` asks the console what the user already made the
 window — so every size is valid and nothing must be resized back. Reporting
 success lets the RTL reallocate the buffer, which was the only missing step.
 
-**Status: NOT yet validated at runtime.** It compiles clean and the reasoning is
-traced end to end through the installed FPC 3.2.2 sources, but a console resize
-is an interactive gesture and has not been performed against this build. Do that
-first: maximize, restore, drag-resize slowly, drag-resize fast, and resize with
-several panes open and with one maximized.
+**Status: validated as a large improvement, not yet complete.** Driven
+interactively against the 5.2.2 Win64 build: resizing no longer breaks the
+interface, which it reliably did before. Something still needs work — the
+remaining defect has not been characterised yet, so the next step is to pin down
+exactly what still goes wrong and when.
+
+What to establish, in order:
+
+1. Which gesture reproduces it — maximize, restore, slow drag, fast drag, or a
+   font-size change (which changes the cell grid without a mouse resize).
+2. Whether it depends on direction: growing, shrinking, or only one axis.
+3. Whether it survives a forced full repaint, which separates a stale-tracking
+   problem from a wrong-geometry one.
+4. Whether pane count matters, and whether a maximized pane or an active
+   passthrough behaves differently.
+
+Two places are worth suspecting first. `WaitForActivity` waits on the console
+input handle, and a window resize is delivered as a `WINDOW_BUFFER_SIZE_RECORD`
+that the VT input path does not consume — so a resize may be signalling the
+handle repeatedly without anything draining it. And `ApplyTerminalSize` is
+driven by a 250 ms poll, so a continuous drag produces a burst of intermediate
+sizes; the last one is correct, but each intermediate one reallocates the
+buffer and forces a full repaint.
 
 *Relevance to `main`:* the bug is Windows-only — the Unix video drivers do not
 resize the terminal and do not reject sizes — so the fix itself does not belong
