@@ -75,15 +75,19 @@ end;
 // but the locks it held do, with nobody left alive to release them, and the
 // child then blocks forever on its first allocation. Quiesce everything of
 // ours around it; both routines are no-ops when nothing is running.
+var
+  ForkOutputWasAsync: boolean = False;
+  ForkOutputNeedsFullFrame: boolean = False;
+
 procedure QuiesceClientThreadsForFork;
 begin
   QuiesceInputForFork;
-  QuiesceVideoOutputForFork;
+  PauseAsyncVideoOutputForFork(ForkOutputWasAsync, ForkOutputNeedsFullFrame);
 end;
 
 procedure ResumeClientThreadsAfterFork;
 begin
-  ResumeVideoOutputAfterFork;
+  ResumeAsyncVideoOutputAfterFork(ForkOutputWasAsync, ForkOutputNeedsFullFrame);
   ResumeInputAfterFork;
 end;
 
@@ -316,12 +320,13 @@ begin
   // is left is to say so in the trace, which is the one line that explains a
   // machine where the mouse is missing
   if DebugActive then
-    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d',
+    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d waitfd=%d',
       [GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
-       Drivers.ButtonCount]));
-  // Mouse tracking joins everything else on the client's single emitter,
-  // without st_mouse depending on st_video: see HostMouseEmit.
-  HostMouseEmit := @WriteRaw;
+       Drivers.ButtonCount, MouseInputWaitHandle]));
+  // st_mouse must initialize before Drivers and therefore cannot depend on
+  // st_video. Connect its tiny mode-sequence producer only now, before
+  // TApplication.Init starts the selected mouse driver.
+  InstallMouseOutputWriter(@st_video.WriteRaw);
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video

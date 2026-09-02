@@ -843,6 +843,24 @@ begin
   inherited Destroy;
 end;
 
+// POSIX single-quote quoting. Deliberately local rather than reached through
+// st_config: this unit sits below configuration, and a uses clause added for
+// one small helper is exactly how an initialisation order gets inverted.
+function QuoteForShell(const S: string): string;
+const
+  SQ = #39;
+var
+  I: integer;
+begin
+  Result := SQ;
+  for I := 1 to Length(S) do
+    if S[I] = SQ then
+      Result := Result + SQ + '\' + SQ + SQ   // close, escaped quote, reopen
+    else
+      Result := Result + S[I];
+  Result := Result + SQ;
+end;
+
 function TPty.Spawn(const AShell, ACwd, ACommand: string; ACols, ARows: integer;
   const AExtraEnv: string; ALoginShell: boolean): boolean;
 var
@@ -866,7 +884,21 @@ begin
   begin
     // Run the configured script as-is. Prefixing it with exec breaks valid
     // scripts such as "printf ...; exec $SHELL" and fallback terminals.
-    Script := ACommand;
+    //
+    // What IS added is a way back to a prompt. A configured command owned the
+    // pane's process outright, so interrupting it took the pane down with it:
+    // Ctrl-C reaches the whole foreground process group and left nothing alive
+    // to show a shell. Appending `exec $SHELL` alone does NOT fix that --
+    // measured: the wrapping shell dies of the same SIGINT before it reaches
+    // the exec. Installing a handler first does. The trap runs a command (`:`)
+    // and is deliberately never an empty one: an ignored disposition IS
+    // inherited across exec and would make the pane's own command immune to
+    // Ctrl-C. A handler is reset to the default instead, so the command still
+    // dies exactly as the user expects, and this shell survives to exec the
+    // interactive one.
+    Script := 'trap : INT; ' + ACommand + '; exec ' + QuoteForShell(AShell);
+    if ALoginShell then
+      Script := Script + ' -l';
     if ALoginShell then
     begin
       SetLength(Args, 4);

@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+### Reproducible engineering and performance baseline
+
+The build now treats every visible Free Pascal warning, note, and hint as an
+error in release, debug, and test-runtime modes. The only suppressed compiler
+messages are the two FPC 3.2.2 hints that announce reading its global
+configuration file.
+
+The regression harness now enforces one exact suite inventory, maps every suite
+to a frozen behavior contract, reports uncatalogued pyte parser defects, records
+distinct child-reaping outcomes, and checks the public wire constants against
+the server declarations. A primary-reference catalogue records provenance,
+redistribution policy, and checksums for locally stored material.
+
+A permanent interleaved performance harness records raw latency, settling time,
+emitted bytes, changed cells, and frame count for keyboard, mouse, UI, resize,
+bulk-output, reconnect, and slow-client workloads at 100x30, 200x50, and
+400x100. Performance regressions are rejection conditions.
+
+The first measured parser optimization removes the managed-string allocation
+previously performed for every printable ASCII byte. A focused 16 MiB parser
+probe improved from a 874 ms median to 195 ms on the development host while
+preserving pending wrap, disabled autowrap, indexed/direct-RGB rendition, wide
+UTF-8, and combining-character behaviour. Non-ASCII input continues through
+the existing general path.
+
+The detached-server worker-result drain now has a per-reactor-pass budget, so
+continuously readable pane PTYs cannot prevent socket, control, output, or
+lifecycle work from receiving another readiness pass. A write-side client
+disconnect is retained until the UI receives its single loss event, including
+when the socket was closed outside the ordinary poll path.
+
+### Event-driven client presentation under terminal backpressure
+
+The interactive client no longer pays Free Vision's fixed 10 ms idle sleep.
+Its UI waits on keyboard input, the session socket or local PTYs, and output
+completion, while the same short timeout remains only as a ceiling for cursor,
+layout, title, and terminal-size timers. Real work therefore wakes the client
+immediately instead of waiting for a scheduler tick.
+
+Runtime terminal output now belongs to a dedicated event-driven reactor. It
+opens `/dev/tty` independently in nonblocking mode, drains an 8 MiB bounded
+queue, preserves every admitted ANSI transaction, and reports only the empty
+edge to the UI. If a complete frame is already being written, intermediate
+replaceable presentations coalesce into the latest framebuffer state; pane
+input, mouse handling, menus, and detach remain responsive even when the host
+terminal temporarily stops reading. Shutdown waits at most 500 ms for the
+physical queue and never converts terminal backpressure into an unbounded
+client hang.
+
+The fork which creates a detached daemon now quiesces this reactor first and
+restarts it only in the parent. The child can no longer inherit a Free Pascal
+`TThread` object whose POSIX thread vanished at `fork`, and the parent
+invalidates its terminal baseline if bounded draining had to abandon a
+superseded frame. Optional zoom transitions use a narrow ordered-frame lane:
+their eight show/hide pairs and the native zoom-button feedback remain exact,
+while ordinary UI and pane frames continue to coalesce.
+
+GNU/Linux virtual-console mouse startup now uses the kernel `KDGETMODE` ioctl
+instead of guessing from `TERM`. The GPM availability probe is nonblocking,
+the real connected GPM descriptor wakes the same client event loop, and PTYs
+with names such as `linux` or an unknown forwarded value never enter the RTL's
+blocking GPM connection during Free Vision initialization. Terminal-emulator
+mouse reporting continues through stdin unchanged.
+
+The recursive-output stress harness now runs independent finite `ls -R`
+workloads in multiple panes while exercising mouse drag, pane resize,
+maximize/restore, tiling, and host resize under the heap-enabled build; an
+explicit soak mode runs unbounded `cd /; ls -R`. It records exact process
+stacks and owned crash artifacts on failure. A closed session now prioritizes
+its explicit shutdown notice, or one loss event, over obsolete pane-output
+backlog, so a flooded client leaves remote mode and is reaped cleanly.
+
 ## 4.2.1 - 2026-08
 
 ### Native Windows is now a first-class documented target

@@ -615,6 +615,12 @@ and removes the session. With zero viewers, a session whose panes have all
 exited may reap itself after its grace period; a deliberately empty desktop
 with zero panes remains available for reattach.
 
+The outer OpenSSH terminal is a PTY even when its forwarded `TERM` value is
+`linux` or unknown. SuperTerm identifies a GNU/Linux virtual console with the
+kernel `KDGETMODE` ioctl, not that environment string, so an SSH forced command
+never enters FPC's blocking GPM console path. Mouse reports from an SSH
+terminal continue through the PTY in xterm/SGR form.
+
 ### Windows SSH clients and terminal encoding
 
 An SSH PTY request carries the terminal type, rows, columns and terminal modes;

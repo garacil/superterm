@@ -94,7 +94,9 @@ grep -v "video: update\|draw pane=" /tmp/st-dbg.log | less
 
 | prefix | what it tells you |
 |---|---|
-| `mouse:` | `TERM`, whether this is a console, and `ButtonCount` — **zero means no mouse at all** |
+| `mouse:` | `TERM`, kernel-console result, `ButtonCount`, and the GPM wait descriptor (`-1` for terminal-emulator input) — **zero buttons means no mouse at all** |
+| `video: client output reactor started/stopped` | the independent nonblocking `/dev/tty` writer, its bounded queue, and whether shutdown drained or abandoned bytes |
+| `video: physical-submit` | bytes admitted by the UI, pending physical bytes, and admission time; this never includes time blocked in a terminal write |
 | `== BOOT:` | startup, followed by `init: sysini=... classes=N profiles=N` |
 | `startpane i=N ... win=... term=... scr=WxH` | a pane created locally, with the objects behind it |
 | `attach: panes=N geom=N desk=WxH focused=N` | this client attached to a daemon, i.e. it is in remote mode |
@@ -176,9 +178,10 @@ python3 test/f5_output_layout_order_test.py
 ```
 
 The fullscreen ordering test (kept in the legacy-named
-`f5_output_layout_order_test.py`) uses two equal-size viewers plus cursor-positioned output
-during both animation directions. It checks the daemon screen, both client
-mirrors and both physical cursors, so a client cannot resize optimistically
+`f5_output_layout_order_test.py`) uses two equal-size viewers plus
+cursor-positioned output during both animation directions. It checks the
+daemon screen, both client mirrors and both physical cursors, so a client
+cannot resize optimistically
 or parse queued output at a width different from the canonical PTY.
 
 The raw-protocol preview regression verifies the transient half of the same

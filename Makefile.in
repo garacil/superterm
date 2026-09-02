@@ -102,7 +102,16 @@ TESTS := suite_manifest_test.py wire_constants_test.py \
   new_session_profile_test.py ssh_server_config_test.py \
   ssh_release_boundary_test.py \
   ssh_service_uninstall_test.py ssh_entry_test.py \
-  ssh_transport_test.py
+  ssh_transport_test.py \
+  pyte_scrub_test.py \
+  contract_manifest_test.py \
+  strict_build_test.py \
+  reference_index_test.py \
+  performance_harness_test.py \
+  screen_ascii_fastpath_test.py \
+  client_output_reactor_test.py \
+  root_output_ui_stress_test.py \
+  pane_command_interrupt_test.py
 
 .PHONY: all release debug debug-heap perf test-runtime test install uninstall install-deps clean distclean info
 

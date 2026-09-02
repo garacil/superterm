@@ -10,21 +10,29 @@ procedure InstallWideVideoOutput;
 // does not change O_NONBLOCK on the stdout file description inherited by the
 // caller's shell. Startup probes remain synchronous until this is enabled.
 procedure StartAsyncVideoOutput;
-// A session daemon is created with a double fork and NO exec (st_server,
-// StartDetachedServer), so the child continues inside this address space. A
-// thread does not survive fork but the locks it held do, with no owner left
-// alive to release them, and the child then blocks forever on its first use.
-// Measured: seven daemons stuck in futex_do_wait with a single thread and no
-// listening socket, which left every client hanging in connect(). Nothing may
-// be running when that fork happens.
-procedure QuiesceVideoOutputForFork;
-procedure ResumeVideoOutputAfterFork;
+// POSIX fork preserves only the calling thread. Stop the physical-output
+// reactor before the session daemon is forked, then recreate it only in the
+// parent. Otherwise the child inherits a TThread object whose pthread no
+// longer exists and unit finalization waits for it forever -- and, more
+// immediately, every lock that thread held stays held with no owner left
+// alive to release it. Measured when it was violated: seven daemons stuck in
+// futex_do_wait, one thread each, no listening socket, and every client behind
+// them hanging in connect().
+procedure PauseAsyncVideoOutputForFork(out AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+procedure ResumeAsyncVideoOutputAfterFork(AWasActive,
+  AResumeNeedsFullFrame: Boolean);
 // Make bounded progress on queued physical output. True means a renderer
 // update was coalesced while the terminal was busy and must now be retried.
 function PumpVideoOutput: Boolean;
 function VideoOutputHasFailed: Boolean;
 function VideoOutputWaitHandle: LongInt;
 function VideoOutputPending: Boolean;
+// Admit one intentional animation step behind an already queued physical
+// frame. Ordinary renderer updates still coalesce to the latest state; this
+// narrow path preserves the documented show/hide sequence of an opt-in
+// transition without making the UI perform a physical write.
+procedure PresentOrderedVideoFrame;
 // Renderer capability of this process/host terminal.  Every attached client
 // has its own process and therefore its own value; it is never shared with the
 // canonical desktop kept by the daemon.
@@ -198,7 +206,7 @@ var
   OutputWakePipe: TFilDes = (-1, -1);
   OutputProgressPipe: TFilDes = (-1, -1);
   OutputReactor: TClientOutputReactor = nil;
-  OutputForkQuiesced: Boolean = False;
+  OrderedFrameAdmission: Boolean = False;
 
 function HostUtf8Output: Boolean;
 begin
@@ -376,7 +384,7 @@ begin
 end;
 
 function QueueOutputTransaction(const AData; ALen: LongInt;
-  AFrame: Boolean): Boolean;
+  AFrame, AAppendFrame: Boolean): Boolean;
 var
   Tail, FirstPart: LongInt;
   Src: PByte;
@@ -392,7 +400,7 @@ begin
   try
     if OutputFailed or (not AsyncOutputActive) then
       Exit;
-    if AFrame and (OutputCount <> 0) then
+    if AFrame and (OutputCount <> 0) and (not AAppendFrame) then
       Exit
     else if ALen > Length(OutputRing) - OutputCount then
       Overflow := True
@@ -431,14 +439,15 @@ end;
 
 function QueueOutputBytes(const AData; ALen: LongInt): Boolean;
 begin
-  Result := QueueOutputTransaction(AData, ALen, False);
+  Result := QueueOutputTransaction(AData, ALen, False, False);
 end;
 
-function QueueOutputFrame(const S: AnsiString): Boolean;
+function QueueOutputFrame(const S: AnsiString;
+  AAppendFrame: Boolean = False): Boolean;
 begin
   if S = '' then
     Exit(True);
-  Result := QueueOutputTransaction(S[1], Length(S), True);
+  Result := QueueOutputTransaction(S[1], Length(S), True, AAppendFrame);
 end;
 
 function RawWriteBlocking(const AData; ALen: LongInt): Boolean;
@@ -1686,7 +1695,8 @@ begin
   // EffOld again while it is pending. Once the reactor reports completion,
   // the next call diffs the latest VideoBuf against that actually admitted
   // baseline, coalescing every superseded intermediate presentation.
-  if AsyncOutputActive and VideoOutputPending then
+  if AsyncOutputActive and VideoOutputPending and
+     (not OrderedFrameAdmission) then
   begin
     DeferredFrame := True;
     Exit;
@@ -1696,8 +1706,13 @@ begin
   // superseded, so skip it and let the NEXT one emit the accumulated delta.
   // EffOld is only advanced by cells we actually emit, so skipping is safe.
   // The time bound keeps at least ~25 frames a second under continuous input.
-  if InputPending and (GetTickCount64 - LastEmitTick < COALESCE_MS) then
+  if (not OrderedFrameAdmission) and InputPending and
+     (GetTickCount64 - LastEmitTick < COALESCE_MS) then
   begin
+    // This may itself be the retry of a frame deferred behind physical
+    // output. Keep the latest-state obligation alive: clearing it here loses
+    // the final canonical paint when the pending input causes no later draw.
+    DeferredFrame := True;
     if DebugActive then
       DebugLog('video: frame coalesced (more input already waiting)');
     Exit;
@@ -1932,7 +1947,7 @@ begin
   // removes the stall at its source instead of predicting it.
   if AsyncOutputActive then
   begin
-    if not QueueOutputFrame(Frame) then
+    if not QueueOutputFrame(Frame, OrderedFrameAdmission) then
       Exit;
   end
   else
@@ -1953,6 +1968,16 @@ begin
     DebugLog(Format('video: update force=%d runs=%d changed_cells=%d ' +
       'of %d bytes=%d rich_hit=%d rich_miss=%d', [Ord(Force), Runs, ChangedCells,
       LongInt(ScreenWidth) * ScreenHeight, Length(Frame), RHit, RMiss]));
+end;
+
+procedure PresentOrderedVideoFrame;
+begin
+  OrderedFrameAdmission := True;
+  try
+    WideUpdateScreen(False);
+  finally
+    OrderedFrameAdmission := False;
+  end;
 end;
 
 procedure WideClearScreen;
@@ -2143,6 +2168,7 @@ begin
   OutputHead := 0;
   OutputCount := 0;
   OutputFrameRemaining := 0;
+  OutputFailed := False;
   DeferredFrame := False;
   BlockingTeardownUnsafe := False;
   AsyncOutputActive := True;
@@ -2156,27 +2182,6 @@ begin
 end;
 {$pop}
 
-procedure QuiesceVideoOutputForFork;
-begin
-  if not AsyncOutputActive then
-    Exit;
-  StopAsyncVideoOutput;
-  // Stop keeps the descriptor open when it had to abandon a backlog, because a
-  // blocking teardown on it would be unsafe. Across a fork that does not
-  // apply: the parent opens a fresh one and the child must inherit nothing.
-  CloseOutputDescriptor(OutputHandle);
-  BlockingTeardownUnsafe := False;
-  AsyncOutputEverStarted := False;   // Start refuses to run twice otherwise
-  OutputForkQuiesced := True;
-end;
-
-procedure ResumeVideoOutputAfterFork;
-begin
-  if not OutputForkQuiesced then
-    Exit;
-  OutputForkQuiesced := False;
-  StartAsyncVideoOutput;
-end;
 
 function StopAsyncVideoOutput: Boolean;
 var
@@ -2248,6 +2253,37 @@ begin
   if DebugActive then
     DebugLog(Format('video: client output reactor stopped drained=%d abandoned=%d',
       [Ord(Result), Pending]));
+end;
+
+procedure PauseAsyncVideoOutputForFork(out AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+begin
+  AWasActive := AsyncOutputActive and (OutputReactor <> nil);
+  AResumeNeedsFullFrame := False;
+  if not AWasActive then
+    Exit;
+  AResumeNeedsFullFrame := not StopAsyncVideoOutput;
+  // StopAsyncVideoOutput deliberately retains the nonblocking descriptor
+  // when terminal teardown could not drain. A fork pause is not teardown:
+  // discard that private descriptor and let the parent reopen a clean one.
+  CloseOutputDescriptor(OutputHandle);
+  BlockingTeardownUnsafe := False;
+  OutputFailed := False;
+  AsyncOutputEverStarted := False;
+end;
+
+procedure ResumeAsyncVideoOutputAfterFork(AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+begin
+  if not AWasActive then
+    Exit;
+  StartAsyncVideoOutput;
+  // A clean pause drained every admitted frame, so the physical terminal and
+  // EffOld still describe the same screen. Preserve that valuable baseline.
+  // A bounded pause that abandoned output must instead make the next
+  // presentation self-contained.
+  if AResumeNeedsFullFrame then
+    InvalidateFrame;
 end;
 
 procedure InstallWideVideoOutput;

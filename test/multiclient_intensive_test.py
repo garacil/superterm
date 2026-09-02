@@ -103,7 +103,14 @@ if not math.isfinite(VISIBLE_STEP_PAUSE) or VISIBLE_STEP_PAUSE <= 0:
     raise SystemExit('SUPERTERM_STRESS_VISIBLE_STEP_PAUSE must be positive')
 if not EXTERNAL_MODE:
     with open(HOME + '/.superterm/superterm.ini', 'w') as fh:
+        # Membership toasts are deliberately client-local and their two-second
+        # FIFO timers need not start on the same tick.  They can cover a pane
+        # border while this suite compares the shared desktop.  The dedicated
+        # client_notifications_test.py keeps that behaviour enabled and
+        # verifies every toast/status/bell; disable only the optional desktop
+        # overlay here so the pane-convergence oracle observes shared state.
         fh.write('[ui]\nlanguage=en\nbackground=none\n'
+                 'desktop_notifications=0\n'
                  '[session]\nserver=always\nautosave=0\nautorestore=0\n'
                  'multithread=auto\nzoomanim=0\n')
 
@@ -1666,6 +1673,15 @@ def restore_and_tile(clients, session):
           tiled is not None and tiled.returncode == 0)
     drain_all(clients, 0.9)
     rects = [layout_rects(client) for client in clients]
+    if not all(all(rect is not None for rect in client_rects)
+               for client_rects in rects):
+        print('  restore/tile client layouts:', rects)
+        for viewer_index, client in enumerate(clients, 1):
+            with open(os.path.join(
+                    LOG_HOME, f'restore-tile-viewer-{viewer_index}.txt'),
+                    'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(client.screen.display))
+                fh.write('\n')
     check('canonical tile is visible in every client', all(
         all(rect is not None for rect in client_rects)
         for client_rects in rects))
@@ -2095,6 +2111,19 @@ for number in range(ROUNDS):
     check(f'round {number} shared layout converges',
           all(layout_rects(c) == final_layout for c in clients[1:]))
     final_visual = final_visuals[0]
+    if (not all(visual == final_visual for visual in final_visuals[1:]) or
+            not (len(final_flags) == 3 and
+                 all(visual_map_matches_flags(visual, final_flags, active)
+                     for visual, active in zip(final_visuals, final_active)))):
+        print(f'  round {number} canonical flags: {final_flags}')
+        print(f'  round {number} active panes: {final_active}')
+        for viewer_index, visual in enumerate(final_visuals, 1):
+            print(f'  round {number} viewer {viewer_index} visual: {visual}')
+            with open(os.path.join(
+                    LOG_HOME, f'round-{number}-viewer-{viewer_index}.txt'),
+                    'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(clients[viewer_index - 1].screen.display))
+                fh.write('\n')
     check(f'round {number} shared pane/icon identity converges',
           all(visual == final_visual for visual in final_visuals[1:]))
     check(f'round {number} canonical flags match every rendered pane/icon',
