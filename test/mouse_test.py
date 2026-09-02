@@ -63,11 +63,10 @@ class Session:
             readable, _, _ = select.select([self.fd], [], [], 0.05)
             if readable:
                 try:
-                    self.stream.feed(os.read(self.fd, 65536))
+                    data = os.read(self.fd, 65536)
                 except OSError:
                     return
-                except Exception:
-                    pass
+                stlib.feed_pyte(self.stream, data, 'mouse')
 
     def mouse(self, code, x, y, motion=False, release=False):
         if motion:

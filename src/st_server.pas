@@ -223,11 +223,20 @@ const
   CLIENT_EGRESS_LIMIT = MAX_EGRESS;
   CLIENT_CLOSE_POLL_MS = 100;
   CLIENT_CLOSE_WAIT_POLLS = 15;
+  // Administrative shutdown has stopped every pane producer, so it can spend
+  // this bounded interval flushing the already ordered tail plus the terminal
+  // lifecycle frame.  A peer which still cannot drain is closed normally.
+  SHUTDOWN_NOTICE_DRAIN_MS = 1500;
 
   // Workers feed the socket reactor through a bounded in-process queue. If
   // the main reactor is busy producing a snapshot/capture, a full queue
   // back-pressures only the worker's PTYs instead of growing without limit.
   WORKER_RESULT_SLOTS = 512;
+  // A permanently readable set of PTYs must not turn queue draining into an
+  // unbounded reactor operation.  One batch is large enough to give every
+  // possible pane one result-sized turn, then socket input, client output and
+  // lifecycle work get another readiness pass.  FIFO order is unchanged.
+  WORKER_RESULT_DRAIN_BUDGET = MAX_PANES;
   MAX_WORKER_RESULT_BYTES = 16 * 1024 * 1024;
 
   {$ifdef darwin}
@@ -326,6 +335,11 @@ type
     FOutBuf: RawByteString;
     FOutPos: integer;
     FPeerClosed: boolean;
+    // A write-side failure can close the socket outside Poll (for example,
+    // while a mouse gesture publishes focus).  Retain that transition until
+    // Poll delivers the one ordered sekLost event to the UI; otherwise
+    // FConnected=False made Poll return silently forever.
+    FOutboundLostPending: boolean;
     FNextLayoutLockRequest: QWord;
     FNextPreviewId: QWord;
     FLastPreviewId: QWord;
@@ -350,6 +364,10 @@ type
   public
     constructor Create;
     destructor Destroy; override;
+    // Read-only descriptor exposure for the client reactor wait set. Socket
+    // ownership and all reads/writes remain inside TSessionClient.
+    function WaitHandle: cint;
+    function WantsWrite: boolean;
     function Connect(const APath: string; out Snapshot: TSessionSnapshot;
       AHostW: integer = 0; AHostH: integer = 0): boolean;
     function Poll(out Event: TSessionEvent): boolean;
@@ -808,6 +826,7 @@ type
     procedure Broadcast(AKind: byte; APane: integer; const Buffer;
       ASize: integer; ANeedCaps: boolean; AExcept: integer);
     procedure FlushClient(AIdx: integer);
+    procedure FlushShutdownNotices;
     procedure FlushPending(AIdx: integer);
     procedure ApplyCanonicalResize(APane, ACols, ARows: integer;
       ANotify: boolean = True; AWorkersStopped: boolean = False);
@@ -2203,6 +2222,7 @@ begin
   FOutBuf := '';
   FOutPos := 0;
   FPeerClosed := False;
+  FOutboundLostPending := False;
   FNextLayoutLockRequest := 0;
   FNextPreviewId := 0;
   FLastPreviewId := 0;
@@ -2230,6 +2250,19 @@ destructor TSessionClient.Destroy;
 begin
   CloseSocket;
   inherited Destroy;
+end;
+
+function TSessionClient.WaitHandle: cint;
+begin
+  if FConnected then
+    Result := FSocket
+  else
+    Result := -1;
+end;
+
+function TSessionClient.WantsWrite: boolean;
+begin
+  Result := FConnected and OutputPending;
 end;
 
 function TSessionClient.SendFrame(AKind: byte; APane: integer;
@@ -2305,6 +2338,7 @@ begin
     end;
     if N = 0 then
     begin
+      FOutboundLostPending := True;
       CloseSocket;
       Exit;
     end;
@@ -2313,6 +2347,7 @@ begin
       Continue;
     if (E = ESysEAGAIN) or (E = ESysEWOULDBLOCK) then
       Break;
+    FOutboundLostPending := True;
     CloseSocket;
     Exit;
   end;
@@ -2530,6 +2565,7 @@ begin
   FOutBuf := '';
   FOutPos := 0;
   FPeerClosed := False;
+  FOutboundLostPending := False;
   FLastPreviewId := 0;
   FLastPreviewTick := 0;
   FQueuedEvents := nil;
@@ -2742,24 +2778,50 @@ end;
 function TSessionClient.Poll(out Event: TSessionEvent): boolean;
 var
   Kind: byte;
-  Pane: integer;
+  Pane, I: integer;
   Data: TByteArray;
-  ClosedNow: boolean;
+  ClosedNow, HaveShutdown: boolean;
   PopResult: TFramePop;
 begin
   Event := Default(TSessionEvent);
   Event.Kind := sekLost;
   Event.Pane := -1;
   Result := False;
+  if (not FConnected) or FOutboundLostPending then
+  begin
+    // A synchronous layout operation can queue a large volume of pane output
+    // while it waits for its correlated reply. Once the connection is dead,
+    // replaying that obsolete backlog before reporting lifecycle would leave
+    // the client in RemoteMode with WaitHandle=-1 for an unbounded interval.
+    // Preserve an explicit ordered shutdown notice when the daemon managed to
+    // enqueue one; otherwise report loss. No live-connection event is skipped.
+    HaveShutdown := False;
+    for I := FQueuedEventHead to High(FQueuedEvents) do
+      if FQueuedEvents[I].Kind = sekShutdown then
+      begin
+        Event := FQueuedEvents[I];
+        HaveShutdown := True;
+        Break;
+      end;
+    FQueuedEvents := nil;
+    FQueuedEventHead := 0;
+    FOutboundLostPending := False;
+    if not HaveShutdown then
+    begin
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+    end;
+    Exit(True);
+  end;
   if PopQueuedEvent(Event) then
     Exit(True);
-  if not FConnected then
-    Exit;
   // Sending commands is opportunistic: a daemon that temporarily stops
   // reading can never stall the UI's Idle loop.  A fatal error is reported
   // through the same single lost event as a failed read.
   if not FlushOutgoing then
   begin
+    FOutboundLostPending := False;
     Event.Kind := sekLost;
     Exit(True);
   end;
@@ -4370,6 +4432,34 @@ begin
     Exit
   else
     DropClient(AIdx);
+end;
+
+procedure TDetachedSession.FlushShutdownNotices;
+var
+  Deadline: QWord;
+  I: integer;
+  Pending: boolean;
+begin
+  Deadline := GetTickCount64 + SHUTDOWN_NOTICE_DRAIN_MS;
+  repeat
+    Pending := False;
+    for I := 0 to MAX_CLIENTS - 1 do
+      if FClients[I].Fd >= 0 then
+      begin
+        // Run's normal per-readiness budget no longer applies: producers are
+        // stopped and this bounded tail is the only remaining server work.
+        FClients[I].WriteUsed := 0;
+        FlushClient(I);
+        if (FClients[I].Fd >= 0) and
+           (FClients[I].OutPos < Length(FClients[I].OutBuf)) then
+          Pending := True;
+      end;
+    if not Pending then
+      Exit;
+    Sleep(1);
+  until GetTickCount64 >= Deadline;
+  if DebugActive then
+    DebugLog('daemon: shutdown notice drain reached its bounded deadline');
 end;
 
 procedure TDetachedSession.FlushPending(AIdx: integer);
@@ -7183,9 +7273,11 @@ procedure TDetachedSession.DrainWorkerResults;
 var
   R: TWorkerResult;
   B0: byte;
-  Have: boolean;
+  Have, More: boolean;
+  Drained: integer;
 begin
   DrainPipe(FWorkerResultPipe[0]);
+  Drained := 0;
   repeat
     R := Default(TWorkerResult);
     Have := False;
@@ -7212,8 +7304,23 @@ begin
       else
         Broadcast(R.Kind, R.Pane, B0, 0, False, -1);
       R.Data := nil;
+      Inc(Drained);
     end;
-  until not Have;
+  until (not Have) or (Drained >= WORKER_RESULT_DRAIN_BUDGET);
+
+  // DrainPipe consumed every advisory byte, including bytes corresponding to
+  // results which the bounded batch deliberately left queued.  Re-arm once
+  // after dropping the lock so the next poll pass cannot sleep on real work.
+  // A producer racing this check writes its own wake byte after enqueueing.
+  More := False;
+  EnterCriticalSection(FWorkerResultLock);
+  try
+    More := FWorkerResultCount > 0;
+  finally
+    LeaveCriticalSection(FWorkerResultLock);
+  end;
+  if More then
+    PipeWriteByte(FWorkerResultPipe[1], 1);
 end;
 
 function TDetachedSession.WantedWorkerCount: integer;
@@ -8011,8 +8118,11 @@ begin
   StopPaneWorkers;
   // orderly shutdown notice to capable clients; legacy ones see the
   // EOF and react as they do today (lost connection)
+  for I := 0 to MAX_CLIENTS - 1 do
+    FClients[I].WriteUsed := 0;
   B0 := 0;
   Broadcast(FRAME_SHUTDOWN_EV, -1, B0, 0, True, -1);
+  FlushShutdownNotices;
 end;
 
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
@@ -8033,6 +8143,7 @@ var
   Attempt, N, Flags: integer;
   Probe: TSocketProbe;
   OwnershipTransferred: boolean;
+  OutputWasAsync, OutputResumeNeedsFullFrame: boolean;
 
   procedure SignalChildFailure;
   begin
@@ -8132,6 +8243,8 @@ begin
   Result := dssFailed;
   DetachedServerChildFinished := False;
   OwnershipTransferred := False;
+  OutputWasAsync := False;
+  OutputResumeNeedsFullFrame := False;
   if (ALay = nil) or (Length(APanes) > MAX_PANES) or
      (ALay.PaneCount <> Length(APanes)) or
      (not Assigned(AChildHook)) then
@@ -8162,7 +8275,16 @@ begin
     ReadyPipe := Default(TFilDes);
     if FpPipe(ReadyPipe) <> 0 then
       Exit;
+    // fork(2) retains only the calling thread. The interactive client normally
+    // has a physical-output reactor by this point, so quiesce it before fork;
+    // the daemon child must never inherit a TThread handle for a vanished
+    // pthread. The parent immediately restores descriptor-driven output.
+    st_video.PauseAsyncVideoOutputForFork(OutputWasAsync,
+      OutputResumeNeedsFullFrame);
     Pid := FpFork;
+    if Pid <> 0 then
+      st_video.ResumeAsyncVideoOutputAfterFork(OutputWasAsync,
+        OutputResumeNeedsFullFrame);
     if Pid = 0 then
     begin
       FpClose(ReadyPipe[0]);

@@ -19,18 +19,18 @@ UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
 TEST_TARGET := $(PROJECT_DIR)/bin/superterm-test
 
-# -vewnh: errors, warnings, notes and hints all on -- the project builds with
-# none of them. -vm11030,11031 silences the two FPC emits about reading its
-# own /etc/fpc.cfg, which say nothing about this code and made a clean build
-# look like it had something to report.
-BASE_FLAGS := -Mobjfpc -Sh -vewnh -vm11030,11031 \
+# -vewnh makes every diagnostic class visible; -Sewnh makes each visible
+# warning, note, or hint fatal. The only suppressed messages are FPC 11030 and
+# 11031, which describe the compiler reading its own global configuration and
+# are not source diagnostics.
+BASE_FLAGS := -Mobjfpc -Sh -Sewnh -vewnh -vm11030,11031 \
   -Fu$(PROJECT_DIR)/vendor/fv322 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
 
 ifeq ($(MODE),debug)
-# -Crtoi explicito: /etc/fpc.cfg lo activa via su rama "#IFDEF DEBUG", pero
-# el build no debe depender del config global para sus checks de runtime
+# Keep -Crtoi explicit: /etc/fpc.cfg enables it through its "#IFDEF DEBUG"
+# branch, but runtime checks must not depend on global compiler configuration.
 MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
 else ifeq ($(MODE),release)
 # -gl: line information, kept in the optimised build on purpose. A crash
@@ -47,12 +47,13 @@ SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.inc)
 
-TESTS := drive_test.py large_screen_test.py mouse_test.py \
+TESTS := drive_test.py large_screen_test.py mouse_backend_test.py mouse_test.py \
   mouse_focus_test.py focus_color_test.py palette_resize_transition_test.py \
   class_creation_transition_test.py \
   restore_test.py sysconfig_test.py \
   template_test.py sqlite_test.py wizard_test.py language_test.py clipboard_test.py \
   window_test.py cursor_test.py wclass_test.py profile_test.py \
+  profile_command_interrupt_test.py \
   profile_default_test.py profile_shell_fallback_test.py \
   profile_switch_transition_test.py multisession_test.py \
   prefix_test.py title_test.py \
@@ -91,13 +92,17 @@ TESTS := drive_test.py large_screen_test.py mouse_test.py \
   new_session_profile_test.py ssh_server_config_test.py \
   ssh_release_boundary_test.py \
   ssh_service_uninstall_test.py ssh_entry_test.py \
-  ssh_transport_test.py
+  ssh_transport_test.py suite_manifest_test.py pyte_scrub_test.py \
+  stlib_reaping_test.py wire_constants_test.py contract_manifest_test.py \
+  strict_build_test.py reference_index_test.py performance_harness_test.py \
+  screen_ascii_fastpath_test.py client_output_reactor_test.py \
+  root_output_ui_stress_test.py
 
 .PHONY: all release debug debug-heap test-runtime test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
-# la version se toma del fichero VERSION y se inyecta como include
+# Read the version from VERSION and inject it through the generated include.
 $(PROJECT_DIR)/src/st_version.inc: $(PROJECT_DIR)/VERSION
 	printf "const SUPERTERM_VERSION = '%s';\n" "$$(cat $(PROJECT_DIR)/VERSION)" \
 		> $(PROJECT_DIR)/src/st_version.inc

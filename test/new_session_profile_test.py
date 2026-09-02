@@ -23,6 +23,7 @@ with open(INI, 'w', encoding='utf-8') as stream:
     stream.write('''[ui]
 language=en
 background=none
+desktop_notifications=0
 [session]
 server=always
 default_profile=alpha

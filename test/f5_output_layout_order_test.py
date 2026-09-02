@@ -34,17 +34,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check, raw_frame, read_frame, run_cli
-
-
-FRAME_ATTACH = 1
-FRAME_DETACH = 4
-FRAME_CTL_CAPTURE = 13
-FRAME_SCREEN = 21
-FRAME_READY = 22
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
-CAPTURE_VISIBLE = 0
+from stlib import (CAPTURE_VISIBLE, FRAME_ATTACH, FRAME_CTL_CAPTURE,
+                   FRAME_CTL_DATA, FRAME_CTL_END, FRAME_DETACH, FRAME_READY,
+                   FRAME_SCREEN, check, raw_frame, read_frame, run_cli)
 
 WIDTH = 100
 HEIGHT = 30
@@ -54,18 +46,7 @@ RAW_OSC = b'\x1b]777;F5_ORDER_STABLE_RAW\x07'
 EXIT_OSC = b'\x1b]777;F5_ORDER_EXIT_07\x07'
 
 
-def attach_proto_ver():
-    source = os.path.join(os.path.dirname(__file__), '..', 'src',
-                          'st_server.pas')
-    with open(source, encoding='utf-8') as stream:
-        for line in stream:
-            match = re.match(r'\s*ATTACH_PROTO_VER\s*=\s*(\d+)', line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError('ATTACH_PROTO_VER not found')
-
-
-PROTO_VER = attach_proto_ver()
+PROTO_VER = stlib.attach_proto_ver()
 HOME = stlib.fresh_home('f5-output-layout-order')
 os.makedirs(HOME + '/.superterm', exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as stream:

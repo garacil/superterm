@@ -11,7 +11,7 @@ import time
 
 import pyte
 
-from stlib import wait_pid
+from stlib import feed_pyte, wait_pid
 
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
@@ -49,9 +49,10 @@ class Session:
             readable, _, _ = select.select([self.fd], [], [], 0.05)
             if readable:
                 try:
-                    self.stream.feed(os.read(self.fd, 65536))
-                except Exception:
+                    data = os.read(self.fd, 65536)
+                except OSError:
                     return
+                feed_pyte(self.stream, data, 'language')
 
     def send(self, data, seconds=0.6):
         os.write(self.fd, data)
