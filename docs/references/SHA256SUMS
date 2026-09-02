@@ -1,4 +1,4 @@
 # Verify from the repository root with:
 # sha256sum -c docs/references/SHA256SUMS
-af6a61d59ad0baeda3a56fc93b48cb6d12961350bf3c1b07b062b4ea2c961267  docs/references/README.md
+b0128957485868ccb10a987be4bf063fa320e0c6ee6cbe84aff9679384da9a48  docs/references/README.md
 0a1b2c97895da4363f0f9dcbf853828363dcc25a1e0f06f622ba62809d231724  docs/references/index.md
