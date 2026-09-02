@@ -2778,32 +2778,44 @@ end;
 function TSessionClient.Poll(out Event: TSessionEvent): boolean;
 var
   Kind: byte;
-  Pane: integer;
+  Pane, I: integer;
   Data: TByteArray;
-  ClosedNow: boolean;
+  ClosedNow, HaveShutdown: boolean;
   PopResult: TFramePop;
 begin
   Event := Default(TSessionEvent);
   Event.Kind := sekLost;
   Event.Pane := -1;
   Result := False;
+  if (not FConnected) or FOutboundLostPending then
+  begin
+    // A synchronous layout operation can queue a large volume of pane output
+    // while it waits for its correlated reply. Once the connection is dead,
+    // replaying that obsolete backlog before reporting lifecycle would leave
+    // the client in RemoteMode with WaitHandle=-1 for an unbounded interval.
+    // Preserve an explicit ordered shutdown notice when the daemon managed to
+    // enqueue one; otherwise report loss. No live-connection event is skipped.
+    HaveShutdown := False;
+    for I := FQueuedEventHead to High(FQueuedEvents) do
+      if FQueuedEvents[I].Kind = sekShutdown then
+      begin
+        Event := FQueuedEvents[I];
+        HaveShutdown := True;
+        Break;
+      end;
+    FQueuedEvents := nil;
+    FQueuedEventHead := 0;
+    FOutboundLostPending := False;
+    if not HaveShutdown then
+    begin
+      Event := Default(TSessionEvent);
+      Event.Kind := sekLost;
+      Event.Pane := -1;
+    end;
+    Exit(True);
+  end;
   if PopQueuedEvent(Event) then
     Exit(True);
-  if FOutboundLostPending then
-  begin
-    FOutboundLostPending := False;
-    Exit(True);
-  end;
-  if not FConnected then
-  begin
-    // Poll is the UI's sole connection-state observer. A close can be
-    // discovered by a command/resize send between Poll calls; returning
-    // False forever from that disconnected state leaves RemoteMode true with
-    // WaitHandle=-1, so the client idles indefinitely after its daemon has
-    // gone. Publish the already initialized sekLost event. The UI consumes it
-    // once and leaves remote mode before another Poll is possible.
-    Exit(True);
-  end;
   // Sending commands is opportunistic: a daemon that temporarily stops
   // reading can never stall the UI's Idle loop.  A fatal error is reported
   // through the same single lost event as a failed read.
@@ -8131,6 +8143,7 @@ var
   Attempt, N, Flags: integer;
   Probe: TSocketProbe;
   OwnershipTransferred: boolean;
+  OutputWasAsync, OutputResumeNeedsFullFrame: boolean;
 
   procedure SignalChildFailure;
   begin
@@ -8230,6 +8243,8 @@ begin
   Result := dssFailed;
   DetachedServerChildFinished := False;
   OwnershipTransferred := False;
+  OutputWasAsync := False;
+  OutputResumeNeedsFullFrame := False;
   if (ALay = nil) or (Length(APanes) > MAX_PANES) or
      (ALay.PaneCount <> Length(APanes)) or
      (not Assigned(AChildHook)) then
@@ -8260,7 +8275,16 @@ begin
     ReadyPipe := Default(TFilDes);
     if FpPipe(ReadyPipe) <> 0 then
       Exit;
+    // fork(2) retains only the calling thread. The interactive client normally
+    // has a physical-output reactor by this point, so quiesce it before fork;
+    // the daemon child must never inherit a TThread handle for a vanished
+    // pthread. The parent immediately restores descriptor-driven output.
+    st_video.PauseAsyncVideoOutputForFork(OutputWasAsync,
+      OutputResumeNeedsFullFrame);
     Pid := FpFork;
+    if Pid <> 0 then
+      st_video.ResumeAsyncVideoOutputAfterFork(OutputWasAsync,
+        OutputResumeNeedsFullFrame);
     if Pid = 0 then
     begin
       FpClose(ReadyPipe[0]);

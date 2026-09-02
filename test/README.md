@@ -19,7 +19,7 @@ enforces the mapping and the required coverage areas.
 | cli_help_test.py | CLI | Contextual command help is complete, navigable, truthful, and side-effect free. |
 | cli_test.py | CLI | English and Spanish control commands, errors, output, and exit codes keep their public behavior. |
 | client_egress_nonblocking_test.py | protocol, lifecycle | A stalled daemon cannot block the interactive client writer. |
-| client_output_reactor_test.py | performance, lifecycle | A dedicated event-driven client output reactor keeps keyboard control and detach responsive when the host terminal stops draining, without changing inherited stdout flags. |
+| client_output_reactor_test.py | performance, lifecycle | A dedicated event-driven client output reactor keeps keyboard control and detach responsive when the host terminal stops draining, preserves latest-state retry and ordered animation frames, and does not change inherited stdout flags. |
 | client_notifications_test.py | UI, sessions | Ordered membership changes produce only the documented local notifications. |
 | clipboard_test.py | UI, input | Pane copy, ten-item history, host paste, and OSC 52 retain their visible semantics. |
 | close_all_panes_test.py | UI, rendering | Closing every pane is one atomic visible transition, not a sequence of close animations. |
@@ -49,17 +49,18 @@ enforces the mapping and the required coverage areas.
 | large_screen_test.py | UI, rendering | Extreme-width hosts remain local viewports over one fixed desktop. |
 | late_dsr_test.py | input, protocol | A late cursor-position reply is never interpreted as a user command. |
 | layout_preview_protocol_test.py | protocol, UI | Layout previews are ordered, transient, owner-scoped, and never canonical mutations. |
-| layout_transition_test.py | rendering, sessions | Shared layout operations never expose a rollback or divergent intermediate frame. |
+| layout_transition_test.py | rendering, sessions | Shared layout operations preserve exact ordered show/hide and native-control feedback without rollback; an exact software-cursor reverse toggle may share an otherwise valid frame. |
 | max_panes_test.py | UI, sessions | Pane sixteen is usable and pane seventeen receives the documented refusal. |
 | maximize_min_viewport_test.py | UI, sessions | Normal maximize follows the logical desktop rather than a smaller viewer. |
 | mouse_focus_test.py | input, UI | Mouse menu activation and exclusive pane focus work under the documented terminal chain. |
+| mouse_backend_test.py | input, lifecycle | The mouse driver is installed before FreeVision without a dependency cycle, real consoles use `KDGETMODE`, GPM is probed nonblockingly and wakes the event loop by descriptor, and PTY startup never waits for GPM. |
 | mouse_test.py | input, UI | Xterm mouse events move and resize windows correctly. |
 | mouseforward_test.py | input, protocol | Mouse events reach a pane application only while it has requested them. |
 | mousemode_test.py | input, cleanup | Disabling any-motion tracking restores ordinary host mouse reporting. |
 | multiclient_close_test.py | sessions, lifecycle | Exit and detach have one unambiguous shared-session lifetime. |
 | multiclient_focus_test.py | sessions, input | Focus is shared while every attached client may write without a layout lock. |
 | multiclient_input_burst_test.py | input, sessions | Concurrent attached clients can write to the shared focused pane without loss. |
-| multiclient_intensive_test.py | sessions, lifecycle | Shared focus/layout/fullscreen survive intensive attachment and detachment churn. |
+| multiclient_intensive_test.py | sessions, lifecycle | Shared focus/layout/fullscreen survive intensive attachment and detachment churn; client-local membership toasts are isolated from the shared-pane convergence oracle. |
 | multiclient_minimize_test.py | UI, sessions | Minimized panes keep stable shared icon slots and focus in every viewer. |
 | multiclient_test.py | sessions, protocol | Versioned attach, legacy exclusion, broadcast, geometry, laggard eviction, and shutdown remain compatible. |
 | multisession_test.py | sessions, CLI | Named sessions, picker, attach, and listing retain their public behavior. |
@@ -86,7 +87,7 @@ enforces the mapping and the required coverage areas.
 | resize_keep_test.py | rendering, UI | Shrinking uses available blank rows before scrolling content away. |
 | restore_focus_test.py | UI, sessions | Minimize and restore preserve real shared focus. |
 | restore_test.py | sessions, configuration | Saved sessions restore across independent runs. |
-| root_output_ui_stress_test.py | performance, lifecycle | Concurrent recursive pane output remains interactive during drag, maximize/restore, pane resize, and host resize, with exact crash and heap evidence on failure. |
+| root_output_ui_stress_test.py | performance, lifecycle | Per-pane recursive output and positive history counters remain interactive during drag, maximize/restore, pane resize, and host resize; session shutdown supersedes obsolete output backlog and every failure preserves exact crash, stack, and heap evidence. |
 | scrollback_test.py | input, UI | History remains reachable by wheel, keys, and scrollbar. |
 | screen_ascii_fastpath_test.py | performance, rendering | Printable ASCII parsing preserves wrap, rendition, UTF-8 adjacency, and screen state without per-character managed allocation. |
 | session_startup_atomic_test.py | lifecycle, cleanup | Fault-injected detached startup is bounded and ownership-safe. |
@@ -98,7 +99,7 @@ enforces the mapping and the required coverage areas.
 | ssh_release_boundary_test.py | SSH, cleanup | The installed administration binary cannot enable test-only hooks. |
 | ssh_server_config_test.py | SSH, configuration | Dedicated OpenSSH administration remains isolated, strict, and idempotent. |
 | ssh_service_uninstall_test.py | SSH, lifecycle | SSH service removal is exact, transactional, and packaging-safe. |
-| ssh_transport_test.py | SSH, protocol | Real OpenSSH transport integration works without mutating the host service. |
+| ssh_transport_test.py | SSH, protocol | Real OpenSSH transport integration and bounded forced-command rejection work without mutating the host service, with exact process diagnostics retained on timeout. |
 | stlib_crash_audit_test.py | foundation, cleanup | A dead daemon remains crash-auditable without granting authority over a reused PID. |
 | stlib_reaping_test.py | foundation, cleanup | Reaped, reaped-elsewhere, vanished, stale-identity, and leaked outcomes stay distinct and safe. |
 | stlib_transition_capture_test.py | foundation, rendering | The transition oracle never merges a truncated synchronized-output frame. |

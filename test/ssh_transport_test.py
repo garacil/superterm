@@ -702,6 +702,33 @@ def run_rejected(args, listener_pid, listener_identity, descendant_claims,
                 if time.monotonic() < deadline:
                     continue
                 timed_out = True
+                # Keep a timeout actionable without widening cleanup
+                # authority. Reading the exact listener tree and procfs is
+                # diagnostic only; unsupported platforms simply omit it.
+                rows = process_table()
+                for child_pid in sorted(exact_listener_descendants(
+                        listener_pid, rows)):
+                    command = rows[child_pid][3]
+                    if '--ssh-entry' not in command:
+                        continue
+                    environment = []
+                    try:
+                        with open(f'/proc/{child_pid}/environ', 'rb') as env:
+                            environment = [
+                                item.decode('utf-8', 'replace')
+                                for item in env.read().split(b'\0')
+                                if item.startswith((b'SSH_', b'TERM='))]
+                    except OSError:
+                        pass
+                    try:
+                        with open(f'/proc/{child_pid}/wchan',
+                                  encoding='ascii') as wait_file:
+                            wait_channel = wait_file.read().strip()
+                    except OSError:
+                        wait_channel = ''
+                    print('  timed-out forced-command process: '
+                          f'pid={child_pid} command={command!r} '
+                          f'wchan={wait_channel!r} env={environment!r}')
                 proc.terminate()
                 try:
                     stdout, stderr = proc.communicate(timeout=1.0)
@@ -1038,6 +1065,13 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         denied_exec, exec_unchanged, exec_timeout = run_rejected(
             base_ssh_args() + ['-tt', '127.0.0.1', 'uname'], sshd_proc.pid,
             listener_identity, descendant_claims)
+        if (exec_timeout or denied_exec.returncode == 0 or
+                not exec_unchanged):
+            print('  PTY remote exec diagnostic: '
+                  f'rc={denied_exec.returncode} timeout={exec_timeout} '
+                  f'attached_unchanged={exec_unchanged} '
+                  f'stdout={denied_exec.stdout!r} '
+                  f'stderr={denied_exec.stderr!r}')
         check('PTY remote exec rejected without attach',
               not exec_timeout and denied_exec.returncode != 0 and
               exec_unchanged)

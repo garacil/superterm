@@ -196,6 +196,37 @@ pins one CPU when supported. A performance change is rejected if a repeated
 run degrades p50, p95, desktop-area scaling, emitted bytes, or frame count
 without a required visible effect.
 
+The deterministic high-output UI regression uses a generated tree, the
+heap-enabled binary, and two independently loaded panes:
+
+```sh
+make debug-heap
+SUPERTERM_TEST_BIN=./bin/superterm-debug-heap \
+  python3 test/root_output_ui_stress_test.py
+```
+
+It verifies per-pane output counters before manipulating the desktop, then
+checks drag, pane resize, maximize/restore, tiling, host resize, daemon
+survival, clean client reaping, HeapTrc output, and owned crash artifacts. For
+the deliberately unbounded live diagnostic requested by the project owner,
+run the same command with `SUPERTERM_ROOT_OUTPUT_EXACT=1`; that mode executes
+`cd /` and `ls -R` in every pane and is a soak rather than a `make test` gate.
+
+The client reactor and mouse-backend boundaries also have focused gates:
+
+```sh
+python3 test/client_output_reactor_test.py
+python3 test/mouse_backend_test.py
+python3 test/layout_transition_test.py
+python3 test/client_notifications_test.py
+```
+
+The mouse-backend suite proves that PTYs do not enter the blocking FPC GPM
+path, checks the kernel-console and descriptor-wake wiring, and runs bounded
+startup probes with both `TERM=tmux-256color` and `TERM=linux`. A real GPM
+event still requires a GNU/Linux virtual console with a running GPM service;
+that hardware-specific observation cannot be inferred from a PTY run.
+
 Each suite has an independent 15-minute deadline. A timed-out suite and its
 process group are terminated, the remaining suites still run, and the final
 summary lists every failure. Override the per-suite deadline when required:

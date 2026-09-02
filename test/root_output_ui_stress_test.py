@@ -123,6 +123,21 @@ def pane_rows(session):
     return result, rows
 
 
+def pane_history(row):
+    """Return the HIST counter from one stable ``superterm list`` row."""
+    fields = row.split()
+    for index, field in enumerate(fields[:-1]):
+        parts = field.split('x', 1)
+        if (len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and
+                fields[index + 1].isdigit()):
+            return int(fields[index + 1])
+    return -1
+
+
+def load_marker(pane):
+    return os.path.join(HOME, f'.root-output-load-{pane}')
+
+
 def attached_clients(session):
     """Return the daemon's authoritative viewer count for this session."""
     result = run_cli(['list'], HOME, env={**DEBUG_ENV, 'LANG': 'C'})
@@ -228,11 +243,13 @@ def restart_finished_listings(session):
     if result.returncode != 0 or len(rows) != PANES:
         return False
     for pane, row in enumerate(rows, 1):
-        if 'ls -R' in row:
+        if ((EXACT and 'ls -R' in row) or
+                ((not EXACT) and os.path.exists(load_marker(pane)))):
             continue
         action(f'restart recursive listing pane={pane}')
         run_cli(['send', f'{session}:{pane}', 'cd /'], HOME, env=DEBUG_ENV)
-        command = ('ls -R' if EXACT else bounded_listing_command(bounded_root))
+        command = ('ls -R' if EXACT else
+                   bounded_listing_command(bounded_root, pane))
         if run_cli(['send', f'{session}:{pane}', command], HOME,
                    env=DEBUG_ENV).returncode != 0:
             return False
@@ -253,7 +270,7 @@ def bounded_tree():
     return root
 
 
-def bounded_listing_command(root):
+def bounded_listing_command(root, pane):
     """Return a finite flood large enough to overlap the UI exercise.
 
     An infinite producer necessarily outruns every bounded queue on a slow
@@ -262,8 +279,11 @@ def bounded_listing_command(root):
     if one has already completed.
     """
     quoted = shlex.quote(root)
-    return ('_st_i=0; while [ "$_st_i" -lt 32 ]; do '
-            f'ls -R {quoted}; _st_i=$((_st_i+1)); sleep 0.02; done')
+    marker = shlex.quote(load_marker(pane))
+    return (f'rm -f {marker}; touch {marker}; '
+            '_st_i=0; while [ "$_st_i" -lt 32 ]; do '
+            f'ls -R {quoted}; _st_i=$((_st_i+1)); sleep 0.02; done; '
+            f'rm -f {marker}')
 
 
 client = None
@@ -317,21 +337,34 @@ try:
     for pane in range(1, PANES + 1):
         # In bounded mode retain the exact two-command sequence, then list a
         # controlled tree repeatedly so make test remains deterministic.
-        command = ('ls -R' if EXACT else bounded_listing_command(target))
+        command = ('ls -R' if EXACT else bounded_listing_command(target, pane))
         listed = run_cli(['send', f'{session}:{pane}', command], HOME,
                          env=DEBUG_ENV)
         check(f'pane {pane} recursive listing accepted',
               listed.returncode == 0)
     action('all recursive listings submitted')
-    time.sleep(0.20)
-    result, rows = pane_rows(session)
+    deadline = time.monotonic() + 2.0
+    rows = []
+    while time.monotonic() < deadline:
+        result, rows = pane_rows(session)
+        histories = [pane_history(row) for row in rows]
+        loads_started = (sum('ls -R' in row for row in rows) == PANES
+                         if EXACT else
+                         all(os.path.exists(load_marker(pane))
+                             for pane in range(1, PANES + 1)))
+        if (result.returncode == 0 and len(rows) == PANES and loads_started and
+                all(history > 0 for history in histories)):
+            break
+        time.sleep(0.02)
     check('all panes remain listed after output begins',
           result.returncode == 0 and len(rows) == PANES)
-    # The list command exposes the current foreground command. Requiring at
-    # least one live ls per pane proves this is output stress, not a command
-    # that failed before the geometry loop began.
+    action(f'initial pane rows={rows!r}')
+    # A bounded loop alternates between ls and a short sleep, leaving a tiny
+    # fork/exec interval where COMMAND is empty. Per-pane lifetime markers and
+    # positive HIST counters prove the workload without sampling that race.
     check('recursive listings are live in every pane',
-          sum('ls -R' in row for row in rows) == PANES)
+          loads_started and len(rows) == PANES and
+          all(pane_history(row) > 0 for row in rows))
 
     pump = threading.Thread(target=pump_client,
                             args=(client, stop, totals), daemon=True)
@@ -402,6 +435,11 @@ finally:
                     env=DEBUG_ENV)
         result = run_cli(['kill', session], HOME, env=DEBUG_ENV)
         action(f'cleanup kill rc={result.returncode}')
+    for pane in range(1, PANES + 1):
+        try:
+            os.unlink(load_marker(pane))
+        except FileNotFoundError:
+            pass
     if client is not None:
         if client.alive():
             # Drain without pyte and acknowledge when the ordered lifecycle

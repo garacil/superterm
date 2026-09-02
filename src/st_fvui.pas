@@ -7757,6 +7757,12 @@ var
 begin
   if PassthroughActive or (Desktop = nil) then
     Exit;
+  // FreeVision may have redrawn a native title control immediately before
+  // entering this cosmetic sequence (the zoom button paints down and up
+  // around cmZoom).  Preserve that completed feedback as its own physical
+  // state instead of allowing the first outline to absorb it while an older
+  // frame is still draining through the asynchronous output reactor.
+  PresentOrderedVideoFrame;
   P := 0;
   if AWindow <> nil then
   begin
@@ -7776,11 +7782,11 @@ begin
     y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
     TransientOutlineSet(P, x1, y1, x2, y2, FrameAttr);
     SendOutlineStep(PREVIEW_OP_OUTLINE_SHOW);
-    UpdateScreen(False);
+    PresentOrderedVideoFrame;
     Sleep(FRAME_MS);
     TransientOutlineClear(P);
     SendOutlineStep(PREVIEW_OP_OUTLINE_HIDE);
-    UpdateScreen(False);
+    PresentOrderedVideoFrame;
   end;
 end;
 
@@ -8183,6 +8189,12 @@ begin
             AFullRedraw := False;
             Result := True;
           end;
+          // The authoritative layout or lease paint precedes this tail in
+          // socket FIFO order.  Complete that base presentation before the
+          // first cosmetic ring, even when the physical output reactor is
+          // still draining an older frame; otherwise the ring's SHOW can
+          // silently carry unrelated cells which its HIDE cannot undo.
+          PresentOrderedVideoFrame;
           RemotePreviewTailGesture[APane] := 0;
           RemotePreviewTailBase[APane] := 0;
         end;
@@ -8195,7 +8207,7 @@ begin
         TransientOutlineSet(APane, Desktop^.Origin.X + R.A.X,
           Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
           Desktop^.Origin.Y + R.B.Y - 1, FrameAttr);
-        UpdateScreen(False);
+        PresentOrderedVideoFrame;
       end;
     PREVIEW_OP_OUTLINE_HIDE:
       if RemotePreviewOverlayGesture[APane] = Preview.GestureId then
@@ -8203,7 +8215,7 @@ begin
         TransientOutlineClear(APane);
         RemotePreviewOverlayOn[APane] := False;
         RemotePreviewOverlayGesture[APane] := 0;
-        UpdateScreen(False);
+        PresentOrderedVideoFrame;
       end;
   end;
 end;
@@ -10331,6 +10343,10 @@ var
   begin
     Count := 0;
     AddFd(StdInputHandle, POLLIN);
+    // On a GNU/Linux virtual console GPM is a separate Unix socket, not tty
+    // input. Include its real descriptor so the event-driven client wakes on
+    // mouse input instead of noticing it only when an unrelated timer fires.
+    AddFd(MouseInputWaitHandle, POLLIN);
     Fd := VideoOutputWaitHandle;
     AddFd(Fd, POLLIN);
     if RemoteMode and (Remote <> nil) then

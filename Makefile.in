@@ -47,7 +47,7 @@ SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.pas) \
   $(wildcard $(PROJECT_DIR)/vendor/fv322/*.inc)
 
-TESTS := drive_test.py large_screen_test.py mouse_test.py \
+TESTS := drive_test.py large_screen_test.py mouse_backend_test.py mouse_test.py \
   mouse_focus_test.py focus_color_test.py palette_resize_transition_test.py \
   class_creation_transition_test.py \
   restore_test.py sysconfig_test.py \

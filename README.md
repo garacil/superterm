@@ -278,6 +278,22 @@ superterm listar prod                           # the same CLI, en español
   per-pane reactors can parse independent PTY streams on multiple CPU cores;
   `multithread=1` preserves the single reactor, while `auto` or a total thread
   limit enables dynamic workers on GNU/Linux and macOS.
+- The interactive UI waits on keyboard, session-socket or PTY activity and
+  physical-output progress. It wakes for real work immediately; its bounded
+  timeout exists only to service UI and terminal timers, not as a fixed sleep
+  before every event.
+- A dedicated client output reactor owns a separately opened, nonblocking
+  `/dev/tty` descriptor and an 8 MiB bounded queue. Complete ANSI frames remain
+  indivisible, superseded framebuffer states coalesce, and a slow terminal
+  cannot prevent keyboard, mouse, menu, detach, or session-lifecycle handling.
+- Detached-daemon creation pauses that reactor across `fork` and recreates it
+  only in the interactive parent, so no child inherits a thread object without
+  its POSIX thread. Intentional zoom-animation frames retain their exact order;
+  ordinary intermediate frames still collapse to the latest visible state.
+- On a GNU/Linux virtual console, mouse availability is proved with the kernel
+  console ioctl and GPM wakes the UI through its connected descriptor. A PTY
+  never attempts GPM merely because `TERM` says `linux`; xterm/SGR mouse input
+  continues to arrive through the terminal descriptor.
 - GNU/Linux and macOS share the UI, VT engine, layout, configuration, session
   protocol and control CLI. Platform-specific PTY/process and service-manager
   adapters are selected at compile time.
@@ -584,6 +600,7 @@ Individual tests are also runnable directly:
 ```sh
 python3 test/drive_test.py
 python3 test/large_screen_test.py
+python3 test/mouse_backend_test.py
 python3 test/mouse_test.py
 SUPERTERM_TEST_TERM=tmux-256color python3 test/mouse_test.py
 python3 test/mouse_focus_test.py
@@ -910,7 +927,8 @@ src/
 ├── st_config.pas   User settings, prefix key, palette, and paths.
 ├── st_templates.pas Legacy INI and SQLite template loading.
 ├── st_kbd.pas      Custom keyboard driver (ESC timeout, CSI/SS3, mouse).
-├── st_video.pas    Wide video output, CP437 glyph mapping, cursor restore.
+├── st_mouse.pas    PTY/xterm and GNU/Linux virtual-console mouse selection.
+├── st_video.pas    Wide renderer, nonblocking output reactor, cursor restore.
 ├── st_keys.pas     FreeVision key codes to terminal escape sequences.
 └── st_debug.pas    Optional runtime logging.
 ```
