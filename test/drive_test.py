@@ -4,7 +4,7 @@ import os, pty, time, select, sys, fcntl, termios, struct
 import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons, wait_pid
+from stlib import close_all_daemons, feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
@@ -42,10 +42,7 @@ class Session:
                     d = os.read(self.fd, 65536)
                 except OSError:
                     return
-                try:
-                    self.stream.feed(d)
-                except Exception:
-                    pass
+                feed_pyte(self.stream, d, 'drive')
 
     def send(self, s, t=1.0):
         os.write(self.fd, s)

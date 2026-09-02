@@ -14,12 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import check
-
-
-FRAME_CTL_LIST = 11
-FRAME_CTL_DATA = 42
-FRAME_CTL_END = 43
+from stlib import FRAME_CTL_DATA, FRAME_CTL_END, FRAME_CTL_LIST, check
 HOST_W, HOST_H = 132, 55       # deliberately not the canonical 120x52 IDE
 DESKTOP = (120, 50)
 PTY_SIZE = (80, 25)

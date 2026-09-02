@@ -1,5 +1,133 @@
 # Changelog
 
+## 5.2.2 - 2026-09
+
+### One architecture, chosen by measurement
+
+This release closes a deliberate competition. Four branches were opened from
+the same commit and each implemented client responsiveness and the surrounding
+architecture differently: a threaded client which moved keyboard, mouse and
+output onto dedicated threads; a daemon-first thin client with per-client
+mirrors, an isolated compositor and a transport-neutral attach contract; the
+event-driven single-reactor line kept here; and the integration branch which
+carried the winner. They were judged on the same frozen behaviour contracts and
+the same interleaved performance harness rather than on preference, and the
+line with the best measured results was the one merged.
+
+The intent is normalisation: from 5.2.2 onward there is one architecture to
+extend instead of four candidate designs, and the discarded branches remain
+readable history rather than parallel futures. The selected work is
+`e581f9d`, `b27f4a1`, `947982b` and `b609745`, promoted through `newfeatures`
+and merged into `main` as `e1181c0`, on top of `dbcc21f`.
+
+### Reproducible engineering and performance baseline
+
+The build now treats every visible Free Pascal warning, note, and hint as an
+error in release, debug, and test-runtime modes. The only suppressed compiler
+messages are the two FPC 3.2.2 hints that announce reading its global
+configuration file.
+
+The regression harness now enforces one exact suite inventory, maps every suite
+to a frozen behavior contract, reports uncatalogued pyte parser defects, records
+distinct child-reaping outcomes, and checks the public wire constants against
+the server declarations. A primary-reference catalogue records provenance,
+redistribution policy, and checksums for locally stored material.
+
+A permanent interleaved performance harness records raw latency, settling time,
+emitted bytes, changed cells, and frame count for keyboard, mouse, UI, resize,
+bulk-output, reconnect, and slow-client workloads at 100x30, 200x50, and
+400x100. Performance regressions are rejection conditions.
+
+The first measured parser optimization removes the managed-string allocation
+previously performed for every printable ASCII byte. A focused 16 MiB parser
+probe improved from a 874 ms median to 195 ms on the development host while
+preserving pending wrap, disabled autowrap, indexed/direct-RGB rendition, wide
+UTF-8, and combining-character behaviour. Non-ASCII input continues through
+the existing general path.
+
+The detached-server worker-result drain now has a per-reactor-pass budget, so
+continuously readable pane PTYs cannot prevent socket, control, output, or
+lifecycle work from receiving another readiness pass. A write-side client
+disconnect is retained until the UI receives its single loss event, including
+when the socket was closed outside the ordinary poll path.
+
+### Event-driven client presentation under terminal backpressure
+
+The interactive client no longer pays Free Vision's fixed 10 ms idle sleep.
+Its UI waits on keyboard input, the session socket or local PTYs, and output
+completion, while the same short timeout remains only as a ceiling for cursor,
+layout, title, and terminal-size timers. Real work therefore wakes the client
+immediately instead of waiting for a scheduler tick.
+
+Runtime terminal output now belongs to a dedicated event-driven reactor. It
+opens `/dev/tty` independently in nonblocking mode, drains an 8 MiB bounded
+queue, preserves every admitted ANSI transaction, and reports only the empty
+edge to the UI. If a complete frame is already being written, intermediate
+replaceable presentations coalesce into the latest framebuffer state; pane
+input, mouse handling, menus, and detach remain responsive even when the host
+terminal temporarily stops reading. Shutdown waits at most 500 ms for the
+physical queue and never converts terminal backpressure into an unbounded
+client hang.
+
+The fork which creates a detached daemon now quiesces this reactor first and
+restarts it only in the parent. The child can no longer inherit a Free Pascal
+`TThread` object whose POSIX thread vanished at `fork`, and the parent
+invalidates its terminal baseline if bounded draining had to abandon a
+superseded frame. Optional zoom transitions use a narrow ordered-frame lane:
+their eight show/hide pairs and the native zoom-button feedback remain exact,
+while ordinary UI and pane frames continue to coalesce.
+
+GNU/Linux virtual-console mouse startup now uses the kernel `KDGETMODE` ioctl
+instead of guessing from `TERM`. The GPM availability probe is nonblocking,
+the real connected GPM descriptor wakes the same client event loop, and PTYs
+with names such as `linux` or an unknown forwarded value never enter the RTL's
+blocking GPM connection during Free Vision initialization. Terminal-emulator
+mouse reporting continues through stdin unchanged.
+
+The recursive-output stress harness now runs independent finite `ls -R`
+workloads in multiple panes while exercising mouse drag, pane resize,
+maximize/restore, tiling, and host resize under the heap-enabled build; an
+explicit soak mode runs unbounded `cd /; ls -R`. It records exact process
+stacks and owned crash artifacts on failure. A closed session now prioritizes
+its explicit shutdown notice, or one loss event, over obsolete pane-output
+backlog, so a flooded client leaves remote mode and is reaped cleanly.
+
+### Profile commands survive an interactive interrupt
+
+A local or free-command pane recreated from a profile now keeps its supervising
+shell alive while the configured command runs. The command restores normal
+SIGINT and SIGQUIT handling, so Ctrl-C or Ctrl-\ still stops it; only the
+supervisor ignores that same group-directed signal while waiting. It then
+restores the signal dispositions and becomes the configured interactive shell.
+An interrupted command such as `cat /dev/random` therefore returns to a usable
+prompt instead of turning the pane into an exited window. HUP and TERM
+lifecycle handling are unchanged.
+
+### Native Windows follows 5.2.2
+
+The `windows-support` branch carries 5.2.2 to the native Win64 target. The new
+event-driven client output architecture is POSIX: its bounded queue is drained
+by a poll reactor on a private non-blocking `/dev/tty`. Windows keeps the
+established synchronous console writer, which is the same path a Unix client
+takes when that descriptor is unavailable, so the two platforms share one set
+of producers rather than two designs.
+
+The idle loop is no longer a fixed sleep. It now waits on the console input
+handle for the same bounded interval the POSIX client waits on its descriptor
+set, and skips the wait entirely whenever a pane has just produced output, so a
+keystroke is acted on when it arrives instead of at the end of a timer.
+
+Resizing or maximizing the console window no longer breaks the interface. The
+RTL's Win32 video driver only accepts a fixed table of legacy console modes and
+silently refused every other size, leaving the video buffer at its previous
+geometry while the interface laid itself out at the new one; where a size did
+match, it commanded the console back to that geometry. SuperTerm now owns that
+driver hook on Windows: it accepts the size the console already has, resizes the
+buffer, and commands the console nothing.
+
+The whole Win64 build also meets the release's strict diagnostics contract:
+every warning, note and hint is fatal there too.
+
 ## 4.2.1 - 2026-08
 
 ### Native Windows is now a first-class documented target

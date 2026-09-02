@@ -102,8 +102,10 @@ uses
 const
   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = $00020016;
   EXTENDED_STARTUPINFO_PRESENT        = $00080000;
-  PSEUDOCONSOLE_INHERIT_CURSOR        = 1;
   STILL_ACTIVE_                       = $103;
+  { consoleapi.h also defines PSEUDOCONSOLE_INHERIT_CURSOR (1) for
+    CreatePseudoConsole's dwFlags. SuperTerm always starts a pane with a fresh
+    cursor, so the flag is not declared here until something needs it. }
 
   // JOBOBJECT_EXTENDED_LIMIT_INFORMATION / kill-on-close
   JobObjectExtendedLimitInformation   = 9;
@@ -115,7 +117,6 @@ type
     StartupInfo: TStartupInfoW;
     lpAttributeList: pointer;
   end;
-  PSTARTUPINFOEXW = ^STARTUPINFOEXW;
 
   // Minimal shapes of the job-object limit structs we set.
   IO_COUNTERS = record
@@ -336,6 +337,8 @@ var
   EnvPtr: PWideChar;
   Ok: BOOL;
   Jeli: JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+  HpcValue: HPCON;
+  HpcAsPointer: Pointer absolute HpcValue;
 begin
   Result := False;
   if not IsConPtyAvailable then
@@ -362,8 +365,12 @@ begin
     Close;
     Exit;
   end;
+  // The attribute value IS the pseudo-console handle, passed where the API
+  // expects a void*. Alias it rather than casting an ordinal to a pointer,
+  // which is not portable and is a fatal hint in this build.
+  HpcValue := FHPC;
   if not UpdateProcThreadAttribute(FAttrList, 0,
-       PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, Pointer(FHPC), SizeOf(HPCON),
+       PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, HpcAsPointer, SizeOf(HPCON),
        nil, nil) then
   begin
     Close;
@@ -448,7 +455,8 @@ begin
       Exit;
   end;
   Got := 0;
-  if not ReadFile(FOutRead, Buf[0], Length(Buf), Got, nil) then
+  // Address-of, not a read: Buf is an out parameter that ReadFile fills.
+  if not ReadFile(FOutRead, PByte(@Buf[0])^, Length(Buf), Got, nil) then
   begin
     FAlive := False;
     Exit;

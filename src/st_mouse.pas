@@ -15,8 +15,8 @@
   at startup forever, and nothing in the program can do anything about it
   because the program has not started yet.
 
-  On a real virtual console, the opposite: TERM is 'linux', which is not on
-  the list either, so the RTL goes to gpm -- but FreeVision only initialises
+  On a real virtual console, the opposite: TERM is usually 'linux', which is
+  not on the list either, so the RTL goes to gpm -- but FreeVision only initialises
   the mouse when the RTL reports one, and the report is 0 whenever gpm is
   absent, leaving the console without a mouse it could have had.
 
@@ -36,9 +36,22 @@ unit st_mouse;
 
 interface
 
-// True on a Linux virtual console (TERM=linux), where the only possible
-// mouse is gpm.
+type
+  TMouseOutputWriter = procedure(const S: AnsiString);
+
+// True only when stdin is an actual GNU/Linux virtual console, where the
+// only possible mouse is GPM. TERM alone is not sufficient: it can be stale,
+// overridden, or forwarded through a pseudo-terminal.
 function OnLinuxConsole: boolean;
+// Descriptor which becomes readable for a GPM event on a virtual console.
+// Terminal-emulator mouse reports travel through stdin and return -1 here.
+function MouseInputWaitHandle: LongInt;
+
+// Install the application's nonblocking terminal writer after unit
+// initialization and before FreeVision starts the mouse driver. Keeping this
+// callback out of the uses graph is essential: a st_mouse -> st_video ->
+// Drivers cycle would let Drivers probe the blocking RTL driver first.
+procedure InstallMouseOutputWriter(AWriter: TMouseOutputWriter);
 
 // The exact set of modes this driver wants the host terminal in, and the way
 // back. One place decides, so anything that hands the terminal to a pane and
@@ -52,13 +65,34 @@ procedure HostMouseOff;
 implementation
 
 uses
-  SysUtils, Mouse {$IFDEF UNIX}, BaseUnix, Sockets{$ENDIF};
+  SysUtils, Mouse
+  {$IFDEF UNIX}, BaseUnix, Sockets{$ENDIF}
+  {$IFDEF LINUX}, Linux{$ENDIF};
 
 var
   {$IFDEF UNIX}
   SysDriver: TMouseDriver;   // the RTL's, kept for the Linux console/gpm
   {$ENDIF}
   OurDriver: TMouseDriver;
+  {$IFDEF UNIX}
+  GpmWaitFd: cint = -1;
+  {$ENDIF}
+  MouseOutputWriter: TMouseOutputWriter = nil;
+
+procedure InstallMouseOutputWriter(AWriter: TMouseOutputWriter);
+begin
+  MouseOutputWriter := AWriter;
+end;
+
+// Marks a parameter of a fixed driver signature as intentionally unused, the
+// same diagnostic-free helper the vendored Free Vision units use.
+procedure Unused(const A); begin if @A = nil then; end;
+
+procedure WriteMouseControl(const S: AnsiString);
+begin
+  if Assigned(MouseOutputWriter) then
+    MouseOutputWriter(S);
+end;
 
 {$IFDEF WINDOWS}
 // Windows has no gpm and no Linux virtual console. The console (Windows
@@ -71,16 +105,26 @@ begin
   Result := False;
 end;
 
+// The console mouse arrives as VT reports inside the ordinary input stream
+// st_kbd already waits on, so there is no second descriptor to add to a wait
+// set. This is the answer a Unix terminal emulator gives too; only a GNU/Linux
+// virtual console with gpm has a separate one.
+function MouseInputWaitHandle: LongInt;
+begin
+  Result := -1;
+end;
+
 procedure HostMouseOn;
 begin
-  Write(#27'[?1000h'#27'[?1002h'#27'[?1006h');
-  Flush(Output);
+  // Through the installed writer, never the RTL text file: st_video owns the
+  // single physical output path, and a buffered Write(Output) here could
+  // reach the console out of order with the frames around it.
+  WriteMouseControl(#27'[?1000h'#27'[?1002h'#27'[?1006h');
 end;
 
 procedure HostMouseOff;
 begin
-  Write(#27'[?1006l'#27'[?1002l'#27'[?1000l');
-  Flush(Output);
+  WriteMouseControl(#27'[?1006l'#27'[?1002l'#27'[?1000l');
 end;
 
 function OurDetectMouse: byte;
@@ -121,8 +165,12 @@ begin
   Result := 0;
 end;
 
+// The driver record needs every slot filled (see the initialization comment),
+// and a queue-only driver has nothing to do with a requested position.
 procedure OurSetMouseXY(x, y: word);
 begin
+  Unused(x);                                         { Fixed signature }
+  Unused(y);                                         { Fixed signature }
 end;
 
 procedure OurGetMouseEvent(var MouseEvent: TMouseEvent);
@@ -138,16 +186,54 @@ end;
 
 procedure OurPutMouseEvent(const MouseEvent: TMouseEvent);
 begin
+  Unused(MouseEvent);                                { Fixed signature }
 end;
 
 {$ELSE}
 
 function OnLinuxConsole: boolean;
+{$IFDEF LINUX}
 var
-  T: string;
+  ConsoleMode: cint;
+{$ENDIF}
 begin
-  T := LowerCase(GetEnvironmentVariable('TERM'));
-  Result := (T = 'linux') or (Copy(T, 1, 6) = 'linux-');
+  {$IFDEF LINUX}
+  // KDGETMODE is accepted by the kernel console driver and rejected with
+  // ENOTTY by Unix PTYs. This is the same installed FPC/Linux console ioctl
+  // contract used by the RTL, without guessing from a terminal name.
+  ConsoleMode := -1;
+  Result := FpIOCtl(StdInputHandle, KDGETMODE, @ConsoleMode) = 0;
+  {$ELSE}
+  Result := False;
+  {$ENDIF}
+end;
+
+function FindGpmWaitHandle: cint;
+var
+  Fd: cint;
+  Addr: sockaddr_un;
+  AddrLen: TSockLen;
+begin
+  Result := -1;
+  if not OnLinuxConsole then
+    Exit;
+  // FPC 3.2.2 keeps mouse.pp's gpm_fs private. Identify that one connected
+  // descriptor once, immediately after the RTL opens it, by its Unix peer.
+  // No descriptor is opened, duplicated or owned here.
+  for Fd := 0 to 1023 do
+  begin
+    Addr := Default(sockaddr_un);
+    AddrLen := SizeOf(Addr);
+    if (fpGetPeerName(Fd, psockaddr(@Addr), @AddrLen) = 0) and
+       (Addr.sun_family = AF_UNIX) and
+       (StrPas(PChar(@Addr.sun_path[0])) = '/dev/gpmctl') then
+      Exit(Fd);
+  end;
+end;
+
+function MouseInputWaitHandle: LongInt;
+begin
+  Result := GpmWaitFd;
 end;
 
 // Can gpm take a connection right now? Asked without blocking: a listening
@@ -189,7 +275,11 @@ begin
   if OnLinuxConsole then
   begin
     if GpmAccepting and Assigned(SysDriver.DetectMouse) then
-      Result := SysDriver.DetectMouse()
+    begin
+      Result := SysDriver.DetectMouse();
+      if Result <> 0 then
+        GpmWaitFd := FindGpmWaitHandle;
+    end
     else
       Result := 0;
   end
@@ -205,6 +295,7 @@ begin
   begin
     if Assigned(SysDriver.InitDriver) then
       SysDriver.InitDriver();
+    GpmWaitFd := FindGpmWaitHandle;
     Exit;
   end;
   HostMouseOn;
@@ -218,16 +309,14 @@ begin
   // 223-column limit). Any-motion tracking (?1003) is not asked for: the
   // RTL queue holds 16 events and FreeVision drains one per loop, so a
   // sweep of the pointer under ?1003 overflows it for nothing.
-  Write(#27'[?1000h'#27'[?1002h'#27'[?1006h');
-  Flush(Output);
+  WriteMouseControl(#27'[?1000h'#27'[?1002h'#27'[?1006h');
 end;
 
 procedure HostMouseOff;
 begin
   if OnLinuxConsole then
     Exit;
-  Write(#27'[?1006l'#27'[?1002l'#27'[?1000l');
-  Flush(Output);
+  WriteMouseControl(#27'[?1006l'#27'[?1002l'#27'[?1000l');
 end;
 
 procedure OurDoneDriver;
@@ -236,6 +325,7 @@ begin
   begin
     if Assigned(SysDriver.DoneDriver) then
       SysDriver.DoneDriver();
+    GpmWaitFd := -1;
     Exit;
   end;
   HostMouseOff;

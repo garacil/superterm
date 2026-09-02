@@ -166,7 +166,7 @@ New-Item -ItemType Directory -Force dist | Out-Null
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' packaging\windows\superterm.iss
 ```
 
-The result is `dist\SuperTerm-4.2.1-windows-x64-setup.exe`; it installs under
+The result is `dist\SuperTerm-5.2.2-windows-x64-setup.exe`; it installs under
 `%LOCALAPPDATA%\Programs\SuperTerm` and includes the executable, documentation,
 configuration example, and desktop backgrounds.
 
@@ -191,7 +191,7 @@ open terminal remains supported directly.
 
 The current checkout completes a clean FPC `-B` Win64 build and produces the
 native PE x86-64 executable `D:\sources\superterm\bin\superterm.exe`.
-The binary reports `superterm 4.2.1`.
+The binary reports `superterm 5.2.2`.
 
 The native dependency graph compiles 23 of the 26 `src/st_*.pas` units.
 `st_poll.pas` is the Unix daemon's `poll(2)` registry; `st_ssh_server.pas` and
@@ -298,6 +298,10 @@ also created and atomically saved `session.ini` there.
 - `TConPty.WriteInput` uses synchronous `WriteFile`. `TPty` bounds and chunks
   its pending input, but the UI can still block if a child stops draining its
   input pipe.
+- A window class post-connect command is dropped. `WizardCommand` delivers it
+  by piping it into the connection's standard input with `printf` and a
+  subshell; `cmd` and PowerShell provide neither, so the connection runs alone
+  and the post-connect command is silently discarded.
 - `OsRestrictFile` and `OsRestrictDir` are no-ops on Windows. Files inherit
   the user's AppData ACLs; SuperTerm does not yet apply an explicit private
   ACL. Saved configuration passwords are base64 encoded, not encrypted.

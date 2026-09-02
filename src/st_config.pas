@@ -1105,6 +1105,10 @@ end;
 
 {$IFDEF WINDOWS}
 initialization
+  // Preset before the RTL initializer takes it by reference: FPC's flow
+  // analysis does not recognise InitCriticalSection as the first write, and
+  // the project builds with every hint fatal.
+  WindowsConfigLockGuard := Default(TRTLCriticalSection);
   InitCriticalSection(WindowsConfigLockGuard);
 
 finalization

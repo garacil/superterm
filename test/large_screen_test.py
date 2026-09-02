@@ -150,12 +150,10 @@ class Session:
                     self.raw_tail.extend(data)
                     if len(self.raw_tail) > 65536:
                         del self.raw_tail[:-65536]
-                    self.stream.feed(data)
+                    stlib.feed_pyte(self.stream, data, 'large_screen')
                 except OSError:
                     self.poll_status(0.5)
                     return
-                except Exception:
-                    pass
 
     def send(self, data, seconds=0.8):
         os.write(self.fd, data)

@@ -5,12 +5,11 @@ import errno, os, pty, re, time, select, sys, fcntl, termios, struct, subprocess
 import pyte
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons, wait_pid
+from stlib import close_all_daemons, feed_pyte, fresh_home, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/st-restore'
-os.makedirs(HOME, exist_ok=True)
+HOME = fresh_home('restore')
 SESS = HOME + '/.superterm/session.ini'
 DEBUG_LOG = HOME + '/foreground-debug.log'
 W, H = 110, 35
@@ -44,10 +43,7 @@ class Session:
                     d = os.read(self.fd, 65536)
                 except OSError:
                     return
-                try:
-                    self.stream.feed(d)
-                except Exception:
-                    pass
+                feed_pyte(self.stream, d, 'restore')
     def send(self, s, t=1.0):
         os.write(self.fd, s)
         self.drain(t)

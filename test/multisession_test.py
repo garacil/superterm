@@ -64,10 +64,7 @@ class Client:
                 return
             if b'\033[6n' in d:
                 os.write(self.fd, b'\033[10;20R')
-            try:
-                self.stream.feed(d)
-            except Exception:
-                pass
+            stlib.feed_pyte(self.stream, d, 'multisession')
     def send(self, s, t=1.0):
         os.write(self.fd, s)
         self.drain(t)

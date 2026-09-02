@@ -638,7 +638,13 @@ VAR
 {<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>}
 { API Units }
   USES
+{$IFNDEF OS_WINDOWS}
+  { Only GetSystemEvent's non-Windows branch maps SysMsg events onto the
+    standard cmReceivedFocus/cmReleasedFocus/cmQuitApp/cmResizeApp commands.
+    SuperTerm's Windows branch returns evNothing there, so the unit would be
+    an unused dependency in a Win64 build. }
   FVConsts,
+{$ENDIF}
   Keyboard,Mouse,SysUtils;
 
 {***************************************************************************}
@@ -750,7 +756,9 @@ Function GetDosTicks:longint; { returns ticks at 18.2 Hz, just like DOS }
 {$ENDIF OS_UNIX}
 {$IFDEF OS_WINDOWS}
   begin
-     GetDosTicks:=GetTickCount div 55;
+     { GetTickCount is deprecated in favour of the 64-bit counter, which also
+       removes the 49.7-day wrap this DOS-tick approximation inherited. }
+     GetDosTicks:=LongInt(GetTickCount64 div 55);
   end;
 {$ENDIF OS_WINDOWS}
 {$IFDEF OS_WIN16}

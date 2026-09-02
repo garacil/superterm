@@ -21,7 +21,7 @@ BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
 W, H = 110, 35
 
 sys.path.insert(0, os.path.dirname(__file__))
-from stlib import close_all_daemons, wait_pid
+from stlib import close_all_daemons, feed_pyte, wait_pid
 
 close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
@@ -85,10 +85,7 @@ class Session:
                     data = os.read(self.fd, 65536)
                 except OSError:
                     return
-                try:
-                    self.stream.feed(data)
-                except Exception:
-                    pass
+                feed_pyte(self.stream, data, 'sqlite')
 
     def text(self):
         return '\n'.join(row.rstrip() for row in self.screen.display)

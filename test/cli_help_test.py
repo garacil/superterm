@@ -267,7 +267,7 @@ quickstart_contract = (
     'Required inputs',
     'Safety contract for an AI or automated operator',
     'Read-only preflight',
-    'sha256sum -c superterm_4.2.1_amd64.deb.sha256',
+    'sha256sum -c superterm_5.2.2_amd64.deb.sha256',
     'sudo apt-get install -y openssh-server',
     'sudo dnf install -y openssh-server',
     'sudo pacman -S --needed openssh',

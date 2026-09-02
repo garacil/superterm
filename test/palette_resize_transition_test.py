@@ -236,12 +236,9 @@ def replay_resized_output(raw_before, raw_after):
     """Return every physical presentation after OLD -> NEW host geometry."""
     screen = pyte.Screen(OLD_W, OLD_H)
     stream = pyte.ByteStream(screen)
-    parse_ok = True
-    try:
-        stream.feed(raw_before)
-        screen.resize(lines=NEW_H, columns=NEW_W)
-    except Exception:
-        parse_ok = False
+    parse_ok = stlib.feed_pyte(stream, raw_before, 'palette replay')
+    parse_ok = stlib.flush_pyte(stream, 'palette replay') and parse_ok
+    screen.resize(lines=NEW_H, columns=NEW_W)
 
     before = screen_cells(screen, NEW_W, NEW_H)
     records = []
@@ -250,9 +247,9 @@ def replay_resized_output(raw_before, raw_after):
         nonlocal before, parse_ok
         if not raw:
             return
-        try:
-            stream.feed(raw)
-        except Exception:
+        if not stlib.feed_pyte(stream, raw, 'palette replay'):
+            parse_ok = False
+        if not stlib.flush_pyte(stream, 'palette replay'):
             parse_ok = False
         after = screen_cells(screen, NEW_W, NEW_H)
         changed = sum(before[y][x] != after[y][x]

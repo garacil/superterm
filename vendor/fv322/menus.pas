@@ -59,17 +59,9 @@ UNIT Menus;
 {====================================================================}
 
 USES
-   {$IFDEF OS_WINDOWS}                                { WIN/NT CODE }
-     {$IFNDEF PPC_SPEED}                              { NON SPEED COMPILER }
-       {$IFDEF PPC_FPC}                               { FPC WINDOWS COMPILER }
-       Windows,                                       { Standard unit }
-       {$ELSE}                                        { OTHER COMPILERS }
-       WinTypes,WinProcs,                             { Standard units }
-       {$ENDIF}
-     {$ELSE}                                          { SPEEDSOFT COMPILER }
-       WinBase, WinDef,                               { Standard units }
-     {$ENDIF}
-   {$ENDIF}
+   { The upstream OS_WINDOWS branch pulled in the Windows unit, but nothing in
+     this vendored copy calls the WinAPI: the platform work lives in the
+     project's own units. Keeping it would be an unused dependency. }
 
    objects, drivers, views, fvconsts;                 { GFV standard units }
 

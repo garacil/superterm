@@ -112,14 +112,21 @@ make info
 
 ## Build modes
 
-The default release build uses Free Pascal level-4 optimization (`-O4`) and
-keeps warnings enabled:
+The default release build uses Free Pascal level-4 optimization (`-O4`). Every
+warning, note, and hint is visible and fatal (`-vewnh -Sewnh`) in release,
+debug, and test-runtime builds:
 
 ```sh
 make release
 ```
 
 The release executable is `bin/superterm`.
+
+The only suppressed messages are FPC 11030 and 11031. The installed FPC 3.2.2
+compiler sources identify those hints as the start and end of reading the
+compiler's own configuration file; they are not source diagnostics. A clean
+build with any other diagnostic fails. `test/strict_build_test.py` verifies all
+three build modes in isolated unit directories.
 
 `make test` also builds `bin/superterm-test` in a separate unit directory.
 Only that non-installed executable contains the compile-time hooks used to
@@ -164,6 +171,61 @@ Build the release binary and run every Python regression test:
 ```sh
 make test
 ```
+
+[`../test/README.md`](../test/README.md) is the frozen behavior-contract
+manifest. `test/suite_manifest_test.py` requires the same complete suite list
+in `Makefile.in`, the generated `Makefile`, and `test/*_test.py`; a newly added
+or accidentally omitted suite therefore fails the build instead of silently
+changing coverage.
+
+The permanent interleaved performance harness is separate from `make test` so
+loaded-host timing never becomes a flaky regression assertion. A closure run
+uses at least 50 warmed samples per binary, scenario, and geometry and archives
+raw latency, emitted bytes, changed cells, and frame counts:
+
+```sh
+python3 test/performance_baseline.py \
+  --baseline /usr/local/bin/superterm \
+  --candidate "$PWD/bin/superterm" \
+  --samples 50 \
+  --output docs/baselines/ns_arch_01_performance.json
+```
+
+The command interleaves baseline and candidate order, uses isolated homes, and
+pins one CPU when supported. A performance change is rejected if a repeated
+run degrades p50, p95, desktop-area scaling, emitted bytes, or frame count
+without a required visible effect.
+
+The deterministic high-output UI regression uses a generated tree, the
+heap-enabled binary, and two independently loaded panes:
+
+```sh
+make debug-heap
+SUPERTERM_TEST_BIN=./bin/superterm-debug-heap \
+  python3 test/root_output_ui_stress_test.py
+```
+
+It verifies per-pane output counters before manipulating the desktop, then
+checks drag, pane resize, maximize/restore, tiling, host resize, daemon
+survival, clean client reaping, HeapTrc output, and owned crash artifacts. For
+the deliberately unbounded live diagnostic requested by the project owner,
+run the same command with `SUPERTERM_ROOT_OUTPUT_EXACT=1`; that mode executes
+`cd /` and `ls -R` in every pane and is a soak rather than a `make test` gate.
+
+The client reactor and mouse-backend boundaries also have focused gates:
+
+```sh
+python3 test/client_output_reactor_test.py
+python3 test/mouse_backend_test.py
+python3 test/layout_transition_test.py
+python3 test/client_notifications_test.py
+```
+
+The mouse-backend suite proves that PTYs do not enter the blocking FPC GPM
+path, checks the kernel-console and descriptor-wake wiring, and runs bounded
+startup probes with both `TERM=tmux-256color` and `TERM=linux`. A real GPM
+event still requires a GNU/Linux virtual console with a running GPM service;
+that hardware-specific observation cannot be inferred from a PTY run.
 
 Each suite has an independent 15-minute deadline. A timed-out suite and its
 process group are terminated, the remaining suites still run, and the final

@@ -55,6 +55,12 @@ This matters for a multi-client session: using HeapTrc's plain `log=` option
 would make every inherited process write to the same file, allowing reports
 from concurrent exits to interleave.
 
+The interactive client's physical-output reactor is stopped before the
+session daemon is forked and recreated only in the parent. The daemon therefore
+has no inherited `TThread` object for a POSIX thread which did not survive
+`fork`; a shutdown backtrace waiting in `TThread.WaitFor` is a regression, not
+an expected HeapTrc finalization delay.
+
 `HEAPTRC=nohalt` keeps the audit running after HeapTrc diagnoses a bad heap
 operation, so the surrounding SuperTerm log can record more context. Remove
 `nohalt` when the desired behavior is to stop at the first invalid heap
@@ -168,6 +174,13 @@ missing, duplicate and canonically impossible pane/icon states. Phase
 boundaries are fail-fast and write exact screen/state diagnostics on a
 convergence failure, preventing one bad action from producing a page of
 misleading secondary failures.
+
+This shared-pane oracle disables only the optional desktop membership toast.
+That toast is client-local, lasts two seconds per queued event, and may cover a
+pane border at a different instant in each viewer; treating it as shared
+geometry would manufacture a divergence. `client_notifications_test.py`
+independently keeps the feature enabled and verifies its ordered toast, status
+line, bell, expiry, and configuration behavior.
 
 The automatic heap check is enabled for the standard
 `superterm-debug-heap` filename; set `SUPERTERM_EXPECT_HEAP=1` when testing an

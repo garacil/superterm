@@ -14,6 +14,7 @@ W, H = 100, 28
 
 sys.path.insert(0, os.path.dirname(__file__))
 import pyte
+import stlib
 
 fails = []
 def check(name, cond):
@@ -44,13 +45,11 @@ def drain(sc, st, fd, t):
         if r:
             try:
                 d = os.read(fd, 65536)
-                if not d:
-                    return
-                st.feed(d)
             except OSError:
                 return
-            except Exception:
-                pass
+            if not d:
+                return
+            stlib.feed_pyte(st, d, 'title')
 
 def text(sc):
     return "\n".join("".join(sc.buffer[y][x].data for x in range(W))

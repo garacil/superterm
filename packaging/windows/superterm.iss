@@ -2,7 +2,7 @@
 ; Build from the repository root with Inno Setup 6:
 ;   ISCC.exe packaging\windows\superterm.iss
 
-#define AppVersion "4.2.1"
+#define AppVersion "5.2.2"
 
 [Setup]
 AppId={{A1B7D1D4-9D37-4A5D-9F4C-6D4B8E4B1E42}

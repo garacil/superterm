@@ -163,6 +163,14 @@ uses
   st_debug, st_os, StrUtils
   {$IFDEF LINUX}, PThreads, SysCall{$ENDIF};
 
+{$IFDEF WINDOWS}
+// Marks a parameter of a fixed cross-platform signature as intentionally
+// unused, the same diagnostic-free helper the vendored Free Vision units use.
+// Declared locally on purpose: it hides the WinAPI DDE record accessors of the
+// same name that the Windows unit brings into scope.
+procedure Unused(const A); begin if @A = nil then; end;
+{$ENDIF}
+
 {$IFDEF UNIX}
 
 const
@@ -2312,6 +2320,9 @@ var
   Shell, Base: string;
   Args: TStringArray;
 begin
+  // cmd and PowerShell have no login/interactive shell distinction: the
+  // argument stays in the shared signature and means nothing here.
+  Unused(ALoginShell);
   Shell := EffectiveWindowsShell(AShell);
   Base := LowerCase(ExtractFileName(Shell));
   Args := Default(TStringArray);
@@ -2515,24 +2526,32 @@ begin
   KillPane;
 end;
 
+// Windows process-tree inspection is not part of Phase 1 (see docs/WINDOWS.md):
+// pane titles keep their launch command and starting directory instead. These
+// keep the shared signature and answer "nothing known".
 function FindChildProcs(ParentPid: TPid;
   out Children: array of TPid): integer;
 begin
+  Unused(ParentPid);
+  Children[0] := 0;
   Result := 0;
 end;
 
 function ProcArgs(Pid: TPid): TStringArray;
 begin
+  Unused(Pid);
   Result := nil;
 end;
 
 function ProcCmdLine(Pid: TPid): string;
 begin
+  Unused(Pid);
   Result := '';
 end;
 
 function ProcCwd(Pid: TPid): string;
 begin
+  Unused(Pid);
   Result := '';
 end;
 

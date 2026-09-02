@@ -19,9 +19,11 @@ function AvailableCPUCount: integer;
 implementation
 
 uses
-  ctypes
-  {$ifdef darwin}, SysCtl{$endif}
-  {$ifdef windows}, Windows{$endif};
+  { Only the POSIX affinity and sysctl declarations below use the C types. }
+  {$ifndef windows}ctypes,{$endif}
+  {$ifdef darwin}SysCtl,{$endif}
+  {$ifdef windows}Windows,{$endif}
+  SysUtils;
 
 {$ifdef linux}
 const

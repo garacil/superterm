@@ -5,6 +5,30 @@ unit st_video;
 interface
 
 procedure InstallWideVideoOutput;
+// Runtime presentation uses a separately opened, nonblocking /dev/tty handle.
+// This keeps a slow outer terminal from parking the Free Vision/UI thread and
+// does not change O_NONBLOCK on the stdout file description inherited by the
+// caller's shell. Startup probes remain synchronous until this is enabled.
+procedure StartAsyncVideoOutput;
+// POSIX fork preserves only the calling thread. Stop the physical-output
+// reactor before the session daemon is forked, then recreate it only in the
+// parent. Otherwise the child inherits a TThread object whose pthread no
+// longer exists and unit finalization waits for it forever.
+procedure PauseAsyncVideoOutputForFork(out AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+procedure ResumeAsyncVideoOutputAfterFork(AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+// Make bounded progress on queued physical output. True means a renderer
+// update was coalesced while the terminal was busy and must now be retried.
+function PumpVideoOutput: Boolean;
+function VideoOutputHasFailed: Boolean;
+function VideoOutputWaitHandle: LongInt;
+function VideoOutputPending: Boolean;
+// Admit one intentional animation step behind an already queued physical
+// frame. Ordinary renderer updates still coalesce to the latest state; this
+// narrow path preserves the documented show/hide sequence of an opt-in
+// transition without making the UI perform a physical write.
+procedure PresentOrderedVideoFrame;
 // Renderer capability of this process/host terminal.  Every attached client
 // has its own process and therefore its own value; it is never shared with the
 // canonical desktop kept by the daemon.
@@ -122,9 +146,30 @@ var
 implementation
 
 uses
-  SysUtils, Video, st_debug, st_kbd
+  Classes, SysUtils, Video, st_debug, st_kbd
   {$IFDEF UNIX}, termio, BaseUnix{$ENDIF}
   {$IFDEF WINDOWS}, Windows{$ENDIF};
+
+{$IFDEF WINDOWS}
+type
+  // The client output reactor is a POSIX design: one private nonblocking
+  // /dev/tty descriptor, two wake pipes and a poll loop on a helper thread.
+  // Windows Phase 1 keeps the established blocking console writer, so these
+  // aliases exist only so the shared declarations and call sites below compile
+  // unchanged. Every descriptor stays -1 and AsyncOutputActive stays False,
+  // which is exactly the branch WriteRaw, PassthroughRaw and WideUpdateScreen
+  // already take on Unix when the reactor cannot be started.
+  cint = LongInt;
+  TFilDes = array[0..1] of cint;
+{$ENDIF}
+
+{$IFDEF UNIX}
+type
+  TClientOutputReactor = class(TThread)
+  protected
+    procedure Execute; override;
+  end;
+{$ENDIF}
 
 var
   SavedDriver: TVideoDriver;
@@ -135,10 +180,369 @@ var
   HostUtf8: Boolean = True;
   ProbeHostEncoding: Boolean = True;
 
+{$IFDEF UNIX}
+const
+  // A renderer frame is normally at most a few hundred KiB, while direct
+  // passthrough can burst much harder. Keep the queue finite: saturation is a
+  // client-local failure, never permission to consume unbounded memory or to
+  // block the UI thread.
+  OUTPUT_QUEUE_CAPACITY = 8 * 1024 * 1024;
+  OUTPUT_TEARDOWN_DRAIN_MS = 500;
+{$ENDIF}
+
+var
+  {$IFDEF UNIX}
+  OutputHandle: cint = -1;
+  OutputRing: array of Byte;
+  OutputHead: LongInt = 0;
+  OutputFrameRemaining: LongInt = 0;
+  AsyncOutputEverStarted: Boolean = False;
+  {$ENDIF}
+  OutputCount: LongInt = 0;
+  AsyncOutputActive: Boolean = False;
+  BlockingTeardownUnsafe: Boolean = False;
+  DeferredFrame: Boolean = False;
+  CursorStateDirty: Boolean = False;
+  DesiredCursorType: Word = crHidden;
+  QueuedCursorType: Word = $FFFF;
+  QueuedCursorX: Word = $FFFF;
+  QueuedCursorY: Word = $FFFF;
+  OutputLock: TRTLCriticalSection;
+  OutputLockInitialized: Boolean = False;
+  {$IFDEF UNIX}
+  OutputWakePipe: TFilDes = (-1, -1);
+  {$ENDIF}
+  OutputProgressPipe: TFilDes = (-1, -1);
+  {$IFDEF UNIX}
+  OutputReactor: TClientOutputReactor = nil;
+  {$ENDIF}
+  OrderedFrameAdmission: Boolean = False;
+
+{$IFDEF WINDOWS}
+// Marks a parameter of a fixed cross-platform signature as intentionally
+// unused, the same diagnostic-free helper the vendored Free Vision units use.
+procedure Unused(const A); begin if @A = nil then; end;
+{$ENDIF}
+
 function HostUtf8Output: Boolean;
 begin
   Result := HostUtf8;
 end;
+
+function PendingOutputByteCount: LongInt;
+begin
+  if not OutputLockInitialized then
+    Exit(0);
+  EnterCriticalSection(OutputLock);
+  try
+    Result := OutputCount;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+end;
+
+// FPC 3.2.2 emits a non-actionable inline note for its untyped fpRead/fpWrite
+// declarations. Keep it confined to the physical-I/O leaf, as st_server does
+// for the same system calls, so strict project builds stay diagnostic-clean.
+{$push}{$notes off}{$hints off}
+procedure SignalPipe(AFd: cint);
+{$IFDEF WINDOWS}
+begin
+  // No reactor thread to wake: Windows submits every frame synchronously on
+  // the UI thread, so progress is observed by the caller that wrote it.
+end;
+{$ELSE}
+var
+  B: Byte;
+  N: ssize_t;
+begin
+  if AFD < 0 then
+    Exit;
+  B := 1;
+  N := fpWrite(AFd, PChar(@B)^, 1);
+  if (N < 0) and (fpGetErrNo <> ESysEINTR) and
+     (fpGetErrNo <> ESysEAGAIN) and (fpGetErrNo <> ESysEWOULDBLOCK) and
+     DebugActive then
+    DebugLog('video: output wake pipe failed errno=' + IntToStr(fpGetErrNo));
+end;
+{$ENDIF}
+
+procedure DrainPipe(AFd: cint);
+{$IFDEF WINDOWS}
+begin
+  // Counterpart of the SignalPipe stub: there is no progress pipe to drain.
+end;
+{$ELSE}
+var
+  Buf: array[0..63] of Byte;
+  N: ssize_t;
+begin
+  if AFD < 0 then
+    Exit;
+  repeat
+    N := fpRead(AFd, PChar(@Buf[0])^, SizeOf(Buf));
+  until (N <= 0) and (fpGetErrNo <> ESysEINTR);
+end;
+{$ENDIF}
+
+procedure MarkOutputFailure(const AReason: string);
+var
+  First: Boolean;
+begin
+  First := False;
+  if OutputLockInitialized then
+    EnterCriticalSection(OutputLock);
+  try
+    if not OutputFailed then
+    begin
+      OutputFailed := True;
+      First := True;
+    end;
+  finally
+    if OutputLockInitialized then
+      LeaveCriticalSection(OutputLock);
+  end;
+  if First and DebugActive then
+    DebugLog('video: physical output failed: ' + AReason);
+  if First then
+    SignalPipe(OutputProgressPipe[1]);
+end;
+
+{$IFDEF UNIX}
+function WritePendingNonblocking: Boolean;
+var
+  Head, Chunk, Written, ErrNo, FromFrame: LongInt;
+  BecameEmpty: Boolean;
+begin
+  Result := False;
+  repeat
+    EnterCriticalSection(OutputLock);
+    try
+      if OutputFailed or (OutputCount <= 0) or (OutputHandle < 0) then
+        Exit(not OutputFailed);
+      Head := OutputHead;
+      Chunk := Length(OutputRing) - Head;
+      if Chunk > OutputCount then
+        Chunk := OutputCount;
+    finally
+      LeaveCriticalSection(OutputLock);
+    end;
+    Written := fpWrite(OutputHandle, PChar(@OutputRing[Head])^, Chunk);
+    if Written > 0 then
+    begin
+      BecameEmpty := False;
+      EnterCriticalSection(OutputLock);
+      try
+        FromFrame := Written;
+        if FromFrame > OutputFrameRemaining then
+          FromFrame := OutputFrameRemaining;
+        Dec(OutputFrameRemaining, FromFrame);
+        Inc(OutputHead, Written);
+        if OutputHead >= Length(OutputRing) then
+          OutputHead := 0;
+        Dec(OutputCount, Written);
+        if OutputCount = 0 then
+        begin
+          OutputHead := 0;
+          BecameEmpty := True;
+        end;
+      finally
+        LeaveCriticalSection(OutputLock);
+      end;
+      // The UI only needs the empty edge: that is when a deferred latest
+      // frame or cursor state can be admitted. Waking it for every partial
+      // write turns a large terminal frame into an avoidable wake storm.
+      if BecameEmpty then
+        SignalPipe(OutputProgressPipe[1]);
+      Continue;
+    end;
+    ErrNo := fpGetErrNo;
+    if ErrNo = ESysEINTR then
+      Continue;
+    if (ErrNo = ESysEAGAIN) or (ErrNo = ESysEWOULDBLOCK) then
+      Exit(True);
+    MarkOutputFailure('write errno=' + IntToStr(ErrNo));
+    Exit(False);
+  until False;
+end;
+{$ENDIF}
+
+{$pop}
+
+{$IFDEF UNIX}
+procedure TClientOutputReactor.Execute;
+var
+  Fds: array[0..1] of TPollFD;
+  NFds, N: cint;
+  HaveOutput: Boolean;
+begin
+  TThread.NameThreadForDebugging('st-client-output');
+  while not Terminated do
+  begin
+    EnterCriticalSection(OutputLock);
+    try
+      HaveOutput := OutputCount > 0;
+    finally
+      LeaveCriticalSection(OutputLock);
+    end;
+    Fds[0] := Default(TPollFD);
+    Fds[0].fd := OutputWakePipe[0];
+    Fds[0].events := POLLIN;
+    NFds := 1;
+    if HaveOutput then
+    begin
+      Fds[1] := Default(TPollFD);
+      Fds[1].fd := OutputHandle;
+      Fds[1].events := POLLOUT;
+      NFds := 2;
+    end;
+    N := fpPoll(@Fds[0], NFds, -1);
+    if N < 0 then
+    begin
+      if fpGetErrNo = ESysEINTR then
+        Continue;
+      MarkOutputFailure('poll errno=' + IntToStr(fpGetErrNo));
+      Break;
+    end;
+    if (Fds[0].revents and (POLLIN or POLLHUP)) <> 0 then
+      DrainPipe(OutputWakePipe[0]);
+    if Terminated then
+      Break;
+    if (NFds = 2) and
+       ((Fds[1].revents and (POLLOUT or POLLERR or POLLHUP or POLLNVAL)) <> 0) then
+      if not WritePendingNonblocking then
+        Break;
+  end;
+end;
+{$ENDIF}
+
+{$IFDEF WINDOWS}
+// No reactor, so no queue to admit anything to. Every producer already tests
+// AsyncOutputActive first and takes the blocking writer instead; these exist
+// so that shared code needs no platform branch of its own.
+function QueueOutputTransaction(const AData; ALen: LongInt;
+  AFrame, AAppendFrame: Boolean): Boolean;
+begin
+  Unused(AData);
+  Unused(ALen);
+  Unused(AFrame);
+  Unused(AAppendFrame);
+  Result := False;
+end;
+{$ELSE}
+function QueueOutputTransaction(const AData; ALen: LongInt;
+  AFrame, AAppendFrame: Boolean): Boolean;
+var
+  Tail, FirstPart: LongInt;
+  Src: PByte;
+  Overflow: Boolean;
+begin
+  Result := False;
+  if ALen <= 0 then
+    Exit(True);
+  if not OutputLockInitialized then
+    Exit;
+  Overflow := False;
+  EnterCriticalSection(OutputLock);
+  try
+    if OutputFailed or (not AsyncOutputActive) then
+      Exit;
+    if AFrame and (OutputCount <> 0) and (not AAppendFrame) then
+      Exit
+    else if ALen > Length(OutputRing) - OutputCount then
+      Overflow := True
+    else
+    begin
+      Tail := OutputHead + OutputCount;
+      if Tail >= Length(OutputRing) then
+        Dec(Tail, Length(OutputRing));
+      FirstPart := Length(OutputRing) - Tail;
+      if FirstPart > ALen then
+        FirstPart := ALen;
+      Src := @AData;
+      Move(Src^, OutputRing[Tail], FirstPart);
+      if FirstPart < ALen then
+      begin
+        Inc(Src, FirstPart);
+        Move(Src^, OutputRing[0], ALen - FirstPart);
+      end;
+      Inc(OutputCount, ALen);
+      if AFrame then
+        OutputFrameRemaining := ALen;
+      Result := True;
+    end;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+  if Overflow then
+  begin
+    MarkOutputFailure(Format('bounded queue overflow append=%d cap=%d',
+      [ALen, Length(OutputRing)]));
+    Exit(False);
+  end;
+  if Result then
+    SignalPipe(OutputWakePipe[1]);
+end;
+{$ENDIF}
+
+function QueueOutputBytes(const AData; ALen: LongInt): Boolean;
+begin
+  Result := QueueOutputTransaction(AData, ALen, False, False);
+end;
+
+function QueueOutputFrame(const S: AnsiString;
+  AAppendFrame: Boolean = False): Boolean;
+begin
+  if S = '' then
+    Exit(True);
+  Result := QueueOutputTransaction(S[1], Length(S), True, AAppendFrame);
+end;
+
+function RawWriteBlocking(const AData; ALen: LongInt): Boolean;
+var
+  P: PByte;
+  Left: LongInt;
+  Written: Int64;
+begin
+  Result := False;
+  if ALen <= 0 then
+    Exit(True);
+  P := @AData;
+  Left := ALen;
+  while Left > 0 do
+  begin
+    Written := FileWrite(StdOutputHandle, P^, Left);
+    if Written <= 0 then
+      Exit;
+    Inc(P, Written);
+    Dec(Left, LongInt(Written));
+  end;
+  Result := True;
+end;
+
+{$push}{$notes off}{$hints off}
+function RawWriteBestEffort(const AData; ALen: LongInt): Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Only reached after a bounded-queue teardown failure, which Windows cannot
+  // enter because it never activates the reactor. Kept defined, and honest:
+  // the ordinary console writer is the only physical output path here.
+  Result := RawWriteBlocking(AData, ALen);
+end;
+{$ELSE}
+var
+  N: ssize_t;
+begin
+  Result := False;
+  if (ALen <= 0) or (OutputHandle < 0) then
+    Exit(ALen <= 0);
+  repeat
+    N := fpWrite(OutputHandle, AData, ALen);
+  until (N >= 0) or (fpGetErrNo <> ESysEINTR);
+  Result := N = ALen;
+end;
+{$ENDIF}
+{$pop}
 
 {$IFDEF WINDOWS}
 const
@@ -162,6 +566,7 @@ var
   HOut: THandle;
   M: DWORD;
 begin
+  M := 0;
   HOut := GetStdHandle(STD_OUTPUT_HANDLE);
   if (HOut <> INVALID_HANDLE_VALUE) and GetConsoleMode(HOut, M) then
   begin
@@ -191,25 +596,18 @@ end;
 {$ENDIF}
 
 procedure PassthroughRaw(const Data; ALen: LongInt);
-var
-  P: PByte;
-  Left: LongInt;
-  Written: Int64;
 begin
-  if (ALen <= 0) or OutputFailed then
+  if (ALen <= 0) or VideoOutputHasFailed then
     Exit;
-  P := @Data;
-  Left := ALen;
-  while Left > 0 do
+  if AsyncOutputActive then
   begin
-    Written := FileWrite(StdOutputHandle, P^, Left);
-    if Written > 0 then
-    begin
-      Inc(P, Written);
-      Dec(Left, LongInt(Written));
-    end
-    else
-      Exit;   // EINTR is retried by FileWrite; anything else = give up on this chunk
+    if not QueueOutputBytes(Data, ALen) then
+      Exit;
+  end
+  else if not RawWriteBlocking(Data, ALen) then
+  begin
+    MarkOutputFailure('blocking passthrough write failed');
+    Exit;
   end;
   if DebugActive then
     DebugLog(Format('pass: raw %d bytes straight to terminal', [ALen]));
@@ -234,33 +632,61 @@ end;
 
 procedure WriteRaw(const S: AnsiString);
 var
-  Offset, Remaining: LongInt;
-  Written: Int64;
+  Started, Elapsed: QWord;
+  TrackTiming: Boolean;
 begin
-  if OutputFailed or (Length(S) = 0) then
+  if (Length(S) = 0) or VideoOutputHasFailed then
     Exit;
-  Offset := 1;
-  while Offset <= Length(S) do
+  TrackTiming := DebugActive;
+  Started := 0;
+  if TrackTiming then
+    Started := GetTickCount64;
+  if AsyncOutputActive then
   begin
-    Remaining := Length(S) - Offset + 1;
-    { FileWrite retries EINTR internally, so any non-positive result here
-      is a real failure. }
-    Written := FileWrite(StdOutputHandle, S[Offset], Remaining);
-    if Written > 0 then
-    begin
-      if Written > Remaining then
-      begin
-        OutputFailed := True;
-        Exit;
-      end;
-      Inc(Offset, LongInt(Written));
-    end
-    else
-    begin
-      OutputFailed := True;
+    if not QueueOutputBytes(S[1], Length(S)) then
       Exit;
-    end;
+  end
+  else if BlockingTeardownUnsafe then
+  begin
+    // A terminal which did not drain the bounded runtime queue must never
+    // trap teardown in a blocking stdout write. Restoration is best-effort in
+    // that physically unwritable case; normal exits use the exact old path.
+    RawWriteBestEffort(S[1], Length(S));
+  end
+  else if not RawWriteBlocking(S[1], Length(S)) then
+  begin
+    MarkOutputFailure('blocking write failed');
+    Exit;
   end;
+  if TrackTiming then
+  begin
+    Elapsed := GetTickCount64 - Started;
+    if DebugFull or (Elapsed >= 10) then
+      DebugLog(Format('video: physical-submit bytes=%d pending=%d elapsed_ms=%d',
+        [Length(S), PendingOutputByteCount, Elapsed]));
+  end;
+end;
+
+function VideoOutputHasFailed: Boolean;
+begin
+  if not OutputLockInitialized then
+    Exit(OutputFailed);
+  EnterCriticalSection(OutputLock);
+  try
+    Result := OutputFailed;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+end;
+
+function VideoOutputWaitHandle: LongInt;
+begin
+  Result := OutputProgressPipe[0];
+end;
+
+function VideoOutputPending: Boolean;
+begin
+  Result := PendingOutputByteCount > 0;
 end;
 
 procedure HostBell;
@@ -496,6 +922,97 @@ end;
 function CursorPosition(AX, AY: Word): AnsiString;
 begin
   Result := #27'[' + IntToStr(AY + 1) + ';' + IntToStr(AX + 1) + 'H';
+end;
+
+function CursorTypeSequence(AType: Word): AnsiString;
+begin
+  case AType of
+    crHidden: Result := #27'[?25l';
+    crBlock: Result := #27'[2 q'#27'[?25h';
+  else
+    // crUnderline and the platform fallbacks use a steady underline. A host
+    // which does not implement DECSCUSR simply ignores the style selector and
+    // still honours the standard visibility sequence.
+    Result := #27'[4 q'#27'[?25h';
+  end;
+end;
+
+procedure QueueLatestCursorState;
+var
+  S: AnsiString;
+  QueueIsEmpty: Boolean;
+begin
+  if not AsyncOutputActive or VideoOutputHasFailed or
+     (not CursorStateDirty) then
+    Exit;
+  EnterCriticalSection(OutputLock);
+  try
+    QueueIsEmpty := OutputCount = 0;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+  if not QueueIsEmpty or DeferredFrame then
+    Exit;
+  S := '';
+  if (QueuedCursorX <> CursorX) or (QueuedCursorY <> CursorY) then
+    S := CursorPosition(CursorX, CursorY);
+  if QueuedCursorType <> DesiredCursorType then
+    S := S + CursorTypeSequence(DesiredCursorType);
+  if (S = '') or QueueOutputBytes(S[1], Length(S)) then
+  begin
+    QueuedCursorX := CursorX;
+    QueuedCursorY := CursorY;
+    QueuedCursorType := DesiredCursorType;
+    CursorStateDirty := False;
+  end;
+end;
+
+procedure WideSetCursorPos(NewCursorX, NewCursorY: Word);
+begin
+  if (CursorX = NewCursorX) and (CursorY = NewCursorY) then
+    Exit;
+  CursorX := NewCursorX;
+  CursorY := NewCursorY;
+  CursorStateDirty := True;
+  if AsyncOutputActive then
+    QueueLatestCursorState
+  else
+    WriteRaw(CursorPosition(NewCursorX, NewCursorY));
+end;
+
+function WideGetCursorType: Word;
+begin
+  Result := DesiredCursorType;
+end;
+
+procedure WideSetCursorType(NewType: Word);
+begin
+  if DesiredCursorType = NewType then
+    Exit;
+  DesiredCursorType := NewType;
+  CursorStateDirty := True;
+  if AsyncOutputActive then
+    QueueLatestCursorState
+  else
+    WriteRaw(CursorTypeSequence(NewType));
+end;
+
+function PumpVideoOutput: Boolean;
+var
+  QueueIsEmpty: Boolean;
+begin
+  DrainPipe(OutputProgressPipe[0]);
+  if not AsyncOutputActive then
+    Exit(False);
+  EnterCriticalSection(OutputLock);
+  try
+    QueueIsEmpty := OutputCount = 0;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+  Result := QueueIsEmpty and DeferredFrame;
+  if QueueIsEmpty and (not DeferredFrame) then
+    QueueLatestCursorState;
 end;
 
 type
@@ -1126,7 +1643,7 @@ var
   end;
 
 begin
-  if PassthroughActive or OutputFailed then
+  if PassthroughActive or VideoOutputHasFailed then
     Exit;
   if (NX2 <= NX1) or (NY2 <= NY1) then
     Exit;
@@ -1180,7 +1697,7 @@ var
   end;
 
 begin
-  if PassthroughActive or OutputFailed then
+  if PassthroughActive or VideoOutputHasFailed then
     Exit;
   if (X2 <= X1) or (Y2 <= Y1) then
     Exit;
@@ -1234,7 +1751,8 @@ var
   NeedMove, Shadowed, NShadow, OverlayHere, OverlayACS, ACSActive,
     CellACS: Boolean;
   OutCursorX, OutCursorY: Word;
-  Body, Frame, CurSGR, LastSGR, OverlayGlyph, CellGlyph: AnsiString;
+  Body, Frame, CursorTail, CurSGR, LastSGR, OverlayGlyph,
+    CellGlyph: AnsiString;
   OverlayAttr: Byte;
   ChangedCells, Runs, RHit, RMiss: LongInt;
 begin
@@ -1253,12 +1771,29 @@ begin
   if (VideoBuf = nil) or (OldVideoBuf = nil) or
      (ScreenWidth = 0) or (ScreenHeight = 0) then
     Exit;
+  // A physical frame already admitted to the output reactor is immutable and
+  // is never abandoned halfway through an ANSI transaction. Do not advance
+  // EffOld again while it is pending. Once the reactor reports completion,
+  // the next call diffs the latest VideoBuf against that actually admitted
+  // baseline, coalescing every superseded intermediate presentation.
+  if AsyncOutputActive and VideoOutputPending and
+     (not OrderedFrameAdmission) then
+  begin
+    DeferredFrame := True;
+    Exit;
+  end;
+  DeferredFrame := False;
   // Coalesce: if more input is already queued, this frame is about to be
   // superseded, so skip it and let the NEXT one emit the accumulated delta.
   // EffOld is only advanced by cells we actually emit, so skipping is safe.
   // The time bound keeps at least ~25 frames a second under continuous input.
-  if InputPending and (GetTickCount64 - LastEmitTick < COALESCE_MS) then
+  if (not OrderedFrameAdmission) and InputPending and
+     (GetTickCount64 - LastEmitTick < COALESCE_MS) then
   begin
+    // This may itself be the retry of a frame deferred behind physical
+    // output. Keep the latest-state obligation alive: clearing it here loses
+    // the final canonical paint when the pending input causes no later draw.
+    DeferredFrame := True;
     if DebugActive then
       DebugLog('video: frame coalesced (more input already waiting)');
     Exit;
@@ -1447,6 +1982,10 @@ begin
   else
     OutCursorY := CursorY;
 
+  CursorTail := CursorPosition(OutCursorX, OutCursorY);
+  if QueuedCursorType <> DesiredCursorType then
+    CursorTail := CursorTail + CursorTypeSequence(DesiredCursorType);
+
   if Body <> '' then
   begin
     // neutral SGR reset + autowrap off + body + cursor, in ONE write. Each
@@ -1455,15 +1994,24 @@ begin
     // output (atomic present, no tearing) -- but that holds the frame until
     // ?2026l, and some terminals do not present it until the next input, so it
     // is OFF by default and enabled with SUPERTERM_SYNC=1.
-    Frame := #27'[0m'#27'[?7l' + Body +
-      CursorPosition(OutCursorX, OutCursorY);
+    Frame := #27'[0m'#27'[?7l' + Body + CursorTail;
     if UseSyncOutput then
       Frame := #27'[?2026h' + Frame + #27'[?2026l';
   end
   else
     // nothing changed: only keep the hardware cursor in sync (cheap)
-    Frame := CursorPosition(OutCursorX, OutCursorY);
-  WriteRaw(Frame);
+    Frame := CursorTail;
+  if AsyncOutputActive then
+  begin
+    if not QueueOutputFrame(Frame, OrderedFrameAdmission) then
+      Exit;
+  end
+  else
+    WriteRaw(Frame);
+  QueuedCursorX := OutCursorX;
+  QueuedCursorY := OutCursorY;
+  QueuedCursorType := DesiredCursorType;
+  CursorStateDirty := False;
   Move(VideoBuf^, OldVideoBuf^, VideoBufSize);
   // per-frame detail is FULL-mode only: a blinking cursor alone writes two
   // lines every half second, which buried everything worth reading
@@ -1473,13 +2021,78 @@ begin
       LongInt(ScreenWidth) * ScreenHeight, Length(Frame), RHit, RMiss]));
 end;
 
-procedure WideDoneVideo;
+procedure PresentOrderedVideoFrame;
 begin
+  OrderedFrameAdmission := True;
+  try
+    WideUpdateScreen(False);
+  finally
+    OrderedFrameAdmission := False;
+  end;
+end;
+
+{$IFDEF WINDOWS}
+// Accept the size the console window already has.
+//
+// The RTL's Win32 mode selector is wrong for this program in two ways. It only
+// recognises a fixed table of legacy modes -- 40x25, 80x25, 80x30, 80x43 and
+// 80x50 -- and rejects everything else; and when a mode does match it commands
+// the console to that geometry with SetConsoleWindowInfo and
+// SetConsoleScreenBufferSize, then clears it.
+//
+// SuperTerm never invents a size: ReadTerminalSize asks the console what the
+// user has just made the window, and that size is what arrives here. So every
+// size is valid and nothing may be resized back.
+//
+// A rejected mode was not merely ignored, either. Video.ScreenWidth and
+// ScreenHeight kept their previous values and the video buffer was not
+// reallocated, while Free Vision went on to lay the application out at the new
+// size -- so after a maximize or a drag-resize every view drew against a buffer
+// of the wrong geometry and the whole interface came apart. Reporting success
+// here lets the RTL's own SetVideoMode reallocate the buffer for the new
+// dimensions, which is the only step that was missing.
+function WideSetVideoMode(const AMode: TVideoMode): Boolean;
+begin
+  Result := (AMode.Col > 0) and (AMode.Row > 0);
+  if not Result then
+    Exit;
+  Video.ScreenWidth := AMode.Col;
+  Video.ScreenHeight := AMode.Row;
+  Video.ScreenColor := AMode.Color;
+  // The terminal still shows the old frame at the old geometry; nothing that
+  // was tracked about it describes the new surface.
+  InvalidateFrame;
+end;
+{$ENDIF}
+
+procedure WideClearScreen;
+begin
+  // Video.ClearScreen has already filled VideoBuf with its canonical blank
+  // cells before invoking the driver hook. Present that state through the
+  // same bounded reactor as every other frame. The FPC Unix hook writes an
+  // escape sequence directly to stdout and can otherwise block teardown
+  // before WideDoneVideo gets a chance to stop the reactor.
+  WideUpdateScreen(True);
+end;
+
+function StopAsyncVideoOutput: Boolean; forward;
+
+procedure WideDoneVideo;
+var
+  Drained: Boolean;
+begin
+  Drained := StopAsyncVideoOutput;
   // Restore the ordinary ASCII character set even if teardown follows a
   // partially written compatibility frame.
   WriteRaw(#27'(B'#27'[?7h');
-  if Assigned(SavedDriver.DoneDriver) then
+  if Drained and Assigned(SavedDriver.DoneDriver) then
     SavedDriver.DoneDriver;
+  if not Drained then
+    // The original driver uses blocking writes to stdout. Calling it after a
+    // bounded drain timed out would recreate the exact shutdown deadlock this
+    // reactor prevents. Best-effort the portable alternate-screen exit on the
+    // independent nonblocking handle instead.
+    WriteRaw(#27'[?1049l'#27'[0m'#27'[?25h');
   { FreeVision homes the cursor while tearing down the alternate screen.
     Restore the shell's cursor after that teardown, not before it. This is
     only the fallback: the RTL keyboard teardown still emits ESC[H after
@@ -1571,6 +2184,230 @@ begin
   {$ENDIF}
 end;
 
+{$IFDEF UNIX}
+function ConfigureNonblockingDescriptor(AFd: cint): Boolean;
+var
+  Flags: cint;
+begin
+  Result := False;
+  Flags := fpFcntl(AFd, F_GETFL, 0);
+  if (Flags < 0) or (fpFcntl(AFd, F_SETFL, Flags or O_NONBLOCK) < 0) then
+    Exit;
+  Flags := fpFcntl(AFd, F_GETFD, 0);
+  if (Flags < 0) or
+     (fpFcntl(AFd, F_SETFD, Flags or 1 {FD_CLOEXEC}) < 0) then
+    Exit;
+  Result := True;
+end;
+
+function CreateOutputPipe(out APipe: TFilDes): Boolean;
+begin
+  APipe[0] := -1;
+  APipe[1] := -1;
+  Result := fpPipe(APipe) = 0;
+  if not Result then
+    Exit;
+  if not ConfigureNonblockingDescriptor(APipe[0]) or
+     not ConfigureNonblockingDescriptor(APipe[1]) then
+  begin
+    fpClose(APipe[0]);
+    fpClose(APipe[1]);
+    APipe[0] := -1;
+    APipe[1] := -1;
+    Exit(False);
+  end;
+end;
+
+procedure CloseOutputDescriptor(var AFD: cint);
+begin
+  if AFD >= 0 then
+    fpClose(AFd);
+  AFD := -1;
+end;
+{$ENDIF}
+
+{$push}{$notes off}{$hints off}
+procedure StartAsyncVideoOutput;
+{$IFDEF WINDOWS}
+begin
+  // Phase 1 has no Windows reactor. The console writer stays synchronous, so
+  // AsyncOutputActive remains False and every producer takes the blocking
+  // branch it already takes on a Unix host whose /dev/tty cannot be opened.
+  if DebugActive then
+    DebugLog('video: client output reactor unavailable: windows phase 1');
+end;
+{$ELSE}
+begin
+  if AsyncOutputActive or AsyncOutputEverStarted then
+    Exit;
+  OutputHandle := fpOpen(PChar('/dev/tty'), O_WRONLY or O_NONBLOCK);
+  if OutputHandle < 0 then
+  begin
+    if DebugActive then
+      DebugLog('video: client output reactor unavailable: cannot open /dev/tty');
+    Exit;
+  end;
+  if not ConfigureNonblockingDescriptor(OutputHandle) or
+     not CreateOutputPipe(OutputWakePipe) or
+     not CreateOutputPipe(OutputProgressPipe) then
+  begin
+    CloseOutputDescriptor(OutputWakePipe[0]);
+    CloseOutputDescriptor(OutputWakePipe[1]);
+    CloseOutputDescriptor(OutputProgressPipe[0]);
+    CloseOutputDescriptor(OutputProgressPipe[1]);
+    CloseOutputDescriptor(OutputHandle);
+    if DebugActive then
+      DebugLog('video: client output reactor unavailable: descriptor setup failed');
+    Exit;
+  end;
+  InitCriticalSection(OutputLock);
+  OutputLockInitialized := True;
+  SetLength(OutputRing, OUTPUT_QUEUE_CAPACITY);
+  OutputHead := 0;
+  OutputCount := 0;
+  OutputFrameRemaining := 0;
+  OutputFailed := False;
+  DeferredFrame := False;
+  BlockingTeardownUnsafe := False;
+  AsyncOutputActive := True;
+  AsyncOutputEverStarted := True;
+  OutputReactor := TClientOutputReactor.Create(True);
+  OutputReactor.FreeOnTerminate := False;
+  OutputReactor.Start;
+  if DebugActive then
+    DebugLog(Format('video: client output reactor started fd=%d cap=%d',
+      [OutputHandle, Length(OutputRing)]));
+end;
+{$ENDIF}
+{$pop}
+
+function StopAsyncVideoOutput: Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Nothing was ever admitted to a queue, so teardown is always fully drained
+  // and the ordinary blocking restoration path stays safe.
+  Result := True;
+end;
+{$ELSE}
+var
+  Deadline, NowTick: QWord;
+  Pending, WaitMs: LongInt;
+  Failed: Boolean;
+  PollItem: TPollFD;
+begin
+  Result := True;
+  if not AsyncOutputEverStarted or (OutputReactor = nil) then
+    Exit;
+  Deadline := GetTickCount64 + OUTPUT_TEARDOWN_DRAIN_MS;
+  repeat
+    EnterCriticalSection(OutputLock);
+    try
+      Pending := OutputCount;
+      Failed := OutputFailed;
+    finally
+      LeaveCriticalSection(OutputLock);
+    end;
+    if (Pending = 0) or Failed then
+      Break;
+    NowTick := GetTickCount64;
+    if NowTick >= Deadline then
+      Break;
+    WaitMs := Deadline - NowTick;
+    if WaitMs > 50 then
+      WaitMs := 50;
+    PollItem := Default(TPollFD);
+    PollItem.fd := OutputProgressPipe[0];
+    PollItem.events := POLLIN;
+    if (fpPoll(@PollItem, 1, WaitMs) < 0) and
+       (fpGetErrNo <> ESysEINTR) then
+      Break;
+    DrainPipe(OutputProgressPipe[0]);
+  until False;
+  EnterCriticalSection(OutputLock);
+  try
+    Pending := OutputCount;
+    Failed := OutputFailed;
+    if Pending > 0 then
+    begin
+      OutputCount := 0;
+      OutputHead := 0;
+      OutputFrameRemaining := 0;
+    end;
+    AsyncOutputActive := False;
+  finally
+    LeaveCriticalSection(OutputLock);
+  end;
+  BlockingTeardownUnsafe := (Pending > 0) or Failed;
+  Result := not BlockingTeardownUnsafe;
+  OutputReactor.Terminate;
+  SignalPipe(OutputWakePipe[1]);
+  OutputReactor.WaitFor;
+  FreeAndNil(OutputReactor);
+  CloseOutputDescriptor(OutputWakePipe[0]);
+  CloseOutputDescriptor(OutputWakePipe[1]);
+  CloseOutputDescriptor(OutputProgressPipe[0]);
+  CloseOutputDescriptor(OutputProgressPipe[1]);
+  SetLength(OutputRing, 0);
+  if OutputLockInitialized then
+  begin
+    DoneCriticalSection(OutputLock);
+    OutputLockInitialized := False;
+  end;
+  if not BlockingTeardownUnsafe then
+    CloseOutputDescriptor(OutputHandle);
+  if DebugActive then
+    DebugLog(Format('video: client output reactor stopped drained=%d abandoned=%d',
+      [Ord(Result), Pending]));
+end;
+{$ENDIF}
+
+procedure PauseAsyncVideoOutputForFork(out AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+{$IFDEF WINDOWS}
+begin
+  // There is no fork and no reactor on Windows; the pair stays callable so the
+  // shared client code needs no platform branch of its own.
+  AWasActive := False;
+  AResumeNeedsFullFrame := False;
+end;
+{$ELSE}
+begin
+  AWasActive := AsyncOutputActive and (OutputReactor <> nil);
+  AResumeNeedsFullFrame := False;
+  if not AWasActive then
+    Exit;
+  AResumeNeedsFullFrame := not StopAsyncVideoOutput;
+  // StopAsyncVideoOutput deliberately retains the nonblocking descriptor
+  // when terminal teardown could not drain. A fork pause is not teardown:
+  // discard that private descriptor and let the parent reopen a clean one.
+  CloseOutputDescriptor(OutputHandle);
+  BlockingTeardownUnsafe := False;
+  OutputFailed := False;
+  AsyncOutputEverStarted := False;
+end;
+{$ENDIF}
+
+procedure ResumeAsyncVideoOutputAfterFork(AWasActive,
+  AResumeNeedsFullFrame: Boolean);
+{$IFDEF WINDOWS}
+begin
+  Unused(AWasActive);
+  Unused(AResumeNeedsFullFrame);
+end;
+{$ELSE}
+begin
+  if not AWasActive then
+    Exit;
+  StartAsyncVideoOutput;
+  // A clean pause drained every admitted frame, so the physical terminal and
+  // EffOld still describe the same screen. Preserve that valuable baseline.
+  // A bounded pause that abandoned output must instead make the next
+  // presentation self-contained.
+  if AResumeNeedsFullFrame then
+    InvalidateFrame;
+end;
+{$ENDIF}
+
 procedure InstallWideVideoOutput;
 var
   Driver: TVideoDriver;
@@ -1610,7 +2447,14 @@ begin
   Driver := SavedDriver;
   Driver.InitDriver := @WideInitVideo;
   Driver.UpdateScreen := @WideUpdateScreen;
+  Driver.ClearScreen := @WideClearScreen;
   Driver.DoneDriver := @WideDoneVideo;
+  Driver.SetCursorPos := @WideSetCursorPos;
+  Driver.GetCursorType := @WideGetCursorType;
+  Driver.SetCursorType := @WideSetCursorType;
+  {$IFDEF WINDOWS}
+  Driver.SetVideoMode := @WideSetVideoMode;
+  {$ENDIF}
   if SetVideoDriver(Driver) then
     DriverInstalled := True;
 end;
@@ -1628,6 +2472,7 @@ var
   Info: TConsoleScreenBufferInfo;
   HOut: THandle;
 begin
+  Info := Default(TConsoleScreenBufferInfo);
   // No DSR round-trip needed: the console buffer knows the cursor position.
   ConsoleRow := 0;
   ConsoleCol := 0;
@@ -1716,5 +2561,23 @@ begin
   if (ConsoleRow > 0) and (ConsoleCol > 0) then
     WriteRaw(#27'[' + IntToStr(ConsoleRow) + ';' + IntToStr(ConsoleCol) + 'H');
 end;
+
+finalization
+  {$IFDEF UNIX}
+  if OutputReactor <> nil then
+  begin
+    OutputReactor.Terminate;
+    SignalPipe(OutputWakePipe[1]);
+    OutputReactor.WaitFor;
+    FreeAndNil(OutputReactor);
+  end;
+  CloseOutputDescriptor(OutputWakePipe[0]);
+  CloseOutputDescriptor(OutputWakePipe[1]);
+  CloseOutputDescriptor(OutputProgressPipe[0]);
+  CloseOutputDescriptor(OutputProgressPipe[1]);
+  CloseOutputDescriptor(OutputHandle);
+  {$ENDIF}
+  if OutputLockInitialized then
+    DoneCriticalSection(OutputLock);
 
 end.

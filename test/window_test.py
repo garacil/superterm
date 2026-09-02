@@ -52,9 +52,10 @@ class Session:
             readable, _, _ = select.select([self.fd], [], [], 0.05)
             if readable:
                 try:
-                    self.stream.feed(os.read(self.fd, 65536))
-                except Exception:
+                    data = os.read(self.fd, 65536)
+                except OSError:
                     return
+                stlib.feed_pyte(self.stream, data, 'window')
 
     def send(self, data, seconds=0.8):
         os.write(self.fd, data)

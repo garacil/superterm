@@ -562,6 +562,7 @@ type
   end;
 
 const
+  ST_STD_INPUT_HANDLE  = LongWord($FFFFFFF6); // DWORD(-10)
   ST_STD_OUTPUT_HANDLE = LongWord($FFFFFFF5); // DWORD(-11)
   ST_STD_ERROR_HANDLE  = LongWord($FFFFFFF4); // DWORD(-12)
   ST_INVALID_HANDLE_VALUE = High(PtrUInt);
@@ -571,6 +572,9 @@ function StGetStdHandle(AKind: LongWord): PtrUInt; stdcall;
 function StGetConsoleScreenBufferInfo(AHandle: PtrUInt;
   var AInfo: TStConsoleScreenBufferInfo): LongBool; stdcall;
   external 'kernel32' name 'GetConsoleScreenBufferInfo';
+function StWaitForSingleObject(AHandle: PtrUInt;
+  AMilliseconds: LongWord): LongWord; stdcall;
+  external 'kernel32' name 'WaitForSingleObject';
 {$ENDIF}
 
 var
@@ -785,6 +789,11 @@ begin
     SuppressFlush := False;
     FBootLocked := False;
   end;
+  // From this point onward one dedicated client reactor owns physical output.
+  // Startup CPR/encoding probes deliberately stayed on the old synchronous
+  // path; interactive Free Vision, keyboard and mouse must never wait for a
+  // slow terminal write.
+  StartAsyncVideoOutput;
   HostPasteOn;
   UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
   if not PassthroughActive then
@@ -7400,6 +7409,12 @@ var
 begin
   if PassthroughActive or (Desktop = nil) then
     Exit;
+  // FreeVision may have redrawn a native title control immediately before
+  // entering this cosmetic sequence (the zoom button paints down and up
+  // around cmZoom).  Preserve that completed feedback as its own physical
+  // state instead of allowing the first outline to absorb it while an older
+  // frame is still draining through the asynchronous output reactor.
+  PresentOrderedVideoFrame;
   P := 0;
   if AWindow <> nil then
   begin
@@ -7419,11 +7434,11 @@ begin
     y2 := AY2 + ((BY2 - AY2) * k) div STEPS;
     TransientOutlineSet(P, x1, y1, x2, y2, FrameAttr);
     SendOutlineStep(PREVIEW_OP_OUTLINE_SHOW);
-    UpdateScreen(False);
+    PresentOrderedVideoFrame;
     Sleep(FRAME_MS);
     TransientOutlineClear(P);
     SendOutlineStep(PREVIEW_OP_OUTLINE_HIDE);
-    UpdateScreen(False);
+    PresentOrderedVideoFrame;
   end;
 end;
 
@@ -7826,6 +7841,12 @@ begin
             AFullRedraw := False;
             Result := True;
           end;
+          // The authoritative layout or lease paint precedes this tail in
+          // socket FIFO order.  Complete that base presentation before the
+          // first cosmetic ring, even when the physical output reactor is
+          // still draining an older frame; otherwise the ring's SHOW can
+          // silently carry unrelated cells which its HIDE cannot undo.
+          PresentOrderedVideoFrame;
           RemotePreviewTailGesture[APane] := 0;
           RemotePreviewTailBase[APane] := 0;
         end;
@@ -7838,7 +7859,7 @@ begin
         TransientOutlineSet(APane, Desktop^.Origin.X + R.A.X,
           Desktop^.Origin.Y + R.A.Y, Desktop^.Origin.X + R.B.X - 1,
           Desktop^.Origin.Y + R.B.Y - 1, FrameAttr);
-        UpdateScreen(False);
+        PresentOrderedVideoFrame;
       end;
     PREVIEW_OP_OUTLINE_HIDE:
       if RemotePreviewOverlayGesture[APane] = Preview.GestureId then
@@ -7846,7 +7867,7 @@ begin
         TransientOutlineClear(APane);
         RemotePreviewOverlayOn[APane] := False;
         RemotePreviewOverlayGesture[APane] := 0;
-        UpdateScreen(False);
+        PresentOrderedVideoFrame;
       end;
   end;
 end;
@@ -9935,9 +9956,98 @@ var
     LastBlink: cardinal = 0;
     LastSizeCheck: cardinal = 0;
     LastLayoutSync: cardinal = 0;
+
+  procedure WaitForActivity(AMaxMs: LongInt);
+  {$IFDEF WINDOWS}
+  var
+    H: PtrUInt;
+  begin
+    // Only the console input handle is waitable here. ConPTY output arrives on
+    // anonymous pipes, which Win32 cannot wait on, and a Phase-1 client has no
+    // session socket to add. The pane loop above peeks those pipes and skips
+    // this call whenever it actually moved bytes, so parking happens only when
+    // there is nothing to do -- and a keystroke or a mouse report still wakes
+    // the loop at once instead of after a fixed sleep.
+    H := StGetStdHandle(ST_STD_INPUT_HANDLE);
+    if (H = 0) or (H = ST_INVALID_HANDLE_VALUE) then
+      Exit;
+    StWaitForSingleObject(H, LongWord(AMaxMs));
+  end;
+  {$ELSE}
+  var
+    PollFds: array[0..MAX_PANES + 2] of TPollFD;
+    Count, J, Fd: integer;
+
+    procedure AddFd(AFd: cint; AEvents: cshort);
+    var
+      K: integer;
+    begin
+      if (AFd < 0) or (Count > High(PollFds)) then
+        Exit;
+      for K := 0 to Count - 1 do
+        if PollFds[K].fd = AFD then
+        begin
+          PollFds[K].events := PollFds[K].events or AEvents;
+          Exit;
+        end;
+      PollFds[Count] := Default(TPollFD);
+      PollFds[Count].fd := AFD;
+      PollFds[Count].events := AEvents;
+      Inc(Count);
+    end;
+
+  begin
+    Count := 0;
+    AddFd(StdInputHandle, POLLIN);
+    // On a GNU/Linux virtual console GPM is a separate Unix socket, not tty
+    // input. Include its real descriptor so the event-driven client wakes on
+    // mouse input instead of noticing it only when an unrelated timer fires.
+    AddFd(MouseInputWaitHandle, POLLIN);
+    Fd := VideoOutputWaitHandle;
+    AddFd(Fd, POLLIN);
+    if RemoteMode and (Remote <> nil) then
+    begin
+      Fd := Remote.WaitHandle;
+      if Remote.WantsWrite then
+        AddFd(Fd, POLLIN or POLLOUT)
+      else
+        AddFd(Fd, POLLIN);
+    end
+    else
+      for J := 0 to MAX_PANES - 1 do
+        if (Panes[J] <> nil) and Panes[J].Alive then
+        begin
+          if Panes[J].InputPending then
+            AddFd(Panes[J].Master, POLLIN or POLLOUT)
+          else
+            AddFd(Panes[J].Master, POLLIN);
+        end;
+    if Count > 0 then
+      repeat
+        J := fpPoll(@PollFds[0], Count, AMaxMs);
+      until (J >= 0) or (fpGetErrNo <> ESysEINTR);
+  end;
+  {$ENDIF}
 begin
   HostPaste := '';
-    inherited Idle;
+  // TProgram.Idle performs these two useful Free Vision duties and then a
+  // blind 10 ms nanosleep. Preserve the duties, replace the sleep below with
+  // a descriptor-driven wait that wakes immediately for real work.
+  if StatusLine <> nil then
+    StatusLine^.Update;
+  if CommandSetChanged then
+  begin
+    Message(@Self, evBroadcast, cmCommandSetChanged, nil);
+    CommandSetChanged := False;
+  end;
+  if PumpVideoOutput then
+    Video.UpdateScreen(False);
+  if VideoOutputHasFailed then
+  begin
+    DebugLog('video: output reactor failed; closing client cleanly');
+    Message(@Self, evCommand, cmQuit, nil);
+    Exit;
+  end;
   if Current = PView(Desktop) then
     while TakeHostPaste(HostPaste) do
     begin
@@ -10228,6 +10338,7 @@ begin
          (Win[i]^.Term <> nil) then
         RepaintPane(i);
     end;
+    WaitForActivity(10);
     Exit;
   end;
   // poll ptys
@@ -10272,8 +10383,6 @@ begin
           Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
       end;
     end;
-  if not AnyLocalOutput then
-    Sleep(8);
   {$ELSE}
   maxfd := -1;
   fpFD_ZERO(fdset);
@@ -10287,7 +10396,7 @@ begin
   if maxfd >= 0 then
   begin
     tv.tv_sec := 0;
-    tv.tv_usec := 8000;
+    tv.tv_usec := 0;
     if fpSelect(maxfd + 1, @fdset, nil, nil, @tv) > 0 then
       for i := 0 to MAX_PANES - 1 do
         if (Panes[i] <> nil) and Panes[i].Alive and
@@ -10319,8 +10428,7 @@ begin
           end;
         end;
   end
-  else
-    Sleep(8);
+  else ;
   // Reap only leaders owned by the current local workspace. waitpid(-1)
   // could collect a child whose PTY was transferred to an older daemon and
   // make that daemon's still-stored PGID reusable before it observes EOF.
@@ -10370,6 +10478,12 @@ begin
           Win[i]^.SetTitle(' ' + Copy(ExtractFileName(Panes[i].TitleCwd), 1, 24));
       end;
   end;
+  {$IFDEF WINDOWS}
+  // A pane that just produced output very likely has more queued behind it:
+  // its pipe is not waitable, so go straight round again instead of parking.
+  if not AnyLocalOutput then
+  {$ENDIF}
+    WaitForActivity(10);
 end;
 
 // informational menu row: always gray, never dispatchable (TV

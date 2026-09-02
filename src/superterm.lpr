@@ -321,9 +321,13 @@ begin
   // is left is to say so in the trace, which is the one line that explains a
   // machine where the mouse is missing
   if DebugActive then
-    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d',
+    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d waitfd=%d',
       [GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
-       Drivers.ButtonCount]));
+       Drivers.ButtonCount, MouseInputWaitHandle]));
+  // st_mouse must initialize before Drivers and therefore cannot depend on
+  // st_video. Connect its tiny mode-sequence producer only now, before
+  // TApplication.Init starts the selected mouse driver.
+  InstallMouseOutputWriter(@st_video.WriteRaw);
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video

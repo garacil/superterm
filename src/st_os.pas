@@ -103,11 +103,18 @@ begin
   Result := ExcludeTrailingPathDelimiter(Result);
 end;
 
+{$IFDEF WINDOWS}
+// Marks a parameter of a fixed cross-platform signature as intentionally
+// unused, the same diagnostic-free helper the vendored Free Vision units use.
+procedure Unused(const A); begin if @A = nil then; end;
+{$ENDIF}
+
 procedure OsRestrictFile(const APath: string);
 begin
   {$IFDEF WINDOWS}
   // ACL tightening is deferred; a single-user %APPDATA% profile inherits the
   // account's protection. Intentionally a no-op, not an error.
+  Unused(APath);
   {$ELSE}
   FpChmod(PAnsiChar(APath), &600);
   {$ENDIF}
@@ -116,6 +123,7 @@ end;
 procedure OsRestrictDir(const APath: string);
 begin
   {$IFDEF WINDOWS}
+  Unused(APath);
   {$ELSE}
   FpChmod(PAnsiChar(APath), &700);
   {$ENDIF}
