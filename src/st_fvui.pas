@@ -9965,12 +9965,13 @@ var
     // as finished, and the longest a continuous drag may go without any
     // refresh at all. See the sampling block below.
     RESIZE_SETTLE_MS = 120;
-    RESIZE_REFRESH_MS = 750;
+    RESIZE_REFRESH_MS = 80;
     SeenCols: integer = 0;
     SeenRows: integer = 0;
     SizeStillTick: cardinal = 0;
     SizeMovingSince: cardinal = 0;
     SizeMoving: boolean = False;
+    LastAlive: cardinal = 0;
     {$ENDIF}
 
   procedure WaitForActivity(AMaxMs: LongInt);
@@ -10093,10 +10094,21 @@ begin
   // apply it and repaint unconditionally -- the surface may well be right
   // already, and it is what the terminal is showing that is not. A drag that
   // never pauses still gets a refresh every RESIZE_REFRESH_MS.
+  // One line a second, so a trace can tell "Idle never ran" apart from "Idle
+  // ran and the resize was missed". Without it the two look identical in a log.
+  if DebugActive and (Tick - LastAlive >= 1000) then
+  begin
+    LastAlive := Tick;
+    DebugLog(Format('win: idle alive screen=%dx%d bounds=%dx%d moving=%d',
+      [ScreenWidth, ScreenHeight, Size.X, Size.Y, Ord(SizeMoving)]));
+  end;
   if ReadTerminalSize(SizeCols, SizeRows) then
   begin
     if (SizeCols <> SeenCols) or (SizeRows <> SeenRows) then
     begin
+      if DebugActive then
+        DebugLog(Format('win: console size seen %dx%d (was %dx%d)',
+          [SizeCols, SizeRows, SeenCols, SeenRows]));
       SeenCols := SizeCols;
       SeenRows := SizeRows;
       SizeStillTick := Tick;
@@ -10111,6 +10123,9 @@ begin
              (Tick - SizeMovingSince >= RESIZE_REFRESH_MS)) then
     begin
       SizeMoving := False;
+      if DebugActive then
+        DebugLog(Format('win: console size settled %dx%d screen=%dx%d bounds=%dx%d',
+          [SizeCols, SizeRows, ScreenWidth, ScreenHeight, Size.X, Size.Y]));
       // Hold the writes across the rebuild so this settles into exactly one
       // physical frame: ApplyTerminalSize's own final paint stays buffered,
       // and the single emit below carries the whole settled screen.
@@ -10121,8 +10136,15 @@ begin
       finally
         SuppressFlush := SizeSuppress;
       end;
+      // The full frame below rewrites every cell: a complete repaint on its
+      // own, which Windows Terminal renders as soon as it arrives. (When it
+      // seemed not to, the client was in fact stuck in ReadFile on the
+      // console input handle -- see CharRecordPending in st_kbd.)
       InvalidateFrame;
       ReDraw;
+      if DebugActive then
+        DebugLog(Format('win: console size repainted screen=%dx%d bounds=%dx%d',
+          [ScreenWidth, ScreenHeight, Size.X, Size.Y]));
     end;
   end;
   {$ELSE}

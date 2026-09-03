@@ -498,12 +498,54 @@ begin
   Result := QueueOutputTransaction(S[1], Length(S), True, AAppendFrame);
 end;
 
+{$IFDEF WINDOWS}
+// Diagnostic tee: SUPERTERM_TEE=path copies every byte written to the console
+// into that file, and path.idx records "offset length tick" per write, so a
+// frame can be replayed byte-for-byte outside superterm.
+var
+  TeeData: THandle = INVALID_HANDLE_VALUE;
+  TeeIndex: THandle = INVALID_HANDLE_VALUE;
+  TeeResolved: Boolean = False;
+  TeeOffset: Int64 = 0;
+
+procedure TeeWrite(const AData; ALen: LongInt);
+var
+  Written: DWORD;
+  FN: string;
+  Line: AnsiString;
+begin
+  if not TeeResolved then
+  begin
+    TeeResolved := True;
+    FN := SysUtils.GetEnvironmentVariable('SUPERTERM_TEE');
+    if FN = '' then
+      Exit;
+    TeeData := CreateFileW(PWideChar(UnicodeString(FN)), GENERIC_WRITE,
+      FILE_SHARE_READ, nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    TeeIndex := CreateFileW(PWideChar(UnicodeString(FN + '.idx')),
+      GENERIC_WRITE, FILE_SHARE_READ, nil, CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL, 0);
+  end;
+  if (TeeData = INVALID_HANDLE_VALUE) or (ALen <= 0) then
+    Exit;
+  Written := 0;
+  WriteFile(TeeData, AData, DWORD(ALen), Written, nil);
+  if TeeIndex <> INVALID_HANDLE_VALUE then
+  begin
+    Line := Format('%d %d %d'#13#10, [TeeOffset, ALen, GetTickCount64]);
+    WriteFile(TeeIndex, Line[1], DWORD(Length(Line)), Written, nil);
+  end;
+  Inc(TeeOffset, ALen);
+end;
+{$ENDIF}
+
 function RawWriteBlocking(const AData; ALen: LongInt): Boolean;
 var
   P: PByte;
   Left: LongInt;
   Written: Int64;
 begin
+  {$IFDEF WINDOWS}TeeWrite(AData, ALen);{$ENDIF}
   Result := False;
   if ALen <= 0 then
     Exit(True);
@@ -2175,6 +2217,16 @@ begin
   WriteRaw(#27'7'#27'[s');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
+  {$IFDEF WINDOWS}
+  // On Unix the RTL driver's InitDriver enters the alternate screen (smcup);
+  // the Win32 driver knows nothing of VT and leaves us in the console's main
+  // buffer. WideDoneVideo already leaves the alternate screen on exit, so
+  // enter it here too: it keeps the shell's scrollback intact under the
+  // application, and Windows Terminal does not reflow it on a resize -- a
+  // window being dragged narrower merely clips the picture until the next
+  // frame, instead of re-wrapping every full-width row into two.
+  WriteRaw(#27'[?1049h'#27'[H'#27'[2J');
+  {$ENDIF}
   DetectHostEncoding;
   // TTermView and every FreeVision frame use CP437 semantic bytes. FPC may
   // select CP850 when LANG is not UTF-8; keep one canonical grid and perform

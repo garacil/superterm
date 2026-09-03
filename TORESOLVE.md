@@ -151,52 +151,110 @@ success lets the RTL reallocate the buffer, which was the only missing step.
 breaks the interface, which it reliably did before. A second, smaller defect
 remained on top of it, diagnosed below.
 
-### 2.1b The settled resize was never repainted
+### 2.1b The settled resize was never repainted — the client was stuck in `ReadFile`
 
-**Symptom after the video-mode fix:** a resize still left the screen looking
-wrong, but pressing any key or clicking repainted it correctly, and
-`Desktop -> adapt size` always produced a perfect screen.
+**Symptom after the video-mode fix:** a maximize or restore left the old
+picture on screen (the previous layout in the top-left corner, nothing below it)
+until any key or click, after which everything was perfect. `Desktop -> adapt
+size` always produced a correct screen.
 
-That pattern says the geometry ends up right and only the *painting* is missing,
-which is exactly what the code did:
+**What was actually happening.** Nothing was wrong with the painting. The
+client was not running. On Windows the console queues a `WINDOW_BUFFER_SIZE_EVENT`
+record on every resize of the window **even with `ENABLE_WINDOW_INPUT` clear**,
+and a `FOCUS_EVENT` on every focus change. Those records signal the input
+handle, so `WaitForActivity` woke, `KPoll` called `FillBuf`, and `FillBuf`
+called `ReadFile` on the handle. `ReadFile` on a console input handle only
+returns characters: it discards every other record by *waiting* for the next
+one that carries a character. The whole client sat inside that call from the
+moment of the resize until the user pressed a key or clicked. The settle logic
+then ran, applied the geometry and painted — which is why the log always showed
+a correct, complete frame "after the settle", and why the user always saw it
+"after the click": they were the same event.
 
-- A console resize announces itself to nobody. `KInit` clears
-  `ENABLE_WINDOW_INPUT`, so `WINDOW_BUFFER_SIZE_EVENT` records are never queued,
-  and the VT input stream has no resize sequence. (This also disproves the
-  earlier suspicion that unconsumed resize records were waking or blocking the
-  input handle — with that flag off there are no such records.) The only way to
-  see a resize is to ask the console.
-- `Idle` asked every 250 ms. A drag walks through many geometries, so each poll
-  applied an intermediate one and emitted a frame into a console that was
-  already reflowing to the next size.
-- Worst at the end: when the gesture stops on a size that was already applied,
-  `ApplyTerminalSize` finds nothing to do and returns **without painting**. So
-  the last frame on screen was one emitted mid-reflow, and nothing repainted it
-  until an unrelated key or click did.
+The heartbeat gave it away. With the one-per-second `win: idle alive` line, the
+trace of a maximize followed by a click reads:
 
-**Fix (in `src/st_fvui.pas`, `TSuperApp.Idle`, Windows only).** Sample the
-console size on every idle pass — it is one `GetConsoleScreenBufferInfo` call —
-but only *record* it. When the geometry has held still for `RESIZE_SETTLE_MS`
-(120 ms), apply it once and repaint unconditionally, since the surface is
-usually already correct and it is the terminal's contents that are not. A drag
-that never pauses still refreshes every `RESIZE_REFRESH_MS` (750 ms). The
-rebuild is wrapped in `SuppressFlush` so `ApplyTerminalSize`'s own final paint
-stays buffered and the whole settled screen leaves as a single physical frame.
+```
+01:24:59.555  win: idle alive screen=120x30 bounds=120x30      (maximize at 01:25:00.2)
+01:25:03.232  win: idle alive screen=120x30 bounds=120x30      (mouse-down at 01:25:03.2)
+01:25:03.232  win: console size seen 423x108 (was 120x30)
+01:25:03.349  win: console size settled 423x108
+01:25:03.364  win: console size repainted screen=423x108 bounds=423x108
+```
 
-The Unix path is untouched: it keeps the 250 ms `SyncTerminalSize` poll, since
-`SIGWINCH`-era terminals behave differently and none of this applies there.
+Three and a half seconds without a heartbeat, ending exactly at the click.
 
-**Status: NOT yet validated interactively.** Build is clean at `-Sewnh` and the
-CLI smoke checks pass. Next: maximize, restore, slow drag, fast drag, drag with
-several panes open, with one maximized, and during passthrough. Also worth
-checking a font-size change, which alters the cell grid without a mouse resize.
+**How it was pinned down** (everything lives in `notes/local/resize-harness/`,
+which is gitignored):
 
-*Relevance to `main`:* the settle-then-repaint idea is not Windows-specific —
-any host whose resize arrives as a stream of intermediate sizes has the same
-problem — but on Unix `SIGWINCH` already coalesces and the 250 ms poll has not
-misbehaved, so there is nothing to fix upstream today. Two things might be worth
-carrying up if that ever changes: the settle window itself, and the invariant
-below.
+1. A PowerShell harness launches a program in a new Windows Terminal window,
+   maximizes and restores it through `ShowWindow` (or drags it through
+   `MoveWindow` in steps), and captures the window with `PrintWindow` at each
+   step, so the host's rendering is observed directly instead of described.
+2. A minimal probe that only paints on settle (`resizeprobe.lpr`) repainted by
+   itself, with every combination of SuperTerm's console setup (alternate
+   screen, VT input mode, UTF-8 code page). The host was fine.
+3. A tee in `RawWriteBlocking` (`SUPERTERM_TEE=path`, Windows only) captured
+   every byte SuperTerm wrote, with an index of offsets per write. A second
+   probe (`replayprobe.lpr`) replayed those exact bytes on settle — and painted
+   correctly without input. The bytes were fine.
+4. The same replay, made to read its input the way SuperTerm does
+   (`replayread.lpr`: `WaitForSingleObject` on the input handle, then
+   `ReadFile`), reproduced the defect exactly. The process's input path was the
+   difference, and the heartbeat gap said which call.
+
+**Fix (in `src/st_kbd.pas`, Windows only).** `CharRecordPending` peeks the
+console input queue with `PeekConsoleInputW` and consumes, with
+`ReadConsoleInputW`, every leading record `ReadFile` would have discarded: any
+record that is not a key-down carrying a character. `FillBuf` calls `ReadFile`
+only when such a record is at the head of the queue. A timed poll that wakes
+without one reports "nothing" and returns to the caller's loop; a blocking read
+waits again. In a debug build the consumed record types are logged
+(`kbd: consumed console records without characters: 4` — 4 is the window-size
+record, 16 is focus).
+
+**Two follow-ups for the drag case.** With the stall gone, dragging a window
+edge still looked wrong *while* dragging: Windows Terminal reflows the main
+screen buffer on every width change, so each full-width row wrapped into two
+and the picture became alternating drawn and black lines until the next frame.
+
+- SuperTerm on Windows never entered the alternate screen. On Unix the RTL
+  driver's `InitDriver` does it (smcup); the Win32 driver knows no VT, yet
+  `WideDoneVideo` already emitted `?1049l` on exit. `WideInitVideo` now emits
+  `?1049h` on Windows after the RTL driver. In the alternate buffer the host
+  clips instead of reflowing, and the shell's scrollback survives underneath.
+- `RESIZE_REFRESH_MS` went from 750 to 80, so a drag that never pauses repaints
+  about twelve times a second; `RESIZE_SETTLE_MS` (120) still issues the final
+  frame once the gesture stops.
+
+**Verification.** Under the harness, with no click at all, SuperTerm shows the
+settled 423x108 screen 150 ms after the maximize and the 120x30 screen after
+the restore; the heartbeat has no gaps; a simulated 24-step drag shows only a
+clipped picture between frames; key records injected with `WriteConsoleInput`
+reach the pane. The `ESC[H ESC[2J` nudge tried before the fix was unnecessary
+and has been removed.
+
+**Earlier conclusions in this file that were wrong, kept so nobody repeats
+them:**
+
+- "`ENABLE_WINDOW_INPUT` is cleared, so no resize records are queued and the
+  input handle cannot be woken by a resize." False on this host (Windows 11
+  26200, Windows Terminal 1.24 over ConPTY): the record is queued and signals
+  the handle regardless of the flag. The code reading was right, the inference
+  about the console was speculation, and only the experiment settled it.
+- "The clicks produce no log activity, so they never reach SuperTerm." False.
+  The click's VT bytes were exactly what unblocked `ReadFile`; the settle lines
+  that followed *were* the click's effect. Mouse reporting works.
+
+**The resize event does exist.** `WINDOW_BUFFER_SIZE_EVENT` arrives on every
+console resize whether or not it was asked for. With the drain in place it
+could become the trigger instead of a poll; today the poll on each idle pass
+sees the change in the same pass that consumes the record, so there is nothing
+to gain yet.
+
+*Relevance to `main`:* the mechanism is Windows-only (`ReadFile` on a console
+input handle has no POSIX counterpart: `select`/`poll` readiness on a tty means
+bytes). What transfers is the method, see 2.1c.
 
 *Relevance to `main` (from 2.1):* the video-mode bug is Windows-only — the Unix
 video drivers neither resize the terminal nor reject sizes — so that fix does
@@ -205,6 +263,37 @@ without checking that `Video.ScreenWidth` actually became what was asked for. A
 cheap post-condition there would have turned this into a visible failure instead
 of silent corruption, on any platform whose driver can refuse a mode. That is a
 real hardening candidate for `main`, independent of Windows.
+
+### 2.1c Debug instrumentation added for the resize hunt
+
+All of it is silent unless `SUPERTERM_DEBUG` (or `SUPERTERM_TEE`) is set.
+
+| Where | Line / facility | Says |
+|---|---|---|
+| `TSuperApp.Idle` | `win: idle alive screen=WxH bounds=WxH moving=N` | once a second, unconditionally |
+| `TSuperApp.Idle` | `win: console size seen WxH (was WxH)` | the poll observed a new geometry |
+| `TSuperApp.Idle` | `win: console size settled WxH screen=WxH bounds=WxH` | the geometry is about to be applied (settle or periodic refresh) |
+| `TSuperApp.Idle` | `win: console size repainted screen=WxH bounds=WxH` | the forced full frame has been issued |
+| `st_kbd.CharRecordPending` | `kbd: consumed console records without characters: T T ...` | record types drained before a read (4 = window size, 16 = focus) |
+| `st_video.RawWriteBlocking` | `SUPERTERM_TEE=path` | every byte written to the console, plus `path.idx` with `offset length tick` per write |
+
+Two of these generalise and are worth carrying to `main`:
+
+- **The heartbeat.** Every hypothesis in this hunt — "the event loop is
+  blocked", "the poll never sees it", "the frame is coalesced" — looks identical
+  in a trace that only logs when something happens: an absence. A once-a-second
+  line that prints the geometry the application currently believes in
+  separates "nothing happened" from "nothing ran". It eliminated two wrong
+  hypotheses in one run and then exposed the real one as a 3.5 s gap.
+- **The output tee.** A byte-exact capture of what the client sent, with write
+  boundaries and timestamps, lets a trivial program replay the stream from a
+  process that has none of the application's other behaviour. That single
+  experiment partitions every terminal-side bug into "the bytes" or "the
+  process". The POSIX variant is a few lines next to `RawWriteBlocking`'s
+  `fpWrite` sibling, and it would sit naturally beside `SUPERTERM_DEBUG_FULL`.
+
+The console-size lines and the record drain line are Windows-specific and stay
+here.
 
 ### 2.2 The idle wait, generalised
 
@@ -242,11 +331,82 @@ Beyond the Phase-1 limitations already listed in `docs/WINDOWS.md`:
   the connection runs alone and the post-connect command is silently discarded.
   It needs a native equivalent, and until then it should be reported to the user
   rather than ignored.
-- **Interactive validation of the 5.2.2 merge.** The build is clean and the CLI
-  answers, but the merged interactive path has not been driven: panes,
-  passthrough, the mouse, paste, and above all resize (2.1). The Python test
-  suite is POSIX-only and cannot cover it.
+- **Interactive validation of the 5.2.2 merge.** The build is clean, the CLI
+  answers, and resize (maximize, restore, drag) is now driven and verified
+  under the harness (2.1b). Still not driven on the merged path: panes,
+  passthrough, the mouse, paste. The Python test suite is POSIX-only and
+  cannot cover it.
 - **`st_server.pas` stub-block hint suppression.** Acceptable while the block is
   uniformly "unavailable on this platform". If Phase 2 gives some of those
   routines real bodies, the `{$push}{$hints off}` region must shrink to only
   what is still a stub.
+
+---
+
+## 4. Merge map — carrying `windows-support` into `main` behind compiler clauses
+
+This is the section that makes the eventual upstream merge mechanical. The
+rule on this branch is absolute: **every Windows change is either behind
+`{$IFDEF WINDOWS}` / `{$IFDEF UNIX}` (or their `IFNDEF` forms) or lives in a
+new unit that only a Windows build references.** A GNU/Linux or macOS build of
+this branch must produce the same binary `main` produces. When a change is
+platform-neutral (a vendor fix, a `-Sewnh` cleanup) it is listed as such and is
+the only kind that changes the Unix build.
+
+How to read the table: *guard* says what the Unix compiler sees; *merge* says
+what to do when the hunk is carried to `main`. "Copy" means the hunk is
+self-contained and can be applied verbatim; "needs X" names the other hunk it
+depends on.
+
+### 4.1 New units (Windows only, never compiled on Unix)
+
+| Unit | Role | Merge |
+|---|---|---|
+| `src/st_conpty.pas` | ConPTY backend: `CreatePseudoConsole`, `ResizePseudoConsole`, pipes, child process. Referenced only from `st_pty.pas` under `{$IFDEF WINDOWS}`. | Copy. Unix never sees it. |
+
+### 4.2 Guarded hunks in shared units
+
+| Unit | What the Windows side does | Guard | Merge |
+|---|---|---|---|
+| `st_kbd.pas` | `KInit`/`KDone`: put the console input handle in VT mode (`ENABLE_VIRTUAL_TERMINAL_INPUT`, no line/echo/processed input, no quick-edit, no mouse/window records requested), `SetConsoleCP(CP_UTF8)`. | `{$IFDEF WINDOWS}` inside the procedures | Copy. |
+| `st_kbd.pas` | `FillBuf`: wait on the input handle with `WaitForSingleObject`, then `ReadFile`. **`CharRecordPending` (2.1b)** drains window-size, focus and character-less key records with `PeekConsoleInputW`/`ReadConsoleInputW` before any `ReadFile`, so the client can never block behind a resize. | `{$IFDEF WINDOWS}` (the Unix branch is the `fpSelect` + `FileRead` pair) | Copy. Needs `st_debug` in the Windows `uses` (already guarded). |
+| `st_video.pas` | `EnableVTConsole`/`RestoreVTConsole`: `ENABLE_VIRTUAL_TERMINAL_PROCESSING` + `DISABLE_NEWLINE_AUTO_RETURN`, output code page UTF-8. Called from `InstallWideVideoOutput`. | `{$IFDEF WINDOWS}` | Copy. |
+| `st_video.pas` | `WideSetVideoMode` (2.1): accept any size, set `Video.ScreenWidth/Height`, never command the console. Installed as `Driver.SetVideoMode`. | `{$IFDEF WINDOWS}` around the function and the assignment | Copy. |
+| `st_video.pas` | `WideInitVideo`: enter the alternate screen (`?1049h`) after the RTL driver, because the Win32 driver emits no smcup (2.1b). | `{$IFDEF WINDOWS}` inside the procedure | Copy. |
+| `st_video.pas` | Output reactor: thread, ring, wake/progress pipes, non-blocking helpers, fork pause/resume are Unix; Windows has stubs that report "no reactor" and a `cint`/`TFilDes` alias block so shared declarations compile. | Reactor `{$IFDEF UNIX}`, stubs `{$IFDEF WINDOWS}` | Copy both halves together; the stubs exist because the shared call sites are unconditional. |
+| `st_video.pas` | `RawWriteBestEffort`: Windows variant is the blocking writer (only reachable after a teardown Windows cannot enter). | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
+| `st_video.pas` | `TeeWrite` (`SUPERTERM_TEE`, 2.1c) called first thing in `RawWriteBlocking`. | `{$IFDEF WINDOWS}` | Copy; a POSIX twin is a candidate (2.1c), not a requirement. |
+| `st_video.pas` | `CaptureConsoleCursor`: read the cursor with `GetConsoleScreenBufferInfo` instead of a DSR round trip; `ReleaseConsoleInput`: `FlushConsoleInputBuffer` + `RestoreVTConsole` instead of `TCFlush`. | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
+| `st_fvui.pas` | `WaitForActivity`: wait on the console input handle (local `kernel32` import `StWaitForSingleObject`) instead of `fpPoll` over descriptors (1.2). | `{$IFDEF WINDOWS}` / `{$ELSE}` inside the nested procedure | Copy. |
+| `st_fvui.pas` | `ReadTerminalSize`: `GetConsoleScreenBufferInfo` window rect on stdout, then stderr; Unix is `TIOCGWINSZ` on fds 0..2. | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
+| `st_fvui.pas` | `TSuperApp.Idle`: sample the console size every pass, apply after `RESIZE_SETTLE_MS` (120) of stillness or every `RESIZE_REFRESH_MS` (80) during a drag, then one forced full frame; heartbeat and trace lines (2.1c). The Unix 250 ms `SyncTerminalSize` poll and its `LastSizeCheck` are untouched. | New code `{$IFDEF WINDOWS}`, `LastSizeCheck` `{$IFNDEF WINDOWS}` | Copy. Needs `ReadTerminalSize` and `WideSetVideoMode`. |
+| `st_fvui.pas` | Passthrough re-entry writes `?1049h` and re-asserts mouse modes; pane start/resize goes through `TPty` → `TConPty`. | Mixed; see the unit's own comments | Copy with `st_pty.pas`. |
+| `st_pty.pas` | `TPty` wraps `TConPty` for shells, `cmd.exe /d /k`, PowerShell/`pwsh`, argv, resize, buffered input, kill-on-close. | `{$IFDEF WINDOWS}` / `{$ELSE}` per method | Copy with `st_conpty.pas`. |
+| `st_mouse.pas` | `MouseInputWaitHandle` returns `-1`; `GpmWaitFd` is Unix; `HostMouseOn`/`HostMouseOff` write through `WriteMouseControl` (1.2). | `{$IFDEF UNIX}` / `{$IFDEF WINDOWS}` | Copy. |
+| `st_server.pas` | Phase-1 stub block: every session/daemon/socket routine reports "unavailable on this platform"; `WaitHandle`/`WantsWrite` added for `main`'s reactor contract (1.2); POSIX units and nine socket fields under `UNIX`. | `{$IFDEF WINDOWS}` block, `{$push}{$hints off}` inside it (1.3) | Copy. Shrink the hint region when Phase 2 lands. |
+| `st_debug.pas` | Log file through a Win32 handle, crash dir from `%TEMP%`; POSIX uses `fpOpen`, signals, `/tmp`. | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
+| `st_os.pas`, `st_config.pas`, `st_wclass.pas`, `st_cli_help.pas`, `st_artbg.pas` | Paths (`%ProgramData%`, `%LOCALAPPDATA%`), process helpers, help text naming Windows, background loading. | `{$IFDEF WINDOWS}` per hunk | Copy; each hunk is independent. `git diff main -- src/<unit>` lists them. |
+
+### 4.3 Platform-neutral changes (the only ones that touch the Unix build)
+
+| Where | Change | Why it is safe |
+|---|---|---|
+| `vendor/fv322/drivers.pas` | `GetTickCount` → `GetTickCount64`; `FVConsts` in `uses` only `{$IFNDEF OS_WINDOWS}` | Same value modulo the 49.7-day wrap; the unit is only used by the non-Windows branch. |
+| `vendor/fv322/views.pas` | CP850 frame table declared under the same `{$ifdef unix}` that selects it; unused `Windows` unit removed | Declaration matches its only use; the unit was never referenced. |
+| `vendor/fv322/app.pas`, `dialogs.pas`, `menus.pas`, `msgbox.pas` | Unused `Windows` unit removed; `-Sewnh` cleanups | No code path changes. |
+| `src/*` `Unused(const A)` helpers, `{$push}{$hints off}` region | Diagnostic hygiene for `-Sewnh` (1.3) | No code path changes; the helper must stay local per unit (`Windows` exports a colliding `Unused`). |
+| `Makefile.in`, `configure` | Windows target detection, `.exe` suffix, GNU Make 3.80 compatibility | Unix paths unchanged. |
+| `packaging/windows/`, `docs/WINDOWS.md` | Installer, launcher, documentation | New files. |
+
+### 4.4 The procedure
+
+1. Carry a hunk only when 2.x says it has been seen to work here, with the
+   evidence next to it.
+2. Apply it with its guard exactly as it is on this branch. Never un-guard to
+   "simplify": the guard is what proves the Unix build unchanged.
+3. Build `main` on GNU/Linux at the strict contract and confirm the binary is
+   byte-identical before and after (only 4.3 rows may change it, and each says
+   how).
+4. Build the Win64 target from `main` and run `notes/local/resize-harness/`
+   (maximize, restore, drag, injected keys) on the result.
+5. Record the promotion in this file: move the row from 2.x to 1.x history.

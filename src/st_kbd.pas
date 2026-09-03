@@ -43,7 +43,7 @@ implementation
 uses
   SysUtils, Keyboard, Mouse, Drivers
   {$IFDEF UNIX}, BaseUnix, Termio{$ENDIF}
-  {$IFDEF WINDOWS}, Windows{$ENDIF};
+  {$IFDEF WINDOWS}, Windows, st_debug{$ENDIF};
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
@@ -365,6 +365,59 @@ begin
 end;
 
 // waits up to TimeoutMs (negative = forever) for bytes in the buffer
+{$IFDEF WINDOWS}
+// True when the console input queue starts with a record ReadFile turns into
+// bytes: a key-down carrying a character. Everything ReadFile would discard
+// is consumed here first, because ReadFile discards such records by BLOCKING
+// until a real character follows. A resize of the console window queues a
+// WINDOW_BUFFER_SIZE_EVENT even with ENABLE_WINDOW_INPUT clear, and a focus
+// change queues a FOCUS_EVENT; either signals the handle, so the poll saw
+// activity, called ReadFile, and the whole client hung inside it until the
+// user pressed a key or clicked -- which is why a maximized superterm only
+// repainted on the next click. Established with a minimal program replaying
+// superterm's exact console bytes: it repainted by itself until it also read
+// its input this way.
+function CharRecordPending(HIn: THandle): Boolean;
+type
+  TInputRecords = array[0..31] of INPUT_RECORD;
+var
+  Recs: TInputRecords;
+  Have, Got, Skip: DWORD;
+  Kinds: string;
+begin
+  Result := False;
+  Kinds := '';
+  Recs := Default(TInputRecords);
+  repeat
+    Have := 0;
+    if not PeekConsoleInputW(HIn, Recs[0], Length(Recs), Have) or
+       (Have = 0) then
+      Break;
+    Skip := 0;
+    while Skip < Have do
+    begin
+      if (Recs[Skip].EventType = KEY_EVENT) and
+         Recs[Skip].Event.KeyEvent.bKeyDown and
+         (Recs[Skip].Event.KeyEvent.UnicodeChar <> #0) then
+        Break;
+      if DebugActive then
+        Kinds := Kinds + IntToStr(Recs[Skip].EventType) + ' ';
+      Inc(Skip);
+    end;
+    if Skip = 0 then
+    begin
+      Result := True;
+      Break;
+    end;
+    Got := 0;
+    if not ReadConsoleInputW(HIn, Recs[0], Skip, Got) or (Got = 0) then
+      Break;
+  until False;
+  if DebugActive and (Kinds <> '') then
+    DebugLog('kbd: consumed console records without characters: ' + Kinds);
+end;
+{$ENDIF}
+
 function FillBuf(TimeoutMs: integer): boolean;
 type
   TReadChunk = array[0..255] of byte;
@@ -392,9 +445,17 @@ begin
     WaitMs := INFINITE
   else
     WaitMs := DWORD(TimeoutMs);
-  WaitResult := WaitForSingleObject(HIn, WaitMs);
-  if WaitResult <> WAIT_OBJECT_0 then
-    Exit(False);
+  repeat
+    WaitResult := WaitForSingleObject(HIn, WaitMs);
+    if WaitResult <> WAIT_OBJECT_0 then
+      Exit(False);
+    if CharRecordPending(HIn) then
+      Break;
+    // Signalled without a character. A poll reports nothing and returns to
+    // the caller's loop; only a blocking read waits for the next record.
+    if WaitMs <> INFINITE then
+      Exit(False);
+  until False;
   Got := 0;
   if not ReadFile(HIn, tmp[0], SizeOf(tmp), Got, nil) then
     Exit(False);

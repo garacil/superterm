@@ -125,6 +125,22 @@ match, it commanded the console back to that geometry. SuperTerm now owns that
 driver hook on Windows: it accepts the size the console already has, resizes the
 buffer, and commands the console nothing.
 
+A second defect hid behind that one. On every resize the console queues a
+window-size record even though SuperTerm never asks for them, the input handle
+reports activity, and the character read that followed blocked until the next
+keystroke or click: the interface only caught up when the user touched it. The
+keyboard driver now consumes the records that carry no character before it
+reads, and only reads when a character is waiting. Resizes and focus changes no
+longer stall the client, and a maximized or restored window repaints by itself.
+
+Dragging a window edge is clean as well. The Windows client now runs on the
+alternate screen like the Unix client always did, so Windows Terminal clips the
+picture between frames instead of re-wrapping every row, and a drag that never
+pauses is repainted about twelve times a second until it settles.
+
+For diagnosis, `SUPERTERM_TEE=path` copies every byte the client writes to the
+console into that file, with an index of write boundaries.
+
 The whole Win64 build also meets the release's strict diagnostics contract:
 every warning, note and hint is fatal there too.
 
