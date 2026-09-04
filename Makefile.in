@@ -36,6 +36,7 @@ RES_DEP := $(PROJECT_DIR)/src/superterm.res
 endif
 
 SUPERTERM_BIN := $(PROJECT_DIR)/bin/superterm$(EXEEXT)
+SUPERTERM_TRAY_BIN := $(PROJECT_DIR)/bin/superterm-tray$(EXEEXT)
 SUPERTERM_DEBUG_BIN := $(PROJECT_DIR)/bin/superterm-debug$(EXEEXT)
 SUPERTERM_HEAP_BIN := $(PROJECT_DIR)/bin/superterm-debug-heap$(EXEEXT)
 
@@ -126,7 +127,7 @@ TESTS := drive_test.py large_screen_test.py mouse_backend_test.py mouse_test.py 
   screen_ascii_fastpath_test.py client_output_reactor_test.py \
   root_output_ui_stress_test.py
 
-.PHONY: all release debug debug-heap test-runtime test install uninstall install-deps clean distclean info
+.PHONY: all release traytool debug debug-heap test-runtime test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
@@ -155,6 +156,20 @@ $(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(RES_DEP) $(PROJECT_DIR
 
 release:
 	$(MAKE) MODE=release TARGET=$(SUPERTERM_BIN) all
+
+# Windows notification-area helper: a separate GUI executable (see
+# src/traytool) that lists live detached sessions and reopens or closes one.
+# Built only on Windows and never part of 'all'/'release', so a GNU/Linux or
+# macOS build never compiles it -- the same rule as src/st_conpty.pas.
+traytool:
+ifeq ($(OS),Windows_NT)
+	@mkdir -p "$(PROJECT_DIR)/build/units/tray" "$(PROJECT_DIR)/bin"
+	$(FPC) -Mobjfpc -Sh -Sewnh -vewnh -vm11030,11031 $(MODE_FLAGS) \
+		-FU$(PROJECT_DIR)/build/units/tray -FE$(PROJECT_DIR)/bin \
+		-o$(SUPERTERM_TRAY_BIN) $(PROJECT_DIR)/src/traytool/superterm-tray.lpr
+else
+	@printf '%s\n' 'traytool is a Windows-only component; nothing to build here.'
+endif
 
 debug:
 	$(MAKE) MODE=debug TARGET=$(SUPERTERM_DEBUG_BIN) all

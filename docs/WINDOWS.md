@@ -524,6 +524,10 @@ What works, and how to check it without any GUI:
   Unix; sessions live under `%LOCALAPPDATA%\superterm\sessions`.
 - `test\windows\session_smoke.ps1` drives the whole cycle (start, list,
   send, capture, detach, reattach, kill) and asserts each step.
+- A separate notification-area helper, `superterm-tray.exe`, lists the live
+  sessions and reopens or closes one from the tray, since the closed console
+  client leaves no window behind. It ships in the installer and the zip with a
+  Start-menu shortcut. Source and details: `src/traytool/`.
 
 Known Phase-2 gaps: the sessions directory and socket have no owner-only ACL
 yet (`OsRestrictDir`/`OsRestrictFile` are no-ops); the `.create-<name>.lock`

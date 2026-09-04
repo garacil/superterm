@@ -45,6 +45,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 $dist = Join-Path $root 'dist'
 $exe = Join-Path $root 'bin\superterm.exe'
+$tray = Join-Path $root 'bin\superterm-tray.exe'
 $setupName = "SuperTerm-$version-windows-x64-setup.exe"
 $zipName = "superterm-$version-windows-x86_64.zip"
 $setup = Join-Path $dist $setupName
@@ -67,6 +68,9 @@ if (-not $SkipBuild) {
   $rootPosix = '/' + ($root.Substring(0, 1).ToLower()) + ($root.Substring(2) -replace '\\', '/')
   & $bash -lc "cd '$rootPosix' && '$makePosix' release"
   if ($LASTEXITCODE -ne 0) { throw 'make release failed' }
+  & $bash -lc "cd '$rootPosix' && '$makePosix' traytool"
+  if ($LASTEXITCODE -ne 0) { throw 'make traytool failed' }
+  if (-not (Test-Path $tray)) { throw 'superterm-tray.exe was not built' }
   $reported = (& $exe --version | Select-Object -First 1)
   if ($reported -notmatch [regex]::Escape($version)) { throw "built binary reports '$reported', expected $version" }
   $vi = (Get-Item $exe).VersionInfo
@@ -75,9 +79,9 @@ if (-not $SkipBuild) {
 }
 
 if ($Sign) {
-  Step 'sign superterm.exe'
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign.ps1') $exe
-  if ($LASTEXITCODE -ne 0) { throw 'signing superterm.exe failed' }
+  Step 'sign superterm.exe and superterm-tray.exe'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign.ps1') $exe $tray
+  if ($LASTEXITCODE -ne 0) { throw 'signing the executables failed' }
 }
 
 Step 'installer'
@@ -94,7 +98,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $setup)) { throw 'ISCC failed' }
 Step 'zip'
 $stage = Join-Path $env:TEMP ("superterm-zip-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
-Copy-Item $exe, (Join-Path $PSScriptRoot 'superterm-launch.cmd'), (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE'), (Join-Path $root 'docs\WINDOWS.md') $stage
+Copy-Item $exe, $tray, (Join-Path $PSScriptRoot 'superterm-launch.cmd'), (Join-Path $root 'README.md'), (Join-Path $root 'LICENSE'), (Join-Path $root 'docs\WINDOWS.md') $stage
 Copy-Item (Join-Path $root 'backgrounds\*.art') $stage
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
@@ -110,7 +114,7 @@ foreach ($f in @($setup, $zip)) {
   $assets += @($f, "$f.sha256")
 }
 if ($Sign) {
-  foreach ($f in @($exe, $setup)) {
+  foreach ($f in @($exe, $tray, $setup)) {
     $s = Get-AuthenticodeSignature $f
     if ($s.Status -ne 'Valid') { throw "$f is not validly signed ($($s.Status))" }
   }

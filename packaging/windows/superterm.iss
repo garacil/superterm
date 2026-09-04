@@ -62,6 +62,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\..\bin\superterm.exe"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
+Source: "..\..\bin\superterm-tray.exe"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
 Source: "superterm-launch.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -72,6 +73,7 @@ Source: "..\..\examples\superterm.ini.example"; DestDir: "{app}\examples"; Flags
 [Icons]
 Name: "{group}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\superterm.exe"
 Name: "{group}\SuperTerm documentation"; Filename: "{app}\README.md"
+Name: "{group}\SuperTerm sessions (tray)"; Filename: "{app}\superterm-tray.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\superterm.exe"; Tasks: desktopicon
 
 [Run]
@@ -83,14 +85,21 @@ Filename: "{app}\superterm-launch.cmd"; Description: "Launch SuperTerm"; Working
 // and holds its shells. Installing or uninstalling over it must first close
 // it, so warn plainly (this ends live sessions), confirm, and only then close.
 
-function SuperTermRunning: Boolean;
+function ImageRunning(const AImage: string): Boolean;
 var
   Rc: Integer;
 begin
   // 'find' returns 0 only when the image appears in the task list.
   Result := Exec(ExpandConstant('{cmd}'),
-    '/c tasklist /FI "IMAGENAME eq superterm.exe" /NH | find /I "superterm.exe"',
+    '/c tasklist /FI "IMAGENAME eq ' + AImage + '" /NH | find /I "' + AImage + '"',
     '', SW_HIDE, ewWaitUntilTerminated, Rc) and (Rc = 0);
+end;
+
+// The console client, the no-window session server and the tray helper are all
+// loaded from {app}; any of them locks a file Setup must replace.
+function SuperTermRunning: Boolean;
+begin
+  Result := ImageRunning('superterm.exe') or ImageRunning('superterm-tray.exe');
 end;
 
 // Deliberately without /T. Updating from inside a SuperTerm session is the
@@ -103,6 +112,8 @@ var
   Rc: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM superterm.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM superterm-tray.exe',
     '', SW_HIDE, ewWaitUntilTerminated, Rc);
   Sleep(700);
 end;
