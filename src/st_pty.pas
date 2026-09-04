@@ -11,8 +11,10 @@ unit st_pty;
 interface
 
 uses
-  Classes, SysUtils, ctypes
-  {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF}
+  Classes, SysUtils
+  // Unix keeps main's order (ctypes after the POSIX units, so cint resolves
+  // exactly as before); on Windows ctypes is the only source of the C types.
+  {$IFDEF UNIX}, BaseUnix, Unix, Termio{$ENDIF}, ctypes
   {$IFDEF WINDOWS}, Windows, st_conpty{$ENDIF};
 
 const

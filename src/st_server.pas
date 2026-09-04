@@ -18,7 +18,12 @@ uses
   // GetEnvironmentVariable must win over the WinAPI spellings.
   Windows,
   {$ENDIF}
-  Classes, SysUtils, ctypes,
+  Classes, SysUtils,
+  {$IFDEF WINDOWS}
+  // The Winsock transport prologue declares its descriptors with the C
+  // types; on Unix they come from BaseUnix, exactly as on main.
+  ctypes,
+  {$ENDIF}
   {$IFDEF UNIX}
   BaseUnix, Unix,
   {$ENDIF}

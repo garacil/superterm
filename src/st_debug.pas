@@ -61,7 +61,9 @@ implementation
 
 uses
   SysUtils, st_os
-  {$IFDEF UNIX}, ctypes, BaseUnix{$ENDIF}
+  // BaseUnix already supplies cint and TSsize; a ctypes nobody references
+  // would be a fatal "unit not used" hint on Unix.
+  {$IFDEF UNIX}, BaseUnix{$ENDIF}
   {$IFDEF WINDOWS}, Windows{$ENDIF}
   {$IFDEF SUPERTERM_HEAPTRACE}, HeapTrc{$ENDIF};
 

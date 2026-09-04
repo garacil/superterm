@@ -11,7 +11,11 @@ unit st_config;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, ctypes, st_os
+  Classes, SysUtils, IniFiles,
+  // ctypes only for the Windows lock handles: on Unix every C type used here
+  // already comes from BaseUnix (as on main), and a unit nothing references
+  // is a fatal hint under the strict -Sewnh contract.
+  {$IFDEF WINDOWS}ctypes,{$ENDIF} st_os
   {$IFDEF UNIX}, BaseUnix, Unix{$ENDIF}
   {$IFDEF WINDOWS}, Windows{$ENDIF};
 

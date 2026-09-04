@@ -88,8 +88,13 @@ begin
 end;
 
 function OsConfigDir: string;
+{$IFDEF WINDOWS}
+// Only the Windows branch below composes a base path; declaring the local
+// on POSIX too leaves it unused there, and the strict build (-Sewnh) turns
+// that note into a compile error.
 var
   Base: string;
+{$ENDIF}
 begin
   {$IFDEF WINDOWS}
   Base := SysUtils.GetEnvironmentVariable('APPDATA');
