@@ -21,7 +21,8 @@ uses
   // Drivers unit initialises and asks the RTL whether a mouse exists
   SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server,
   st_video, st_kbd, st_config, st_cli, st_debug
-  {$IFDEF UNIX}, BaseUnix, st_ssh_server, st_ssh_entry{$ENDIF};
+  {$IFDEF UNIX}, BaseUnix, st_ssh_server, st_ssh_entry{$ENDIF}
+  {$IFDEF WINDOWS}, Windows{$ENDIF};
 
 // The daemon child must run Pascal unit finalizers (notably HeapTrc) after
 // its inherited TApplication has unwound, but must not enter the platform's
@@ -78,6 +79,50 @@ end;
 
 {$ENDIF}
 
+{$IFDEF WINDOWS}
+// Start the notification-area helper if it is installed next to us and not
+// already running, so a detached session stays reachable after this window
+// closes. The tray holds a named mutex while it runs; opening it means one is
+// already there. Absent (a bare zip, a dev build without it) means skip.
+procedure MaybeStartTray;
+const
+  DETACHED_PROCESS_ = $00000008;
+var
+  ExePath: array[0..MAX_PATH] of WideChar;
+  Dir, TrayPath, Cmd: UnicodeString;
+  Mutex: HANDLE;
+  Si: STARTUPINFOW;
+  Pi: PROCESS_INFORMATION;
+  I: integer;
+begin
+  for I := 0 to High(ExePath) do
+    ExePath[I] := #0;
+  if GetModuleFileNameW(0, @ExePath[0], MAX_PATH) = 0 then
+    Exit;
+  Dir := ExtractFilePath(UnicodeString(PWideChar(@ExePath[0])));
+  TrayPath := Dir + 'superterm-tray.exe';
+  if not FileExists(TrayPath) then
+    Exit;
+  Mutex := OpenMutex(SYNCHRONIZE, False, 'Local\SuperTermTraySingleton');
+  if Mutex <> 0 then
+  begin
+    CloseHandle(Mutex);
+    Exit;
+  end;
+  Cmd := '"' + TrayPath + '"';
+  UniqueString(Cmd);
+  Si := Default(STARTUPINFOW);
+  Si.cb := SizeOf(Si);
+  Pi := Default(PROCESS_INFORMATION);
+  if CreateProcessW(nil, PWideChar(Cmd), nil, nil, False,
+       DETACHED_PROCESS_, nil, PWideChar(Dir), Si, Pi) then
+  begin
+    CloseHandle(Pi.hThread);
+    CloseHandle(Pi.hProcess);
+  end;
+end;
+{$ENDIF}
+
 procedure Main;
 var
   STApp: PSuperApp;
@@ -105,8 +150,8 @@ begin
   // A test-only, side-effect-free probe lets Darwin inspect the calling
   // thread's real signal mask; neither sysctl nor libproc publishes it.
   // Production binaries do not contain this environment-controlled path.
-  if (GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
-     (GetEnvironmentVariable('SUPERTERM_TEST_SIGCHLD_POLICY') = '1') then
+  if (SysUtils.GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
+     (SysUtils.GetEnvironmentVariable('SUPERTERM_TEST_SIGCHLD_POLICY') = '1') then
   begin
     if not QueryChildReapingPolicy(ChildDefault, ChildBlocked,
       ChildNoWait) then
@@ -180,7 +225,7 @@ begin
   // language (or the LANG one if there is no configuration yet)
   if TryReadUserUiLanguage(BootLanguage) then
     CurrentLanguage := BootLanguage
-  else if Copy(LowerCase(GetEnvironmentVariable('LANG')), 1, 2) = 'es' then
+  else if Copy(LowerCase(SysUtils.GetEnvironmentVariable('LANG')), 1, 2) = 'es' then
     CurrentLanguage := ulSpanish;
   // OpenSSH's ForceCommand reaches the exact same client/session path as a
   // local terminal.  Its small adapter validates the forced environment and
@@ -332,7 +377,7 @@ begin
   // machine where the mouse is missing
   if DebugActive then
     DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d waitfd=%d',
-      [GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
+      [SysUtils.GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
        Drivers.ButtonCount, MouseInputWaitHandle]));
   // st_mouse must initialize before Drivers and therefore cannot depend on
   // st_video. Connect its tiny mode-sequence producer only now, before
@@ -342,6 +387,11 @@ begin
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
   CaptureConsoleCursor;
+  {$IFDEF WINDOWS}
+  // Interactive Windows client: make sure the session tray is up. (Not the
+  // CLI or the session daemon -- those returned long before here.)
+  MaybeStartTray;
+  {$ENDIF}
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
   // attach cancelled or failed during Init: do not start the event

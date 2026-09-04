@@ -59,6 +59,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
+; Checked by default: the tray keeps detached sessions reachable after a
+; window is closed, and it costs almost nothing at rest.
+Name: "traystartup"; Description: "Start the SuperTerm session tray when I sign in"; GroupDescription: "Session tray:"
 
 [Files]
 Source: "..\..\bin\superterm.exe"; DestDir: "{app}"; Flags: ignoreversion {#SignFlag}
@@ -76,7 +79,13 @@ Name: "{group}\SuperTerm documentation"; Filename: "{app}\README.md"
 Name: "{group}\SuperTerm sessions (tray)"; Filename: "{app}\superterm-tray.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\superterm.exe"; Tasks: desktopicon
 
+[Registry]
+; Auto-start the tray at sign-in when the task is chosen; removed on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "SuperTermTray"; ValueData: """{app}\superterm-tray.exe"""; Flags: uninsdeletevalue; Tasks: traystartup
+
 [Run]
+; Bring the tray up now if auto-start was chosen, so it is there immediately.
+Filename: "{app}\superterm-tray.exe"; Description: "Start the SuperTerm session tray"; WorkingDir: "{app}"; Flags: nowait skipifsilent; Tasks: traystartup
 Filename: "{app}\superterm-launch.cmd"; Description: "Launch SuperTerm"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
 
 [Code]
