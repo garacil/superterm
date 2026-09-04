@@ -74,9 +74,10 @@ the next up-merge checks them first instead of trusting the plan.
 The §4 procedure and §5 checklist still apply; the GNU/Linux gate was run on
 the result (release and debug builds, `make test`). `restore_test.py` fails
 on this build host with the same three checks on `main` itself, so it is an
-environment failure, not a merge one; `ssh_entry_test.py` failed once while
-another build was running on the same machine and passes alone (its SIGHUP
-path is identical to `main`'s).
+environment failure, not a merge one; `ssh_entry_test.py` fails whenever
+the suite is started under `nohup`, on `main` exactly as here: nohup sets
+SIGHUP to ignored and every child inherits that, so the forced-command client
+the test HUPs never exits. Start `make test` from a plain shell.
 
 ## 2. Is it possible? — verdict
 
