@@ -313,6 +313,65 @@ injected keystrokes — and captures what Windows Terminal renders, so the check
 needs nobody at the keyboard. `TORESOLVE.md` §2.1 is the full account and §4
 the per-file merge map.
 
+## Code signing and the SmartScreen warning
+
+A downloaded `SuperTerm-<version>-windows-x64-setup.exe` is met by "Windows
+protected your PC" (SmartScreen) and, if it gets past that, a "Publisher:
+Unknown" prompt. Both come from one fact: the file carries no Authenticode
+signature, so Windows has no publisher to name and no reputation to consult.
+Nothing in the code can change that. What removes the warnings is signing
+`superterm.exe`, the setup and its uninstaller with a **code-signing
+certificate issued by a CA in Microsoft's trust program**, with an RFC 3161
+timestamp so the signature outlives the certificate. The publisher Windows
+then shows is the certificate's subject. A self-signed certificate does not
+help outside machines where it has been installed by hand.
+
+What to obtain, checked against the CA's current terms before buying:
+
+- **Azure Trusted Signing** (Microsoft's cloud signing service): a monthly
+  subscription with identity validation, no hardware token, and signatures
+  that SmartScreen treats as coming from a known publisher. `signtool` uses it
+  through `/dlib` with `Azure.CodeSigning.Dlib.dll` and a metadata JSON.
+- **An OV or EV code-signing certificate** from a CA (DigiCert, Sectigo,
+  GlobalSign, SSL.com, Certum and others). Since 2023 the private key must
+  live on a hardware token or an HSM; the certificate then appears in the
+  user's store and is selected by thumbprint. EV certificates have
+  historically started with SmartScreen reputation; OV ones earn it as the
+  signed files are downloaded. Certum offers a reduced-price certificate for
+  open-source projects.
+
+What the project already does, so that signing is one switch:
+
+- `src/superterm.rc` gives `superterm.exe` a version resource: publisher,
+  product, description, copyright and the version from `VERSION` (the
+  Makefile regenerates `superterm.res` with `windres`). Explorer's Details
+  tab, the UAC prompt and antivirus heuristics all read it.
+- `packaging/windows/sign.ps1` signs and verifies files with `signtool`. The
+  certificate comes from the environment: `SUPERTERM_SIGN_THUMBPRINT`, or
+  `SUPERTERM_SIGN_PFX` with `SUPERTERM_SIGN_PFX_PASSWORD`, or
+  `SUPERTERM_SIGN_DLIB` with `SUPERTERM_SIGN_METADATA` for Trusted Signing.
+  Without one it refuses, so a signed build cannot come out unsigned.
+- `packaging/windows/superterm.iss` signs the setup, the uninstaller and
+  `superterm.exe` when compiled with `/DSIGN` and the sign tool hook:
+
+```
+ISCC.exe /DSIGN "/Ssuperterm=powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\windows\sign.ps1 $f" packaging\windows\superterm.iss
+```
+
+- `packaging/windows/release.ps1` does the whole release: `make release`
+  through Git's bash, the version checks, signing, the installer, the flat
+  zip, the `.sha256` files, and with `-Upload` replaces the four Windows
+  assets on the GitHub release `v<version>` using the token Git Credential
+  Manager already holds.
+
+```powershell
+$env:SUPERTERM_SIGN_THUMBPRINT = '<thumbprint>'
+powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload
+```
+
+Until a certificate exists, `release.ps1` without `-Sign` produces the same
+unsigned assets as before, and the warnings remain.
+
 ## Native Phase-1 limitations
 
 - There is no Windows detached-session server, reattach, daemon control

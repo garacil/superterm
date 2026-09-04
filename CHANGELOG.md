@@ -141,6 +141,14 @@ pauses is repainted about twelve times a second until it settles.
 For diagnosis, `SUPERTERM_TEE=path` copies every byte the client writes to the
 console into that file, with an index of write boundaries.
 
+The executable now carries a Windows version resource (publisher, product,
+description, copyright and the version from `VERSION`), the installer script
+signs the setup, the uninstaller and `superterm.exe` when a code-signing
+certificate is configured, and `packaging/windows/release.ps1` builds, signs,
+packages and publishes the Windows assets in one step. Until a certificate
+is obtained the assets remain unsigned and SmartScreen keeps warning; the
+Windows guide explains what to obtain.
+
 The whole Win64 build also meets the release's strict diagnostics contract:
 every warning, note and hint is fatal there too.
 

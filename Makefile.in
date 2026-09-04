@@ -23,6 +23,18 @@ PROJECT_DIR := $(shell cygpath -m "$(PROJECT_DIR)")
 FPC := $(shell cygpath -m "$(FPC)")
 endif
 
+# The Windows version resource (icon, "Publisher", "File description",
+# version numbers) is compiled from src/superterm.rc with the version taken
+# from VERSION, so the Details tab and the installer can never disagree with
+# --version. superterm.res stays committed for the hand-run fpc path.
+RES_DEP :=
+ifeq ($(OS),Windows_NT)
+WINDRES := $(dir $(FPC))windres$(EXEEXT)
+VERSION_STRING := $(shell cat "$(PROJECT_DIR)/VERSION")
+VERSION_PARTS := $(subst ., ,$(VERSION_STRING))
+RES_DEP := $(PROJECT_DIR)/src/superterm.res
+endif
+
 SUPERTERM_BIN := $(PROJECT_DIR)/bin/superterm$(EXEEXT)
 SUPERTERM_DEBUG_BIN := $(PROJECT_DIR)/bin/superterm-debug$(EXEEXT)
 SUPERTERM_HEAP_BIN := $(PROJECT_DIR)/bin/superterm-debug-heap$(EXEEXT)
@@ -123,7 +135,20 @@ $(PROJECT_DIR)/src/st_version.inc: $(PROJECT_DIR)/VERSION
 	printf "const SUPERTERM_VERSION = '%s';\n" "$$(cat $(PROJECT_DIR)/VERSION)" \
 		> $(PROJECT_DIR)/src/st_version.inc
 
-$(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(PROJECT_DIR)/config.status
+ifeq ($(OS),Windows_NT)
+# windres on Windows mangles quoted -D values, so the version travels in a
+# generated header the resource script includes.
+$(PROJECT_DIR)/src/superterm_version.rh: $(PROJECT_DIR)/VERSION
+	printf '#define ST_VER_MAJOR %s\n#define ST_VER_MINOR %s\n#define ST_VER_PATCH %s\n#define ST_VER_STRING "%s"\n' \
+		"$(word 1,$(VERSION_PARTS))" "$(word 2,$(VERSION_PARTS))" \
+		"$(word 3,$(VERSION_PARTS))" "$(VERSION_STRING)" \
+		> $(PROJECT_DIR)/src/superterm_version.rh
+
+$(PROJECT_DIR)/src/superterm.res: $(PROJECT_DIR)/src/superterm.rc $(PROJECT_DIR)/src/superterm_version.rh $(PROJECT_DIR)/packaging/windows/alien-hacker.ico
+	cd "$(PROJECT_DIR)/src" && "$(WINDRES)" -i superterm.rc -o superterm.res
+endif
+
+$(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(RES_DEP) $(PROJECT_DIR)/config.status
 	@mkdir -p "$(UNITDIR)" "$(PROJECT_DIR)/bin"
 	$(FPC) $(BASE_FLAGS) $(MODE_FLAGS) $(FPCFLAGS_EXTRA) \
 		-o$(TARGET) $(PROJECT_DIR)/src/superterm.lpr
