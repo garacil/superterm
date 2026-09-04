@@ -102,6 +102,21 @@ $hook = { param($stage)
 When the program was started through the harness's `-DebugLog`/`-Tee`
 wrapper, attach to the wrapper `cmd.exe` instead (it shares the console).
 
+## Detached sessions
+
+`session_smoke.ps1` exercises the Windows session server end to end without a
+person at the keyboard: it starts a named session in a Windows Terminal
+window, detaches it by injecting the prefix chord with `WriteConsoleInput`,
+confirms the `--session-daemon` process outlives the window, reattaches in a
+second window, and kills the session, asserting every CLI answer.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File test\windows\session_smoke.ps1
+```
+
+It leaves nothing behind on success. The session server design is in
+`TORESOLVE.md` section 2.4.
+
 ## Probes
 
 `console_resize_probe.pas` paints a numbered checkerboard on every settled

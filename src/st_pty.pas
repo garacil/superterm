@@ -119,6 +119,17 @@ type
     procedure MarkReaped;
     procedure MarkExited;
     procedure QueryState;
+    // The recorded deferred launch as an opaque byte string, and its inverse.
+    // A session server started as a separate process (Windows) receives the
+    // launch this way and performs it itself, exactly as the forked daemon
+    // does with the inherited object on POSIX. Only a pending launch exports;
+    // a live pane has nothing transferable.
+    function ExportLaunch: RawByteString;
+    function ImportLaunch(const S: RawByteString): boolean;
+    // True when ReadBuf would return output now, or the pane is gone. The
+    // Windows pane reactor asks before reading, because a ConPTY pipe cannot
+    // be waited on and ReadBuf reports "nothing yet" and "closed" alike.
+    function OutputAvailable: boolean;
   end;
 
 {$IFDEF UNIX}
@@ -171,7 +182,135 @@ uses
 procedure Unused(const A); begin if @A = nil then; end;
 {$ENDIF}
 
+// --- deferred launch transfer (shared by both platforms) -----------------
+
+procedure LaunchPutStr(var B: RawByteString; const S: string);
+var
+  L: Longint;
+  Raw: RawByteString;
+begin
+  Raw := S;
+  L := Length(Raw);
+  SetLength(B, Length(B) + SizeOf(L) + L);
+  Move(L, B[Length(B) - SizeOf(L) - L + 1], SizeOf(L));
+  if L > 0 then
+    Move(Raw[1], B[Length(B) - L + 1], L);
+end;
+
+procedure LaunchPutInt(var B: RawByteString; V: Longint);
+begin
+  SetLength(B, Length(B) + SizeOf(V));
+  Move(V, B[Length(B) - SizeOf(V) + 1], SizeOf(V));
+end;
+
+function LaunchGetInt(const B: RawByteString; var P: integer;
+  out V: Longint): boolean;
+begin
+  V := 0;
+  Result := (P >= 1) and (P + SizeOf(V) - 1 <= Length(B));
+  if not Result then
+    Exit;
+  Move(B[P], V, SizeOf(V));
+  Inc(P, SizeOf(V));
+end;
+
+function LaunchGetStr(const B: RawByteString; var P: integer;
+  out S: string): boolean;
+var
+  L: Longint;
+begin
+  S := '';
+  Result := LaunchGetInt(B, P, L) and (L >= 0) and (L <= 1024 * 1024) and
+    (P + L - 1 <= Length(B));
+  if not Result then
+    Exit;
+  SetLength(S, L);
+  if L > 0 then
+    Move(B[P], S[1], L);
+  Inc(P, L);
+end;
+
+function TPty.ExportLaunch: RawByteString;
+var
+  I: integer;
+begin
+  Result := '';
+  LaunchPutInt(Result, 1);   // format version
+  LaunchPutInt(Result, Ord(FLaunchKind));
+  LaunchPutInt(Result, Ord(FLaunchPending));
+  LaunchPutStr(Result, FLaunchProgram);
+  LaunchPutInt(Result, Length(FLaunchArgs));
+  for I := 0 to High(FLaunchArgs) do
+    LaunchPutStr(Result, FLaunchArgs[I]);
+  LaunchPutStr(Result, FLaunchShell);
+  LaunchPutStr(Result, FLaunchCommand);
+  LaunchPutStr(Result, FLaunchCwd);
+  LaunchPutStr(Result, FLaunchExtraEnv);
+  LaunchPutStr(Result, FLaunchSecret);
+  LaunchPutInt(Result, FLaunchCols);
+  LaunchPutInt(Result, FLaunchRows);
+  LaunchPutInt(Result, Ord(FLaunchLoginShell));
+  LaunchPutStr(Result, FFallbackShell);
+  LaunchPutStr(Result, FFallbackCwd);
+  LaunchPutStr(Result, FFallbackCommand);
+  LaunchPutInt(Result, Ord(FFallbackLoginShell));
+end;
+
+function TPty.ImportLaunch(const S: RawByteString): boolean;
+var
+  P, I: integer;
+  V, N: Longint;
+  Str: string;
+begin
+  Result := False;
+  P := 1;
+  if not LaunchGetInt(S, P, V) or (V <> 1) then
+    Exit;
+  if not LaunchGetInt(S, P, V) or (V < Ord(Low(TConfiguredLaunchKind))) or
+     (V > Ord(High(TConfiguredLaunchKind))) then
+    Exit;
+  FLaunchKind := TConfiguredLaunchKind(V);
+  if not LaunchGetInt(S, P, V) then
+    Exit;
+  FLaunchPending := V <> 0;
+  if not LaunchGetStr(S, P, FLaunchProgram) then
+    Exit;
+  if not LaunchGetInt(S, P, N) or (N < 0) or (N > 4096) then
+    Exit;
+  SetLength(FLaunchArgs, N);
+  for I := 0 to N - 1 do
+  begin
+    if not LaunchGetStr(S, P, Str) then
+      Exit;
+    FLaunchArgs[I] := Str;
+  end;
+  if not LaunchGetStr(S, P, FLaunchShell) then Exit;
+  if not LaunchGetStr(S, P, FLaunchCommand) then Exit;
+  if not LaunchGetStr(S, P, FLaunchCwd) then Exit;
+  if not LaunchGetStr(S, P, FLaunchExtraEnv) then Exit;
+  if not LaunchGetStr(S, P, FLaunchSecret) then Exit;
+  if not LaunchGetInt(S, P, V) then Exit;
+  FLaunchCols := V;
+  if not LaunchGetInt(S, P, V) then Exit;
+  FLaunchRows := V;
+  if not LaunchGetInt(S, P, V) then Exit;
+  FLaunchLoginShell := V <> 0;
+  if not LaunchGetStr(S, P, FFallbackShell) then Exit;
+  if not LaunchGetStr(S, P, FFallbackCwd) then Exit;
+  if not LaunchGetStr(S, P, FFallbackCommand) then Exit;
+  if not LaunchGetInt(S, P, V) then Exit;
+  FFallbackLoginShell := V <> 0;
+  Result := True;
+end;
+
 {$IFDEF UNIX}
+
+function TPty.OutputAvailable: boolean;
+begin
+  // The POSIX reactors learn readiness from poll(2) on the master; a read
+  // is always allowed to try.
+  Result := True;
+end;
 
 const
   PTY_EXEC_POLL_MS = 100;
@@ -2379,6 +2518,11 @@ begin
     TitleCmd := WindowsCommandLine(AProgram, AArgs);
     TitleArgs := nil;
   end;
+end;
+
+function TPty.OutputAvailable: boolean;
+begin
+  Result := (FConPty = nil) or (not Alive) or (FConPty.PeekAvailable > 0);
 end;
 
 function TPty.ReadBuf(out Buf: array of byte): integer;

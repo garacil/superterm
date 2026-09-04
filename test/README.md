@@ -123,4 +123,5 @@ enforces the mapping and the required coverage areas.
 The suite above is POSIX-only. The native Windows build is checked with the
 harness in `test/windows/`: it drives `superterm.exe` in a real Windows
 Terminal window (maximize, restore, drag, injected keystrokes) and captures
-what the host renders. See `test/windows/README.md`.
+what the host renders. See `test/windows/README.md`. `session_smoke.ps1` there drives
+detached sessions end to end (start, detach, reattach, kill).

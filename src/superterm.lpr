@@ -125,6 +125,16 @@ begin
   end;
   {$ENDIF}
   {$ENDIF}
+  {$IFDEF WINDOWS}
+  // The Windows session server is this same executable started again with no
+  // console; it reads its workspace from standard input and reports readiness
+  // on standard output. Nothing else about the process is decided here.
+  if (ParamCount = 1) and (ParamStr(1) = '--session-daemon') then
+  begin
+    System.ExitCode := RunSessionDaemonChild;
+    Exit;
+  end;
+  {$ENDIF}
   // In a HeapTrc build this also gives even short-lived CLI commands their
   // own PID-tagged memory report. The daemon calls it again after fork.
   DebugSetRole('client');

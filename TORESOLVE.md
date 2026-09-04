@@ -319,6 +319,100 @@ Windows-specific and all are safe on GNU/Linux:
 They only matter to a Windows build, so there is no urgency; carry them upstream
 only if the vendored tree is being touched for another reason.
 
+### 2.4 Detached sessions on Windows — a spawned server instead of a fork
+
+**What was missing.** `main`'s session model makes every workspace a server
+from launch: the daemon owns the PTY masters and the terminal parsers, and the
+visible UI is only its first client, so closing the window never kills a shell.
+On Windows that whole layer was a wall of stubs (`st_server.pas`, the
+`{$ELSE}` block): `StartDetachedServer` returned `dssFailed`, `EnumerateSessions`
+returned nothing, `TSessionClient` refused to connect. Detach asked for a name
+and then failed; `list`, `attach`, `send`, `capture`, `kill` all reported no
+sessions. The port ran one workspace in one process, and losing that process
+lost the shells.
+
+**Why the POSIX design does not port directly.** The Unix daemon is a `fork`:
+the child inherits the live `TPty` objects, their master file descriptors and
+the `TScreen` parsers in memory, then calls `setsid` and reopens stdio on
+`/dev/null`. Windows has no `fork`, and a ConPTY pseudo console cannot change
+owner after `CreatePseudoConsole` — the handles belong to the process that
+made them. So a live pane cannot be handed to another process at all.
+
+**The Windows shape: start the server first, let it make the panes.** The
+server is this same executable started again as `superterm --session-daemon`
+with `DETACHED_PROCESS` (no console) and its own process group, so it outlives
+the window the client runs in and a closed window never reaches it. The client
+serialises the workspace — name, profile, split tree, per-window geometry and,
+for every pane, the *recorded launch it has not performed yet* — into a
+blueprint and writes it to the server's standard input; the server parses it,
+creates the ConPTYs itself (so it is their real parent), publishes the socket
+and reports one status byte on its standard output. The client then attaches to
+that socket as an ordinary remote client, exactly as the forked parent
+re-attaches on Unix. This is why `[session] server=always` is now the default
+on Windows too, and why `DeferPaneSpawn` matters: at server-always startup the
+UI only *configures* each `TPty` (`ConfigureShell`/`ConfigureArgv`) and never
+spawns, so the blueprint carries a launch the server can run and the pane is
+born in the server, never in the client.
+
+**The transport is real, not emulated.** AF_UNIX stream sockets have existed on
+Windows 10 since 1803, and FPC's `Sockets` unit already wraps
+socket/bind/listen/accept/connect/send/recv over Winsock. `WSAPoll` is
+`poll(2)` for sockets. So the ~7000 lines of daemon and client — the framing,
+the command FIFO, the layout leases, the snapshot, the multi-client broadcast —
+compile and run unchanged; only the handful of primitives beneath them get
+Windows bodies (see the merge map, §4). `console_replay_probe`, `afunix_probe`
+and `daemon_probe` in `test/windows/` established each of these facts before a
+line of `st_server` was touched — the AF_UNIX/WSAPoll semantics, that a
+`DETACHED_PROCESS` child keeps reading its ConPTY after the parent exits, and
+the one ConPTY bug below.
+
+**The one genuine bug found on the way.** A ConPTY child launched by a process
+whose own standard handles are not a console (a pipe, or `NUL` for the detached
+server) inherited *those* handles and its output never reached the pseudo
+console. Fixed in `st_conpty.pas` by setting `STARTF_USESTDHANDLES` with no
+handles supplied, which makes the child fall back to the pseudo console's — what
+a pane always wants. This also fixes ConPTY output when SuperTerm's own stdout
+is redirected, so it is a correctness fix beyond the daemon.
+
+**What replaced each POSIX primitive** (all in `st_server.pas`, Windows islands
+beside the POSIX code they stand in for):
+
+| POSIX | Windows |
+|---|---|
+| `fork` + inherit live objects | `CreateProcessW(--session-daemon)` + a serialised **blueprint** on stdin (`BuildBlueprint`/`ParseBlueprint`, `TPty.ExportLaunch`/`ImportLaunch`) |
+| ready pipe byte | the server's stdout pipe; `SignalReady` writes one byte, the launcher `PeekNamedPipe`s for it |
+| `fpPoll` on the reactor | `WSAPoll` (`st_poll.pas` and the daemon's `TPollFD`); the WSAPOLLFD record is padded to 16 bytes or every entry after the first is misaligned |
+| `pipe(2)` for wake/result | a connected AF_UNIX **socket pair** (`FpPipe`), so one `WSAPoll` still covers it |
+| `poll` on the PTY master | none — a ConPTY pipe is not a socket, so panes are always served by a worker thread that `PeekNamedPipe`s and reads (`FThreadLimit` forced ≥ 2) |
+| `waitpid` / `SIGCHLD` reaping | none — a closed pane's kill-on-close job takes its tree down and leaves no zombie; `TrackRetiredChild`/`ReapChildren` are no-ops |
+| `fcntl(F_SETLK)` name lock | `CreateFileW` with no sharing; the open *is* the lock, released by the OS on death, `ERROR_SHARING_VIOLATION` is "busy" |
+| socket dev/ino identity | the socket file's NTFS creation timestamp (a re-created path cannot match) |
+| `SIGHUP`/`SIGPIPE` ignore, `/dev/null` stdio | not needed: no console, and `RunSessionDaemonChild` points the RTL text files at `NUL` before anything can print |
+| `~/.superterm/sessions` (0700) | `%LOCALAPPDATA%\superterm\sessions` — non-roaming and short, because an AF_UNIX path is capped at 107 bytes |
+
+**Verified, driven from `test/windows/hosttest.ps1` with no hands on the
+keyboard.** A named session starts (`--session harness1`); `list` shows it with
+one client; `capture` returns the shell banner and injected input; the detach
+chord (`prefix d`, injected with `WriteConsoleInput`) exits the client while the
+`--session-daemon` process keeps running; `list` then shows zero clients and
+`send`/`capture` still reach the live shell; a second window (`attach harness1`)
+shows the earlier output plus new input; `kill` terminates the daemon and
+removes the socket and sidecar.
+
+**Still Phase-1 limited, deliberately:** the client waits on its console input
+handle plus the session socket (a `WSAEventSelect` event, added to the
+`WaitForMultipleObjects` set in `st_fvui.Idle`); everything else — leases,
+previews, multi-client host summary — rides the shared protocol untouched.
+
+*Relevance to `main`:* nothing here changes the Unix build's behaviour, but the
+refactor that makes it possible is the thing to weigh for `main`. Today one
+giant `{$IFDEF UNIX} … {$ELSE stubs} … {$ENDIF}` split `st_server`; this work
+turned that into per-concern islands — the pure protocol/wire/FIFO/lease code is
+now shared, and only transport, process model, reaping, locking and identity
+branch. That is strictly better structure for `main` too, and it is the
+precondition for the eventual "one daemon, three platforms" state. The Windows
+bodies themselves stay Windows-only. See §4 for the exact per-hunk map.
+
 ---
 
 ## 3. Still open on Windows
@@ -343,10 +437,12 @@ Beyond the Phase-1 limitations already listed in `docs/WINDOWS.md`:
   `packaging/windows/sign.ps1`, `release.ps1 -Sign -Upload`); what is missing
   is the certificate itself. `docs/WINDOWS.md`, "Code signing and the
   SmartScreen warning", lists what to obtain.
-- **`st_server.pas` stub-block hint suppression.** Acceptable while the block is
-  uniformly "unavailable on this platform". If Phase 2 gives some of those
-  routines real bodies, the `{$push}{$hints off}` region must shrink to only
-  what is still a stub.
+- **Detached-session hardening.** The Windows server works (2.4) but has not
+  been driven under the fault-injection and stress suites the POSIX daemon has
+  (`session_startup_atomic`, `nonblocking_server`, `multiclient_intensive`),
+  which are POSIX-only. The `.create-<name>.lock` file is left on disk after
+  release, harmless but not cleaned. `OsRestrictDir`/`OsRestrictFile` are still
+  no-ops, so the sessions directory and socket have no owner-only ACL yet.
 
 ---
 
@@ -369,7 +465,7 @@ depends on.
 
 | Unit | Role | Merge |
 |---|---|---|
-| `src/st_conpty.pas` | ConPTY backend: `CreatePseudoConsole`, `ResizePseudoConsole`, pipes, child process. Referenced only from `st_pty.pas` under `{$IFDEF WINDOWS}`. | Copy. Unix never sees it. |
+| `src/st_conpty.pas` | ConPTY backend: `CreatePseudoConsole`, `ResizePseudoConsole`, pipes, child process. `Spawn` sets `STARTF_USESTDHANDLES` with no handles so the child uses the pseudo console's, not the launcher's stdio (2.4). `PeekAvailable` exposes pending output for the daemon's pane workers. Referenced only from `st_pty.pas` under `{$IFDEF WINDOWS}`. | Copy. Unix never sees it. |
 
 ### 4.2 Guarded hunks in shared units
 
@@ -390,11 +486,22 @@ depends on.
 | `st_fvui.pas` | Passthrough re-entry writes `?1049h` and re-asserts mouse modes; pane start/resize goes through `TPty` → `TConPty`. | Mixed; see the unit's own comments | Copy with `st_pty.pas`. |
 | `st_pty.pas` | `TPty` wraps `TConPty` for shells, `cmd.exe /d /k`, PowerShell/`pwsh`, argv, resize, buffered input, kill-on-close. | `{$IFDEF WINDOWS}` / `{$ELSE}` per method | Copy with `st_conpty.pas`. |
 | `st_mouse.pas` | `MouseInputWaitHandle` returns `-1`; `GpmWaitFd` is Unix; `HostMouseOn`/`HostMouseOff` write through `WriteMouseControl` (1.2). | `{$IFDEF UNIX}` / `{$IFDEF WINDOWS}` | Copy. |
-| `st_server.pas` | Phase-1 stub block: every session/daemon/socket routine reports "unavailable on this platform"; `WaitHandle`/`WantsWrite` added for `main`'s reactor contract (1.2); POSIX units and nine socket fields under `UNIX`. | `{$IFDEF WINDOWS}` block, `{$push}{$hints off}` inside it (1.3) | Copy. Shrink the hint region when Phase 2 lands. |
+| `st_server.pas` | **The session daemon and client, real on Windows now (2.4).** The pure protocol/wire/FIFO/lease/snapshot code is shared. Windows islands, each beside its POSIX twin: a Winsock AF_UNIX transport prologue (constants, `TUnixSockAddr`, `TPollFD`, `fpPoll`→`WSAPoll`, `FpClose`→`closesocket`, `FpPipe`→socket pair, `fpgeterrno`); `SetCloExec`/`SetNonBlocking`; blocking `WriteFull`/`ReadFull` over a non-blocking socket; `ConnectSocket`/`ProbeSocket`/`SocketIsRecent`/`SessionsDir`/`TryHoldSessionNameLock` (`CreateFileW` no-share)/`OwnsSocketPath` (NTFS creation stamp); `TSessionClient.WaitEvent`/`EndWait` (`WSAEventSelect`); worker-forced `FThreadLimit`; `ReadPaneEvent`/`TPanePollWorker.Execute` peek-based; `TrackRetiredChild`/`ReapChildren` no-ops; sidecar via `MoveFileEx`; `SignalReady` via the stdout pipe; and the whole `{$ELSE}` tail — `BuildBlueprint`/`ParseBlueprint`, `RunSessionDaemonChild`, and a `CreateProcessW(--session-daemon)` `StartDetachedServer`. | one `{$IFDEF UNIX}`/`{$ELSE}`/`{$ENDIF}` per island; the shared code is now outside them | Do NOT copy blindly. Carrying to `main` means keeping the same island split so the Unix bodies stay byte-identical; a Unix build must be diffed before and after. The Windows bodies are Windows-only. |
+| `st_pty.pas` | `ExportLaunch`/`ImportLaunch` serialise a deferred launch (shared); `OutputAvailable` (Windows peeks the ConPTY, Unix always true). | `ExportLaunch`/`ImportLaunch` shared, `OutputAvailable` `{$IFDEF WINDOWS}`/`{$ELSE}` | Copy; the shared pair is harmless on Unix. |
+| `st_poll.pas` | `WSAPoll` behind the same `TSuperPoll.Clear`/`Watch`/`Wait`; the WSAPOLLFD record is padded to 16 bytes. | `{$IFDEF WINDOWS}`/`{$ELSE}` throughout | Copy. |
+| `superterm.lpr` | `--session-daemon` dispatches to `RunSessionDaemonChild` before the UI. | `{$IFDEF WINDOWS}` | Copy. |
 | `st_debug.pas` | Log file through a Win32 handle, crash dir from `%TEMP%`; POSIX uses `fpOpen`, signals, `/tmp`. | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
 | `st_os.pas`, `st_config.pas`, `st_wclass.pas`, `st_cli_help.pas`, `st_artbg.pas` | Paths (`%ProgramData%`, `%LOCALAPPDATA%`), process helpers, help text naming Windows, background loading. | `{$IFDEF WINDOWS}` per hunk | Copy; each hunk is independent. `git diff main -- src/<unit>` lists them. |
 
 ### 4.3 Platform-neutral changes (the only ones that touch the Unix build)
+
+Note (2.4): making `st_server` build on Windows moved several units in its
+`uses` from the `{$IFDEF UNIX}` list to unconditional (`IniFiles`, `Sockets`,
+`st_wclass`, `st_session`, `st_poll`, `st_cpu`, added `st_os`), and replaced
+`fpGetPid` with `OsGetPid` in shared code. On Unix these are the same symbols
+that were already linked; the effect is nil but the source is not
+byte-identical, so a `main` merge of §2.4 must rebuild and diff the Unix binary
+per §4.4 rather than assume it is untouched.
 
 | Where | Change | Why it is safe |
 |---|---|---|

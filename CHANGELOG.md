@@ -141,6 +141,14 @@ pauses is repainted about twelve times a second until it settles.
 For diagnosis, `SUPERTERM_TEE=path` copies every byte the client writes to the
 console into that file, with an index of write boundaries.
 
+Detached sessions work natively. With no fork and no way to hand a running
+pseudo console to another process, the server is a separate copy of the
+program started with no console; the client sends it the workspace and the
+server starts the panes itself, so it owns them and outlives the window.
+Detach, reattach, list, send, capture and kill behave as on Unix, over the
+same AF_UNIX socket and protocol; sessions live under the local application
+data folder. Closing or losing a window no longer closes its shells.
+
 The executable now carries a Windows version resource (publisher, product,
 description, copyright and the version from `VERSION`), the installer script
 signs the setup, the uninstaller and `superterm.exe` when a code-signing

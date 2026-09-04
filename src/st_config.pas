@@ -455,11 +455,10 @@ begin
   Cfg.Language := ulEnglish;
   // Keep the upstream first-install presentation on every platform.
   Cfg.Palette := 'mono';
-  {$IFDEF WINDOWS}
-  Cfg.ServerMode := 'detach'; // native detach/multi-client is Phase 2
-  {$ELSE}
+  // Every platform starts sessions as a server. On Windows the server is a
+  // separate process that starts the panes itself, so a workspace can only
+  // be detached when it was born this way.
   Cfg.ServerMode := 'always';
-  {$ENDIF}
   Cfg.MultiThread := 1;
   Cfg.NewWinCols := 0;
   Cfg.NewWinRows := 0;

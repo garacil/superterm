@@ -575,6 +575,9 @@ function StGetConsoleScreenBufferInfo(AHandle: PtrUInt;
 function StWaitForSingleObject(AHandle: PtrUInt;
   AMilliseconds: LongWord): LongWord; stdcall;
   external 'kernel32' name 'WaitForSingleObject';
+function StWaitForMultipleObjects(ACount: LongWord; AHandles: Pointer;
+  AWaitAll: LongBool; AMilliseconds: LongWord): LongWord; stdcall;
+  external 'kernel32' name 'WaitForMultipleObjects';
 {$ENDIF}
 
 var
@@ -6058,6 +6061,25 @@ begin
   N := Lay.PaneCount;
   if (N < 0) or (N > MAX_PANES) then
     Exit;
+  {$IFDEF WINDOWS}
+  // The Windows session server is a separate process that starts its panes
+  // itself; a pseudo console already running here cannot be handed to it.
+  // Such a workspace only exists with [session] server=detach: say so before
+  // asking for a name that would end in a generic failure.
+  for I := 0 to MAX_PANES - 1 do
+    if (Panes[I] <> nil) and Panes[I].Alive then
+    begin
+      MessageBox(UiText(
+        'This workspace runs its panes locally and cannot be detached on ' +
+        'Windows. Start sessions as a server ([session] server=always, ' +
+        'the default) to detach them.',
+        'Este espacio ejecuta sus paneles en local y no se puede separar en ' +
+        'Windows. Arranque las sesiones como servidor ([session] ' +
+        'server=always, el valor por defecto) para poder separarlas.'),
+        nil, mfError or mfOKButton);
+      Exit;
+    end;
+  {$ENDIF}
   // session name: defaults to the active profile (or a free sesion-N);
   // collision with a live session -> suggest name-2 and ask again
   ProfName := '';
@@ -9977,18 +9999,31 @@ var
   procedure WaitForActivity(AMaxMs: LongInt);
   {$IFDEF WINDOWS}
   var
-    H: PtrUInt;
+    H: array[0..1] of PtrUInt;
+    N: LongWord;
+    E: PtrUInt;
   begin
-    // Only the console input handle is waitable here. ConPTY output arrives on
-    // anonymous pipes, which Win32 cannot wait on, and a Phase-1 client has no
-    // session socket to add. The pane loop above peeks those pipes and skips
-    // this call whenever it actually moved bytes, so parking happens only when
-    // there is nothing to do -- and a keystroke or a mouse report still wakes
-    // the loop at once instead of after a fixed sleep.
-    H := StGetStdHandle(ST_STD_INPUT_HANDLE);
-    if (H = 0) or (H = ST_INVALID_HANDLE_VALUE) then
+    // The console input handle is waitable; a ConPTY output pipe is not, so
+    // the local pane loop peeks those and skips this call whenever it moved
+    // bytes. An attached client adds its session socket as a Winsock event,
+    // armed for the wait and disarmed right after (see TSessionClient).
+    H[0] := StGetStdHandle(ST_STD_INPUT_HANDLE);
+    if (H[0] = 0) or (H[0] = ST_INVALID_HANDLE_VALUE) then
       Exit;
-    StWaitForSingleObject(H, LongWord(AMaxMs));
+    N := 1;
+    E := 0;
+    if RemoteMode and (Remote <> nil) and Remote.Connected then
+    begin
+      E := Remote.WaitEvent(Remote.WantsWrite);
+      if E <> 0 then
+      begin
+        H[1] := E;
+        N := 2;
+      end;
+    end;
+    StWaitForMultipleObjects(N, @H[0], False, LongWord(AMaxMs));
+    if E <> 0 then
+      Remote.EndWait;
   end;
   {$ELSE}
   var

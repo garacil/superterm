@@ -384,10 +384,9 @@ unsigned assets as before, and the warnings remain.
 
 ## Native Phase-1 limitations
 
-- There is no Windows detached-session server, reattach, daemon control
-  channel, or multi-client sharing. The Unix server depends on `fork` and
-  inherited live PTY masters; Phase 2 needs a spawned-server and explicit
-  handle/ownership design rather than a direct port of that lifecycle.
+- Detached sessions now work (see the section below). Multi-client sharing
+  rides the same protocol but has not been driven under load on Windows;
+  treat more than two simultaneous viewers as unverified for now.
 - The new dedicated incoming OpenSSH service administrator and
   `--ssh-entry` adapter are POSIX-only. Windows supports outgoing SSH panes,
   but does not install or administer the isolated SuperTerm `sshd` service.
@@ -421,6 +420,34 @@ unsigned assets as before, and the warnings remain.
   process load time. Supporting older Windows would require dynamically
   loading every unavailable entry point and a separate non-ConPTY backend;
   neither is a Phase-1 goal.
+
+## Detached sessions — a spawned server
+
+Every workspace is a server from launch on Windows too (`[session]
+server=always`, the default). Because Windows has no `fork` and a ConPTY
+cannot change owner, the server is a separate process — this same executable
+started as `superterm --session-daemon` with no console — that receives the
+workspace on its standard input and creates the panes itself, so it is their
+real parent and outlives the window you launched from. The visible UI is its
+first client over an AF_UNIX socket (Windows 10 1803+), exactly the transport
+and protocol the POSIX build uses; only the primitives beneath it (process
+start, `WSAPoll`, the name lock, socket-file identity) have Windows bodies.
+
+What works, and how to check it without any GUI:
+
+- `superterm --session NAME` starts NAME as a server and attaches to it.
+- prefix + `d` (default prefix Ctrl-Q) detaches: the window closes, the server
+  and its shells keep running.
+- `superterm list` / `attach NAME` / `send` / `capture` / `kill` behave as on
+  Unix; sessions live under `%LOCALAPPDATA%\superterm\sessions`.
+- `test\windows\session_smoke.ps1` drives the whole cycle (start, list,
+  send, capture, detach, reattach, kill) and asserts each step.
+
+Known Phase-2 gaps: the sessions directory and socket have no owner-only ACL
+yet (`OsRestrictDir`/`OsRestrictFile` are no-ops); the `.create-<name>.lock`
+file is left on disk after use; the POSIX fault-injection and stress suites
+are not ported. `TORESOLVE.md` section 2.4 is the full design and section 4
+the per-file merge map for carrying it toward `main`.
 
 ## Further runtime validation
 

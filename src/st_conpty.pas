@@ -74,6 +74,9 @@ type
     // read otherwise). ReadOutput uses a peek so a single-threaded caller does
     // not stall; the daemon path will instead wait on the handle first.
     function ReadOutput(out Buf: array of byte; APeekFirst: boolean): integer;
+    // Bytes a ReadOutput could return without blocking (PeekNamedPipe).
+    // A broken pipe reports 0 and marks the console gone.
+    function PeekAvailable: integer;
     // Feed bytes to the child's stdin. Returns bytes written (best effort).
     function WriteInput(const S: RawByteString): integer;
     // Re-size the pseudo console; the child sees the console resize event.
@@ -380,6 +383,14 @@ begin
   Si := Default(STARTUPINFOEXW);
   Si.StartupInfo.cb := SizeOf(STARTUPINFOEXW);
   Si.lpAttributeList := FAttrList;
+  // Without this flag the child takes this process's own standard handles
+  // whenever they are not a console -- a pipe, a file, NUL -- and its output
+  // never reaches the pseudo console at all. Observed with cmd.exe from a
+  // parent whose stdout was a pipe (the text arrived in the pipe) and from a
+  // detached session server whose stdio is NUL (nothing arrived anywhere).
+  // Asking for standard handles and giving none makes the child fall back to
+  // the pseudo console's, which is what a pane always wants.
+  Si.StartupInfo.dwFlags := STARTF_USESTDHANDLES;
 
   // CreateProcessW mutates its command-line buffer, so hand it a writable copy.
   CmdLine := UTF8Decode(ACommand);
@@ -462,6 +473,22 @@ begin
     Exit;
   end;
   Result := Got;
+end;
+
+function TConPty.PeekAvailable: integer;
+var
+  Avail: DWORD;
+begin
+  Result := 0;
+  if (FOutRead = 0) or (FOutRead = INVALID_HANDLE_VALUE) then
+    Exit;
+  Avail := 0;
+  if not PeekNamedPipe(FOutRead, nil, 0, nil, @Avail, nil) then
+  begin
+    FAlive := False;
+    Exit;
+  end;
+  Result := integer(Avail);
 end;
 
 function TConPty.WriteInput(const S: RawByteString): integer;
