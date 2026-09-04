@@ -107,8 +107,19 @@ cd /d/sources/superterm
 ./configure \
   --with-fpc=/d/lazarus/fpc/3.2.2/bin/x86_64-win64/fpc
 /d/lazarus/fpc/3.2.2/bin/x86_64-win64/make.exe info
-/d/lazarus/fpc/3.2.2/bin/x86_64-win64/make.exe release
+/d/lazarus/fpc/3.2.2/bin/x86_64-win64/make.exe release    # -> bin/superterm.exe
+/d/lazarus/fpc/3.2.2/bin/x86_64-win64/make.exe traytool   # -> bin/superterm-tray.exe
 ```
+
+The Windows build has **two executables**: `release` builds the console
+client `superterm.exe` (which is also the session server, re-run with
+`--session-daemon`), and `traytool` builds the notification-area helper
+`superterm-tray.exe`. `traytool` is Windows-only and deliberately not part of
+`all`/`release`, so a GNU/Linux or macOS `make release` never touches it — the
+same rule as `src/st_conpty.pas`. Both compile under the strict diagnostics
+contract (`-Sewnh -vewnh`, every warning fatal). `packaging/windows/release.ps1`
+runs both, so a full release needs no manual step; run `make traytool` by hand
+only when iterating on the tray alone.
 
 `Makefile.in` is compatible with the bundled GNU Make 3.80: its mode
 selection uses nested conditionals, it adds `.exe` on Windows, and it
@@ -171,13 +182,13 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [
 ```
 
 The installer is `dist\SuperTerm-5.2.2-windows-x64-setup.exe`; it installs
-under `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and includes the
-executable, documentation, configuration example, and desktop backgrounds.
-Compiling it alone, from PowerShell (never from Git Bash, which rewrites
-ISCC's `/` switches as paths):
+under `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and includes both
+executables (`superterm.exe` and `superterm-tray.exe`), documentation, the
+configuration example, and desktop backgrounds. Compiling it alone, from
+PowerShell (never from Git Bash, which rewrites ISCC's `/` switches as paths):
 
 ```powershell
-& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' packaging\windows\superterm.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' packaging\windows\superterm.iss
 ```
 
 The Start-menu and desktop shortcuts use `superterm-launch.cmd`: it opens a new
@@ -186,6 +197,21 @@ The Start-menu and desktop shortcuts use `superterm-launch.cmd`: it opens a new
 panel minimized inside that desktop. Otherwise it runs the console executable
 inside the standard `cmd.exe` host. Launching `superterm.exe` from an already-
 open terminal remains supported directly.
+
+The installer does two more things worth knowing:
+
+- **It closes a running SuperTerm before replacing files.** A detached session
+  server (`superterm.exe --session-daemon`), a client, or the tray keeps its
+  own executable locked, so Setup cannot overwrite it while one runs. On an
+  interactive install it detects this, warns that continuing will close the
+  detached sessions and the programs inside them, and only closes them if the
+  user confirms; a silent install (the Store, `/SILENT`, `/VERYSILENT`) closes
+  them without asking, as the silent contract requires. The same guard runs
+  before an uninstall.
+- **It offers to start the session tray at sign-in, checked by default.** The
+  "Start the SuperTerm session tray when I sign in" task writes an `HKCU\…\Run`
+  entry (removed on uninstall) and launches the tray at the end of the install.
+  See "The session tray" below.
 
 ## Implementation approach
 
@@ -524,16 +550,63 @@ What works, and how to check it without any GUI:
   Unix; sessions live under `%LOCALAPPDATA%\superterm\sessions`.
 - `test\windows\session_smoke.ps1` drives the whole cycle (start, list,
   send, capture, detach, reattach, kill) and asserts each step.
-- A separate notification-area helper, `superterm-tray.exe`, lists the live
-  sessions and reopens or closes one from the tray, since the closed console
-  client leaves no window behind. It ships in the installer and the zip with a
-  Start-menu shortcut. Source and details: `src/traytool/`.
+- A separate notification-area helper, `superterm-tray.exe`, keeps detached
+  sessions reachable after the window is gone. See "The session tray" below.
 
 Known Phase-2 gaps: the sessions directory and socket have no owner-only ACL
 yet (`OsRestrictDir`/`OsRestrictFile` are no-ops); the `.create-<name>.lock`
 file is left on disk after use; the POSIX fault-injection and stress suites
 are not ported. `TORESOLVE.md` section 2.4 is the full design and section 4
 the per-file merge map for carrying it toward `main`.
+
+## The session tray
+
+`superterm-tray.exe` is a small separate GUI program in the notification area
+that manages detached sessions. It exists because the console client has no
+window of its own — the window belongs to the terminal emulator — so once it
+closes there is nothing on screen showing the session server and its shells
+are still alive, or bringing one back.
+
+**Using it.**
+
+- **Right-click** the tray icon: a menu with one submenu per live session,
+  each offering **Attach** and **Close**, plus **Exit** (which only removes the
+  icon; it never touches the sessions).
+- **Left double-click**: attach the one live session, or, with several, open
+  the menu so you can pick.
+- **Attach** opens the session in a new Windows Terminal window (a plain
+  console if `wt.exe` is absent), running `superterm attach NAME`.
+- **Close** runs `superterm kill NAME` with no window, ending that session and
+  the programs inside it.
+
+It reads sessions straight from `%LOCALAPPDATA%\superterm\sessions\*.sock` —
+the same names `superterm list` shows — and runs a single instance, guarded by
+a named mutex (`Local\SuperTermTraySingleton`); a second launch exits at once.
+
+**When it starts.**
+
+- On an interactive Windows launch, `superterm.exe` starts the tray itself if
+  `superterm-tray.exe` sits next to it and is not already running (it opens the
+  mutex to tell). A CLI command or the session daemon never reaches that point,
+  so only a real UI start triggers it. A bare zip run without the tray binary,
+  or a dev build without it, simply skips.
+- At install time, the checked-by-default task "Start the SuperTerm session
+  tray when I sign in" writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\SuperTermTray`
+  and launches the tray at the end of the install. Uninstall removes the entry.
+
+**Building and shipping.** It is a Windows-only, GUI-subsystem executable
+built by its own Makefile target and never part of `all`/`release`, the same
+rule as `src/st_conpty.pas`, so a GNU/Linux or macOS build never compiles it:
+
+```
+make traytool          # -> bin/superterm-tray.exe
+```
+
+`packaging/windows/release.ps1` builds it (`make traytool`), signs it beside
+`superterm.exe` with `-Sign`, and packages it in both the installer and the
+zip. It uses only `Windows` and `ShellApi` (`Shell_NotifyIconW`), links no
+project unit, and launches `superterm.exe` by path — so the source sits in the
+shared tree ready for `main`. Full details in `src/traytool/README.md`.
 
 ## Further runtime validation
 

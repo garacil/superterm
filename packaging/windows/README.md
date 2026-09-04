@@ -19,23 +19,29 @@ Windows assets lives in this directory. The macOS equivalent belongs in
 powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [-Upload] [-SkipBuild]
 ```
 
-1. **Build.** Runs `make release` through Git's `bash.exe` with the GNU Make
-   that ships next to the `fpc` recorded in `config.status` (`./configure`
-   must have been run once). The Makefile regenerates `src/st_version.inc`
-   and `src/superterm_version.rh` from `VERSION`, recompiles
-   `src/superterm.res` with `windres`, and links `bin\superterm.exe`. The
-   script then checks that `--version` and the executable's version resource
-   both say what `VERSION` says. `-SkipBuild` reuses the binary as it is.
-2. **Sign** (`-Sign`). `sign.ps1` signs `bin\superterm.exe`; Inno Setup then
-   calls it again for the setup and the uninstaller. See "Signing" below.
+1. **Build.** Runs `make release` and `make traytool` through Git's `bash.exe`
+   with the GNU Make that ships next to the `fpc` recorded in `config.status`
+   (`./configure` must have been run once). The Makefile regenerates
+   `src/st_version.inc` and `src/superterm_version.rh` from `VERSION`,
+   recompiles `src/superterm.res` with `windres`, and links `bin\superterm.exe`
+   (the console client and session server) and `bin\superterm-tray.exe` (the
+   notification-area helper, source in `src/traytool`). The script then checks
+   that `--version` and the version resource both say what `VERSION` says.
+   `-SkipBuild` reuses the binaries as they are.
+2. **Sign** (`-Sign`). `sign.ps1` signs `bin\superterm.exe` and
+   `bin\superterm-tray.exe`; Inno Setup then calls it again for the setup and
+   the uninstaller. See "Signing" below.
 3. **Installer.** `ISCC.exe /Q [/DSIGN /Ssuperterm=...] superterm.iss` writes
    `dist\SuperTerm-<version>-windows-x64-setup.exe`. It installs under
-   `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and carries the
-   executable, `superterm-launch.cmd`, the documentation, the configuration
-   example and the desktop backgrounds.
+   `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and carries both
+   executables, `superterm-launch.cmd`, the documentation, the configuration
+   example and the desktop backgrounds. It closes a running SuperTerm (client,
+   session server or tray) before replacing files, and offers a
+   checked-by-default task to start the tray at sign-in (an `HKCU\…\Run` entry,
+   removed on uninstall). Behaviour is documented in `docs/WINDOWS.md`.
 4. **Zip.** `dist\superterm-<version>-windows-x86_64.zip`, **flat** (no
-   directories): `superterm.exe`, `superterm-launch.cmd`, `README.md`,
-   `LICENSE`, `WINDOWS.md` and every `backgrounds\*.art`.
+   directories): `superterm.exe`, `superterm-tray.exe`, `superterm-launch.cmd`,
+   `README.md`, `LICENSE`, `WINDOWS.md` and every `backgrounds\*.art`.
 5. **Checksums.** A `.sha256` next to each, one line:
    `<lowercase sha256>  <filename>`.
 6. **Upload** (`-Upload`). Puts the four Windows assets on the GitHub release
