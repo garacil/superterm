@@ -413,6 +413,57 @@ branch. That is strictly better structure for `main` too, and it is the
 precondition for the eventual "one daemon, three platforms" state. The Windows
 bodies themselves stay Windows-only. See §4 for the exact per-hunk map.
 
+### 2.5 Windows session experience: tray, auto-start, window sizing, the lock fix
+
+Four changes made after 2.4 landed, all Windows-guarded or new files, all
+candidates for `main` on the same terms as 2.4.
+
+**The layout-lock fix (a real bug, not a nicety).** Adapting the desktop, and
+moving, dragging or resizing a window, all take the daemon's layout lock first;
+`LockLayout` polls the session socket for the grant. On Windows that poll asked
+`WSAPoll` for `POLLIN or POLLHUP` in the *events* field, and `WSAPoll` fails the
+whole call (`WSAEINVAL`, returns −1) on any bit but the read/write-normal ones —
+`POLLHUP`/`POLLERR`/`POLLNVAL` are output-only status bits. So the poll returned
+−1 every time, `LockLayout` burned its attempt budget in microseconds without
+ever waiting, and every layout operation reported "The shared desktop is busy".
+Typing and focus worked because they take no lock. Fix: `PollFd` and
+`WaitSocketReady` mask *events* to `POLLIN or POLLOUT` on Windows, keeping the
+status bits only for the *revents* test; `poll()` on Unix ignores them in
+events, so that path is unchanged. *For `main`:* a `{$IFDEF WINDOWS}` mask in
+those two helpers — copy.
+
+**The session tray.** `superterm-tray.exe` (new file `src/traytool/`) is a
+separate GUI program in the notification area: a detached session's client
+leaves no window behind, so the tray is what shows a session is alive and
+reopens or closes it. Right-click gives a per-session Attach/Close submenu plus
+Exit; left double-click attaches the lone session. It uses only `Windows` and
+`ShellApi` (`Shell_NotifyIconW`), links no project unit, launches
+`superterm.exe` by path, and is built by a Windows-only `traytool` Make target
+that is never part of `all`/`release`. *For `main`:* a new file plus a guarded
+Make target — the same rule as `st_conpty.pas`; it cannot affect a Unix build.
+
+**Auto-start.** On an interactive Windows launch `superterm.exe` starts the
+tray if it sits next to the executable and is not already running (it opens the
+tray's named mutex to tell) — `MaybeStartTray` in `superterm.lpr`, guarded, run
+only after the CLI and daemon dispatch have returned. The installer adds a
+checked-by-default "start the tray at sign-in" task (an `HKCU\…\Run` entry,
+removed on uninstall). *For `main`:* the `MaybeStartTray` island is
+Windows-only; the installer task is packaging, compiled into nothing.
+
+**Reopen at the last size, centred.** Attaching used to open at Windows
+Terminal's default size. Now the daemon records the last client physical size
+as `[terminal] cols/rows` in the session sidecar (`st_server`), and the tray
+reads it and launches a fresh `wt` window with `--size cols,rows` (a fresh
+window, or `wt` ignores `--size`), then centres it on the monitor's work area —
+or maximises it if it fills ~90%+ (closed maximised). Position is not restored:
+SuperTerm cannot read the host window's screen position under ConPTY, so
+centring is the deliberate comfortable placement. *For `main`:* the sidecar
+write is a small guarded `st_server` hunk; the placement lives in the tray.
+
+The installer also closes a running SuperTerm (client, session server or tray)
+before replacing files — warning and confirming interactively, closing silently
+under `/SILENT` for the Store — entirely inside `packaging/windows/superterm.iss`.
+
 ---
 
 ## 3. Still open on Windows
@@ -448,6 +499,10 @@ Beyond the Phase-1 limitations already listed in `docs/WINDOWS.md`:
 
 ## 4. Merge map — carrying `windows-support` into `main` behind compiler clauses
 
+> For the step-by-step merge procedure, the feasibility verdict and the
+> acceptance checklist, see **`HOWTOMERGETOMAIN.md`**. This section is the
+> per-hunk map that document plans around.
+
 This is the section that makes the eventual upstream merge mechanical. The
 rule on this branch is absolute: **every Windows change is either behind
 `{$IFDEF WINDOWS}` / `{$IFDEF UNIX}` (or their `IFNDEF` forms) or lives in a
@@ -466,6 +521,8 @@ depends on.
 | Unit | Role | Merge |
 |---|---|---|
 | `src/st_conpty.pas` | ConPTY backend: `CreatePseudoConsole`, `ResizePseudoConsole`, pipes, child process. `Spawn` sets `STARTF_USESTDHANDLES` with no handles so the child uses the pseudo console's, not the launcher's stdio (2.4). `PeekAvailable` exposes pending output for the daemon's pane workers. Referenced only from `st_pty.pas` under `{$IFDEF WINDOWS}`. | Copy. Unix never sees it. |
+
+| `src/traytool/superterm-tray.lpr` (+ `README.md`) | Notification-area helper: lists live sessions, reopens one at its last size centred (`--size` + centre/maximise), closes one; `--attach NAME` CLI mode. GUI subsystem, uses only `Windows`+`ShellApi`, links no project unit. Built by the Windows-only `traytool` Make target, never in `all`/`release`. | Copy. Unix never compiles it. |
 
 ### 4.2 Guarded hunks in shared units
 
@@ -493,6 +550,10 @@ depends on.
 | `st_debug.pas` | Log file through a Win32 handle, crash dir from `%TEMP%`; POSIX uses `fpOpen`, signals, `/tmp`. | `{$IFDEF WINDOWS}` / `{$ELSE}` | Copy. |
 | `st_os.pas`, `st_config.pas`, `st_wclass.pas`, `st_cli_help.pas`, `st_artbg.pas` | Paths (`%ProgramData%`, `%LOCALAPPDATA%`), process helpers, help text naming Windows, background loading. | `{$IFDEF WINDOWS}` per hunk | Copy; each hunk is independent. `git diff main -- src/<unit>` lists them. |
 
+| `st_server.pas` | `PollFd`/`WaitSocketReady` mask the `events` field to `POLLIN\|POLLOUT` for `WSAPoll` (status bits fail the call with −1); the fix for every layout op reporting "shared desktop is busy" (2.5). | `{$IFDEF WINDOWS}` / `{$ELSE}` in both helpers | Copy. |
+| `st_server.pas` | `TDetachedSession` records the last client host size and writes `[terminal] cols/rows` in the sidecar (2.5), so a re-attach can restore the window size. | `{$IFDEF WINDOWS}`-guarded field/writes | Copy; the field is inert on Unix. |
+| `superterm.lpr` | `--session-daemon` dispatch (2.4) and `MaybeStartTray` on interactive start (2.5); `{$R superterm.res}` and `Windows` in `uses`. | `{$IFDEF WINDOWS}` | Copy; qualify `SysUtils.GetEnvironmentVariable` (the `Windows` unit shadows it). |
+
 ### 4.3 Platform-neutral changes (the only ones that touch the Unix build)
 
 Note (2.4): making `st_server` build on Windows moved several units in its
@@ -510,7 +571,7 @@ per §4.4 rather than assume it is untouched.
 | `vendor/fv322/app.pas`, `dialogs.pas`, `menus.pas`, `msgbox.pas` | Unused `Windows` unit removed; `-Sewnh` cleanups | No code path changes. |
 | `src/*` `Unused(const A)` helpers, `{$push}{$hints off}` region | Diagnostic hygiene for `-Sewnh` (1.3) | No code path changes; the helper must stay local per unit (`Windows` exports a colliding `Unused`). |
 | `Makefile.in`, `configure` | Windows target detection, `.exe` suffix, GNU Make 3.80 compatibility | Unix paths unchanged. |
-| `packaging/windows/`, `docs/WINDOWS.md` | Installer, launcher, documentation | New files. |
+| `packaging/windows/`, `docs/WINDOWS.md`, `HOWTOMERGETOMAIN.md` | Installer (incl. its close-running-instance and sign-in auto-start `[Code]`/`[Tasks]`, compiled into nothing), launcher, `traytool`/size-restore notes, this merge guide | New files. |
 
 ### 4.4 The procedure
 
