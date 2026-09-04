@@ -1,5 +1,5 @@
 ; SuperTerm Windows x64 installer.
-; Build from the repository root with Inno Setup 6:
+; Build from the repository root with Inno Setup 6 or 7:
 ;   ISCC.exe packaging\windows\superterm.iss
 ;
 ; Signed build (setup, uninstaller and superterm.exe carry an Authenticode
@@ -43,6 +43,12 @@ LicenseFile=..\..\LICENSE
 SetupIconFile=alien-hacker.ico
 ; ConPTY is available from Windows 10 1809 (build 17763).
 MinVersion=10.0.17763
+; A running SuperTerm loaded from {app} locks superterm.exe. Let the Restart
+; Manager offer to close it; the code below also warns about detached sessions
+; and force-closes the no-window session server, which the Restart Manager may
+; not catch on its own.
+CloseApplications=yes
+RestartApplications=no
 #ifdef SIGN
 SignTool=superterm
 SignedUninstaller=yes
@@ -70,3 +76,54 @@ Name: "{autodesktop}\SuperTerm"; Filename: "{app}\superterm-launch.cmd"; Working
 
 [Run]
 Filename: "{app}\superterm-launch.cmd"; Description: "Launch SuperTerm"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+
+[Code]
+// A running SuperTerm keeps superterm.exe locked, and the session server is a
+// separate superterm.exe --session-daemon with no window that outlives the UI
+// and holds its shells. Installing or uninstalling over it must first close
+// it, so warn plainly (this ends live sessions), confirm, and only then close.
+
+function SuperTermRunning: Boolean;
+var
+  Rc: Integer;
+begin
+  // 'find' returns 0 only when the image appears in the task list.
+  Result := Exec(ExpandConstant('{cmd}'),
+    '/c tasklist /FI "IMAGENAME eq superterm.exe" /NH | find /I "superterm.exe"',
+    '', SW_HIDE, ewWaitUntilTerminated, Rc) and (Rc = 0);
+end;
+
+procedure CloseSuperTerm;
+var
+  Rc: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM superterm.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  Sleep(700);
+end;
+
+// Returns True to proceed, False to abort. Shared by install and uninstall.
+function ConfirmCloseRunning(const AAction: string): Boolean;
+begin
+  Result := True;
+  if not SuperTermRunning then
+    Exit;
+  if MsgBox('SuperTerm is running.' + #13#10#13#10 +
+       'Any detached sessions and the programs inside them will be closed '
+       + 'so Setup can ' + AAction + '.' + #13#10#13#10 +
+       'Close SuperTerm and continue?',
+       mbConfirmation, MB_YESNO) = IDYES then
+    CloseSuperTerm
+  else
+    Result := False;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := ConfirmCloseRunning('install this update');
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := ConfirmCloseRunning('remove it');
+end;
