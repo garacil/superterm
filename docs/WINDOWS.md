@@ -147,28 +147,38 @@ if ($LASTEXITCODE -ne 0) { throw "FPC failed with exit code $LASTEXITCODE" }
 `-B` is intentional: it verifies the entire dependency graph instead of
 accepting stale `.ppu` files.
 
-### Windows icon and installer
+### Windows icon, version resource and installer
 
-The checked-in `packaging/windows/alien-hacker.ico` is the application icon. If
-it is regenerated from `assets/alien-hacker.png`, rebuild the Windows resource
-before compiling the executable:
+`src/superterm.rc` embeds the application icon
+(`packaging/windows/alien-hacker.ico`) and the version resource that Explorer,
+the UAC prompt and SmartScreen read: publisher, product, description,
+copyright and the version numbers. The version comes from `VERSION`: the
+Makefile writes it into `src/superterm_version.rh` and recompiles the
+committed `src/superterm.res` with `windres` on every Windows build, so the
+Details tab can never disagree with `--version`. To rebuild the resource by
+hand after changing the icon:
 
 ```powershell
 $Windres = 'D:\lazarus\fpc\3.2.2\bin\x86_64-win64\windres.exe'
-& $Windres --target=pe-x86-64 -i src\superterm.rc -o src\superterm.res
+Set-Location src; & $Windres -i superterm.rc -o superterm.res; Set-Location ..
 ```
 
-With Inno Setup 6 installed, compile the per-user x64 installer from the
-repository root:
+The installer, the flat zip, the checksums and the upload to the GitHub
+release are one command, documented in `packaging/windows/README.md`:
 
 ```powershell
-New-Item -ItemType Directory -Force dist | Out-Null
-& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' packaging\windows\superterm.iss
+powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [-Upload]
 ```
 
-The result is `dist\SuperTerm-5.2.2-windows-x64-setup.exe`; it installs under
-`%LOCALAPPDATA%\Programs\SuperTerm` and includes the executable, documentation,
-configuration example, and desktop backgrounds.
+The installer is `dist\SuperTerm-5.2.2-windows-x64-setup.exe`; it installs
+under `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and includes the
+executable, documentation, configuration example, and desktop backgrounds.
+Compiling it alone, from PowerShell (never from Git Bash, which rewrites
+ISCC's `/` switches as paths):
+
+```powershell
+& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' packaging\windows\superterm.iss
+```
 
 The Start-menu and desktop shortcuts use `superterm-launch.cmd`: it opens a new
 120x52 Windows Terminal window when `wt.exe` is available (matching the default

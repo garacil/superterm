@@ -336,6 +336,13 @@ Beyond the Phase-1 limitations already listed in `docs/WINDOWS.md`:
   under the harness (2.1b). Still not driven on the merged path: panes,
   passthrough, the mouse, paste. The Python test suite is POSIX-only and
   cannot cover it.
+- **The published assets are unsigned.** SmartScreen, the browser download
+  warning and the "Unknown publisher" prompt all come from that, and only a
+  CA-issued code-signing certificate removes them. The project side is done
+  (version resource in the executable, `/DSIGN` in the installer script,
+  `packaging/windows/sign.ps1`, `release.ps1 -Sign -Upload`); what is missing
+  is the certificate itself. `docs/WINDOWS.md`, "Code signing and the
+  SmartScreen warning", lists what to obtain.
 - **`st_server.pas` stub-block hint suppression.** Acceptable while the block is
   uniformly "unavailable on this platform". If Phase 2 gives some of those
   routines real bodies, the `{$push}{$hints off}` region must shrink to only
