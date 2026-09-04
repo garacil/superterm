@@ -15,3 +15,6 @@ AUDIT-3x.md
 
 # local working notes, never published
 /notes/local/
+
+# captures written by the Windows console harness
+/test/windows/shots/

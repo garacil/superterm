@@ -277,6 +277,42 @@ child process tree with exit code 0. The smoke run used an isolated writable
 `APPDATA` below `build` because this development workspace is sandboxed; it
 also created and atomically saved `session.ini` there.
 
+## Console resize and input — verified
+
+Resizing, maximizing, restoring and dragging the console window repaint by
+themselves. Four pieces make that true, all behind `{$IFDEF WINDOWS}`:
+
+- `st_video.WideSetVideoMode` accepts whatever size the console reports. The
+  RTL Win32 driver only knew a table of legacy modes; it refused every other
+  size, or commanded the console back to a table entry.
+- `st_video.WideInitVideo` enters the alternate screen. The RTL Win32 driver
+  emits no smcup, while `WideDoneVideo` always emitted `?1049l`. Windows
+  Terminal clips the alternate buffer during a drag instead of reflowing every
+  full-width row into two, and the shell's scrollback survives underneath.
+- `st_kbd.CharRecordPending` consumes the console input records that carry no
+  character before `ReadFile` is called. The console queues a
+  `WINDOW_BUFFER_SIZE_EVENT` on every resize even with `ENABLE_WINDOW_INPUT`
+  clear, and a `FOCUS_EVENT` on every focus change; both signal the input
+  handle, and `ReadFile`, which only returns characters, would otherwise block
+  the whole client until the next keystroke or click. That block was the
+  "repaints only when I click" symptom: the frame was always correct, it was
+  emitted when the click arrived.
+- `TSuperApp.Idle` samples the console size every pass, applies it after
+  120 ms of stillness or every 80 ms while it keeps changing, and paints one
+  full frame.
+
+Diagnostics, silent unless asked for: `SUPERTERM_DEBUG=path` logs `win: idle
+alive` once a second, `win: console size seen/settled/repainted`, and `kbd:
+consumed console records without characters: 4` (4 is window size, 16 is
+focus). `SUPERTERM_TEE=path` copies every byte written to the console into
+that file, with `path.idx` recording `offset length tick` per write, so a
+frame can be replayed outside SuperTerm.
+
+`test/windows/` drives all of this from a script — maximize, restore, drag,
+injected keystrokes — and captures what Windows Terminal renders, so the check
+needs nobody at the keyboard. `TORESOLVE.md` §2.1 is the full account and §4
+the per-file merge map.
+
 ## Native Phase-1 limitations
 
 - There is no Windows detached-session server, reattach, daemon control
@@ -326,8 +362,9 @@ clean Alt-X exit are complete. Continue with broader coverage:
    executable paths, working directories, and commands containing spaces,
    quotes, pipes, and redirection.
 2. Test Unicode input/output, bracketed paste, focus reporting, mouse
-   forwarding, multiple panes, maximize/passthrough, rapid resize, and closing
-   a pane with unread final output.
+   forwarding, multiple panes, maximize/passthrough, and closing a pane with
+   unread final output. Resize, maximize, restore and drag are covered by
+   `test/windows/hosttest.ps1`.
 3. Stress large child output and a child that stops reading stdin to measure
    the final-output race and synchronous-write backpressure before choosing a
    reader/writer thread design.

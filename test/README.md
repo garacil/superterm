@@ -117,3 +117,10 @@ enforces the mapping and the required coverage areas.
 | wireframe_preview_test.py | rendering, sessions | Wireframe previews remain identical and transient in all viewers. |
 | wizard_test.py | UI, configuration | Wizard routing and deferred pane materialization retain their outcomes. |
 | zoom_exclusive_switch_test.py | UI, sessions | Maximized-pane handoff is globally exclusive and preserves restore geometry. |
+
+## Windows
+
+The suite above is POSIX-only. The native Windows build is checked with the
+harness in `test/windows/`: it drives `superterm.exe` in a real Windows
+Terminal window (maximize, restore, drag, injected keystrokes) and captures
+what the host renders. See `test/windows/README.md`.
