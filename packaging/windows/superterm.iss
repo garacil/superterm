@@ -107,12 +107,15 @@ end;
 // must never stop on a prompt: there it closes the running instance without
 // asking, which is the documented silent-install contract. Only an
 // interactive run warns and waits for confirmation.
-function ConfirmCloseRunning(const AAction: string): Boolean;
+// ASilent comes from the caller because the two contexts ask different
+// functions: WizardSilent belongs to Setup and UninstallSilent to the
+// uninstaller, and the Setup one does not report silence while uninstalling.
+function ConfirmCloseRunning(const AAction: string; const ASilent: Boolean): Boolean;
 begin
   Result := True;
   if not SuperTermRunning then
     Exit;
-  if WizardSilent then
+  if ASilent then
   begin
     CloseSuperTerm;
     Exit;
@@ -129,10 +132,10 @@ end;
 
 function InitializeSetup(): Boolean;
 begin
-  Result := ConfirmCloseRunning('install this update');
+  Result := ConfirmCloseRunning('install this update', WizardSilent);
 end;
 
 function InitializeUninstall(): Boolean;
 begin
-  Result := ConfirmCloseRunning('remove it');
+  Result := ConfirmCloseRunning('remove it', UninstallSilent);
 end;
