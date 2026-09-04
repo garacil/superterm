@@ -96,7 +96,7 @@ end;
 
 {$IFDEF WINDOWS}
 // Windows has no gpm and no Linux virtual console. The console (Windows
-// Terminal, or conhost with VT enabled by st_video) reports the mouse as the
+// Terminal, or conhost with VT enabled by the video unit) reports the mouse as the
 // very same ?1000/?1002/?1006 sequences a terminal emulator does, and st_kbd
 // decodes them from the input stream. So there is nothing to register with the
 // RTL mouse driver here: the two HostMouse* writers are the whole job.
@@ -116,7 +116,7 @@ end;
 
 procedure HostMouseOn;
 begin
-  // Through the installed writer, never the RTL text file: st_video owns the
+  // Through the installed writer, never the RTL text file: the video unit owns the
   // single physical output path, and a buffered Write(Output) here could
   // reach the console out of order with the frames around it.
   WriteMouseControl(#27'[?1000h'#27'[?1002h'#27'[?1006h');

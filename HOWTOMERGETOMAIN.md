@@ -62,8 +62,21 @@ the next up-merge checks them first instead of trusting the plan.
    decision; the Windows client never carried it), plus the `st_server`
    lines under the same guard.
 
+3. **Two things `make test` caught that the plan called Windows-only.** The
+   daemon wrote the `[terminal] cols/rows` window-size hint into the sidecar
+   on every platform, although §3.2 says the hunk is guarded; the POSIX
+   sidecar carries exactly one `[session]` section and
+   `sidecar_atomic_test.py` enforces it. Now under `{$IFDEF WINDOWS}`. And
+   `mouse_backend_test.py` forbids the literal name `st_video` anywhere in
+   `st_mouse.pas`'s implementation, which two comments in the Windows block
+   used; reworded. Neither changes a compiled byte on Windows.
+
 The §4 procedure and §5 checklist still apply; the GNU/Linux gate was run on
-the result (release and debug builds, `make test`).
+the result (release and debug builds, `make test`). `restore_test.py` fails
+on this build host with the same three checks on `main` itself, so it is an
+environment failure, not a merge one; `ssh_entry_test.py` failed once while
+another build was running on the same machine and passes alone (its SIGHUP
+path is identical to `main`'s).
 
 ## 2. Is it possible? — verdict
 

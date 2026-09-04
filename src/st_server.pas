@@ -8268,12 +8268,17 @@ begin
       // the identity the panes carry in SUPERTERM_SESSION_CHAIN
       Ini.WriteString('session', 'id', PaneSessionId);
       Ini.WriteString('session', 'client_chains', ClientChainsUnion);
-      // Window size hint for a re-attaching launcher (see the tray).
+      {$IFDEF WINDOWS}
+      // Window size hint for a re-attaching launcher (see the tray). Windows
+      // only: the POSIX sidecar carries exactly one [session] section, a
+      // contract test/sidecar_atomic_test.py enforces, and nothing on a Unix
+      // host reads this.
       if (FLastTermCols > 0) and (FLastTermRows > 0) then
       begin
         Ini.WriteInteger('terminal', 'cols', FLastTermCols);
         Ini.WriteInteger('terminal', 'rows', FLastTermRows);
       end;
+      {$ENDIF}
       Ini.UpdateFile;
     finally
       FreeAndNil(Ini);
