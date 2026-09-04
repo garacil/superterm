@@ -231,8 +231,8 @@ described below.
 | Pane processes | `TPty` wraps `TConPty` for interactive shells, `cmd.exe /d /k` commands, PowerShell/`pwsh` commands, arbitrary argv, resize, buffered input, and kill-on-close. |
 | Child environment | The child receives an inherited Unicode environment overlaid with pane values including `TERM=xterm-256color`, `COLORTERM=truecolor`, `SUPERTERM=1`, and `SUPERTERM_SESSION_CHAIN`. |
 | Local UI | The native `st_fvui` idle path polls ConPTY output, feeds the terminal screen, flushes pending input, detects exit, and resizes panes. |
-| CLI help | Version and contextual `--help` pages run locally. Session-control commands remain unavailable because they require the detached Unix server. |
-| Detached sessions | `st_server` compiles Windows Phase-1 stubs. The local single-process terminal is the Phase-1 path; detach, reattach, daemon control, and multi-client sharing deliberately report unavailable. |
+| CLI help | Version and contextual `--help` pages run locally. Session-control commands (`list`, `attach`, `send`, `capture`, `kill`, window ops) work against the session server. |
+| Detached sessions | Work. The server is a separate `superterm --session-daemon` process (no fork on Windows) that owns the ConPTY panes; detach, reattach, `list`, control commands and `kill` behave as on Unix, over the same AF_UNIX socket and protocol. See the section below. Multi-client sharing is unverified under load. |
 | SSH panes | Structured OpenSSH argv is used. Keys or `ssh-agent` are preferred; a configured secret is retained for the native password-prompt detector, but that path still needs real-host runtime validation. |
 
 Windows process-tree inspection is intentionally not part of Phase 1:

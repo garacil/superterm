@@ -62,9 +62,9 @@ begin
   {$IFDEF WINDOWS}
   H(ALanguage,
     'superterm ' + SUPERTERM_VERSION +
-      ' - native terminal workspaces for Windows',
+      ' - detachable terminal sessions for Windows',
     'superterm ' + SUPERTERM_VERSION +
-      ' - espacios de terminal nativos para Windows');
+      ' - sesiones de terminal separables para Windows');
   {$ELSE}
   H(ALanguage,
     'superterm ' + SUPERTERM_VERSION +
