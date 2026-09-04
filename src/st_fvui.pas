@@ -12,10 +12,13 @@ interface
 
 uses
   Objects, Drivers, Views, Menus, Dialogs, App, FVConsts, MsgBox,
-  SysUtils, Classes, baseunix, unix, termio, Video,
+  SysUtils, Classes, Video,
+  {$IFDEF UNIX}
+  BaseUnix, Unix, Termio,
+  {$ENDIF}
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
-  st_mouse, st_clipboard;
+  st_mouse, st_clipboard, st_os;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -94,12 +97,17 @@ const
   cmDesktopFitTerminal = 2768;  // explicit shared logical desktop resize
   cmDesktopModify      = 2769;
   cmDesktopShowSize    = 2770;
+  {$IFDEF UNIX}
+  // Client activity notifications (desktop toast and status-line tail) are a
+  // Unix-host feature; the Windows client does not carry them. Every piece of
+  // that feature in this unit sits under the same guard.
   cmToggleDesktopNotifications = 2771;
 
   // Membership changes are serialized by the daemon but can arrive faster
   // than a human-readable toast expires. Preserve each event in FIFO order;
   // a user explicitly asked never to collapse desktop notices.
   MEMBER_NOTICE_MS = 2000;
+  {$ENDIF}
 
 {$if cmProfileBase + MAX_PROFILE_MENU_ITEMS > cmProfileSaveAs}
   {$fatal Profile command range overlaps a direct command}
@@ -112,11 +120,13 @@ type
   TPassFilterState = (pfsGround, pfsEsc, pfsOsc, pfsOscEsc,
     pfsDropOsc, pfsDropOscEsc);
   TIconSlotUsed = array[0..MAX_PANES - 1] of boolean;
+  {$IFDEF UNIX}
   TMemberNoticeKind = (mnConnected, mnDisconnected);
   TMemberNotice = record
     Kind: TMemberNoticeKind;
     ClientCount: integer;
   end;
+  {$ENDIF}
 
   PSuperApp = ^TSuperApp;
 
@@ -213,9 +223,12 @@ type
   TArtDesktop = object(TDeskTop)
     procedure InitBackground; virtual;
     function ExecView(P: PView): word; virtual;
+    {$IFDEF UNIX}
     procedure HandleEvent(var Event: TEvent); virtual;
+    {$ENDIF}
   end;
 
+  {$IFDEF UNIX}
   // A local, non-selectable toast over canonical desktop coordinate (0,0).
   // It is deliberately not a TWindow: it must not enter snapshots, profiles,
   // focus selection, icon arrangement or the shared desktop layout.
@@ -234,6 +247,7 @@ type
     constructor Init(var Bounds: Objects.TRect);
     procedure Draw; virtual;
   end;
+  {$ENDIF}
 
   // Physical, client-local viewport chrome.  These views are siblings of the
   // logical Desktop: they never enter snapshots, profiles or daemon state.
@@ -301,6 +315,7 @@ type
     ViewportSyncing: boolean;
     DesktopHBar, DesktopVBar: PDesktopScrollBar;
     DesktopCorner, DesktopBackdrop: PDesktopBackdrop;
+    {$IFDEF UNIX}
     DesktopNotification: PDesktopNotification;
     MemberStatusOverlay: PMemberStatusOverlay;
     MemberNotices: array of TMemberNotice;
@@ -309,6 +324,7 @@ type
     MemberNoticeUntil, MemberNoticePauseTick: QWord;
     MemberNoticePaused: boolean;
     RemoteMembershipReady: boolean;
+    {$ENDIF}
     GeometryStatusActive: boolean;
     GeometryStatusX, GeometryStatusY: integer;
     GeometryStatusW, GeometryStatusH: integer;
@@ -448,11 +464,13 @@ type
     procedure AdjustDesktopToTerminal;
     procedure ModifyDesktopDimensions;
     procedure ShowDesktopDimensions;
+    {$IFDEF UNIX}
     procedure QueueMemberNotice(AKind: TMemberNoticeKind; AClientCount: integer);
     procedure UpdateMemberNotices(ANow: QWord);
     procedure RefreshMemberNoticeViews;
     function MemberNoticeStatusText(AAvailable: integer): string;
     function MemberNoticeDesktopText: string;
+    {$ENDIF}
     procedure SetGeometryStatus(const R: Objects.TRect; AActive: boolean);
     procedure CollectPaneGeom(out AGeom: TPaneGeomArray;
       out ADeskW, ADeskH: integer);
@@ -583,7 +601,43 @@ type
 implementation
 
 uses
-  st_keys, st_kbd, st_ssh_entry;
+  st_keys, st_kbd
+  {$IFDEF UNIX}, st_ssh_entry{$ENDIF};
+
+{$IFDEF WINDOWS}
+type
+  TStConsoleCoord = packed record
+    X, Y: SmallInt;
+  end;
+  TStSmallRect = packed record
+    Left, Top, Right, Bottom: SmallInt;
+  end;
+  TStConsoleScreenBufferInfo = packed record
+    Size: TStConsoleCoord;
+    CursorPosition: TStConsoleCoord;
+    Attributes: Word;
+    WindowRect: TStSmallRect;
+    MaximumWindowSize: TStConsoleCoord;
+  end;
+
+const
+  ST_STD_INPUT_HANDLE  = LongWord($FFFFFFF6); // DWORD(-10)
+  ST_STD_OUTPUT_HANDLE = LongWord($FFFFFFF5); // DWORD(-11)
+  ST_STD_ERROR_HANDLE  = LongWord($FFFFFFF4); // DWORD(-12)
+  ST_INVALID_HANDLE_VALUE = High(PtrUInt);
+
+function StGetStdHandle(AKind: LongWord): PtrUInt; stdcall;
+  external 'kernel32' name 'GetStdHandle';
+function StGetConsoleScreenBufferInfo(AHandle: PtrUInt;
+  var AInfo: TStConsoleScreenBufferInfo): LongBool; stdcall;
+  external 'kernel32' name 'GetConsoleScreenBufferInfo';
+function StWaitForSingleObject(AHandle: PtrUInt;
+  AMilliseconds: LongWord): LongWord; stdcall;
+  external 'kernel32' name 'WaitForSingleObject';
+function StWaitForMultipleObjects(ACount: LongWord; AHandles: Pointer;
+  AWaitAll: LongBool; AMilliseconds: LongWord): LongWord; stdcall;
+  external 'kernel32' name 'WaitForMultipleObjects';
+{$ENDIF}
 
 var
   CursorPhase: boolean = False;
@@ -642,6 +696,16 @@ begin
   // '-bash' (login shell) and variants
   if (Base <> '') and (Base[1] = '-') then
     Delete(Base, 1, 1);
+  Base := LowerCase(Base);
+  {$IFDEF WINDOWS}
+  if (Base = 'cmd') or (Base = 'cmd.exe') or
+     (Base = 'powershell') or (Base = 'powershell.exe') or
+     (Base = 'pwsh') or (Base = 'pwsh.exe') then
+  begin
+    Result := Length(Args) <= 1;
+    Exit;
+  end;
+  {$ENDIF}
   if (Base <> 'bash') and (Base <> 'sh') and (Base <> 'zsh') and
      (Base <> 'dash') and (Base <> 'fish') and (Base <> 'ksh') then
     Exit;
@@ -657,12 +721,36 @@ end;
 
 function ReadTerminalSize(out ACols, ARows: integer): boolean;
 var
+  {$IFDEF WINDOWS}
+  H: PtrUInt;
+  Info: TStConsoleScreenBufferInfo;
+  Which: integer;
+  {$ELSE}
   Fd: cint;
   WS: TWinSize;
+  {$ENDIF}
 begin
   Result := False;
   ACols := 0;
   ARows := 0;
+  {$IFDEF WINDOWS}
+  for Which := 0 to 1 do
+  begin
+    if Which = 0 then
+      H := StGetStdHandle(ST_STD_OUTPUT_HANDLE)
+    else
+      H := StGetStdHandle(ST_STD_ERROR_HANDLE);
+    Info := Default(TStConsoleScreenBufferInfo);
+    if (H <> 0) and (H <> ST_INVALID_HANDLE_VALUE) and
+       StGetConsoleScreenBufferInfo(H, Info) then
+    begin
+      ACols := Info.WindowRect.Right - Info.WindowRect.Left + 1;
+      ARows := Info.WindowRect.Bottom - Info.WindowRect.Top + 1;
+      if (ACols > 0) and (ARows > 0) then
+        Exit(True);
+    end;
+  end;
+  {$ELSE}
   for Fd := 0 to 2 do
   begin
     WS := Default(TWinSize);
@@ -674,6 +762,7 @@ begin
       Exit(True);
     end;
   end;
+  {$ENDIF}
 end;
 
 var
@@ -2416,6 +2505,7 @@ begin
   WriteLine(0, 0, W, Size.Y, B);
 end;
 
+{$IFDEF UNIX}
 constructor TDesktopNotification.Init(var Bounds: Objects.TRect);
 begin
   inherited Init(Bounds);
@@ -2534,6 +2624,7 @@ begin
     ItemWidth(UiText('~' + Prefix + ' d~ Detach',
       '~' + Prefix + ' d~ Separar'));
 end;
+{$ENDIF}
 
 procedure TGeometryStatusLine.Draw;
 var
@@ -2570,6 +2661,7 @@ begin
   end;
 end;
 
+{$IFDEF UNIX}
 procedure TArtDesktop.HandleEvent(var Event: TEvent);
 var
   App: PSuperApp;
@@ -2597,6 +2689,7 @@ begin
   else
     inherited HandleEvent(Event);
 end;
+{$ENDIF}
 
 procedure TSuperApp.SetGeometryStatus(const R: Objects.TRect;
   AActive: boolean);
@@ -2613,6 +2706,7 @@ begin
     StatusLine^.DrawView;
 end;
 
+{$IFDEF UNIX}
 function TSuperApp.MemberNoticeStatusText(AAvailable: integer): string;
 var
   Notice: TMemberNotice;
@@ -2830,6 +2924,7 @@ begin
   if Changed then
     RefreshMemberNoticeViews;
 end;
+{$ENDIF}
 
 procedure TSuperApp.InitViewportViews;
 var
@@ -2846,7 +2941,9 @@ begin
   DesktopVBar := nil;
   DesktopCorner := nil;
   DesktopBackdrop := nil;
+  {$IFDEF UNIX}
   DesktopNotification := nil;
+  {$ENDIF}
   if Desktop = nil then
     Exit;
 
@@ -2855,11 +2952,15 @@ begin
   DesktopHBar := New(PDesktopScrollBar, Init(R, 0));
   DesktopVBar := New(PDesktopScrollBar, Init(R, 1));
   DesktopCorner := New(PDesktopBackdrop, Init(R));
+  {$IFDEF UNIX}
   DesktopNotification := New(PDesktopNotification, Init(R));
+  {$ENDIF}
   DesktopHBar^.Hide;
   DesktopVBar^.Hide;
   DesktopCorner^.Hide;
+  {$IFDEF UNIX}
   DesktopNotification^.Hide;
+  {$ENDIF}
 
   // First is frontmost in this FreeVision view ring.  The filler is behind
   // the logical desktop; bars/corner sit immediately in front of it while the
@@ -2868,7 +2969,9 @@ begin
   InsertBefore(PView(DesktopHBar), PView(Desktop));
   InsertBefore(PView(DesktopVBar), PView(Desktop));
   InsertBefore(PView(DesktopCorner), PView(Desktop));
+  {$IFDEF UNIX}
   Desktop^.Insert(PView(DesktopNotification));
+  {$ENDIF}
   PArtDesktop(Desktop)^.GrowMode := 0;
   UpdateDesktopViewport(True);
 end;
@@ -3175,7 +3278,9 @@ begin
   SuppressFlush := True;
   inherited Init;
   FBootLocked := True;
+  {$IFDEF UNIX}
   MemberStatusOverlay := nil;
+  {$ENDIF}
   ClipHistory := TClipboardHistory.Create;
   CopyMode := False;
   CopySelecting := False;
@@ -3258,6 +3363,7 @@ begin
   RemoteMinHostH := 0;
   RemoteHostSizesMatch := False;
   RemoteHostSummaryValid := False;
+  {$IFDEF UNIX}
   RemoteMembershipReady := False;
   MemberNotices := nil;
   MemberNoticeHead := 0;
@@ -3265,6 +3371,7 @@ begin
   MemberNoticeUntil := 0;
   MemberNoticePauseTick := 0;
   MemberNoticePaused := False;
+  {$ENDIF}
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   RemoteHostSizeArmed := False;
@@ -3641,8 +3748,10 @@ begin
     // A new physical size always starts at the canonical upper-left corner.
     // Existing window bounds and PTY grids remain byte-for-byte untouched.
     UpdateDesktopViewport(True);
+    {$IFDEF UNIX}
     if MemberNoticeActive then
       RefreshMemberNoticeViews;
+    {$ENDIF}
     ResetVideoSurface;
     // Build the final frame while writes are held. EffOld remains invalid,
     // so the post-transaction ReDraw below emits every settled cell once.
@@ -3760,12 +3869,18 @@ begin
   if ASysIdx >= 0 then
   begin
     FallbackShell := Cfg.Shell;
-    FallbackCwd := GetEnvironmentVariable('HOME');
+    FallbackCwd := OsUserHome;
+    {$IFDEF WINDOWS}
+    // cmd.exe and PowerShell do not understand the POSIX printf/exec
+    // recovery script. A plain configured shell is the native fallback.
+    FallbackCmd := '';
+    {$ELSE}
     FallbackCmd := 'printf ' +
       ShellQuote(UiText('superterm: terminal unavailable: ',
         'superterm: terminal no disponible: ') +
         UiText('FAILED ', 'FALLO ') + TitleS + #10) +
       '; exec ' + ShellQuote(Cfg.Shell);
+    {$ENDIF}
   end;
   ExecArgs := TStringList.Create;
   try
@@ -4146,14 +4261,18 @@ begin
     TitleS := Trim(Win[i]^.GetTitle(80));
   if TitleS = '' then
     TitleS := UiText('terminal', 'terminal');
+  {$IFDEF WINDOWS}
+  Cmd := '';
+  {$ELSE}
   Cmd := 'printf ' + ShellQuote(
     UiText('superterm: remote terminal unavailable: ',
       'superterm: terminal remoto no disponible: ') + TitleS + #10) +
     '; exec ' + ShellQuote(Cfg.Shell);
+  {$ENDIF}
   if Panes[i] <> nil then
     FreeAndNil(Panes[i]);
   P := TPty.Create;
-  if P.Spawn(Cfg.Shell, GetEnvironmentVariable('HOME'), Cmd,
+  if P.Spawn(Cfg.Shell, OsUserHome, Cmd,
     Scr[i].Width, Scr[i].Height, '', Cfg.LoginShell) then
   begin
     Panes[i] := P;
@@ -4700,7 +4819,7 @@ begin
   if ASysIdx >= 0 then
     StartPaneEx(NewIdx, '', '', ASysIdx, '', '', '', 0)
   else
-    StartPane(NewIdx, GetEnvironmentVariable('HOME'), '');
+    StartPane(NewIdx, OsUserHome, '');
   NextRectSet := False;
   if Win[NewIdx] = nil then
   begin
@@ -4892,7 +5011,9 @@ procedure TSuperApp.ReleaseRuntime;
 var
   i: integer;
 begin
+  {$IFDEF UNIX}
   RemoteMembershipReady := False;
+  {$ENDIF}
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   ResetSizeRequests;
@@ -4935,7 +5056,9 @@ begin
   // A first-SSH-login lock belongs only to the interactive parent.  The
   // forked long-lived daemon must not retain its descriptor and postpone the
   // next creator indefinitely.
+  {$IFDEF UNIX}
   ReleaseSshEntryCreationLock;
+  {$ENDIF}
   // This hook runs only in the forked child, after setsid and stdio
   // redirection.  Mark the inherited application for the detach-only Done
   // path before touching a view, so even an exceptional cleanup cannot run
@@ -5538,7 +5661,9 @@ begin
   Result := False;
   RemoteHostSizeArmed := False;
   RemoteHostSummaryValid := False;
+  {$IFDEF UNIX}
   RemoteMembershipReady := False;
+  {$ENDIF}
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   Remote := TSessionClient.Create;
@@ -5724,8 +5849,10 @@ begin
   CurrentSessionSocket := APath;
   RemoteLayoutHash := ComputeLayoutHash;
   RemoteHostSizeArmed := True;
+  {$IFDEF UNIX}
   RemoteMembershipReady := True;
   RememberSshEntrySession(CurrentSessionName);
+  {$ENDIF}
   Result := True;
 end;
 
@@ -5747,7 +5874,9 @@ begin
   Result := False;
   RemoteHostSizeArmed := False;
   RemoteHostSummaryValid := False;
+  {$IFDEF UNIX}
   RemoteMembershipReady := False;
+  {$ENDIF}
   ResetRemotePreviewState;
   ResetRemoteZoomState;
   Candidate := TSessionClient.Create;
@@ -5837,8 +5966,10 @@ begin
     ResetSizeRequests;
     RemoteLayoutHash := ComputeLayoutHash;
     RemoteHostSizeArmed := True;
+    {$IFDEF UNIX}
     RemoteMembershipReady := True;
     RememberSshEntrySession(CurrentSessionName);
+    {$ENDIF}
     if DebugActive then
       DebugLog(Format('promote-adopt: panes=%d desk=%dx%d focused=%d revision=%d',
         [N, Snapshot.DeskW, Snapshot.DeskH, Snapshot.Focused,
@@ -6406,6 +6537,25 @@ begin
   N := Lay.PaneCount;
   if (N < 0) or (N > MAX_PANES) then
     Exit;
+  {$IFDEF WINDOWS}
+  // The Windows session server is a separate process that starts its panes
+  // itself; a pseudo console already running here cannot be handed to it.
+  // Such a workspace only exists with [session] server=detach: say so before
+  // asking for a name that would end in a generic failure.
+  for I := 0 to MAX_PANES - 1 do
+    if (Panes[I] <> nil) and Panes[I].Alive then
+    begin
+      MessageBox(UiText(
+        'This workspace runs its panes locally and cannot be detached on ' +
+        'Windows. Start sessions as a server ([session] server=always, ' +
+        'the default) to detach them.',
+        'Este espacio ejecuta sus paneles en local y no se puede separar en ' +
+        'Windows. Arranque las sesiones como servidor ([session] ' +
+        'server=always, el valor por defecto) para poder separarlas.'),
+        nil, mfError or mfOKButton);
+      Exit;
+    end;
+  {$ENDIF}
   // session name: defaults to the active profile (or a free sesion-N);
   // collision with a live session -> suggest name-2 and ask again
   ProfName := '';
@@ -7104,7 +7254,7 @@ begin
   Started := True;
   for I := 0 to WindowCount - 1 do
   begin
-    StartPaneEx(I, GetEnvironmentVariable('HOME'),
+    StartPaneEx(I, OsUserHome,
       WizardCommand(ConnectCmd[I], PostConnectCmd[I]), -1, '', '',
       UiText('wizard ', 'asistente ') + IntToStr(I + 1), DEFAULT_SCROLLBACK);
     // remember the free-form connection to save this as a profile
@@ -7118,7 +7268,7 @@ begin
     if Lay <> nil then
       Lay.Free;
     Lay := TLayout.Create;
-    StartPane(0, GetEnvironmentVariable('HOME'), '');
+    StartPane(0, OsUserHome, '');
     Lay.Focused := 0;
     MessageBox(UiText('The wizard could not start a pane.',
       'No se pudo iniciar un panel del asistente.'), nil,
@@ -8662,7 +8812,10 @@ end;
 // lease; never Locate a window or resize a mirror from this event.
 procedure TSuperApp.ApplyRemoteHostSummaryEv(const AData: TByteArray);
 var
-  Clients, MinHostW, MinHostH, OldClientCount, I, NoticeCount: Longint;
+  Clients, MinHostW, MinHostH, OldClientCount, I: Longint;
+  {$IFDEF UNIX}
+  NoticeCount: Longint;
+  {$ENDIF}
   HostSizesMatch, AnyFull: boolean;
 begin
   if not DecodeHostSummaryBlob(AData, Clients, MinHostW, MinHostH,
@@ -8674,6 +8827,7 @@ begin
   RemoteMinHostH := MinHostH;
   RemoteHostSizesMatch := HostSizesMatch;
   RemoteHostSummaryValid := True;
+  {$IFDEF UNIX}
   // The daemon serializes membership changes and emits this frame to every
   // remaining client. Reuse that exact order; no new per-client protocol or
   // shared desktop state is needed. A snapshot establishes the baseline for
@@ -8687,6 +8841,7 @@ begin
       for NoticeCount := OldClientCount - 1 downto Clients do
         QueueMemberNotice(mnDisconnected, NoticeCount);
   end;
+  {$ENDIF}
   if DebugFull then
     DebugLog(Format('host-summary-event: clients=%d min=%dx%d match=%d',
       [Clients, MinHostW, MinHostH, Ord(HostSizesMatch)]));
@@ -10008,6 +10163,7 @@ begin
       cmDesktopFitTerminal: AdjustDesktopToTerminal;
       cmDesktopModify: ModifyDesktopDimensions;
       cmDesktopShowSize: ShowDesktopDimensions;
+      {$IFDEF UNIX}
       cmToggleDesktopNotifications:
         begin
           Cfg.DesktopNotifications := not Cfg.DesktopNotifications;
@@ -10015,6 +10171,7 @@ begin
           RebuildMenu;
           RefreshMemberNoticeViews;
         end;
+      {$ENDIF}
       cmPaneTile: DoTilePanes;
       cmPaneCascade: DoCascadePanes;
       cmPaneOrganize: DoOrganizePanes;
@@ -10293,13 +10450,20 @@ type
   // untyped var parameter, which the compiler cannot see as initialisation
   TTouchedPanes = array[0..MAX_PANES - 1] of boolean;
 var
+  {$IFDEF UNIX}
   fdset: TFDSet;
   tv: TTimeVal;
   maxfd: cint;
-  i, n: integer;
-  Buf: array[0..MAXREAD - 1] of byte;
   st2: cint;
   p: TPid;
+  {$ENDIF}
+  {$IFDEF WINDOWS}
+  AnyLocalOutput: boolean;
+  SizeCols, SizeRows: integer;
+  SizeSuppress: boolean;
+  {$ENDIF}
+  i, n: integer;
+  Buf: array[0..MAXREAD - 1] of byte;
   Tick: cardinal;
   RemoteEvent: TSessionEvent;
   PendingEvent: TEvent;
@@ -10314,10 +10478,54 @@ var
   const
     LastTitle: cardinal = 0;
     LastBlink: cardinal = 0;
+    {$IFNDEF WINDOWS}
     LastSizeCheck: cardinal = 0;
+    {$ENDIF}
     LastLayoutSync: cardinal = 0;
+    {$IFDEF WINDOWS}
+    // How long the console geometry must hold still before the resize counts
+    // as finished, and the longest a continuous drag may go without any
+    // refresh at all. See the sampling block below.
+    RESIZE_SETTLE_MS = 120;
+    RESIZE_REFRESH_MS = 80;
+    SeenCols: integer = 0;
+    SeenRows: integer = 0;
+    SizeStillTick: cardinal = 0;
+    SizeMovingSince: cardinal = 0;
+    SizeMoving: boolean = False;
+    LastAlive: cardinal = 0;
+    {$ENDIF}
 
   procedure WaitForActivity(AMaxMs: LongInt);
+  {$IFDEF WINDOWS}
+  var
+    H: array[0..1] of PtrUInt;
+    N: LongWord;
+    E: PtrUInt;
+  begin
+    // The console input handle is waitable; a ConPTY output pipe is not, so
+    // the local pane loop peeks those and skips this call whenever it moved
+    // bytes. An attached client adds its session socket as a Winsock event,
+    // armed for the wait and disarmed right after (see TSessionClient).
+    H[0] := StGetStdHandle(ST_STD_INPUT_HANDLE);
+    if (H[0] = 0) or (H[0] = ST_INVALID_HANDLE_VALUE) then
+      Exit;
+    N := 1;
+    E := 0;
+    if RemoteMode and (Remote <> nil) and Remote.Connected then
+    begin
+      E := Remote.WaitEvent(Remote.WantsWrite);
+      if E <> 0 then
+      begin
+        H[1] := E;
+        N := 2;
+      end;
+    end;
+    StWaitForMultipleObjects(N, @H[0], False, LongWord(AMaxMs));
+    if E <> 0 then
+      Remote.EndWait;
+  end;
+  {$ELSE}
   var
     PollFds: array[0..MAX_PANES + 2] of TPollFD;
     Count, J, Fd: integer;
@@ -10371,6 +10579,7 @@ var
         J := fpPoll(@PollFds[0], Count, AMaxMs);
       until (J >= 0) or (fpGetErrNo <> ESysEINTR);
   end;
+  {$ENDIF}
 begin
   HostPaste := '';
   // TProgram.Idle performs these two useful Free Vision duties and then a
@@ -10402,11 +10611,84 @@ begin
   Tick := GetTickCount64;
   RemoteEvent.Data := nil;
   RemoteEvent.Text := '';
+  {$IFDEF WINDOWS}
+  // A console resize announces itself to nobody. KInit clears
+  // ENABLE_WINDOW_INPUT, so WINDOW_BUFFER_SIZE_EVENT records are never queued,
+  // and the VT byte stream has no resize sequence either. Asking the console
+  // is the only way to see it -- one GetConsoleScreenBufferInfo call, so
+  // sample on every idle pass rather than four times a second.
+  //
+  // Acting on each size seen is what looked wrong. Dragging the window walks
+  // through many geometries, and a frame painted for one of them is emitted
+  // into a console already reflowing to the next. Worse at the end: when the
+  // gesture stops on a size that was already applied, ApplyTerminalSize has
+  // nothing to do and returns without painting, so the mangled frame stayed on
+  // screen until some unrelated key or click forced a redraw.
+  //
+  // So watch the geometry instead of reacting to it: once it holds still,
+  // apply it and repaint unconditionally -- the surface may well be right
+  // already, and it is what the terminal is showing that is not. A drag that
+  // never pauses still gets a refresh every RESIZE_REFRESH_MS.
+  // One line a second, so a trace can tell "Idle never ran" apart from "Idle
+  // ran and the resize was missed". Without it the two look identical in a log.
+  if DebugActive and (Tick - LastAlive >= 1000) then
+  begin
+    LastAlive := Tick;
+    DebugLog(Format('win: idle alive screen=%dx%d bounds=%dx%d moving=%d',
+      [ScreenWidth, ScreenHeight, Size.X, Size.Y, Ord(SizeMoving)]));
+  end;
+  if ReadTerminalSize(SizeCols, SizeRows) then
+  begin
+    if (SizeCols <> SeenCols) or (SizeRows <> SeenRows) then
+    begin
+      if DebugActive then
+        DebugLog(Format('win: console size seen %dx%d (was %dx%d)',
+          [SizeCols, SizeRows, SeenCols, SeenRows]));
+      SeenCols := SizeCols;
+      SeenRows := SizeRows;
+      SizeStillTick := Tick;
+      if not SizeMoving then
+      begin
+        SizeMoving := True;
+        SizeMovingSince := Tick;
+      end;
+    end
+    else if SizeMoving and
+            ((Tick - SizeStillTick >= RESIZE_SETTLE_MS) or
+             (Tick - SizeMovingSince >= RESIZE_REFRESH_MS)) then
+    begin
+      SizeMoving := False;
+      if DebugActive then
+        DebugLog(Format('win: console size settled %dx%d screen=%dx%d bounds=%dx%d',
+          [SizeCols, SizeRows, ScreenWidth, ScreenHeight, Size.X, Size.Y]));
+      // Hold the writes across the rebuild so this settles into exactly one
+      // physical frame: ApplyTerminalSize's own final paint stays buffered,
+      // and the single emit below carries the whole settled screen.
+      SizeSuppress := SuppressFlush;
+      SuppressFlush := True;
+      try
+        ApplyTerminalSize(SizeCols, SizeRows);
+      finally
+        SuppressFlush := SizeSuppress;
+      end;
+      // The full frame below rewrites every cell: a complete repaint on its
+      // own, which Windows Terminal renders as soon as it arrives. (When it
+      // seemed not to, the client was in fact stuck in ReadFile on the
+      // console input handle -- see CharRecordPending in st_kbd.)
+      InvalidateFrame;
+      ReDraw;
+      if DebugActive then
+        DebugLog(Format('win: console size repainted screen=%dx%d bounds=%dx%d',
+          [ScreenWidth, ScreenHeight, Size.X, Size.Y]));
+    end;
+  end;
+  {$ELSE}
   if Tick - LastSizeCheck >= 250 then
   begin
     LastSizeCheck := Tick;
     SyncTerminalSize;
   end;
+  {$ENDIF}
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
   SyncHostMouse;
@@ -10596,7 +10878,9 @@ begin
             RemoteMode := False;
             RemoteHostSizeArmed := False;
             RemoteHostSummaryValid := False;
+            {$IFDEF UNIX}
             RemoteMembershipReady := False;
+            {$ENDIF}
             ResetRemotePreviewState;
             ResetRemoteZoomState;
             SkipSave := True;
@@ -10610,7 +10894,9 @@ begin
             RemoteMode := False;
             RemoteHostSizeArmed := False;
             RemoteHostSummaryValid := False;
+            {$IFDEF UNIX}
             RemoteMembershipReady := False;
+            {$ENDIF}
             ResetRemotePreviewState;
             ResetRemoteZoomState;
             // flag before the MessageBox: nothing from this instance must
@@ -10644,7 +10930,9 @@ begin
           FinishRemoteZoomAnimation;
       end;
     end;
+    {$IFDEF UNIX}
     UpdateMemberNotices(GetTickCount64);
+    {$ENDIF}
     if RemoteMode and RemoteZoomPending and
        (Tick - RemoteZoomSentTick >= 2500) then
     begin
@@ -10688,6 +10976,48 @@ begin
     Exit;
   end;
   // poll ptys
+  {$IFDEF WINDOWS}
+  AnyLocalOutput := False;
+  for i := 0 to MAX_PANES - 1 do
+    if (Panes[i] <> nil) and (Panes[i].Pid > 0) then
+    begin
+      // ConPTY output is an anonymous pipe and cannot join a POSIX fd_set.
+      // ReadBuf peeks first, so polling all sixteen possible panes never
+      // blocks when a pane has no output.
+      n := Panes[i].ReadBuf(Buf);
+      if n > 0 then
+      begin
+        AnyLocalOutput := True;
+        if DebugActive then
+          DebugLog(Format('poll pane=%d conpty n=%d', [i, n]));
+        if PassthroughActive and (i = PassPane) then
+        begin
+          Scr[i].WriteBytes(Buf, n);
+          DrainPaneOsc52(i, True);
+          PassthroughFiltered(Buf[0], n);
+        end
+        else
+        begin
+          Scr[i].WriteBytes(Buf, n);
+          DrainPaneOsc52(i, False);
+          if Win[i] <> nil then
+            RepaintPane(i);
+        end;
+      end
+      else if (Panes[i].Pid > 0) and (not Panes[i].Alive) then
+      begin
+        if PassthroughActive and (i = PassPane) then
+          ExitPassthrough;
+        Panes[i].MarkExited;
+        if (PaneTerm[i] >= 0) and
+           (PaneTerm[i] < Length(WClasses)) and
+           (WClasses[PaneTerm[i]].Kind = wcSSH) then
+          FallbackPane(i)
+        else if Win[i] <> nil then
+          Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
+      end;
+    end;
+  {$ELSE}
   maxfd := -1;
   fpFD_ZERO(fdset);
   for i := 0 to MAX_PANES - 1 do
@@ -10754,6 +11084,7 @@ begin
           Win[i]^.SetTitle(UiText(' EXITED', ' TERMINO'));
       end;
     end;
+  {$ENDIF}
   // blinking cursor of the focused pane
   if Tick - LastBlink >= 530 then
   begin
@@ -10781,7 +11112,12 @@ begin
           Win[i]^.SetTitle(' ' + Copy(ExtractFileName(Panes[i].TitleCwd), 1, 24));
       end;
   end;
-  WaitForActivity(10);
+  {$IFDEF WINDOWS}
+  // A pane that just produced output very likely has more queued behind it:
+  // its pipe is not waitable, so go straight round again instead of parking.
+  if not AnyLocalOutput then
+  {$ENDIF}
+    WaitForActivity(10);
 end;
 
 // informational menu row: always gray, never dispatchable (TV
@@ -11280,10 +11616,12 @@ begin
   DesktopItems := NewItem(UiText('~S~how current dimensions...',
     '~M~ostrar dimensiones actuales...'), '', kbNoKey,
     cmDesktopShowSize, hcNoContext, nil);
+  {$IFDEF UNIX}
   DesktopItems := NewItem(ActiveMark(Cfg.DesktopNotifications) +
     UiText('Show desktop ~n~otifications',
            'Mostrar ~n~otificaciones del escritorio'), '', kbNoKey,
     cmToggleDesktopNotifications, hcNoContext, DesktopItems);
+  {$ENDIF}
   DesktopItems := NewItem(UiText('~M~odify dimensions...',
     'Modificar ~d~imensiones...'), '', kbNoKey,
     cmDesktopModify, hcNoContext, DesktopItems);

@@ -103,7 +103,9 @@ USES
    {$ENDIF}
 
    video,
+   {$IFNDEF OS_WINDOWS}
    SysMsg,
+   {$ENDIF}
    Objects;                                           { GFV standard units }
 
 {***************************************************************************}
@@ -636,7 +638,13 @@ VAR
 {<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>}
 { API Units }
   USES
+{$IFNDEF OS_WINDOWS}
+  { Only GetSystemEvent's non-Windows branch maps SysMsg events onto the
+    standard cmReceivedFocus/cmReleasedFocus/cmQuitApp/cmResizeApp commands.
+    SuperTerm's Windows branch returns evNothing there, so the unit would be
+    an unused dependency in a Win64 build. }
   FVConsts,
+{$ENDIF}
   Keyboard,Mouse,SysUtils;
 
 {***************************************************************************}
@@ -748,7 +756,9 @@ Function GetDosTicks:longint; { returns ticks at 18.2 Hz, just like DOS }
 {$ENDIF OS_UNIX}
 {$IFDEF OS_WINDOWS}
   begin
-     GetDosTicks:=GetTickCount div 55;
+     { GetTickCount is deprecated in favour of the 64-bit counter, which also
+       removes the 49.7-day wrap this DOS-tick approximation inherited. }
+     GetDosTicks:=LongInt(GetTickCount64 div 55);
   end;
 {$ENDIF OS_WINDOWS}
 {$IFDEF OS_WIN16}
@@ -1290,9 +1300,19 @@ end;
 {  GetSystemEvent                                                           }
 {---------------------------------------------------------------------------}
 procedure GetSystemEvent (Var Event: TEvent);
+{$IFNDEF OS_WINDOWS}
 var
   SysEvent : TsystemEvent;
+{$ENDIF}
 begin
+{$IFDEF OS_WINDOWS}
+  { SuperTerm owns Windows console input as a VT byte stream.  FPC SysMsg's
+    winevent thread reads INPUT_RECORDs from that same handle and discards
+    keys because the stock keyboard handler is not installed.  Terminal size
+    changes are polled by TSuperApp.SyncTerminalSize, so no SysMsg event is
+    required on this platform. }
+  Event.What := evNothing;
+{$ELSE}
   SysEvent := Default(TsystemEvent);
   if PollSystemEvent(SysEvent) then
     begin
@@ -1328,6 +1348,7 @@ begin
     end
   else
     Event.What:=evNothing;
+{$ENDIF}
 end;
 
 
@@ -1355,7 +1376,9 @@ BEGIN
      LastWhere.y:=MouseWhere.y;
      MouseEvents := True;                             { Set initialized flag }
     end;
+{$IFNDEF OS_WINDOWS}
   InitSystemMsg;
+{$ENDIF}
 END;
 
 {---------------------------------------------------------------------------}
@@ -1363,7 +1386,9 @@ END;
 {---------------------------------------------------------------------------}
 PROCEDURE DoneEvents;
 BEGIN
+{$IFNDEF OS_WINDOWS}
   DoneSystemMsg;
+{$ENDIF}
   DisableTmuxMouse;
   Mouse.DoneMouse;
   MouseEvents:=false;
@@ -1671,7 +1696,9 @@ BEGIN
    ButtonCount := DetectMouse;                        { Detect mouse }
    DetectVideo;                                       { Detect video }
 {   InitKeyboard;}
+{$IFNDEF OS_WINDOWS}
    InitSystemMsg;
+{$ENDIF}
 {$ifdef OS_WINDOWS}
    SetFileApisToOEM;
 {$endif}

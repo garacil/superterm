@@ -48,9 +48,9 @@ UNIT Views;
 {====================================================================}
 
 USES
-   {$IFDEF OS_WINDOWS}                                { WIN/NT CODE }
-         Windows,                                     { Standard unit }
-   {$ENDIF}
+   { The upstream OS_WINDOWS branch pulled in the Windows unit, but nothing in
+     this vendored copy calls the WinAPI: the platform work lives in the
+     project's own units. Keeping it would be an unused dependency. }
 
    {$IFDEF OS_OS2}                                    { OS2 CODE }
      Os2Def, DosCalls, PmWin,
@@ -2771,8 +2771,12 @@ const
      $16, $1A, $1C, $15, $00, $15, $13, $1A, $19);
   FrameChars_437: array[0..31] of Char =
     '   '#192' '#179#218#195' '#217#196#193#191#180#194#197'   '#200' '#186#201#199' '#188#205#207#187#182#209#206;
+  {$ifdef unix}
+  { Selected below only where Video's codepage variables exist; a Windows
+    build pins UTF-8 output and never reaches the CP850 table. }
   FrameChars_850: array[0..31] of Char =
     '   '#192' '#179#218#195' '#217#196#193#191#180#194#197'   '#200' '#186#201#186' '#188#205#205#187#186#205#206;
+  {$endif}
 var
   FrameMask : array[0..MaxViewWidth-1] of Byte;
   ColorMask : word;

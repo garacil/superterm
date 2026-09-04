@@ -14,7 +14,7 @@ unit st_profiles;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix, st_config, st_wclass,
+  Classes, SysUtils, IniFiles, ctypes, st_config, st_wclass,
   st_templates, st_layout;
 
 type

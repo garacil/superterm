@@ -13,11 +13,38 @@ SYSCONFDIR := @SYSCONFDIR@
 DOCDIR := @DOCDIR@
 DATADIR := @DATADIR@
 
+EXEEXT :=
+ifeq ($(OS),Windows_NT)
+EXEEXT := .exe
+# configure runs under Git Bash and records /d/... paths. Native GNU Make and
+# CreateProcess cannot use that spelling, so normalize paths passed to Make's
+# prerequisite scanner and to the compiler executable.
+PROJECT_DIR := $(shell cygpath -m "$(PROJECT_DIR)")
+FPC := $(shell cygpath -m "$(FPC)")
+endif
+
+# The Windows version resource (icon, "Publisher", "File description",
+# version numbers) is compiled from src/superterm.rc with the version taken
+# from VERSION, so the Details tab and the installer can never disagree with
+# --version. superterm.res stays committed for the hand-run fpc path.
+RES_DEP :=
+ifeq ($(OS),Windows_NT)
+WINDRES := $(dir $(FPC))windres$(EXEEXT)
+VERSION_STRING := $(shell cat "$(PROJECT_DIR)/VERSION")
+VERSION_PARTS := $(subst ., ,$(VERSION_STRING))
+RES_DEP := $(PROJECT_DIR)/src/superterm.res
+endif
+
+SUPERTERM_BIN := $(PROJECT_DIR)/bin/superterm$(EXEEXT)
+SUPERTERM_TRAY_BIN := $(PROJECT_DIR)/bin/superterm-tray$(EXEEXT)
+SUPERTERM_DEBUG_BIN := $(PROJECT_DIR)/bin/superterm-debug$(EXEEXT)
+SUPERTERM_HEAP_BIN := $(PROJECT_DIR)/bin/superterm-debug-heap$(EXEEXT)
+
 MODE ?= release
-TARGET ?= $(PROJECT_DIR)/bin/superterm
+TARGET ?= $(SUPERTERM_BIN)
 UNITDIR ?= $(PROJECT_DIR)/build/units/$(MODE)
 FPCFLAGS_EXTRA ?=
-TEST_TARGET := $(PROJECT_DIR)/bin/superterm-test
+TEST_TARGET := $(PROJECT_DIR)/bin/superterm-test$(EXEEXT)
 
 # -vewnh makes every diagnostic class visible; -Sewnh makes each visible
 # warning, note, or hint fatal. The only suppressed messages are FPC 11030 and
@@ -44,7 +71,8 @@ ifeq ($(MODE),debug)
 # Keep -Crtoi explicit: /etc/fpc.cfg enables it through its "#IFDEF DEBUG"
 # branch, but runtime checks must not depend on global compiler configuration.
 MODE_FLAGS := -O1 -g -gl -dDEBUG -Crtoi
-else ifeq ($(MODE),release)
+else
+ifeq ($(MODE),release)
 # -gl: line information, kept in the optimised build on purpose. A crash
 # report from a release binary carried bare addresses that resolved to
 # nothing, which is exactly when the report matters most; with this the
@@ -52,6 +80,7 @@ else ifeq ($(MODE),release)
 MODE_FLAGS := -O4 -gl
 else
 $(error MODE must be release or debug)
+endif
 endif
 
 SOURCES := $(wildcard $(PROJECT_DIR)/src/*.pas) \
@@ -110,7 +139,7 @@ TESTS := drive_test.py large_screen_test.py mouse_backend_test.py mouse_test.py 
   screen_ascii_fastpath_test.py client_output_reactor_test.py \
   root_output_ui_stress_test.py
 
-.PHONY: all release debug debug-heap test-runtime test install uninstall install-deps clean distclean info
+.PHONY: all release traytool debug debug-heap test-runtime test install uninstall install-deps clean distclean info
 
 all: $(TARGET)
 
@@ -119,23 +148,50 @@ $(PROJECT_DIR)/src/st_version.inc: $(PROJECT_DIR)/VERSION
 	printf "const SUPERTERM_VERSION = '%s';\n" "$$(cat $(PROJECT_DIR)/VERSION)" \
 		> $(PROJECT_DIR)/src/st_version.inc
 
-$(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(PROJECT_DIR)/config.status
+ifeq ($(OS),Windows_NT)
+# windres on Windows mangles quoted -D values, so the version travels in a
+# generated header the resource script includes.
+$(PROJECT_DIR)/src/superterm_version.rh: $(PROJECT_DIR)/VERSION
+	printf '#define ST_VER_MAJOR %s\n#define ST_VER_MINOR %s\n#define ST_VER_PATCH %s\n#define ST_VER_STRING "%s"\n' \
+		"$(word 1,$(VERSION_PARTS))" "$(word 2,$(VERSION_PARTS))" \
+		"$(word 3,$(VERSION_PARTS))" "$(VERSION_STRING)" \
+		> $(PROJECT_DIR)/src/superterm_version.rh
+
+$(PROJECT_DIR)/src/superterm.res: $(PROJECT_DIR)/src/superterm.rc $(PROJECT_DIR)/src/superterm_version.rh $(PROJECT_DIR)/packaging/windows/alien-hacker.ico
+	cd "$(PROJECT_DIR)/src" && "$(WINDRES)" -i superterm.rc -o superterm.res
+endif
+
+$(TARGET): $(SOURCES) $(PROJECT_DIR)/src/st_version.inc $(RES_DEP) $(PROJECT_DIR)/config.status
 	@mkdir -p "$(UNITDIR)" "$(PROJECT_DIR)/bin"
 	$(FPC) $(BASE_FLAGS) $(MODE_FLAGS) $(FPCFLAGS_EXTRA) \
 		-o$(TARGET) $(PROJECT_DIR)/src/superterm.lpr
 
 release:
-	$(MAKE) MODE=release TARGET=$(PROJECT_DIR)/bin/superterm all
+	$(MAKE) MODE=release TARGET=$(SUPERTERM_BIN) all
+
+# Windows notification-area helper: a separate GUI executable (see
+# src/traytool) that lists live detached sessions and reopens or closes one.
+# Built only on Windows and never part of 'all'/'release', so a GNU/Linux or
+# macOS build never compiles it -- the same rule as src/st_conpty.pas.
+traytool:
+ifeq ($(OS),Windows_NT)
+	@mkdir -p "$(PROJECT_DIR)/build/units/tray" "$(PROJECT_DIR)/bin"
+	$(FPC) -Mobjfpc -Sh -Sewnh -vewnh -vm11030,11031 $(MODE_FLAGS) \
+		-FU$(PROJECT_DIR)/build/units/tray -FE$(PROJECT_DIR)/bin \
+		-o$(SUPERTERM_TRAY_BIN) $(PROJECT_DIR)/src/traytool/superterm-tray.lpr
+else
+	@printf '%s\n' 'traytool is a Windows-only component; nothing to build here.'
+endif
 
 debug:
-	$(MAKE) MODE=debug TARGET=$(PROJECT_DIR)/bin/superterm-debug all
+	$(MAKE) MODE=debug TARGET=$(SUPERTERM_DEBUG_BIN) all
 
 # Separate instrumented binary: -gh installs FPC's HeapTrc memory manager and
 # SUPERTERM_HEAPTRACE gives st_debug permission to redirect every process to a
 # distinct, PID-tagged dump. Keeping it separate avoids changing normal debug
 # timing and memory layout when a race/deadlock is being reproduced.
 debug-heap:
-	$(MAKE) MODE=debug TARGET=$(PROJECT_DIR)/bin/superterm-debug-heap \
+	$(MAKE) MODE=debug TARGET=$(SUPERTERM_HEAP_BIN) \
 		UNITDIR=$(PROJECT_DIR)/build/units/debug-heap \
 		FPCFLAGS_EXTRA='$(FPCFLAGS_EXTRA) -gh -dSUPERTERM_HEAPTRACE' all
 
@@ -156,7 +212,7 @@ test: release test-runtime
 	@command -v rsvg-convert >/dev/null 2>&1 || \
 		(printf '%s\n' 'rsvg-convert is required for artwork tests; install librsvg2-bin (Debian/Ubuntu) or librsvg (Homebrew)'; exit 1)
 	@SUPERTERM_TEST_BIN="$(TEST_TARGET)" \
-		SUPERTERM_RELEASE_BIN="$(PROJECT_DIR)/bin/superterm" \
+		SUPERTERM_RELEASE_BIN="$(SUPERTERM_BIN)" \
 		FPC="$(FPC)" \
 		$(PYTHON) "$(PROJECT_DIR)/test/run_tests.py" \
 		--project-dir "$(PROJECT_DIR)" $(TESTS)
@@ -170,7 +226,7 @@ Makefile: $(PROJECT_DIR)/Makefile.in $(PROJECT_DIR)/configure
 
 install: release
 	@mkdir -p "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DOCDIR)" "$(DESTDIR)$(SYSCONFDIR)/superterm"
-	install -m 0755 "$(PROJECT_DIR)/bin/superterm" "$(DESTDIR)$(BINDIR)/superterm"
+	install -m 0755 "$(SUPERTERM_BIN)" "$(DESTDIR)$(BINDIR)/superterm$(EXEEXT)"
 	install -m 0644 "$(PROJECT_DIR)/README.md" "$(DESTDIR)$(DOCDIR)/README.md"
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
 		install -m 0644 "$$doc" "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \
@@ -194,9 +250,9 @@ uninstall:
 		   { [ "$${SUPERTERM_TESTING:-}" != 1 ] || \
 		     [ -z "$${SUPERTERM_SSHD_ROOT:-}" ]; }; then \
 			printf '%s\n' 'Unprivileged uninstall: host SSH service state was not touched.'; \
-		elif [ -x "$(BINDIR)/superterm" ]; then \
-			"$(BINDIR)/superterm" ssh-server uninstall-service || exit $$?; \
-		elif [ -e "$(BINDIR)/superterm" ]; then \
+		elif [ -x "$(BINDIR)/superterm$(EXEEXT)" ]; then \
+			"$(BINDIR)/superterm$(EXEEXT)" ssh-server uninstall-service || exit $$?; \
+		elif [ -e "$(BINDIR)/superterm$(EXEEXT)" ]; then \
 			printf '%s\n' 'Refusing to remove a non-executable SuperTerm binary before its SSH service is uninstalled.' >&2; \
 			exit 1; \
 		else \
@@ -205,7 +261,7 @@ uninstall:
 	else \
 		printf '%s\n' 'DESTDIR staging uninstall: host SSH service state is not touched.'; \
 	fi
-	rm -f "$(DESTDIR)$(BINDIR)/superterm"
+	rm -f "$(DESTDIR)$(BINDIR)/superterm$(EXEEXT)"
 	rm -f "$(DESTDIR)$(DOCDIR)/README.md"
 	@for doc in "$(PROJECT_DIR)"/docs/*.md; do \
 		rm -f "$(DESTDIR)$(DOCDIR)/$$(basename "$$doc")"; \

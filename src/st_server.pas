@@ -13,9 +13,25 @@ unit st_server;
 interface
 
 uses
-  Classes, SysUtils, IniFiles, BaseUnix, Unix, Sockets,
-  st_config, st_wclass, st_layout, st_pty, st_screen, st_session, st_debug,
-  st_poll, st_cpu;
+  {$IFDEF WINDOWS}
+  // First on purpose: SysUtils' DeleteFile, GetTickCount64 and
+  // GetEnvironmentVariable must win over the WinAPI spellings.
+  Windows,
+  {$ENDIF}
+  Classes, SysUtils,
+  {$IFDEF WINDOWS}
+  // The Winsock transport prologue declares its descriptors with the C
+  // types; on Unix they come from BaseUnix, exactly as on main.
+  ctypes,
+  {$ENDIF}
+  {$IFDEF UNIX}
+  BaseUnix, Unix,
+  {$ENDIF}
+  // The daemon and the attached client read session files, compose
+  // window-class commands and size their worker pool on every platform.
+  // Windows transport is AF_UNIX over Winsock (Windows 10 1803+).
+  IniFiles, Sockets, st_wclass, st_session, st_poll, st_cpu, st_os,
+  st_config, st_layout, st_pty, st_screen, st_debug;
 
 const
   FRAME_ATTACH = 1;
@@ -239,11 +255,15 @@ const
   WORKER_RESULT_DRAIN_BUDGET = MAX_PANES;
   MAX_WORKER_RESULT_BYTES = 16 * 1024 * 1024;
 
+  {$IFDEF WINDOWS}
+  ST_MSG_DONTWAIT = 0;
+  {$ELSE}
   {$ifdef darwin}
   ST_MSG_DONTWAIT = $80;
   {$else}
   ST_MSG_DONTWAIT = $40;
   {$endif}
+  {$ENDIF}
 
 type
   TByteArray = array of byte;
@@ -330,6 +350,7 @@ type
     FMinHostW, FMinHostH: Longint;
     FHostSizesMatch: boolean;
     FHostSummaryValid: boolean;
+    // Socket buffers and protocol bookkeeping of the attached client.
     FInBuf: RawByteString;
     FInPos: integer;
     FOutBuf: RawByteString;
@@ -341,9 +362,15 @@ type
     // FConnected=False made Poll return silently forever.
     FOutboundLostPending: boolean;
     FNextLayoutLockRequest: QWord;
-    FNextPreviewId: QWord;
     FLastPreviewId: QWord;
     FLastPreviewTick: QWord;
+    {$IFDEF WINDOWS}
+    // The Windows UI waits on this event together with its console handle;
+    // see WaitEvent/EndWait.
+    FWaitEvent: PtrUInt;
+    FWaitArmed: boolean;
+    {$ENDIF}
+    FNextPreviewId: QWord;
     FQueuedEvents: array of TSessionEvent;
     FQueuedEventHead: integer;
     // why the last Connect failed, so the UI can say something useful
@@ -368,6 +395,14 @@ type
     // ownership and all reads/writes remain inside TSessionClient.
     function WaitHandle: cint;
     function WantsWrite: boolean;
+    {$IFDEF WINDOWS}
+    // A Windows UI cannot poll a socket together with its console input
+    // handle, so it waits on this event instead: armed here for reads (and
+    // for writes while output is pending), disarmed again right after the
+    // wait so ordinary socket calls never race the event selection.
+    function WaitEvent(AWantWrite: boolean): PtrUInt;
+    procedure EndWait;
+    {$ENDIF}
     function Connect(const APath: string; out Snapshot: TSessionSnapshot;
       AHostW: integer = 0; AHostH: integer = 0): boolean;
     function Poll(out Event: TSessionEvent): boolean;
@@ -497,6 +532,14 @@ function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const ATitleFixed: TBoolArray;
   AChildHook: TDetachedServerChildHook): TDetachedServerStartResult;
 
+{$IFDEF WINDOWS}
+// Entry point of the session server process that StartDetachedServer starts
+// (superterm.exe --session-daemon): reads the workspace from standard input,
+// publishes the socket, reports one status byte on standard output and runs
+// the reactor until the session ends. Returns the process exit code.
+function RunSessionDaemonChild: integer;
+{$ENDIF}
+
 // decodes the FRAME_LAYOUT / FRAME_LAYOUT_EV payload
 function DecodeLayoutBlob(const Data: TByteArray; out ANodes: string;
   out AFocused: Longint; out ATitles: TStrArray; out AGeom: TPaneGeomArray;
@@ -535,12 +578,19 @@ var
 
 implementation
 
+{$IFDEF UNIX}
 uses
+  // The forked daemon inherits the client's Free Vision objects; see
+  // StartDetachedServer, which keeps their DrawView calls buffer-only.
   st_video;
+{$ENDIF}
 
 const
   SESSION_CREATE_WAIT_MS = 30000;
   SESSION_CREATE_RETRY_MS = 25;
+
+{$IFDEF UNIX}
+const
   // FPC 3.2.2 exposes struct flock/F_SETLK but not these platform values.
   {$ifdef linux}
   SESSION_F_WRLCK = 1;
@@ -550,7 +600,161 @@ const
 
 var
   HeldSessionNameLockFD: cint = -1;
+{$ENDIF}
+
+var
   HeldSessionNameLockName: string = '';
+
+{$IFDEF WINDOWS}
+// ---- Windows transport primitives -------------------------------------
+//
+// Everything below this block is written against the POSIX names it grew up
+// with. Windows supplies those names with Winsock bodies instead of a second
+// implementation: AF_UNIX stream sockets exist since Windows 10 1803 and the
+// FPC Sockets unit already wraps socket/bind/listen/accept/connect/send/recv
+// over them; WSAPoll is poll(2) for sockets; the few pipes the reactor waits
+// on become connected socket pairs so one WSAPoll covers every descriptor.
+// What has no Windows shape at all -- fork, signals, waitpid, record locks,
+// inode identity -- is replaced further down, next to the POSIX code it
+// stands in for.
+const
+  AF_UNIX = 1;
+  POLLIN = $0300;    // POLLRDNORM or POLLRDBAND
+  POLLOUT = $0010;   // POLLWRNORM
+  POLLERR = $0001;
+  POLLHUP = $0002;
+  POLLNVAL = $0004;
+  FIONBIO_ = LongInt($8004667E);
+  WSAEWOULDBLOCK = 10035;
+  // errno names the shared code tests after a socket call
+  ESysEINTR = -1;                  // Winsock never interrupts a call
+  ESysEAGAIN = WSAEWOULDBLOCK;
+  ESysEWOULDBLOCK = WSAEWOULDBLOCK;
+  FD_READ_ = $01;
+  FD_WRITE_ = $02;
+  FD_CLOSE_ = $20;
+  DETACHED_PROCESS_ = $00000008;
+  CREATE_NEW_PROCESS_GROUP_ = $00000200;
+  CREATE_UNICODE_ENVIRONMENT_ = $00000400;
+  CREATE_BREAKAWAY_FROM_JOB_ = $01000000;
+
+type
+  TUnixSockAddr = packed record
+    family: word;
+    path: array[0..107] of AnsiChar;
+  end;
+  TFilDes = array[0..1] of cint;
+  // WSAPOLLFD (16 bytes on x64, padded), so PollFd below compiles unchanged
+  TPollFD = packed record
+    fd: PtrUInt;
+    events: SmallInt;
+    revents: SmallInt;
+    Padding: LongInt;
+  end;
+
+function WSAPoll(fdArray: Pointer; fds: LongWord; timeout: LongInt): LongInt;
+  stdcall; external 'ws2_32.dll' name 'WSAPoll';
+function ioctlsocket(s: PtrUInt; cmd: LongInt; var argp: LongWord): LongInt;
+  stdcall; external 'ws2_32.dll' name 'ioctlsocket';
+function WSACreateEvent: PtrUInt; stdcall;
+  external 'ws2_32.dll' name 'WSACreateEvent';
+function WSACloseEvent(hEvent: PtrUInt): LongBool; stdcall;
+  external 'ws2_32.dll' name 'WSACloseEvent';
+function WSAResetEvent(hEvent: PtrUInt): LongBool; stdcall;
+  external 'ws2_32.dll' name 'WSAResetEvent';
+function WSAEventSelect(s: PtrUInt; hEvent: PtrUInt;
+  lNetworkEvents: LongInt): LongInt; stdcall;
+  external 'ws2_32.dll' name 'WSAEventSelect';
+function IsProcessInJob(hProcess, hJob: THandle; out Res: LongBool): LongBool;
+  stdcall; external 'kernel32' name 'IsProcessInJob';
+
+var
+  HeldSessionNameLockHandle: THandle = 0;
+  // Ready channel of a server process: the pipe its launcher waits on (the
+  // server's standard output while it starts). SignalReady writes one byte.
+  WinReadyPipe: THandle = 0;
+  SocketPairCounter: LongInt = 0;
+
+// errno after a socket call: the shared code only asks this after Winsock
+function fpgeterrno: cint;
+begin
+  Result := socketerror;
+end;
+
+function fpPoll(AFds: Pointer; ACount: LongWord; ATimeoutMs: LongInt): cint;
+begin
+  Result := WSAPoll(AFds, ACount, ATimeoutMs);
+end;
+
+// every descriptor the shared code closes on Windows is a socket
+function FpClose(AFd: cint): cint;
+begin
+  Result := CloseSocket(AFd);
+end;
+
+// The stand-in for pipe(2): a connected AF_UNIX pair through a short-lived
+// listener under the temporary directory, both ends non-blocking and
+// non-inheritable, so the reactor can WSAPoll it like any client.
+function FpPipe(var P: TFilDes): cint;
+var
+  Addr, Peer: TUnixSockAddr;
+  AddrLen, PeerLen: tsocklen;
+  Listener, A, B: cint;
+  Path: string;
+  One: LongWord;
+begin
+  Result := -1;
+  P[0] := -1;
+  P[1] := -1;
+  Path := IncludeTrailingPathDelimiter(GetTempDir) + Format('st-pair-%d-%d',
+    [OsGetPid, InterlockedIncrement(SocketPairCounter)]);
+  if FileExists(Path) then
+    SysUtils.DeleteFile(Path);
+  Addr := Default(TUnixSockAddr);
+  if Length(Path) >= Length(Addr.path) then
+    Exit;
+  Addr.family := AF_UNIX;
+  Move(Path[1], Addr.path[0], Length(Path));
+  AddrLen := SizeOf(Addr.family) + Length(Path) + 1;
+  Listener := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  if Listener < 0 then
+    Exit;
+  A := -1;
+  B := -1;
+  try
+    if (fpBind(Listener, @Addr, AddrLen) <> 0) or
+       (fpListen(Listener, 1) <> 0) then
+      Exit;
+    A := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+    if (A < 0) or (fpConnect(A, @Addr, AddrLen) <> 0) then
+      Exit;
+    Peer := Default(TUnixSockAddr);
+    PeerLen := SizeOf(Peer);
+    B := fpAccept(Listener, @Peer, @PeerLen);
+    if B < 0 then
+      Exit;
+    One := 1;
+    ioctlsocket(PtrUInt(A), FIONBIO_, One);
+    One := 1;
+    ioctlsocket(PtrUInt(B), FIONBIO_, One);
+    SetHandleInformation(THandle(A), HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(THandle(B), HANDLE_FLAG_INHERIT, 0);
+    P[0] := B;   // the reactor reads here
+    P[1] := A;   // producers write here
+    Result := 0;
+  finally
+    if Result <> 0 then
+    begin
+      if A >= 0 then
+        CloseSocket(A);
+      if B >= 0 then
+        CloseSocket(B);
+    end;
+    CloseSocket(Listener);
+    SysUtils.DeleteFile(Path);
+  end;
+end;
+{$ENDIF}
 
 function MinimizedWireFlag(const AGeom: TPaneGeom): byte;
 begin
@@ -758,6 +962,10 @@ type
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
     FDeskW, FDeskH: Longint;
+    // Last physical terminal size a client reported (cols x rows including UI
+    // bars). Persisted in the sidecar so a re-attaching launcher can reopen
+    // the window at the size the session was last used at.
+    FLastTermCols, FLastTermRows: Longint;
     FRevision: QWord;
     // Owner of a structural transaction (tree changes, pane creation and
     // removal).  This must be independent of the per-pane owner array: when
@@ -907,7 +1115,17 @@ begin
     Exit(-1);
   P := Default(TPollFD);
   P.fd := AFD;
+  {$IFDEF WINDOWS}
+  // WSAPoll fails the whole call (WSAEINVAL, returns -1) if events carries
+  // anything but POLLRDNORM/POLLRDBAND/POLLWRNORM. POLLHUP/POLLERR/POLLNVAL are
+  // output-only status bits; callers pass them so the revents test below can
+  // treat a hangup as ready, but they must be masked out of the request or
+  // every poll returns -1 and the caller (a layout lock, a close drain) burns
+  // its budget without ever waiting. poll() ignores them in events on Unix.
+  P.events := AEvents and (POLLIN or POLLOUT);
+  {$ELSE}
   P.events := AEvents;
+  {$ENDIF}
   Result := fpPoll(@P, 1, ATimeoutMs);
   if (Result > 0) and
      ((P.revents and (AEvents or POLLERR or POLLHUP or POLLNVAL)) = 0) then
@@ -1012,7 +1230,11 @@ begin
       Exit;
     P := Default(TPollFD);
     P.fd := AFD;
+    {$IFDEF WINDOWS}
+    P.events := AEvents and (POLLIN or POLLOUT);   // see PollFd: WSAPoll rejects status bits
+    {$ELSE}
     P.events := AEvents;
+    {$ENDIF}
     N := fpPoll(@P, 1, PollMs);
     // errno belongs to the failing syscall. Capture it before the clock query
     // below (or any future diagnostic) can execute another libc operation.
@@ -1126,10 +1348,17 @@ end;
 procedure SetCloExec(AFd: cint);
 begin
   if AFd >= 0 then
+    {$IFDEF UNIX}
     FpFcntl(AFd, 2 {F_SETFD}, 1 {FD_CLOEXEC});
+    {$ELSE}
+    // Winsock sockets are inheritable handles; a pane started with handle
+    // inheritance would otherwise keep the listener alive after the daemon.
+    SetHandleInformation(THandle(AFd), HANDLE_FLAG_INHERIT, 0);
+    {$ENDIF}
 end;
 
 procedure SetNonBlocking(AFd: cint);
+{$IFDEF UNIX}
 var
   Flags: cint;
 begin
@@ -1139,11 +1368,22 @@ begin
   if Flags >= 0 then
     FpFcntl(AFd, F_SETFL, Flags or O_NONBLOCK);
 end;
+{$ELSE}
+var
+  One: LongWord;
+begin
+  if AFD < 0 then
+    Exit;
+  One := 1;
+  ioctlsocket(PtrUInt(AFd), FIONBIO_, One);
+end;
+{$ENDIF}
 
 // FPC declares fpRead/fpWrite with untyped buffers and marks them inline; in
 // generic helper call sites 3.2.2 reports a compiler implementation note even
 // though there is nothing actionable in the project. Keep that noise inside
 // these two small wrappers so normal builds remain warning/note clean.
+{$IFDEF UNIX}
 {$push}{$notes off}{$hints off}
 function PipeWriteByte(AFd: cint; AValue: byte): boolean;
 begin
@@ -1160,6 +1400,25 @@ begin
   while FpRead(AFd, Buf, SizeOf(Buf)) > 0 do ;
 end;
 {$pop}
+{$ELSE}
+// the "pipe" is a socket pair here (see FpPipe above)
+function PipeWriteByte(AFd: cint; AValue: byte): boolean;
+begin
+  Result := (AFd >= 0) and (fpSend(AFd, @AValue, SizeOf(AValue), 0) > 0);
+end;
+
+procedure DrainPipe(AFd: cint);
+type
+  TDrainBuf = array[0..255] of byte;
+var
+  Buf: TDrainBuf;
+begin
+  Buf := Default(TDrainBuf);
+  if AFd < 0 then
+    Exit;
+  while fpRecv(AFd, @Buf[0], SizeOf(Buf), 0) > 0 do ;
+end;
+{$ENDIF}
 
 // Consume only what is immediately available. A short header or payload is
 // retained in ABuffer and completed by a later poll notification; no peer can
@@ -1270,6 +1529,7 @@ begin
   Result := fpReady;
 end;
 
+{$IFDEF UNIX}
 function WriteFull(AFd: cint; const Buffer; ASize: integer): boolean;
 var
   P: PByte;
@@ -1319,6 +1579,78 @@ begin
   end;
   Result := True;
 end;
+{$ELSE}
+// Blocking semantics over a non-blocking socket: wait for readiness between
+// short transfers. A peer that never drains is abandoned after 30 seconds
+// rather than parking the caller forever.
+function WriteFull(AFd: cint; const Buffer; ASize: integer): boolean;
+var
+  P: PByte;
+  Left, N: integer;
+  Started: QWord;
+begin
+  Result := False;
+  if ASize < 0 then
+    Exit;
+  if ASize = 0 then
+    Exit(True);
+  P := @Buffer;
+  Left := ASize;
+  Started := GetTickCount64;
+  while Left > 0 do
+  begin
+    N := fpSend(AFd, P, Left, 0);
+    if N > 0 then
+    begin
+      Inc(P, N);
+      Dec(Left, N);
+      Continue;
+    end;
+    if (N < 0) and (socketerror = WSAEWOULDBLOCK) and
+       (GetTickCount64 - Started < 30000) then
+    begin
+      PollFd(AFd, POLLOUT, 100);
+      Continue;
+    end;
+    Exit;
+  end;
+  Result := True;
+end;
+
+function ReadFull(AFd: cint; var Buffer; ASize: integer): boolean;
+var
+  P: PByte;
+  Left, N: integer;
+  Started: QWord;
+begin
+  Result := False;
+  if ASize < 0 then
+    Exit;
+  if ASize = 0 then
+    Exit(True);
+  P := @Buffer;
+  Left := ASize;
+  Started := GetTickCount64;
+  while Left > 0 do
+  begin
+    N := fpRecv(AFd, P, Left, 0);
+    if N > 0 then
+    begin
+      Inc(P, N);
+      Dec(Left, N);
+      Continue;
+    end;
+    if (N < 0) and (socketerror = WSAEWOULDBLOCK) and
+       (GetTickCount64 - Started < 30000) then
+    begin
+      PollFd(AFd, POLLIN, 100);
+      Continue;
+    end;
+    Exit;
+  end;
+  Result := True;
+end;
+{$ENDIF}
 
 procedure WriteString(Stream: TStream; const S: string);
 var
@@ -1484,6 +1816,32 @@ begin
   Result := True;
 end;
 
+{$IFDEF WINDOWS}
+// A local AF_UNIX connect completes at once or is refused at once, so the
+// blocking form is the simple one; the descriptor then goes non-blocking for
+// the timed frame helpers, which rely on WSAEWOULDBLOCK rather than on a
+// MSG_DONTWAIT flag Winsock does not have.
+function ConnectSocket(const APath: string): cint;
+var
+  Addr: TUnixSockAddr;
+  AddrLen: TSockLen;
+begin
+  Result := -1;
+  if not SocketAddress(APath, Addr, AddrLen) then
+    Exit;
+  Result := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  if Result < 0 then
+    Exit;
+  SetCloExec(Result);
+  if fpConnect(Result, @Addr, AddrLen) <> 0 then
+  begin
+    FpClose(Result);
+    Result := -1;
+    Exit;
+  end;
+  SetNonBlocking(Result);
+end;
+{$ELSE}
 function ConnectSocket(const APath: string): cint;
 var
   Addr: TUnixSockAddr;
@@ -1540,10 +1898,11 @@ begin
     Result := -1;
   end;
 end;
+{$ENDIF}
 
 function SessionSocketPath: string;
 begin
-  Result := ConfigDir + '/session.sock';
+  Result := ConfigDir + PathDelim + 'session.sock';
 end;
 
 type
@@ -1551,6 +1910,60 @@ type
   // candidate) or timeout/saturation (not live, never purgeable)
   TSocketProbe = (spLive, spDead, spTimeout);
 
+{$IFDEF WINDOWS}
+// The daemon named in a session's sidecar, if that process still exists with
+// the recorded birth identity. A refused connect to a socket whose daemon
+// is alive is a busy or starting server, never an orphan to purge.
+function SidecarDaemonAlive(const ASocketPath: string): boolean;
+var
+  Ini: TIniFile;
+  MetaPath, Identity: string;
+  Pid: integer;
+begin
+  Result := False;
+  MetaPath := ChangeFileExt(ASocketPath, '.ini');
+  if not FileExists(MetaPath) then
+    Exit;
+  Ini := nil;
+  try
+    try
+      Ini := TIniFile.Create(MetaPath);
+      Pid := Ini.ReadInteger('session', 'pid', 0);
+      Identity := Ini.ReadString('session', 'pid_identity', '');
+      Result := (Pid > 0) and (Identity <> '') and
+        (ProcBirthIdentity(Pid) = Identity);
+    except
+      Result := False;
+    end;
+  finally
+    Ini.Free;
+  end;
+end;
+
+// A local connect answers at once on Windows: accepted means live, refused
+// means nobody listens. The refused case is still not purgeable while the
+// sidecar names a living daemon (its backlog may simply be full).
+function ProbeSocket(const APath: string): TSocketProbe;
+var
+  Addr: TUnixSockAddr;
+  AddrLen: TSockLen;
+  Fd: cint;
+begin
+  Result := spDead;
+  if not SocketAddress(APath, Addr, AddrLen) then
+    Exit;
+  if not FileExists(APath) then
+    Exit;
+  Fd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  if Fd < 0 then
+    Exit;
+  if fpConnect(Fd, @Addr, AddrLen) = 0 then
+    Result := spLive
+  else if SidecarDaemonAlive(APath) then
+    Result := spTimeout;
+  FpClose(Fd);
+end;
+{$ELSE}
 // probe with non-blocking connect and bounded wait (~300 ms): a hung
 // daemon or one with a full backlog must not freeze the enumeration
 function ProbeSocket(const APath: string): TSocketProbe;
@@ -1593,10 +2006,12 @@ begin
     end;
   FpClose(Fd);
 end;
+{$ENDIF}
 
 // a freshly created .sock may be in the bind->listen window of a
 // starting daemon: never purge if its mtime is <= 5 seconds old
 function SocketIsRecent(const APath: string): boolean;
+{$IFDEF UNIX}
 var
   St: Stat;
 begin
@@ -1605,6 +2020,15 @@ begin
   if FpStat(APath, St) = 0 then
     Result := Abs(FpTime - St.st_mtime) <= 5;
 end;
+{$ELSE}
+var
+  Stamp: TDateTime;
+begin
+  Result := False;
+  if FileAge(APath, Stamp) then
+    Result := Abs(Now - Stamp) <= 5 / 86400;
+end;
+{$ENDIF}
 
 function SessionIsLive(const APath: string): boolean;
 begin
@@ -1617,6 +2041,7 @@ begin
 end;
 
 function SessionsDir: string;
+{$IFDEF UNIX}
 begin
   Result := ConfigDir + '/sessions';
   if not DirectoryExists(Result) then
@@ -1624,6 +2049,22 @@ begin
   if DirectoryExists(Result) then
     FpChmod(PAnsiChar(Result), &700);
 end;
+{$ELSE}
+var
+  Base: string;
+begin
+  // Sessions are machine-local runtime state: the non-roaming profile, which
+  // is also the shorter path -- an AF_UNIX address holds at most 107 bytes.
+  Base := SysUtils.GetEnvironmentVariable('LOCALAPPDATA');
+  if Base = '' then
+    Base := ConfigDir
+  else
+    Base := IncludeTrailingPathDelimiter(Base) + 'superterm';
+  Result := Base + PathDelim + 'sessions';
+  if not DirectoryExists(Result) then
+    ForceDirectories(Result);
+end;
+{$ENDIF}
 
 function SanitizeSessionName(const S: string): string;
 var
@@ -1652,6 +2093,47 @@ end;
 // and closing *any* descriptor for the inode can release every lock that
 // process holds on it. The SSH entry may already own this descriptor while
 // it constructs the first profile, so StartDetachedServer reuses it.
+{$IFDEF WINDOWS}
+// One exclusive open of the lock file is the lock: no sharing at all, held
+// until the handle closes, released by the OS if the process dies. A sharing
+// violation is exactly "somebody else is creating this name".
+function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
+var
+  LockPath: string;
+  H: THandle;
+begin
+  if HeldSessionNameLockHandle <> 0 then
+  begin
+    if HeldSessionNameLockName = SanitizeSessionName(AName) then
+      Exit(snlAcquired)
+    else
+      Exit(snlError);
+  end;
+  Result := snlError;
+  LockPath := SessionsDir + PathDelim + '.create-' +
+    SanitizeSessionName(AName) + '.lock';
+  H := CreateFileW(PWideChar(UnicodeString(LockPath)),
+    GENERIC_READ or GENERIC_WRITE, 0, nil, OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL, 0);
+  if H = INVALID_HANDLE_VALUE then
+  begin
+    if GetLastError = ERROR_SHARING_VIOLATION then
+      Result := snlBusy;
+    Exit;
+  end;
+  HeldSessionNameLockHandle := H;
+  HeldSessionNameLockName := SanitizeSessionName(AName);
+  Result := snlAcquired;
+end;
+
+procedure ReleaseHeldSessionNameLock;
+begin
+  if HeldSessionNameLockHandle <> 0 then
+    CloseHandle(HeldSessionNameLockHandle);
+  HeldSessionNameLockHandle := 0;
+  HeldSessionNameLockName := '';
+end;
+{$ELSE}
 function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
 var
   Region: flock;
@@ -1712,15 +2194,16 @@ begin
   HeldSessionNameLockFD := -1;
   HeldSessionNameLockName := '';
 end;
+{$ENDIF}
 
 function SessionSocketPathFor(const AName: string): string;
 begin
-  Result := SessionsDir + '/' + SanitizeSessionName(AName) + '.sock';
+  Result := SessionsDir + PathDelim + SanitizeSessionName(AName) + '.sock';
 end;
 
 function SessionMetaPathFor(const AName: string): string;
 begin
-  Result := SessionsDir + '/' + SanitizeSessionName(AName) + '.ini';
+  Result := SessionsDir + PathDelim + SanitizeSessionName(AName) + '.ini';
 end;
 
 // TIniFile strips one pair of outer quotes when reading: if the value
@@ -1821,13 +2304,13 @@ var
 begin
   Infos := nil;
   Dir := SessionsDir;
-  if FindFirst(Dir + '/*.sock', faAnyFile, SR) = 0 then
+  if FindFirst(Dir + PathDelim + '*.sock', faAnyFile, SR) = 0 then
   begin
     repeat
       Info := Default(TSessionInfo);
-      Info.SocketPath := Dir + '/' + SR.Name;
+      Info.SocketPath := Dir + PathDelim + SR.Name;
       Info.Name := ChangeFileExt(SR.Name, '');
-      MetaPath := Dir + '/' + Info.Name + '.ini';
+      MetaPath := Dir + PathDelim + Info.Name + '.ini';
       Probe := ProbeSocket(Info.SocketPath);
       if Probe <> spLive then
       begin
@@ -1901,7 +2384,9 @@ var
   I: integer;
   Deadline: TWaitDeadline;
   Probe: TSocketProbe;
+  {$IFDEF UNIX}
   St: Stat;
+  {$ENDIF}
 begin
   Result := False;
   Fd := ConnectSocket(APath);
@@ -1920,10 +2405,15 @@ begin
   for I := 1 to 20 do
   begin
     Probe := ProbeSocket(APath);
+    {$IFDEF UNIX}
     St := Default(Stat);
     if (Probe = spDead) and (FpLStat(RawByteString(APath), St) <> 0) and
        (FpGetErrNo = ESysENOENT) then
       Exit(True);
+    {$ELSE}
+    if (Probe = spDead) and (not FileExists(APath)) then
+      Exit(True);
+    {$ENDIF}
     Sleep(100);
   end;
 end;
@@ -2233,6 +2723,9 @@ end;
 
 procedure TSessionClient.CloseSocket;
 begin
+  {$IFDEF WINDOWS}
+  EndWait;
+  {$ENDIF}
   if FSocket >= 0 then
     FpClose(FSocket);
   FSocket := -1;
@@ -2249,6 +2742,11 @@ end;
 destructor TSessionClient.Destroy;
 begin
   CloseSocket;
+  {$IFDEF WINDOWS}
+  if FWaitEvent <> 0 then
+    WSACloseEvent(FWaitEvent);
+  FWaitEvent := 0;
+  {$ENDIF}
   inherited Destroy;
 end;
 
@@ -2264,6 +2762,39 @@ function TSessionClient.WantsWrite: boolean;
 begin
   Result := FConnected and OutputPending;
 end;
+
+{$IFDEF WINDOWS}
+function TSessionClient.WaitEvent(AWantWrite: boolean): PtrUInt;
+var
+  Mask: LongInt;
+begin
+  Result := 0;
+  if (not FConnected) or (FSocket < 0) then
+    Exit;
+  if FWaitEvent = 0 then
+    FWaitEvent := WSACreateEvent;
+  if FWaitEvent = 0 then
+    Exit;
+  // FD_READ and FD_CLOSE are level-triggered on selection: data already
+  // waiting, or a peer already gone, signals the event at once.
+  Mask := FD_READ_ or FD_CLOSE_;
+  if AWantWrite then
+    Mask := Mask or FD_WRITE_;
+  if WSAEventSelect(PtrUInt(FSocket), FWaitEvent, Mask) <> 0 then
+    Exit;
+  FWaitArmed := True;
+  Result := FWaitEvent;
+end;
+
+procedure TSessionClient.EndWait;
+begin
+  if FWaitArmed and (FSocket >= 0) then
+    WSAEventSelect(PtrUInt(FSocket), FWaitEvent, 0);
+  FWaitArmed := False;
+  if FWaitEvent <> 0 then
+    WSAResetEvent(FWaitEvent);
+end;
+{$ENDIF}
 
 function TSessionClient.SendFrame(AKind: byte; APane: integer;
   const Data: TByteArray): boolean;
@@ -3400,7 +3931,7 @@ begin
   // Cache this while the daemon is unquestionably the current process.  All
   // later sidecar generations must carry the same birth identity even if a
   // transient process-information query would fail during an update.
-  FPidIdentity := ProcBirthIdentity(FpGetPid);
+  FPidIdentity := ProcBirthIdentity(OsGetPid);
   FListener := -1;
   FOwnsPanes := False;
   FWorkerCount := 0;
@@ -3451,6 +3982,12 @@ begin
     FThreadLimit := MAX_PANES + 1;
   if FThreadLimit < 1 then
     FThreadLimit := 1;
+  {$IFDEF WINDOWS}
+  // Pane output on Windows is never in the reactor's wait set (a ConPTY pipe
+  // is not a socket), so panes are always served by at least one worker.
+  if FThreadLimit < 2 then
+    FThreadLimit := 2;
+  {$ENDIF}
   if (FThreadLimit > 1) and (FpPipe(FWorkerResultPipe) = 0) then
   begin
     SetCloExec(FWorkerResultPipe[0]);
@@ -3554,9 +4091,15 @@ begin
   end;
   if RemoveOwnedFiles then
   begin
+    {$IFDEF UNIX}
     FpUnlink(PAnsiChar(FSocketPath));
     if FMetaPath <> '' then
       FpUnlink(PAnsiChar(FMetaPath));
+    {$ELSE}
+    SysUtils.DeleteFile(FSocketPath);
+    if FMetaPath <> '' then
+      SysUtils.DeleteFile(FMetaPath);
+    {$ENDIF}
   end;
   ReleaseHeldSessionNameLock;
   for I := 0 to FPaneCount - 1 do
@@ -3598,7 +4141,27 @@ begin
   inherited Destroy;
 end;
 
+{$IFDEF WINDOWS}
+// The identity of a socket file: its creation stamp, which a re-created path
+// cannot share. Only a reparse point qualifies, which is what an AF_UNIX
+// socket is on NTFS.
+function SocketFileIdentity(const APath: string; out AId: QWord): boolean;
+var
+  Info: TWin32FileAttributeData;
+begin
+  AId := 0;
+  Info := Default(TWin32FileAttributeData);
+  Result := GetFileAttributesExW(PWideChar(UnicodeString(APath)),
+    GetFileExInfoStandard, @Info) and
+    ((Info.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0);
+  if Result then
+    AId := (QWord(Info.ftCreationTime.dwHighDateTime) shl 32) or
+      Info.ftCreationTime.dwLowDateTime;
+end;
+{$ENDIF}
+
 function TDetachedSession.OwnsSocketPath: boolean;
+{$IFDEF UNIX}
 var
   St: Stat;
 begin
@@ -3607,13 +4170,25 @@ begin
     (FpLStat(RawByteString(FSocketPath), St) = 0) and FpS_ISSOCK(St.st_mode) and
     (QWord(St.st_dev) = FSocketDev) and (QWord(St.st_ino) = FSocketIno);
 end;
+{$ELSE}
+var
+  Id: QWord;
+begin
+  Result := FSocketIdentityValid and SocketFileIdentity(FSocketPath, Id) and
+    (Id = FSocketIno);
+end;
+{$ENDIF}
 
 function TDetachedSession.CreateListener: boolean;
 var
   Addr: TUnixSockAddr;
   AddrLen: TSockLen;
   Probe: TSocketProbe;
+  {$IFDEF UNIX}
   St: Stat;
+  {$ELSE}
+  Id: QWord;
+  {$ENDIF}
 begin
   Result := False;
   Probe := ProbeSocket(FSocketPath);
@@ -3621,6 +4196,7 @@ begin
   // inode. A recent refusal may be another creator between bind and listen.
   if (Probe <> spDead) or SocketIsRecent(FSocketPath) then
     Exit;
+  {$IFDEF UNIX}
   St := Default(Stat);
   if FpLStat(RawByteString(FSocketPath), St) = 0 then
   begin
@@ -3630,6 +4206,11 @@ begin
   end
   else if FpGetErrNo <> ESysENOENT then
     Exit;
+  {$ELSE}
+  // bind refuses an existing path, socket or not: a dead one goes first
+  if FileExists(FSocketPath) and (not SysUtils.DeleteFile(FSocketPath)) then
+    Exit;
+  {$ENDIF}
   if not SocketAddress(FSocketPath, Addr, AddrLen) then
     Exit;
   FListener := fpSocket(AF_UNIX, SOCK_STREAM, 0);
@@ -3642,6 +4223,7 @@ begin
     FListener := -1;
     Exit;
   end;
+  {$IFDEF UNIX}
   St := Default(Stat);
   if (FpLStat(RawByteString(FSocketPath), St) <> 0) or
      (not FpS_ISSOCK(St.st_mode)) then
@@ -3652,20 +4234,36 @@ begin
   end;
   FSocketDev := QWord(St.st_dev);
   FSocketIno := QWord(St.st_ino);
+  {$ELSE}
+  if not SocketFileIdentity(FSocketPath, Id) then
+  begin
+    FpClose(FListener);
+    FListener := -1;
+    Exit;
+  end;
+  FSocketDev := 0;
+  FSocketIno := Id;
+  {$ENDIF}
   FSocketIdentityValid := True;
   if fpListen(FListener, MAX_PENDING_CONNECTIONS) <> 0 then
   begin
     FpClose(FListener);
     FListener := -1;
     if OwnsSocketPath then
+      {$IFDEF UNIX}
       FpUnlink(PAnsiChar(FSocketPath));
+      {$ELSE}
+      SysUtils.DeleteFile(FSocketPath);
+      {$ENDIF}
     FSocketDev := 0;
     FSocketIno := 0;
     FSocketIdentityValid := False;
     Exit;
   end;
   SetNonBlocking(FListener);
+  {$IFDEF UNIX}
   FpChmod(PAnsiChar(FSocketPath), &600);
+  {$ENDIF}
   Result := True;
 end;
 
@@ -5156,6 +5754,11 @@ begin
     end;
     FClients[Slot].HostW := HostW;
     FClients[Slot].HostH := HostH;
+    if (HostW > 0) and (HostH > 0) then
+    begin
+      FLastTermCols := HostW;
+      FLastTermRows := HostH;
+    end;
     Move(AFirstData[3 * SizeOf(Longint)], FClients[Slot].Caps,
       SizeOf(Longint));
     // tail 2: the client's own session chain (absent from older clients)
@@ -5653,6 +6256,23 @@ begin
     QueuePending(Idx, FRAME_CTL_OK, -1, Data);
 end;
 
+{$IFDEF WINDOWS}
+// A closed pane took its process tree down with its kill-on-close job and
+// Windows keeps no zombie to collect: nothing is retired or reaped later.
+procedure TDetachedSession.TrackRetiredChild(APid: TPid);
+begin
+  if APid <= 0 then
+    Exit;
+end;
+
+procedure TDetachedSession.ReapChildren;
+begin
+  // Exit is observed by the pane workers through the pseudo console (see
+  // ReadPaneEvent); the process handle is released when the pane closes.
+  if FRetiredChildCount < 0 then
+    FRetiredChildCount := 0;
+end;
+{$ELSE}
 procedure TDetachedSession.TrackRetiredChild(APid: TPid);
 var
   I: integer;
@@ -5733,6 +6353,7 @@ begin
       Inc(I);
   end;
 end;
+{$ENDIF}
 
 // creates a PTY for a window class or a command, like StartPaneEx but
 // without FreeVision: wcSSH -> structured argv; rest -> composed command
@@ -6850,6 +7471,8 @@ begin
           // dedicated event reaches lease owners as well as ordinary viewers.
           FClients[AIdx].HostW := Cols;
           FClients[AIdx].HostH := Rows;
+          FLastTermCols := Cols;
+          FLastTermRows := Rows;
           if DebugFull then
             DebugLog(Format('client-size: owner=%d host=%dx%d',
               [AIdx, Cols, Rows]));
@@ -7121,6 +7744,81 @@ begin
   Wake;
 end;
 
+{$IFDEF WINDOWS}
+// A ConPTY pipe cannot be waited on, so a Windows pane worker asks each of
+// its panes whether output is waiting (one PeekNamedPipe) and drains it,
+// flushes pending input, and otherwise parks for a few milliseconds on its
+// wake socket so RequestStop still interrupts it at once.
+procedure TPanePollWorker.Execute;
+var
+  Poller: TSuperPoll;
+  Ready: TPollReadyArray;
+  I, Pane, N, Fails: integer;
+  Busy, HasOutput: boolean;
+  Kind: byte;
+  Data: TByteArray;
+begin
+  TThread.NameThreadForDebugging('st-pane-' + IntToStr(FWorkerIndex));
+  Poller := TSuperPoll.Create;
+  Fails := 0;
+  try
+    while not Terminated do
+    begin
+      try
+        Busy := False;
+        for I := 0 to FPaneCount - 1 do
+        begin
+          Pane := FPaneIndexes[I];
+          HasOutput := False;
+          FOwner.LockPane(Pane);
+          try
+            if (Pane >= 0) and (Pane < FOwner.FPaneCount) and
+               (FOwner.FPanes[Pane] <> nil) and
+               (FOwner.FPanes[Pane].Pid > 0) then
+            begin
+              if FOwner.FPanes[Pane].Alive and
+                 FOwner.FPanes[Pane].InputPending then
+              begin
+                FOwner.FPanes[Pane].FlushInput;
+                Busy := True;
+              end;
+              HasOutput := FOwner.FPanes[Pane].OutputAvailable;
+            end;
+          finally
+            FOwner.UnlockPane(Pane);
+          end;
+          if HasOutput and FOwner.ReadPaneEvent(Pane, Kind, Data) then
+          begin
+            FOwner.QueueWorkerResult(Kind, Pane, Data);
+            Busy := True;
+          end;
+        end;
+        if not Busy then
+        begin
+          Poller.Clear;
+          Poller.Watch(FWakePipe[0], psWorker, FWorkerIndex, True, False);
+          N := Poller.Wait(4, Ready);
+          if N > 0 then
+            DrainPipe(FWakePipe[0]);
+        end;
+        Fails := 0;
+      except
+        on E: Exception do
+        begin
+          Inc(Fails);
+          if DebugActive then
+            DebugLog(Format('daemon: pane reactor %d exception (%d): %s: %s',
+              [FWorkerIndex, Fails, E.ClassName, E.Message]));
+          if Fails > 50 then
+            Break;
+        end;
+      end;
+    end;
+  finally
+    Poller.Free;
+  end;
+end;
+{$ELSE}
 procedure TPanePollWorker.Execute;
 var
   Poller: TSuperPoll;
@@ -7216,6 +7914,7 @@ begin
     Poller.Free;
   end;
 end;
+{$ENDIF}
 
 procedure TDetachedSession.LockPane(APane: integer);
 begin
@@ -7451,8 +8150,15 @@ begin
   AData := nil;
   LockPane(APane);
   try
+    // On Windows Alive follows the process at once, so a pane whose shell
+    // just exited must still be read here: its last output is drained and
+    // the one EXIT is reported. Only a pane already marked dead is skipped.
     if (APane < 0) or (APane >= FPaneCount) or (FPanes[APane] = nil) or
+       {$IFDEF UNIX}
        (not FPanes[APane].Alive) then
+       {$ELSE}
+       (FPanes[APane].Pid <= 0) then
+       {$ENDIF}
       Exit;
     N := FPanes[APane].ReadBuf(Buf);
     if N > 0 then
@@ -7472,7 +8178,12 @@ begin
       AKind := FRAME_OUTPUT;
       Result := True;
     end
+    {$IFDEF UNIX}
     else if (N = 0) or (fpgeterrno <> ESysEAGAIN) then
+    {$ELSE}
+    // ReadBuf peeks first: 0 is "nothing yet" while the process lives
+    else if not FPanes[APane].Alive then
+    {$ENDIF}
     begin
       FPanes[APane].MarkDead;
       AKind := FRAME_EXIT;
@@ -7532,7 +8243,7 @@ var
   TempPath: string;
 begin
   Ini := nil;
-  TempPath := FMetaPath + '.tmp.' + IntToStr(fpGetPid);
+  TempPath := FMetaPath + '.tmp.' + IntToStr(OsGetPid);
   try
     if FileExists(TempPath) then
       DeleteFile(TempPath);
@@ -7545,7 +8256,7 @@ begin
       Ini.WriteString('session', 'profile', IniQuoteGuard(FProfile));
       Ini.WriteInteger('session', 'panes', FPaneCount);
       Ini.WriteInteger('session', 'attached', AttachedCount);
-      Ini.WriteInteger('session', 'pid', fpGetPid);
+      Ini.WriteInteger('session', 'pid', OsGetPid);
       Ini.WriteString('session', 'pid_identity', FPidIdentity);
       Ini.WriteInteger('session', 'cpus', FAvailableCPUs);
       Ini.WriteInteger('session', 'thread_limit', FThreadLimit);
@@ -7557,10 +8268,22 @@ begin
       // the identity the panes carry in SUPERTERM_SESSION_CHAIN
       Ini.WriteString('session', 'id', PaneSessionId);
       Ini.WriteString('session', 'client_chains', ClientChainsUnion);
+      {$IFDEF WINDOWS}
+      // Window size hint for a re-attaching launcher (see the tray). Windows
+      // only: the POSIX sidecar carries exactly one [session] section, a
+      // contract test/sidecar_atomic_test.py enforces, and nothing on a Unix
+      // host reads this.
+      if (FLastTermCols > 0) and (FLastTermRows > 0) then
+      begin
+        Ini.WriteInteger('terminal', 'cols', FLastTermCols);
+        Ini.WriteInteger('terminal', 'rows', FLastTermRows);
+      end;
+      {$ENDIF}
       Ini.UpdateFile;
     finally
       FreeAndNil(Ini);
     end;
+    {$IFDEF UNIX}
     if FpChmod(PAnsiChar(TempPath), &600) <> 0 then
       raise EInOutError.CreateFmt('cannot protect session sidecar: %s',
         [SysErrorMessage(fpGetErrNo)]);
@@ -7569,6 +8292,14 @@ begin
     if not RenameFile(TempPath, FMetaPath) then
       raise EInOutError.CreateFmt('cannot replace session sidecar: %s',
         [SysErrorMessage(fpGetErrNo)]);
+    {$ELSE}
+    // MoveFileEx with replacement; a reader holding the old file makes the
+    // replace fail, and the next sidecar update simply tries again.
+    if not MoveFileExW(PWideChar(UnicodeString(TempPath)),
+       PWideChar(UnicodeString(FMetaPath)), MOVEFILE_REPLACE_EXISTING) then
+      raise EInOutError.CreateFmt('cannot replace session sidecar: %s',
+        [SysErrorMessage(GetLastError)]);
+    {$ENDIF}
     TempPath := '';
   except
     on E: Exception do
@@ -7592,12 +8323,26 @@ end;
 procedure TDetachedSession.SignalReady(var AFd: cint; AOk: boolean);
 var
   B: byte;
+  {$IFDEF WINDOWS}
+  Written: DWORD;
+  {$ENDIF}
 begin
   if AFd < 0 then
     Exit;
   if AOk then B := 1 else B := 0;
+  {$IFDEF UNIX}
   WriteFull(AFd, B, SizeOf(B));
   FpClose(AFd);
+  {$ELSE}
+  // the ready channel is the launcher's pipe on this process's stdout
+  if WinReadyPipe <> 0 then
+  begin
+    Written := 0;
+    WriteFile(WinReadyPipe, B, SizeOf(B), Written, nil);
+    CloseHandle(WinReadyPipe);
+    WinReadyPipe := 0;
+  end;
+  {$ENDIF}
   AFd := -1;
 end;
 
@@ -7791,9 +8536,11 @@ begin
   // with it and clients otherwise see only "connection lost".
   InstallCrashHandler;
   if DebugActive then
-    DebugLog('daemon: session server starting (pid ' + IntToStr(FpGetPid) + ')');
+    DebugLog('daemon: session server starting (pid ' + IntToStr(OsGetPid) + ')');
+  {$IFDEF UNIX}
   FpSignal(SIGHUP, SignalHandler(SIG_IGN));
   FpSignal(SIGPIPE, SignalHandler(SIG_IGN));
+  {$ENDIF}
   if (FListener < 0) or not FOwnsPanes then
     raise EInOutError.Create(
       'detached session run started before listener/ownership commit');
@@ -8125,6 +8872,7 @@ begin
   FlushShutdownNotices;
 end;
 
+{$IFDEF UNIX}
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
   const ATitles: TStrArray; const ATerms: TStrArray;
@@ -8477,4 +9225,555 @@ begin
   end;
 end;
 
+{$ELSE}
+
+// ---- Windows: the session server is a separate process --------------
+//
+// POSIX forks: the daemon inherits the workspace objects in memory. Windows
+// cannot, and a pseudo console cannot change owner either, so the server is
+// this executable started again (superterm --session-daemon) with the
+// workspace serialised into its standard input: name, profile, layout, the
+// geometry of every window and, for every pane, the recorded launch it is
+// still to perform. The server creates the panes itself and is their real
+// parent, exactly as the forked daemon is on POSIX. The launcher waits for
+// one status byte on the server's standard output, then attaches to the
+// published socket like any other client.
+
+const
+  BLUEPRINT_VERSION = 1;
+
+type
+  TExePath = array[0..MAX_PATH] of WideChar;
+
+function BuildBlueprint(const AName, AProfile: string; ALay: TLayout;
+  const APanes: TPtyArray; const AScreens: TScreenArray;
+  const ATitles: TStrArray; const ATerms: TStrArray;
+  AFocused: integer; const AGeom: TPaneGeomArray;
+  ADeskW, ADeskH: integer; const ATitleFixed: TBoolArray): RawByteString;
+var
+  S: TMemoryStream;
+  I, N: integer;
+  L: Longint;
+  B: byte;
+  G: TPaneGeom;
+  HaveGeom: boolean;
+begin
+  Result := '';
+  N := Length(APanes);
+  HaveGeom := Length(AGeom) = N;
+  S := TMemoryStream.Create;
+  try
+    L := BLUEPRINT_VERSION;
+    S.WriteBuffer(L, SizeOf(L));
+    WriteString(S, AName);
+    WriteString(S, AProfile);
+    WriteString(S, SaveLayoutString(ALay));
+    L := AFocused;
+    S.WriteBuffer(L, SizeOf(L));
+    L := ADeskW;
+    S.WriteBuffer(L, SizeOf(L));
+    L := ADeskH;
+    S.WriteBuffer(L, SizeOf(L));
+    L := N;
+    S.WriteBuffer(L, SizeOf(L));
+    if HaveGeom then B := 1 else B := 0;
+    S.WriteBuffer(B, SizeOf(B));
+    for I := 0 to N - 1 do
+    begin
+      if I <= High(ATitles) then WriteString(S, ATitles[I]) else WriteString(S, '');
+      if I <= High(ATerms) then WriteString(S, ATerms[I]) else WriteString(S, '');
+      if (I <= High(ATitleFixed)) and ATitleFixed[I] then B := 1 else B := 0;
+      S.WriteBuffer(B, SizeOf(B));
+      if AScreens[I] <> nil then L := AScreens[I].Width else L := 80;
+      S.WriteBuffer(L, SizeOf(L));
+      if AScreens[I] <> nil then L := AScreens[I].Height else L := 24;
+      S.WriteBuffer(L, SizeOf(L));
+      if HaveGeom then G := AGeom[I] else G := Default(TPaneGeom);
+      S.WriteBuffer(G.BX, SizeOf(Longint));
+      S.WriteBuffer(G.BY, SizeOf(Longint));
+      S.WriteBuffer(G.BW, SizeOf(Longint));
+      S.WriteBuffer(G.BH, SizeOf(Longint));
+      S.WriteBuffer(G.Cols, SizeOf(Longint));
+      S.WriteBuffer(G.Rows, SizeOf(Longint));
+      if G.Zoomed then B := 1 else B := 0;
+      S.WriteBuffer(B, SizeOf(B));
+      if G.Minimized then B := 1 else B := 0;
+      S.WriteBuffer(B, SizeOf(B));
+      S.WriteBuffer(G.IconSlot, SizeOf(Longint));
+      if G.FullScreen then B := 1 else B := 0;
+      S.WriteBuffer(B, SizeOf(B));
+      WriteString(S, APanes[I].ExportLaunch);
+    end;
+    SetLength(Result, S.Size);
+    if S.Size > 0 then
+      Move(S.Memory^, Result[1], S.Size);
+  finally
+    S.Free;
+  end;
+end;
+
+// Rebuilds the workspace the launcher described. Everything it returns is
+// owned by the caller; on failure nothing is allocated.
+function ParseBlueprint(const ABlob: RawByteString; out AName, AProfile: string;
+  out ALay: TLayout; out APanes: TPtyArray; out AScreens: TScreenArray;
+  out ATitles, ATerms: TStrArray; out AFocused: integer;
+  out AGeom: TPaneGeomArray; out ADeskW, ADeskH: integer;
+  out ATitleFixed: TBoolArray): boolean;
+var
+  S: TMemoryStream;
+  I, N: integer;
+  L, Cols, Rows: Longint;
+  B: byte;
+  Nodes, Launch: string;
+  HaveGeom: boolean;
+
+  procedure RdL(out V: Longint);
+  begin
+    V := 0;
+    S.ReadBuffer(V, SizeOf(V));
+  end;
+
+  procedure RdB(out V: byte);
+  begin
+    V := 0;
+    S.ReadBuffer(V, SizeOf(V));
+  end;
+
+begin
+  Result := False;
+  AName := '';
+  AProfile := '';
+  ALay := nil;
+  APanes := nil;
+  AScreens := nil;
+  ATitles := nil;
+  ATerms := nil;
+  AFocused := 0;
+  AGeom := nil;
+  ADeskW := 0;
+  ADeskH := 0;
+  ATitleFixed := nil;
+  if ABlob = '' then
+    Exit;
+  S := TMemoryStream.Create;
+  try
+    try
+      S.WriteBuffer(ABlob[1], Length(ABlob));
+      S.Position := 0;
+      RdL(L);
+      if L <> BLUEPRINT_VERSION then
+        Exit;
+      if not ReadString(S, AName) then
+        Exit;
+      if not ReadString(S, AProfile) then
+        Exit;
+      if not ReadString(S, Nodes) then
+        Exit;
+      RdL(L);
+      AFocused := L;
+      RdL(L);
+      ADeskW := L;
+      RdL(L);
+      ADeskH := L;
+      RdL(L);
+      if (L < 0) or (L > MAX_PANES) then
+        Exit;
+      N := L;
+      RdB(B);
+      HaveGeom := B <> 0;
+      if not LoadLayoutString(Nodes, ALay, True) then
+        Exit;
+      if ALay.PaneCount <> N then
+        Exit;
+      SetLength(APanes, N);
+      SetLength(AScreens, N);
+      SetLength(ATitles, N);
+      SetLength(ATerms, N);
+      SetLength(ATitleFixed, N);
+      if HaveGeom then
+        SetLength(AGeom, N);
+      for I := 0 to N - 1 do
+      begin
+        if not ReadString(S, ATitles[I]) then
+          Exit;
+        if not ReadString(S, ATerms[I]) then
+          Exit;
+        RdB(B);
+        ATitleFixed[I] := B <> 0;
+        RdL(Cols);
+        RdL(Rows);
+        if (Cols < 1) or (Cols > MAX_SCREEN_COLS) or
+           (Rows < 1) or (Rows > MAX_SCREEN_ROWS) then
+          Exit;
+        RdL(L);
+        if HaveGeom then AGeom[I].BX := L;
+        RdL(L);
+        if HaveGeom then AGeom[I].BY := L;
+        RdL(L);
+        if HaveGeom then AGeom[I].BW := L;
+        RdL(L);
+        if HaveGeom then AGeom[I].BH := L;
+        RdL(L);
+        if HaveGeom then AGeom[I].Cols := L;
+        RdL(L);
+        if HaveGeom then AGeom[I].Rows := L;
+        RdB(B);
+        if HaveGeom then AGeom[I].Zoomed := B <> 0;
+        RdB(B);
+        if HaveGeom then AGeom[I].Minimized := B <> 0;
+        RdL(L);
+        if HaveGeom then AGeom[I].IconSlot := L;
+        RdB(B);
+        if HaveGeom then AGeom[I].FullScreen := B <> 0;
+        if not ReadString(S, Launch) then
+          Exit;
+        APanes[I] := TPty.Create;
+        if not APanes[I].ImportLaunch(Launch) then
+          Exit;
+        AScreens[I] := TScreen.Create(Cols, Rows, DEFAULT_SCROLLBACK);
+      end;
+      Result := True;
+    except
+      Result := False;
+    end;
+  finally
+    S.Free;
+    if not Result then
+    begin
+      for I := 0 to High(APanes) do
+        APanes[I].Free;
+      for I := 0 to High(AScreens) do
+        AScreens[I].Free;
+      APanes := nil;
+      AScreens := nil;
+      FreeAndNil(ALay);
+    end;
+  end;
+end;
+
+function ReadAllFromHandle(AHandle: THandle): RawByteString;
+type
+  TReadChunk = array[0..65535] of byte;
+var
+  Buf: TReadChunk;
+  Got: DWORD;
+  OldLen: integer;
+begin
+  Result := '';
+  Buf := Default(TReadChunk);
+  if (AHandle = 0) or (AHandle = INVALID_HANDLE_VALUE) then
+    Exit;
+  repeat
+    Got := 0;
+    if not ReadFile(AHandle, Buf[0], SizeOf(Buf), Got, nil) or (Got = 0) then
+      Break;
+    OldLen := Length(Result);
+    SetLength(Result, OldLen + integer(Got));
+    Move(Buf[0], Result[OldLen + 1], Got);
+    if Length(Result) > MAX_FRAME_SIZE then
+      Break;
+  until False;
+end;
+
+function RunSessionDaemonChild: integer;
+var
+  Blob: RawByteString;
+  Name, Profile: string;
+  Lay: TLayout;
+  Panes: TPtyArray;
+  Screens: TScreenArray;
+  Titles, Terms: TStrArray;
+  Fixed: TBoolArray;
+  Geom: TPaneGeomArray;
+  Focused, DeskW, DeskH, I: integer;
+  Server: TDetachedSession;
+  ReadyFd: cint;
+  B: byte;
+  Written: DWORD;
+begin
+  Result := 1;
+  DebugSetRole('daemon');
+  WinReadyPipe := GetStdHandle(STD_OUTPUT_HANDLE);
+  Blob := ReadAllFromHandle(GetStdHandle(STD_INPUT_HANDLE));
+  // The RTL text files must never write to the launcher's pipes: stdout is
+  // the one-byte ready channel and stdin was the blueprint. Point them all
+  // at NUL before anything can print.
+  AssignFile(Input, 'NUL');
+  Reset(Input);
+  AssignFile(Output, 'NUL');
+  Rewrite(Output);
+  AssignFile(ErrOutput, 'NUL');
+  Rewrite(ErrOutput);
+  AssignFile(StdOut, 'NUL');
+  Rewrite(StdOut);
+  AssignFile(StdErr, 'NUL');
+  Rewrite(StdErr);
+  Server := nil;
+  Lay := nil;
+  Panes := nil;
+  Screens := nil;
+  try
+    try
+      if not ParseBlueprint(Blob, Name, Profile, Lay, Panes, Screens, Titles,
+         Terms, Focused, Geom, DeskW, DeskH, Fixed) then
+      begin
+        if DebugActive then
+          DebugLog('daemon: workspace blueprint rejected');
+        Exit;
+      end;
+      Blob := '';
+      if DebugActive then
+        DebugLog(Format('daemon: workspace received: name=%s panes=%d desk=%dx%d',
+          [Name, Length(Panes), DeskW, DeskH]));
+      Server := TDetachedSession.Create(Name, Profile, Lay, Panes, Screens,
+        Titles, Terms, Focused, Geom, DeskW, DeskH, Fixed);
+      if not Server.PrepareListener then
+      begin
+        if DebugActive then
+          DebugLog('daemon: cannot publish the session socket');
+        Exit;
+      end;
+      Server.AdoptPanes;
+      // the objects now belong to the session; do not free them below
+      Lay := nil;
+      Panes := nil;
+      Screens := nil;
+      ReadyFd := 0;
+      Server.Run(ReadyFd);
+      Result := 0;
+    except
+      on E: Exception do
+      begin
+        if DebugActive then
+          DebugLog('daemon: fatal: ' + E.ClassName + ': ' + E.Message);
+        Result := 1;
+      end;
+    end;
+  finally
+    // a launcher still waiting learns the outcome: 0 = failed before READY
+    if WinReadyPipe <> 0 then
+    begin
+      B := 0;
+      Written := 0;
+      WriteFile(WinReadyPipe, B, SizeOf(B), Written, nil);
+      CloseHandle(WinReadyPipe);
+      WinReadyPipe := 0;
+    end;
+    Server.Free;
+    for I := 0 to High(Panes) do
+      Panes[I].Free;
+    for I := 0 to High(Screens) do
+      Screens[I].Free;
+    Lay.Free;
+  end;
+end;
+
+function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
+  const APanes: TPtyArray; const AScreens: TScreenArray;
+  const ATitles: TStrArray; const ATerms: TStrArray;
+  AFocused: integer; const AGeom: TPaneGeomArray;
+  ADeskW, ADeskH: integer;
+  const ATitleFixed: TBoolArray;
+  AChildHook: TDetachedServerChildHook): TDetachedServerStartResult;
+var
+  LockResult: TSessionNameLockResult;
+  Attempt, I: integer;
+  Probe: TSocketProbe;
+  Blueprint: RawByteString;
+  Sa: TSecurityAttributes;
+  InR, InW, OutR, OutW, Nul: THandle;
+  Si: TStartupInfoW;
+  Pi: TProcessInformation;
+  Cmd: UnicodeString;
+  Exe: TExePath;
+  Flags: DWORD;
+  Ok, InJob: LongBool;
+  Written, Got, Avail: DWORD;
+  P: PByte;
+  Left: integer;
+  B: byte;
+  Deadline: QWord;
+  Status: integer;
+
+  procedure RemoveCancelledPublication;
+  var
+    Path: string;
+  begin
+    // The server was terminated without running its destructor. Under the
+    // still-held name lock, remove only what this cancelled creator could
+    // have published.
+    Path := SessionSocketPathFor(AName);
+    if (ProbeSocket(Path) = spDead) and FileExists(Path) then
+      SysUtils.DeleteFile(Path);
+    Path := SessionMetaPathFor(AName);
+    if FileExists(Path) then
+      SysUtils.DeleteFile(Path);
+  end;
+
+begin
+  Result := dssFailed;
+  DetachedServerChildFinished := False;
+  if (ALay = nil) or (Length(APanes) > MAX_PANES) or
+     (ALay.PaneCount <> Length(APanes)) or
+     (not Assigned(AChildHook)) then
+    Exit;
+  // Only a workspace whose panes are still to be started can move to another
+  // process: a live pseudo console has no other owner than its creator.
+  for I := 0 to High(APanes) do
+    if (APanes[I] = nil) or APanes[I].Alive or
+       (not APanes[I].LaunchPending) then
+    begin
+      if DebugActive then
+        DebugLog('promote: refused, pane ' + IntToStr(I) +
+          ' already runs in this process');
+      Exit;
+    end;
+  Probe := ProbeSocket(SessionSocketPathFor(AName));
+  if Probe <> spDead then
+    Exit;
+  LockResult := snlError;
+  for Attempt := 1 to
+    (SESSION_CREATE_WAIT_MS div SESSION_CREATE_RETRY_MS) do
+  begin
+    LockResult := TryHoldSessionNameLock(AName);
+    if LockResult = snlAcquired then
+      Break;
+    if LockResult = snlError then
+      Exit;
+    Probe := ProbeSocket(SessionSocketPathFor(AName));
+    if Probe <> spDead then
+      Exit;
+    Sleep(SESSION_CREATE_RETRY_MS);
+  end;
+  if LockResult <> snlAcquired then
+    Exit;
+  InR := 0; InW := 0; OutR := 0; OutW := 0; Nul := 0;
+  Pi := Default(TProcessInformation);
+  try
+    if ProbeSocket(SessionSocketPathFor(AName)) <> spDead then
+      Exit;
+    Blueprint := BuildBlueprint(AName, AProfile, ALay, APanes, AScreens,
+      ATitles, ATerms, AFocused, AGeom, ADeskW, ADeskH, ATitleFixed);
+    if Blueprint = '' then
+      Exit;
+    Sa := Default(TSecurityAttributes);
+    Sa.nLength := SizeOf(Sa);
+    Sa.bInheritHandle := True;
+    if not CreatePipe(InR, InW, @Sa, 0) then
+      Exit;
+    if not CreatePipe(OutR, OutW, @Sa, 0) then
+      Exit;
+    // our ends stay private; only the server's ends are inherited
+    SetHandleInformation(InW, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(OutR, HANDLE_FLAG_INHERIT, 0);
+    Nul := CreateFileW('NUL', GENERIC_READ or GENERIC_WRITE,
+      FILE_SHARE_READ or FILE_SHARE_WRITE, @Sa, OPEN_EXISTING, 0, 0);
+    if Nul = INVALID_HANDLE_VALUE then
+    begin
+      Nul := 0;
+      Exit;
+    end;
+    Exe := Default(TExePath);
+    if GetModuleFileNameW(0, Exe, MAX_PATH) = 0 then
+      Exit;
+    Cmd := '"' + UnicodeString(PWideChar(@Exe[0])) + '" --session-daemon';
+    UniqueString(Cmd);
+    Si := Default(TStartupInfoW);
+    Si.cb := SizeOf(Si);
+    Si.dwFlags := STARTF_USESTDHANDLES;
+    Si.hStdInput := InR;
+    Si.hStdOutput := OutW;
+    Si.hStdError := Nul;
+    // No console: the server must outlive the window this client runs in,
+    // and closing that window must not reach it. Its own process group keeps
+    // console control events away as well.
+    Flags := DETACHED_PROCESS_ or CREATE_NEW_PROCESS_GROUP_ or
+      CREATE_UNICODE_ENVIRONMENT_;
+    Ok := False;
+    InJob := False;
+    if IsProcessInJob(GetCurrentProcess, 0, InJob) and InJob then
+      Ok := CreateProcessW(nil, PWideChar(Cmd), nil, nil, True,
+        Flags or CREATE_BREAKAWAY_FROM_JOB_, nil, nil, Si, Pi);
+    if not Ok then
+      Ok := CreateProcessW(nil, PWideChar(Cmd), nil, nil, True, Flags,
+        nil, nil, Si, Pi);
+    // the server's ends belong to it now
+    CloseHandle(InR);
+    InR := 0;
+    CloseHandle(OutW);
+    OutW := 0;
+    CloseHandle(Nul);
+    Nul := 0;
+    if not Ok then
+    begin
+      if DebugActive then
+        DebugLog('promote: cannot start the session server: error ' +
+          IntToStr(GetLastError));
+      Exit;
+    end;
+    if DebugActive then
+      DebugLog(Format('promote: session server started (pid %d), %d-byte workspace',
+        [Pi.dwProcessId, Length(Blueprint)]));
+    // hand over the workspace; EOF tells the server it has everything
+    P := @Blueprint[1];
+    Left := Length(Blueprint);
+    while Left > 0 do
+    begin
+      Written := 0;
+      if not WriteFile(InW, P^, DWORD(Left), Written, nil) or (Written = 0) then
+        Break;
+      Inc(P, Written);
+      Dec(Left, integer(Written));
+    end;
+    CloseHandle(InW);
+    InW := 0;
+    if Left > 0 then
+    begin
+      TerminateProcess(Pi.hProcess, 1);
+      Exit;
+    end;
+    // the one status byte, within the same startup budget POSIX uses
+    Status := -1;
+    Deadline := GetTickCount64 + QWord(SessionStartupPollAttempts) * 100;
+    repeat
+      Avail := 0;
+      if not PeekNamedPipe(OutR, nil, 0, nil, @Avail, nil) then
+        Break;   // the server closed the channel without a byte
+      if Avail > 0 then
+      begin
+        Got := 0;
+        if ReadFile(OutR, B, 1, Got, nil) and (Got = 1) then
+          Status := B;
+        Break;
+      end;
+      if WaitForSingleObject(Pi.hProcess, 0) = WAIT_OBJECT_0 then
+        Break;
+      Sleep(25);
+    until GetTickCount64 >= Deadline;
+    if Status = 1 then
+      Result := dssParentStarted
+    else
+    begin
+      if DebugActive then
+        DebugLog('promote: session server did not become ready (status ' +
+          IntToStr(Status) + ')');
+      TerminateProcess(Pi.hProcess, 1);
+      WaitForSingleObject(Pi.hProcess, 2000);
+      RemoveCancelledPublication;
+    end;
+  finally
+    if InR <> 0 then CloseHandle(InR);
+    if InW <> 0 then CloseHandle(InW);
+    if OutR <> 0 then CloseHandle(OutR);
+    if OutW <> 0 then CloseHandle(OutW);
+    if Nul <> 0 then CloseHandle(Nul);
+    if Pi.hThread <> 0 then CloseHandle(Pi.hThread);
+    if Pi.hProcess <> 0 then CloseHandle(Pi.hProcess);
+    ReleaseHeldSessionNameLock;
+  end;
+end;
+
+{$ENDIF}
+
 end.
+

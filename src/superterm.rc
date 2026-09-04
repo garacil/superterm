@@ -1,0 +1,48 @@
+// Windows resources for superterm.exe: the icon and the version block that
+// Explorer, the UAC prompt and SmartScreen read (Details tab, "Publisher",
+// "File description"). An executable without one looks anonymous to every
+// heuristic that judges downloaded programs.
+//
+// CompanyName is the publisher: it must read exactly as the Authenticode
+// certificate's subject, which for Azure Trusted Signing is the registered
+// legal name returned by identity validation. If the two disagree, Explorer
+// shows one name and the signature another.
+//
+// The version comes from the VERSION file: the Makefile writes it into
+// superterm_version.rh and regenerates superterm.res with windres. To do it
+// by hand after writing that header:
+//
+//   cd src && windres -i superterm.rc -o superterm.res
+
+#include "superterm_version.rh"
+
+1 ICON "../packaging/windows/alien-hacker.ico"
+
+1 VERSIONINFO
+FILEVERSION    ST_VER_MAJOR,ST_VER_MINOR,ST_VER_PATCH,0
+PRODUCTVERSION ST_VER_MAJOR,ST_VER_MINOR,ST_VER_PATCH,0
+FILEFLAGSMASK  0x3f
+FILEFLAGS      0x0
+FILEOS         0x40004
+FILETYPE       0x1
+FILESUBTYPE    0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "7kas Servicios Internet, S.L."
+      VALUE "FileDescription",  "SuperTerm terminal workspaces"
+      VALUE "FileVersion",      ST_VER_STRING
+      VALUE "InternalName",     "superterm"
+      VALUE "LegalCopyright",   "Copyright (C) 2026 7kas Servicios Internet, S.L. GNU GPL v3."
+      VALUE "OriginalFilename", "superterm.exe"
+      VALUE "ProductName",      "SuperTerm"
+      VALUE "ProductVersion",   ST_VER_STRING
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

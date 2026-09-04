@@ -59,11 +59,19 @@ end;
 
 procedure PrintCliHelpIndex(ALanguage: TUiLanguage);
 begin
+  {$IFDEF WINDOWS}
+  H(ALanguage,
+    'superterm ' + SUPERTERM_VERSION +
+      ' - detachable terminal sessions for Windows',
+    'superterm ' + SUPERTERM_VERSION +
+      ' - sesiones de terminal separables para Windows');
+  {$ELSE}
   H(ALanguage,
     'superterm ' + SUPERTERM_VERSION +
       ' - detachable terminal sessions for GNU/Linux and macOS',
     'superterm ' + SUPERTERM_VERSION +
       ' - sesiones de terminal separables para GNU/Linux y macOS');
+  {$ENDIF}
   Blank;
   H(ALanguage, 'Usage:', 'Uso:');
   H(ALanguage, '  superterm [--session NAME]',
@@ -961,6 +969,16 @@ end;
 procedure HelpSshClient(ALanguage: TUiLanguage);
 begin
   Page(ALanguage, 'STANDARD SSH CLIENT ENTRY', 'ENTRADA CON CLIENTE SSH ESTANDAR');
+  {$IFDEF WINDOWS}
+  H(ALanguage, 'AVAILABILITY', 'DISPONIBILIDAD');
+  H(ALanguage,
+    '  The dedicated inbound SSH service is Unix-host-only in this release.',
+    '  El servicio SSH de entrada dedicado solo esta disponible en Unix.');
+  H(ALanguage,
+    '  Native Windows can still open outgoing OpenSSH panes through ConPTY.',
+    '  Windows nativo puede abrir paneles OpenSSH salientes mediante ConPTY.');
+  Blank;
+  {$ENDIF}
   H(ALanguage, 'PURPOSE', 'PROPOSITO');
   H(ALanguage,
     '  Connect an ordinary OpenSSH client to a dedicated encrypted TCP port',
@@ -1074,6 +1092,16 @@ end;
 procedure PrintSshServerHelp(ALanguage: TUiLanguage);
 begin
   Page(ALanguage, 'DEDICATED SSH/TCP SERVER', 'SERVIDOR SSH/TCP DEDICADO');
+  {$IFDEF WINDOWS}
+  H(ALanguage, 'AVAILABILITY', 'DISPONIBILIDAD');
+  H(ALanguage,
+    '  This managed server is unavailable in the native Windows build;',
+    '  Este servidor gestionado no esta disponible en Windows nativo;');
+  H(ALanguage,
+    '  the following page documents the Unix-host administration commands.',
+    '  esta pagina documenta las ordenes de administracion para hosts Unix.');
+  Blank;
+  {$ENDIF}
   H(ALanguage, 'PURPOSE', 'PROPOSITO');
   H(ALanguage,
     '  Runs a second instance of the system OpenSSH sshd as an encrypted TCP',

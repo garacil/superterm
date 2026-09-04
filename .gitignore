@@ -1,6 +1,7 @@
 /bin/*
 !/bin/.gitkeep
 /build/
+/dist/
 /Makefile
 /config.status
 __pycache__/
@@ -11,3 +12,9 @@ AUDIT-3x.md
 *.ppu
 *.a
 *.compiled
+
+# local working notes, never published
+/notes/local/
+
+# captures written by the Windows console harness
+/test/windows/shots/

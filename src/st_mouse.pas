@@ -65,13 +65,18 @@ procedure HostMouseOff;
 implementation
 
 uses
-  SysUtils, BaseUnix, Sockets, Mouse
+  SysUtils, Mouse
+  {$IFDEF UNIX}, BaseUnix, Sockets{$ENDIF}
   {$IFDEF LINUX}, Linux{$ENDIF};
 
 var
-  SysDriver: TMouseDriver;   // the RTL's, kept for the console
+  {$IFDEF UNIX}
+  SysDriver: TMouseDriver;   // the RTL's, kept for the Linux console/gpm
+  {$ENDIF}
   OurDriver: TMouseDriver;
+  {$IFDEF UNIX}
   GpmWaitFd: cint = -1;
+  {$ENDIF}
   MouseOutputWriter: TMouseOutputWriter = nil;
 
 procedure InstallMouseOutputWriter(AWriter: TMouseOutputWriter);
@@ -79,11 +84,112 @@ begin
   MouseOutputWriter := AWriter;
 end;
 
+// Marks a parameter of a fixed driver signature as intentionally unused, the
+// same diagnostic-free helper the vendored Free Vision units use.
+procedure Unused(const A); begin if @A = nil then; end;
+
 procedure WriteMouseControl(const S: AnsiString);
 begin
   if Assigned(MouseOutputWriter) then
     MouseOutputWriter(S);
 end;
+
+{$IFDEF WINDOWS}
+// Windows has no gpm and no Linux virtual console. The console (Windows
+// Terminal, or conhost with VT enabled by the video unit) reports the mouse as the
+// very same ?1000/?1002/?1006 sequences a terminal emulator does, and st_kbd
+// decodes them from the input stream. So there is nothing to register with the
+// RTL mouse driver here: the two HostMouse* writers are the whole job.
+function OnLinuxConsole: boolean;
+begin
+  Result := False;
+end;
+
+// The console mouse arrives as VT reports inside the ordinary input stream
+// st_kbd already waits on, so there is no second descriptor to add to a wait
+// set. This is the answer a Unix terminal emulator gives too; only a GNU/Linux
+// virtual console with gpm has a separate one.
+function MouseInputWaitHandle: LongInt;
+begin
+  Result := -1;
+end;
+
+procedure HostMouseOn;
+begin
+  // Through the installed writer, never the RTL text file: the video unit owns the
+  // single physical output path, and a buffered Write(Output) here could
+  // reach the console out of order with the frames around it.
+  WriteMouseControl(#27'[?1000h'#27'[?1002h'#27'[?1006h');
+end;
+
+procedure HostMouseOff;
+begin
+  WriteMouseControl(#27'[?1006l'#27'[?1002l'#27'[?1000l');
+end;
+
+function OurDetectMouse: byte;
+begin
+  Result := 2;
+end;
+
+procedure OurInitDriver;
+begin
+  HostMouseOn;
+end;
+
+procedure OurDoneDriver;
+begin
+  HostMouseOff;
+end;
+
+procedure OurShowMouse;
+begin
+end;
+
+procedure OurHideMouse;
+begin
+end;
+
+function OurGetMouseX: word;
+begin
+  Result := 0;
+end;
+
+function OurGetMouseY: word;
+begin
+  Result := 0;
+end;
+
+function OurGetMouseButtons: word;
+begin
+  Result := 0;
+end;
+
+// The driver record needs every slot filled (see the initialization comment),
+// and a queue-only driver has nothing to do with a requested position.
+procedure OurSetMouseXY(x, y: word);
+begin
+  Unused(x);                                         { Fixed signature }
+  Unused(y);                                         { Fixed signature }
+end;
+
+procedure OurGetMouseEvent(var MouseEvent: TMouseEvent);
+begin
+  MouseEvent := Default(TMouseEvent);
+end;
+
+function OurPollMouseEvent(var MouseEvent: TMouseEvent): boolean;
+begin
+  MouseEvent := Default(TMouseEvent);
+  Result := False;
+end;
+
+procedure OurPutMouseEvent(const MouseEvent: TMouseEvent);
+begin
+  Unused(MouseEvent);                                { Fixed signature }
+end;
+
+{$ELSE}
 
 function OnLinuxConsole: boolean;
 {$IFDEF LINUX}
@@ -224,15 +330,39 @@ begin
   end;
   HostMouseOff;
 end;
+{$ENDIF}
 
 initialization
+  {$IFDEF UNIX}
   SysDriver := Default(TMouseDriver);
   GetMouseDriver(SysDriver);
   OurDriver := SysDriver;           // Show/Hide/Get*/Poll stay the RTL's
+  {$ELSE}
+  // Do not copy the stock Win32 callbacks. Its InitDriver starts a thread
+  // which drains every INPUT_RECORD (and discards keys now owned by st_kbd).
+  // The generic queue is all we need: st_kbd decodes VT mouse reports and
+  // feeds it with PutMouseEvent.
+  OurDriver := Default(TMouseDriver);
+  {$ENDIF}
   OurDriver.UseDefaultQueue := True;
   OurDriver.DetectMouse := @OurDetectMouse;
   OurDriver.InitDriver := @OurInitDriver;
   OurDriver.DoneDriver := @OurDoneDriver;
+  {$IFDEF WINDOWS}
+  // FPC's public wrappers dispatch several of these callbacks directly.
+  // Supply a complete driver record even though the default queue owns real
+  // events; leaving callback slots unset produced invalid small addresses in
+  // the Win64 record copied by SetMouseDriver on this FPC build.
+  OurDriver.ShowMouse := @OurShowMouse;
+  OurDriver.HideMouse := @OurHideMouse;
+  OurDriver.GetMouseX := @OurGetMouseX;
+  OurDriver.GetMouseY := @OurGetMouseY;
+  OurDriver.GetMouseButtons := @OurGetMouseButtons;
+  OurDriver.SetMouseXY := @OurSetMouseXY;
+  OurDriver.GetMouseEvent := @OurGetMouseEvent;
+  OurDriver.PollMouseEvent := @OurPollMouseEvent;
+  OurDriver.PutMouseEvent := @OurPutMouseEvent;
+  {$ENDIF}
   SetMouseDriver(OurDriver);
 
 end.

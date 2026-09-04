@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 5.2.2 - 2026-09
+
+### One architecture, chosen by measurement
+
+This release closes a deliberate competition. Four branches were opened from
+the same commit and each implemented client responsiveness and the surrounding
+architecture differently: a threaded client which moved keyboard, mouse and
+output onto dedicated threads; a daemon-first thin client with per-client
+mirrors, an isolated compositor and a transport-neutral attach contract; the
+event-driven single-reactor line kept here; and the integration branch which
+carried the winner. They were judged on the same frozen behaviour contracts and
+the same interleaved performance harness rather than on preference, and the
+line with the best measured results was the one merged.
+
+The intent is normalisation: from 5.2.2 onward there is one architecture to
+extend instead of four candidate designs, and the discarded branches remain
+readable history rather than parallel futures. The selected work is
+`e581f9d`, `b27f4a1`, `947982b` and `b609745`, promoted through `newfeatures`
+and merged into `main` as `e1181c0`, on top of `dbcc21f`.
 
 ### Reproducible engineering and performance baseline
 
@@ -84,6 +102,71 @@ restores the signal dispositions and becomes the configured interactive shell.
 An interrupted command such as `cat /dev/random` therefore returns to a usable
 prompt instead of turning the pane into an exited window. HUP and TERM
 lifecycle handling are unchanged.
+
+### Native Windows follows 5.2.2
+
+The `windows-support` branch carries 5.2.2 to the native Win64 target. The new
+event-driven client output architecture is POSIX: its bounded queue is drained
+by a poll reactor on a private non-blocking `/dev/tty`. Windows keeps the
+established synchronous console writer, which is the same path a Unix client
+takes when that descriptor is unavailable, so the two platforms share one set
+of producers rather than two designs.
+
+The idle loop is no longer a fixed sleep. It now waits on the console input
+handle for the same bounded interval the POSIX client waits on its descriptor
+set, and skips the wait entirely whenever a pane has just produced output, so a
+keystroke is acted on when it arrives instead of at the end of a timer.
+
+Resizing or maximizing the console window no longer breaks the interface. The
+RTL's Win32 video driver only accepts a fixed table of legacy console modes and
+silently refused every other size, leaving the video buffer at its previous
+geometry while the interface laid itself out at the new one; where a size did
+match, it commanded the console back to that geometry. SuperTerm now owns that
+driver hook on Windows: it accepts the size the console already has, resizes the
+buffer, and commands the console nothing.
+
+A second defect hid behind that one. On every resize the console queues a
+window-size record even though SuperTerm never asks for them, the input handle
+reports activity, and the character read that followed blocked until the next
+keystroke or click: the interface only caught up when the user touched it. The
+keyboard driver now consumes the records that carry no character before it
+reads, and only reads when a character is waiting. Resizes and focus changes no
+longer stall the client, and a maximized or restored window repaints by itself.
+
+Dragging a window edge is clean as well. The Windows client now runs on the
+alternate screen like the Unix client always did, so Windows Terminal clips the
+picture between frames instead of re-wrapping every row, and a drag that never
+pauses is repainted about twelve times a second until it settles.
+
+For diagnosis, `SUPERTERM_TEE=path` copies every byte the client writes to the
+console into that file, with an index of write boundaries.
+
+Detached sessions work natively. With no fork and no way to hand a running
+pseudo console to another process, the server is a separate copy of the
+program started with no console; the client sends it the workspace and the
+server starts the panes itself, so it owns them and outlives the window.
+Detach, reattach, list, send, capture and kill behave as on Unix, over the
+same AF_UNIX socket and protocol; sessions live under the local application
+data folder. Closing or losing a window no longer closes its shells.
+
+The executable now carries a Windows version resource (publisher, product,
+description, copyright and the version from `VERSION`), the installer script
+signs the setup, the uninstaller and `superterm.exe` when a code-signing
+certificate is configured, and `packaging/windows/release.ps1` builds, signs,
+packages and publishes the Windows assets in one step. Until a certificate
+is obtained the assets remain unsigned and SmartScreen keeps warning; the
+Windows guide explains what to obtain.
+
+The whole Win64 build also meets the release's strict diagnostics contract:
+every warning, note and hint is fatal there too.
+
+The same sources build on GNU/Linux under that contract as well, so `main`
+carries both targets: the `uses` entries only Windows needs sit under
+`{$IFDEF WINDOWS}` (on Unix the same C types come from `BaseUnix`, and a unit
+nothing references is a fatal hint), and the 5.2.2 client activity
+notifications, which an earlier merge on the Windows branch had dropped, are
+back on GNU/Linux and macOS under `{$IFDEF UNIX}`. The Windows client does
+not carry them.
 
 ## 4.2.1 - 2026-08
 
