@@ -1099,7 +1099,17 @@ begin
     Exit(-1);
   P := Default(TPollFD);
   P.fd := AFD;
+  {$IFDEF WINDOWS}
+  // WSAPoll fails the whole call (WSAEINVAL, returns -1) if events carries
+  // anything but POLLRDNORM/POLLRDBAND/POLLWRNORM. POLLHUP/POLLERR/POLLNVAL are
+  // output-only status bits; callers pass them so the revents test below can
+  // treat a hangup as ready, but they must be masked out of the request or
+  // every poll returns -1 and the caller (a layout lock, a close drain) burns
+  // its budget without ever waiting. poll() ignores them in events on Unix.
+  P.events := AEvents and (POLLIN or POLLOUT);
+  {$ELSE}
   P.events := AEvents;
+  {$ENDIF}
   Result := fpPoll(@P, 1, ATimeoutMs);
   if (Result > 0) and
      ((P.revents and (AEvents or POLLERR or POLLHUP or POLLNVAL)) = 0) then
@@ -1204,7 +1214,11 @@ begin
       Exit;
     P := Default(TPollFD);
     P.fd := AFD;
+    {$IFDEF WINDOWS}
+    P.events := AEvents and (POLLIN or POLLOUT);   // see PollFd: WSAPoll rejects status bits
+    {$ELSE}
     P.events := AEvents;
+    {$ENDIF}
     N := fpPoll(@P, 1, PollMs);
     // errno belongs to the failing syscall. Capture it before the clock query
     // below (or any future diagnostic) can execute another libc operation.
