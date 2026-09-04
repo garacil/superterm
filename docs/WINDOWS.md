@@ -492,6 +492,10 @@ current policies.
 
 ## Native Phase-1 limitations
 
+- Client activity notifications (the desktop toast, the status-line tail and
+  its bell, `[ui] desktop_notifications`) are not compiled into the Windows
+  client: the whole feature sits under `{$IFDEF UNIX}` in `st_fvui.pas`. The
+  key is accepted in the configuration file and ignored.
 - Detached sessions now work (see the section below). Multi-client sharing
   rides the same protocol but has not been driven under load on Windows;
   treat more than two simultaneous viewers as unverified for now.

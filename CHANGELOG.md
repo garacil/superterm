@@ -160,6 +160,14 @@ Windows guide explains what to obtain.
 The whole Win64 build also meets the release's strict diagnostics contract:
 every warning, note and hint is fatal there too.
 
+The same sources build on GNU/Linux under that contract as well, so `main`
+carries both targets: the `uses` entries only Windows needs sit under
+`{$IFDEF WINDOWS}` (on Unix the same C types come from `BaseUnix`, and a unit
+nothing references is a fatal hint), and the 5.2.2 client activity
+notifications, which an earlier merge on the Windows branch had dropped, are
+back on GNU/Linux and macOS under `{$IFDEF UNIX}`. The Windows client does
+not carry them.
+
 ## 4.2.1 - 2026-08
 
 ### Native Windows is now a first-class documented target

@@ -32,6 +32,39 @@ deliberate, reviewed act — exactly what this document is for.
 
 ---
 
+## 1b. What the merge actually required (done 2026-09-04)
+
+The merge was carried out on this branch before fast-forwarding `main`, and
+two things the sections below assumed turned out to be false. Recorded here so
+the next up-merge checks them first instead of trusting the plan.
+
+1. **The branch did not build on GNU/Linux.** Nobody had run the §5 gate
+   before writing it. Under the strict contract FPC stopped, one unit at a
+   time, on diagnostics that only appear off Windows: an unused local in
+   `st_os.pas` (`Base`, used only in the Windows branch) and the hint *Unit
+   "ctypes" not used* in `st_config.pas`, `st_debug.pas`, `st_pty.pas` and
+   `st_server.pas` — on Unix every C type those units name already comes from
+   `BaseUnix`, which is listed later and therefore wins, so `ctypes` is
+   referenced by nothing. The fix is confined to `uses` clauses and one local
+   declaration, every change under `{$IFDEF WINDOWS}`/`{$IFDEF UNIX}`, so the
+   token stream the Windows compiler sees is the one that was verified on
+   Windows. Rule for next time: **a unit whose types are also provided by a
+   later unit in the same `uses` list is unused there** — guard it.
+2. **`main`'s client activity notifications had been silently dropped.** The
+   merge commit `c6bc07c` (2026-08-27) resolved a two-line conflict in
+   `st_fvui.pas` by discarding the whole of `main`'s side of the file — the
+   toast, the status-line tail, `cmToggleDesktopNotifications`, and in
+   `st_server.pas` the daemon's `st_video.SuppressFlush := True` (commit
+   `6dd697a`). Reproducing that merge with `git merge-tree` keeps all of it;
+   the drop was manual and undocumented. `test/client_notifications_test.py`
+   was still in the Makefile's `TESTS`, so `make test` on the branch would
+   have failed. Restored under `{$IFDEF UNIX}` (the feature is Unix-only by
+   decision; the Windows client never carried it), plus the `st_server`
+   lines under the same guard.
+
+The §4 procedure and §5 checklist still apply; the GNU/Linux gate was run on
+the result (release and debug builds, `make test`).
+
 ## 2. Is it possible? — verdict
 
 **Yes, and it is designed to be mechanical, with one mandatory gate.**
