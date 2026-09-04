@@ -25,7 +25,9 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [
    `src/st_version.inc` and `src/superterm_version.rh` from `VERSION`,
    recompiles `src/superterm.res` with `windres`, and links `bin\superterm.exe`
    (the console client and session server) and `bin\superterm-tray.exe` (the
-   notification-area helper, source in `src/traytool`). The script then checks
+   notification-area helper, source in `src/traytool`; it lists live sessions,
+   reopens one at the size it was last used at — recorded by the daemon in the
+   session file — centred on the monitor, or closes one). The script then checks
    that `--version` and the version resource both say what `VERSION` says.
    `-SkipBuild` reuses the binaries as they are.
 2. **Sign** (`-Sign`). `sign.ps1` signs `bin\superterm.exe` and
