@@ -103,11 +103,20 @@ begin
 end;
 
 // Returns True to proceed, False to abort. Shared by install and uninstall.
+// A silent run (the Microsoft Store, and any /SILENT|/VERYSILENT install)
+// must never stop on a prompt: there it closes the running instance without
+// asking, which is the documented silent-install contract. Only an
+// interactive run warns and waits for confirmation.
 function ConfirmCloseRunning(const AAction: string): Boolean;
 begin
   Result := True;
   if not SuperTermRunning then
     Exit;
+  if WizardSilent then
+  begin
+    CloseSuperTerm;
+    Exit;
+  end;
   if MsgBox('SuperTerm is running.' + #13#10#13#10 +
        'Any detached sessions and the programs inside them will be closed '
        + 'so Setup can ' + AAction + '.' + #13#10#13#10 +
