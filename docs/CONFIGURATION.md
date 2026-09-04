@@ -102,7 +102,9 @@ no pane click is needed. A later resize of the host terminal preserves the
 selected palette while rebuilding the screen surface.
 
 `desktop_notifications=1` (the default) shows one short, local toast at desktop
-coordinate `(0,0)` for every client connection or disconnection. Set it to `0`
+coordinate `(0,0)` for every client connection or disconnection. Client activity
+notifications exist on GNU/Linux and macOS only; the native Windows client
+ignores this key. Set it to `0`
 to suppress only that toast. The status line still records the ordered event,
 the resulting number of attached viewers, and its client-local bell; none of
 this cosmetic feedback changes the shared desktop or pane output. Toggle the

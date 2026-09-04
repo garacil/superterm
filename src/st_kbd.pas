@@ -41,7 +41,9 @@ function TakeHostPaste(out AText: RawByteString): boolean;
 implementation
 
 uses
-  BaseUnix, termio, SysUtils, Keyboard, Mouse, Drivers;
+  SysUtils, Keyboard, Mouse, Drivers
+  {$IFDEF UNIX}, BaseUnix, Termio{$ENDIF}
+  {$IFDEF WINDOWS}, Windows, st_debug{$ENDIF};
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
@@ -65,8 +67,16 @@ begin
 end;
 
 var
+  {$IFDEF UNIX}
   SavedTio: termios;
   TioSaved: boolean = False;
+  {$ENDIF}
+  {$IFDEF WINDOWS}
+  SavedInputMode: DWORD = 0;
+  SavedInputCP: UINT = 0;
+  InputModeSaved: boolean = False;
+  InputCPSaved: boolean = False;
+  {$ENDIF}
   RBuf: array[0..1023] of byte;
   RHead: integer = 0;
   RTail: integer = 0;
@@ -108,6 +118,17 @@ begin
   DeferredInput := DeferredInput + S;
 end;
 
+{$IFDEF WINDOWS}
+function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
+begin
+  // The native Windows backend obtains the cursor position through
+  // GetConsoleScreenBufferInfo and forces UTF-8 output, so it must not read
+  // raw console input here looking for a terminal CPR reply.
+  ARow := 0;
+  ACol := 0;
+  Result := False;
+end;
+{$ELSE}
 function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
 const
   PROBE_TIMEOUT_MS = 200;
@@ -317,6 +338,7 @@ begin
   AppendDeferredInput(Kept);
   Result := Found;
 end;
+{$ENDIF}
 
 procedure QueueHostPaste(const AText: RawByteString);
 var
@@ -343,18 +365,102 @@ begin
 end;
 
 // waits up to TimeoutMs (negative = forever) for bytes in the buffer
+{$IFDEF WINDOWS}
+// True when the console input queue starts with a record ReadFile turns into
+// bytes: a key-down carrying a character. Everything ReadFile would discard
+// is consumed here first, because ReadFile discards such records by BLOCKING
+// until a real character follows. A resize of the console window queues a
+// WINDOW_BUFFER_SIZE_EVENT even with ENABLE_WINDOW_INPUT clear, and a focus
+// change queues a FOCUS_EVENT; either signals the handle, so the poll saw
+// activity, called ReadFile, and the whole client hung inside it until the
+// user pressed a key or clicked -- which is why a maximized superterm only
+// repainted on the next click. Established with a minimal program replaying
+// superterm's exact console bytes: it repainted by itself until it also read
+// its input this way.
+function CharRecordPending(HIn: THandle): Boolean;
+type
+  TInputRecords = array[0..31] of INPUT_RECORD;
+var
+  Recs: TInputRecords;
+  Have, Got, Skip: DWORD;
+  Kinds: string;
+begin
+  Result := False;
+  Kinds := '';
+  Recs := Default(TInputRecords);
+  repeat
+    Have := 0;
+    if not PeekConsoleInputW(HIn, Recs[0], Length(Recs), Have) or
+       (Have = 0) then
+      Break;
+    Skip := 0;
+    while Skip < Have do
+    begin
+      if (Recs[Skip].EventType = KEY_EVENT) and
+         Recs[Skip].Event.KeyEvent.bKeyDown and
+         (Recs[Skip].Event.KeyEvent.UnicodeChar <> #0) then
+        Break;
+      if DebugActive then
+        Kinds := Kinds + IntToStr(Recs[Skip].EventType) + ' ';
+      Inc(Skip);
+    end;
+    if Skip = 0 then
+    begin
+      Result := True;
+      Break;
+    end;
+    Got := 0;
+    if not ReadConsoleInputW(HIn, Recs[0], Skip, Got) or (Got = 0) then
+      Break;
+  until False;
+  if DebugActive and (Kinds <> '') then
+    DebugLog('kbd: consumed console records without characters: ' + Kinds);
+end;
+{$ENDIF}
+
 function FillBuf(TimeoutMs: integer): boolean;
 type
   TReadChunk = array[0..255] of byte;
 var
+  {$IFDEF UNIX}
   fds: TFDSet;
-  tmp: TReadChunk;
   n: cint;
+  {$ENDIF}
+  {$IFDEF WINDOWS}
+  HIn: THandle;
+  WaitMs, WaitResult, Got: DWORD;
+  {$ENDIF}
+  tmp: TReadChunk;
   r: integer;
   i: integer;
 begin
   if RHead <> RTail then
     Exit(True);
+  tmp := Default(TReadChunk);
+  {$IFDEF WINDOWS}
+  HIn := GetStdHandle(STD_INPUT_HANDLE);
+  if (HIn = 0) or (HIn = INVALID_HANDLE_VALUE) then
+    Exit(False);
+  if TimeoutMs < 0 then
+    WaitMs := INFINITE
+  else
+    WaitMs := DWORD(TimeoutMs);
+  repeat
+    WaitResult := WaitForSingleObject(HIn, WaitMs);
+    if WaitResult <> WAIT_OBJECT_0 then
+      Exit(False);
+    if CharRecordPending(HIn) then
+      Break;
+    // Signalled without a character. A poll reports nothing and returns to
+    // the caller's loop; only a blocking read waits for the next record.
+    if WaitMs <> INFINITE then
+      Exit(False);
+  until False;
+  Got := 0;
+  if not ReadFile(HIn, tmp[0], SizeOf(tmp), Got, nil) then
+    Exit(False);
+  r := integer(Got);
+  {$ELSE}
   fpFD_ZERO(fds);
   fpFD_SET(0, fds);
   if TimeoutMs < 0 then
@@ -363,8 +469,8 @@ begin
     n := fpSelect(1, @fds, nil, nil, TimeoutMs);
   if n <= 0 then
     Exit(False);
-  tmp := Default(TReadChunk);
   r := FileRead(0, tmp, SizeOf(tmp)); // FileRead retries EINTR
+  {$ENDIF}
   if r <= 0 then
     Exit(False);
   for i := 0 to r - 1 do
@@ -902,8 +1008,17 @@ begin
 end;
 
 procedure KInit;
+{$IFDEF UNIX}
 var
   T: termios;
+{$ENDIF}
+{$IFDEF WINDOWS}
+const
+  ENABLE_VIRTUAL_TERMINAL_INPUT_ = $0200;
+var
+  HIn: THandle;
+  Mode: DWORD;
+{$ENDIF}
 begin
   RHead := 0;
   RTail := 0;
@@ -911,6 +1026,26 @@ begin
   LastMouse := Default(TMouseEvent);
   PasteHead := 0;
   PasteTail := 0;
+  {$IFDEF WINDOWS}
+  HIn := GetStdHandle(STD_INPUT_HANDLE);
+  Mode := 0;
+  if (HIn <> 0) and (HIn <> INVALID_HANDLE_VALUE) and
+     GetConsoleMode(HIn, Mode) then
+  begin
+    SavedInputMode := Mode;
+    // VT input turns keys, mouse and focus into the same byte protocol this
+    // decoder uses on POSIX. Disable cooked console processing so ReadFile
+    // returns each key immediately and Ctrl-C reaches the focused pane.
+    Mode := Mode or ENABLE_VIRTUAL_TERMINAL_INPUT_ or ENABLE_EXTENDED_FLAGS;
+    Mode := Mode and not (ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT or
+      ENABLE_PROCESSED_INPUT or ENABLE_QUICK_EDIT_MODE or
+      ENABLE_MOUSE_INPUT or ENABLE_WINDOW_INPUT);
+    InputModeSaved := SetConsoleMode(HIn, Mode);
+    SavedInputCP := GetConsoleCP;
+    if (SavedInputCP <> 0) and (SavedInputCP <> CP_UTF8) then
+      InputCPSaved := SetConsoleCP(CP_UTF8);
+  end;
+  {$ELSE}
   if TCGetAttr(0, SavedTio) = 0 then
   begin
     TioSaved := True;
@@ -922,15 +1057,29 @@ begin
     T.c_cc[VTIME] := 0;
     TCSetAttr(0, TCSANOW, T);
   end;
+  {$ENDIF}
 end;
 
 procedure KDone;
 begin
+  {$IFDEF WINDOWS}
+  if InputModeSaved then
+  begin
+    SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), SavedInputMode);
+    InputModeSaved := False;
+  end;
+  if InputCPSaved then
+  begin
+    SetConsoleCP(SavedInputCP);
+    InputCPSaved := False;
+  end;
+  {$ELSE}
   if TioSaved then
   begin
     TCSetAttr(0, TCSANOW, SavedTio);
     TioSaved := False;
   end;
+  {$ENDIF}
 end;
 
 function KGet: TKeyEvent;

@@ -1,0 +1,4 @@
+#define ST_VER_MAJOR 5
+#define ST_VER_MINOR 2
+#define ST_VER_PATCH 2
+#define ST_VER_STRING "5.2.2"

@@ -2,6 +2,16 @@
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
+> ### 🖥️ Real demonstration · 3:08 — SuperTerm doing real work with Pizarra and Tiza
+>
+> A complete, non-mock recording: the console, `masterp` and `s-masterp` exchange
+> messages through Tiza and Pizarra inside a SuperTerm desktop. It is the text
+> workspace turned into an operations centre for agent teams.
+>
+> [![SuperTerm doing real work with Pizarra and Tiza — open the video player](https://raw.githubusercontent.com/garacil/pizarra/main/screenshots/pizarra-superterm-complete-video-cover.png)](https://garacil.github.io/pizarra/video.html)
+>
+> **[▶ Open the video player](https://garacil.github.io/pizarra/video.html)** · [Download the original MP4 (96 MB)](https://github.com/garacil/pizarra/releases/download/v1.1.22/pizarra-superterm-complete-demo.mp4)
+
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for

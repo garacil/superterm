@@ -146,13 +146,30 @@ var
 implementation
 
 uses
-  Classes, SysUtils, termio, BaseUnix, Video, st_debug, st_kbd;
+  Classes, SysUtils, Video, st_debug, st_kbd
+  {$IFDEF UNIX}, termio, BaseUnix{$ENDIF}
+  {$IFDEF WINDOWS}, Windows{$ENDIF};
 
+{$IFDEF WINDOWS}
+type
+  // The client output reactor is a POSIX design: one private nonblocking
+  // /dev/tty descriptor, two wake pipes and a poll loop on a helper thread.
+  // Windows Phase 1 keeps the established blocking console writer, so these
+  // aliases exist only so the shared declarations and call sites below compile
+  // unchanged. Every descriptor stays -1 and AsyncOutputActive stays False,
+  // which is exactly the branch WriteRaw, PassthroughRaw and WideUpdateScreen
+  // already take on Unix when the reactor cannot be started.
+  cint = LongInt;
+  TFilDes = array[0..1] of cint;
+{$ENDIF}
+
+{$IFDEF UNIX}
 type
   TClientOutputReactor = class(TThread)
   protected
     procedure Execute; override;
   end;
+{$ENDIF}
 
 var
   SavedDriver: TVideoDriver;
@@ -163,6 +180,7 @@ var
   HostUtf8: Boolean = True;
   ProbeHostEncoding: Boolean = True;
 
+{$IFDEF UNIX}
 const
   // A renderer frame is normally at most a few hundred KiB, while direct
   // passthrough can burst much harder. Keep the queue finite: saturation is a
@@ -170,15 +188,18 @@ const
   // block the UI thread.
   OUTPUT_QUEUE_CAPACITY = 8 * 1024 * 1024;
   OUTPUT_TEARDOWN_DRAIN_MS = 500;
+{$ENDIF}
 
 var
+  {$IFDEF UNIX}
   OutputHandle: cint = -1;
   OutputRing: array of Byte;
   OutputHead: LongInt = 0;
-  OutputCount: LongInt = 0;
   OutputFrameRemaining: LongInt = 0;
-  AsyncOutputActive: Boolean = False;
   AsyncOutputEverStarted: Boolean = False;
+  {$ENDIF}
+  OutputCount: LongInt = 0;
+  AsyncOutputActive: Boolean = False;
   BlockingTeardownUnsafe: Boolean = False;
   DeferredFrame: Boolean = False;
   CursorStateDirty: Boolean = False;
@@ -188,10 +209,20 @@ var
   QueuedCursorY: Word = $FFFF;
   OutputLock: TRTLCriticalSection;
   OutputLockInitialized: Boolean = False;
+  {$IFDEF UNIX}
   OutputWakePipe: TFilDes = (-1, -1);
+  {$ENDIF}
   OutputProgressPipe: TFilDes = (-1, -1);
+  {$IFDEF UNIX}
   OutputReactor: TClientOutputReactor = nil;
+  {$ENDIF}
   OrderedFrameAdmission: Boolean = False;
+
+{$IFDEF WINDOWS}
+// Marks a parameter of a fixed cross-platform signature as intentionally
+// unused, the same diagnostic-free helper the vendored Free Vision units use.
+procedure Unused(const A); begin if @A = nil then; end;
+{$ENDIF}
 
 function HostUtf8Output: Boolean;
 begin
@@ -215,6 +246,12 @@ end;
 // for the same system calls, so strict project builds stay diagnostic-clean.
 {$push}{$notes off}{$hints off}
 procedure SignalPipe(AFd: cint);
+{$IFDEF WINDOWS}
+begin
+  // No reactor thread to wake: Windows submits every frame synchronously on
+  // the UI thread, so progress is observed by the caller that wrote it.
+end;
+{$ELSE}
 var
   B: Byte;
   N: ssize_t;
@@ -228,8 +265,14 @@ begin
      DebugActive then
     DebugLog('video: output wake pipe failed errno=' + IntToStr(fpGetErrNo));
 end;
+{$ENDIF}
 
 procedure DrainPipe(AFd: cint);
+{$IFDEF WINDOWS}
+begin
+  // Counterpart of the SignalPipe stub: there is no progress pipe to drain.
+end;
+{$ELSE}
 var
   Buf: array[0..63] of Byte;
   N: ssize_t;
@@ -240,6 +283,7 @@ begin
     N := fpRead(AFd, PChar(@Buf[0])^, SizeOf(Buf));
   until (N <= 0) and (fpGetErrNo <> ESysEINTR);
 end;
+{$ENDIF}
 
 procedure MarkOutputFailure(const AReason: string);
 var
@@ -264,6 +308,7 @@ begin
     SignalPipe(OutputProgressPipe[1]);
 end;
 
+{$IFDEF UNIX}
 function WritePendingNonblocking: Boolean;
 var
   Head, Chunk, Written, ErrNo, FromFrame: LongInt;
@@ -320,9 +365,11 @@ begin
     Exit(False);
   until False;
 end;
+{$ENDIF}
 
 {$pop}
 
+{$IFDEF UNIX}
 procedure TClientOutputReactor.Execute;
 var
   Fds: array[0..1] of TPollFD;
@@ -367,7 +414,22 @@ begin
         Break;
   end;
 end;
+{$ENDIF}
 
+{$IFDEF WINDOWS}
+// No reactor, so no queue to admit anything to. Every producer already tests
+// AsyncOutputActive first and takes the blocking writer instead; these exist
+// so that shared code needs no platform branch of its own.
+function QueueOutputTransaction(const AData; ALen: LongInt;
+  AFrame, AAppendFrame: Boolean): Boolean;
+begin
+  Unused(AData);
+  Unused(ALen);
+  Unused(AFrame);
+  Unused(AAppendFrame);
+  Result := False;
+end;
+{$ELSE}
 function QueueOutputTransaction(const AData; ALen: LongInt;
   AFrame, AAppendFrame: Boolean): Boolean;
 var
@@ -421,6 +483,7 @@ begin
   if Result then
     SignalPipe(OutputWakePipe[1]);
 end;
+{$ENDIF}
 
 function QueueOutputBytes(const AData; ALen: LongInt): Boolean;
 begin
@@ -435,12 +498,54 @@ begin
   Result := QueueOutputTransaction(S[1], Length(S), True, AAppendFrame);
 end;
 
+{$IFDEF WINDOWS}
+// Diagnostic tee: SUPERTERM_TEE=path copies every byte written to the console
+// into that file, and path.idx records "offset length tick" per write, so a
+// frame can be replayed byte-for-byte outside superterm.
+var
+  TeeData: THandle = INVALID_HANDLE_VALUE;
+  TeeIndex: THandle = INVALID_HANDLE_VALUE;
+  TeeResolved: Boolean = False;
+  TeeOffset: Int64 = 0;
+
+procedure TeeWrite(const AData; ALen: LongInt);
+var
+  Written: DWORD;
+  FN: string;
+  Line: AnsiString;
+begin
+  if not TeeResolved then
+  begin
+    TeeResolved := True;
+    FN := SysUtils.GetEnvironmentVariable('SUPERTERM_TEE');
+    if FN = '' then
+      Exit;
+    TeeData := CreateFileW(PWideChar(UnicodeString(FN)), GENERIC_WRITE,
+      FILE_SHARE_READ, nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    TeeIndex := CreateFileW(PWideChar(UnicodeString(FN + '.idx')),
+      GENERIC_WRITE, FILE_SHARE_READ, nil, CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL, 0);
+  end;
+  if (TeeData = INVALID_HANDLE_VALUE) or (ALen <= 0) then
+    Exit;
+  Written := 0;
+  WriteFile(TeeData, AData, DWORD(ALen), Written, nil);
+  if TeeIndex <> INVALID_HANDLE_VALUE then
+  begin
+    Line := Format('%d %d %d'#13#10, [TeeOffset, ALen, GetTickCount64]);
+    WriteFile(TeeIndex, Line[1], DWORD(Length(Line)), Written, nil);
+  end;
+  Inc(TeeOffset, ALen);
+end;
+{$ENDIF}
+
 function RawWriteBlocking(const AData; ALen: LongInt): Boolean;
 var
   P: PByte;
   Left: LongInt;
   Written: Int64;
 begin
+  {$IFDEF WINDOWS}TeeWrite(AData, ALen);{$ENDIF}
   Result := False;
   if ALen <= 0 then
     Exit(True);
@@ -459,6 +564,14 @@ end;
 
 {$push}{$notes off}{$hints off}
 function RawWriteBestEffort(const AData; ALen: LongInt): Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Only reached after a bounded-queue teardown failure, which Windows cannot
+  // enter because it never activates the reactor. Kept defined, and honest:
+  // the ordinary console writer is the only physical output path here.
+  Result := RawWriteBlocking(AData, ALen);
+end;
+{$ELSE}
 var
   N: ssize_t;
 begin
@@ -470,7 +583,59 @@ begin
   until (N >= 0) or (fpGetErrNo <> ESysEINTR);
   Result := N = ALen;
 end;
+{$ENDIF}
 {$pop}
+
+{$IFDEF WINDOWS}
+const
+  ENABLE_VIRTUAL_TERMINAL_PROCESSING_ = $0004;
+  DISABLE_NEWLINE_AUTO_RETURN_        = $0008;
+
+var
+  SavedOutMode: DWORD = 0;
+  SavedOutputCP: UINT = 0;
+  OutModeSaved: Boolean = False;
+  OutputCPSaved: Boolean = False;
+
+// Put the Windows console into VT mode: the output side interprets the ANSI
+// escapes st_video emits (colours, cursor, alternate screen), and the input
+// side delivers keys and mouse as the same VT byte stream st_kbd already
+// decodes on Unix. Without this, conhost prints the escapes literally. Windows
+// Terminal enables output VT by default; doing it explicitly covers plain
+// conhost on Windows 10 1809+ too.
+procedure EnableVTConsole;
+var
+  HOut: THandle;
+  M: DWORD;
+begin
+  M := 0;
+  HOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  if (HOut <> INVALID_HANDLE_VALUE) and GetConsoleMode(HOut, M) then
+  begin
+    SavedOutMode := M;
+    OutModeSaved := SetConsoleMode(HOut,
+      M or ENABLE_VIRTUAL_TERMINAL_PROCESSING_
+        or DISABLE_NEWLINE_AUTO_RETURN_);
+    SavedOutputCP := GetConsoleOutputCP;
+    if (SavedOutputCP <> 0) and (SavedOutputCP <> CP_UTF8) then
+      OutputCPSaved := SetConsoleOutputCP(CP_UTF8);
+  end;
+end;
+
+procedure RestoreVTConsole;
+begin
+  if OutModeSaved then
+  begin
+    SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), SavedOutMode);
+    OutModeSaved := False;
+  end;
+  if OutputCPSaved then
+  begin
+    SetConsoleOutputCP(SavedOutputCP);
+    OutputCPSaved := False;
+  end;
+end;
+{$ENDIF}
 
 procedure PassthroughRaw(const Data; ALen: LongInt);
 begin
@@ -572,6 +737,15 @@ begin
 end;
 
 function InputPending: Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Frame coalescing only needs "is there something to read right now"; a
+  // signalled console input handle answers that without blocking. Any pending
+  // record (key or mouse) counts, which is exactly what we want.
+  Result := WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 0)
+    = WAIT_OBJECT_0;
+end;
+{$ELSE}
 var
   fds: TFDSet;
   tv: TTimeVal;
@@ -582,6 +756,7 @@ begin
   tv.tv_usec := 0;
   InputPending := fpSelect(StdInputHandle + 1, @fds, nil, nil, @tv) > 0;
 end;
+{$ENDIF}
 
 function VgaColorToAnsi(AColor: Byte; AForeground: Boolean): Integer;
 var
@@ -1898,6 +2073,40 @@ begin
   end;
 end;
 
+{$IFDEF WINDOWS}
+// Accept the size the console window already has.
+//
+// The RTL's Win32 mode selector is wrong for this program in two ways. It only
+// recognises a fixed table of legacy modes -- 40x25, 80x25, 80x30, 80x43 and
+// 80x50 -- and rejects everything else; and when a mode does match it commands
+// the console to that geometry with SetConsoleWindowInfo and
+// SetConsoleScreenBufferSize, then clears it.
+//
+// SuperTerm never invents a size: ReadTerminalSize asks the console what the
+// user has just made the window, and that size is what arrives here. So every
+// size is valid and nothing may be resized back.
+//
+// A rejected mode was not merely ignored, either. Video.ScreenWidth and
+// ScreenHeight kept their previous values and the video buffer was not
+// reallocated, while Free Vision went on to lay the application out at the new
+// size -- so after a maximize or a drag-resize every view drew against a buffer
+// of the wrong geometry and the whole interface came apart. Reporting success
+// here lets the RTL's own SetVideoMode reallocate the buffer for the new
+// dimensions, which is the only step that was missing.
+function WideSetVideoMode(const AMode: TVideoMode): Boolean;
+begin
+  Result := (AMode.Col > 0) and (AMode.Row > 0);
+  if not Result then
+    Exit;
+  Video.ScreenWidth := AMode.Col;
+  Video.ScreenHeight := AMode.Row;
+  Video.ScreenColor := AMode.Color;
+  // The terminal still shows the old frame at the old geometry; nothing that
+  // was tracked about it describes the new surface.
+  InvalidateFrame;
+end;
+{$ENDIF}
+
 procedure WideClearScreen;
 begin
   // Video.ClearScreen has already filled VideoBuf with its canonical blank
@@ -2008,13 +2217,26 @@ begin
   WriteRaw(#27'7'#27'[s');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
+  {$IFDEF WINDOWS}
+  // On Unix the RTL driver's InitDriver enters the alternate screen (smcup);
+  // the Win32 driver knows nothing of VT and leaves us in the console's main
+  // buffer. WideDoneVideo already leaves the alternate screen on exit, so
+  // enter it here too: it keeps the shell's scrollback intact under the
+  // application, and Windows Terminal does not reflow it on a resize -- a
+  // window being dragged narrower merely clips the picture until the next
+  // frame, instead of re-wrapping every full-width row into two.
+  WriteRaw(#27'[?1049h'#27'[H'#27'[2J');
+  {$ENDIF}
   DetectHostEncoding;
   // TTermView and every FreeVision frame use CP437 semantic bytes. FPC may
   // select CP850 when LANG is not UTF-8; keep one canonical grid and perform
   // the client-specific UTF-8/ACS conversion only at the final emitter.
+  {$IFDEF UNIX}
   Video.internal_codepage := Video.cp437;
+  {$ENDIF}
 end;
 
+{$IFDEF UNIX}
 function ConfigureNonblockingDescriptor(AFd: cint): Boolean;
 var
   Flags: cint;
@@ -2054,9 +2276,19 @@ begin
     fpClose(AFd);
   AFD := -1;
 end;
+{$ENDIF}
 
 {$push}{$notes off}{$hints off}
 procedure StartAsyncVideoOutput;
+{$IFDEF WINDOWS}
+begin
+  // Phase 1 has no Windows reactor. The console writer stays synchronous, so
+  // AsyncOutputActive remains False and every producer takes the blocking
+  // branch it already takes on a Unix host whose /dev/tty cannot be opened.
+  if DebugActive then
+    DebugLog('video: client output reactor unavailable: windows phase 1');
+end;
+{$ELSE}
 begin
   if AsyncOutputActive or AsyncOutputEverStarted then
     Exit;
@@ -2098,9 +2330,17 @@ begin
     DebugLog(Format('video: client output reactor started fd=%d cap=%d',
       [OutputHandle, Length(OutputRing)]));
 end;
+{$ENDIF}
 {$pop}
 
 function StopAsyncVideoOutput: Boolean;
+{$IFDEF WINDOWS}
+begin
+  // Nothing was ever admitted to a queue, so teardown is always fully drained
+  // and the ordinary blocking restoration path stays safe.
+  Result := True;
+end;
+{$ELSE}
 var
   Deadline, NowTick: QWord;
   Pending, WaitMs: LongInt;
@@ -2171,9 +2411,18 @@ begin
     DebugLog(Format('video: client output reactor stopped drained=%d abandoned=%d',
       [Ord(Result), Pending]));
 end;
+{$ENDIF}
 
 procedure PauseAsyncVideoOutputForFork(out AWasActive,
   AResumeNeedsFullFrame: Boolean);
+{$IFDEF WINDOWS}
+begin
+  // There is no fork and no reactor on Windows; the pair stays callable so the
+  // shared client code needs no platform branch of its own.
+  AWasActive := False;
+  AResumeNeedsFullFrame := False;
+end;
+{$ELSE}
 begin
   AWasActive := AsyncOutputActive and (OutputReactor <> nil);
   AResumeNeedsFullFrame := False;
@@ -2188,9 +2437,16 @@ begin
   OutputFailed := False;
   AsyncOutputEverStarted := False;
 end;
+{$ENDIF}
 
 procedure ResumeAsyncVideoOutputAfterFork(AWasActive,
   AResumeNeedsFullFrame: Boolean);
+{$IFDEF WINDOWS}
+begin
+  Unused(AWasActive);
+  Unused(AResumeNeedsFullFrame);
+end;
+{$ELSE}
 begin
   if not AWasActive then
     Exit;
@@ -2202,6 +2458,7 @@ begin
   if AResumeNeedsFullFrame then
     InvalidateFrame;
 end;
+{$ENDIF}
 
 procedure InstallWideVideoOutput;
 var
@@ -2210,9 +2467,12 @@ var
 begin
   if DriverInstalled then
     Exit;
-  UseSyncOutput := GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
+  {$IFDEF WINDOWS}
+  EnableVTConsole;
+  {$ENDIF}
+  UseSyncOutput := SysUtils.GetEnvironmentVariable('SUPERTERM_SYNC') = '1';
   Encoding := LowerCase(Trim(
-    GetEnvironmentVariable('SUPERTERM_CLIENT_ENCODING')));
+    SysUtils.GetEnvironmentVariable('SUPERTERM_CLIENT_ENCODING')));
   // The only safe override is the 7-bit compatibility renderer.  Never
   // force UTF-8 from an environment variable: FPC may already have selected
   // an ISO-8859 terminal mode from LANG, and only the live cursor probe can
@@ -2225,7 +2485,15 @@ begin
   else
   begin
     HostUtf8 := True;
+    {$IFDEF WINDOWS}
+    // Native output is explicitly put into CP_UTF8 above. At this point the
+    // custom keyboard driver's KInit has not run yet, so VT input is not
+    // available for a cursor-position round trip; the Win32 console mode and
+    // code page are the authoritative capability instead.
+    ProbeHostEncoding := False;
+    {$ELSE}
     ProbeHostEncoding := True;
+    {$ENDIF}
   end;
   GetVideoDriver(SavedDriver);
   Driver := SavedDriver;
@@ -2236,6 +2504,9 @@ begin
   Driver.SetCursorPos := @WideSetCursorPos;
   Driver.GetCursorType := @WideGetCursorType;
   Driver.SetCursorType := @WideSetCursorType;
+  {$IFDEF WINDOWS}
+  Driver.SetVideoMode := @WideSetVideoMode;
+  {$ENDIF}
   if SetVideoDriver(Driver) then
     DriverInstalled := True;
 end;
@@ -2247,6 +2518,26 @@ end;
 // the cursor again -- already at 1;1 -- into the same slot as DECSC, so
 // the final ESC[u ESC 8 restores the first line. Asking the terminal for
 // the position and repositioning explicitly is immune to that slot overlap.
+{$IFDEF WINDOWS}
+procedure CaptureConsoleCursor;
+var
+  Info: TConsoleScreenBufferInfo;
+  HOut: THandle;
+begin
+  Info := Default(TConsoleScreenBufferInfo);
+  // No DSR round-trip needed: the console buffer knows the cursor position.
+  ConsoleRow := 0;
+  ConsoleCol := 0;
+  HOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  if (HOut <> INVALID_HANDLE_VALUE) and
+     GetConsoleScreenBufferInfo(HOut, Info) then
+  begin
+    // Stored 1-based to match the terminal's ESC[row;colH addressing.
+    ConsoleRow := Info.dwCursorPosition.Y + 1;
+    ConsoleCol := Info.dwCursorPosition.X + 1;
+  end;
+end;
+{$ELSE}
 procedure CaptureConsoleCursor;
 var
   OldTio, RawTio: TermIOS;
@@ -2283,6 +2574,7 @@ begin
     TCSetAttr(StdInputHandle, TCSANOW, OldTio);
   end;
 end;
+{$ENDIF}
 
 // Turns off everything that makes the terminal send us bytes, and throws
 // away whatever it sent before we got here.
@@ -2303,8 +2595,13 @@ begin
   // nothing new can arrive in either encoding
   WriteRaw(#27'[?1003l'#27'[?1002l'#27'[?1000l'#27'[?1015l'#27'[?1006l' +
     #27'[?2004l'#27'[?9l');
+  {$IFDEF WINDOWS}
+  FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
+  RestoreVTConsole;
+  {$ELSE}
   if IsATTY(StdInputHandle) = 1 then
     TCFlush(StdInputHandle, TCIFLUSH);
+  {$ENDIF}
 end;
 
 // Puts the console cursor back where it was at startup. Call at the
@@ -2318,6 +2615,7 @@ begin
 end;
 
 finalization
+  {$IFDEF UNIX}
   if OutputReactor <> nil then
   begin
     OutputReactor.Terminate;
@@ -2330,6 +2628,7 @@ finalization
   CloseOutputDescriptor(OutputProgressPipe[0]);
   CloseOutputDescriptor(OutputProgressPipe[1]);
   CloseOutputDescriptor(OutputHandle);
+  {$ENDIF}
   if OutputLockInitialized then
     DoneCriticalSection(OutputLock);
 

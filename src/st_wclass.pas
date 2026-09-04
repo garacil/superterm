@@ -13,7 +13,7 @@ unit st_wclass;
 interface
 
 uses
-  Classes, SysUtils, StrUtils, IniFiles, BaseUnix, st_config;
+  Classes, SysUtils, StrUtils, IniFiles, ctypes, st_config;
 
 type
   // the kind is derived on load and never persisted:
@@ -101,6 +101,14 @@ implementation
 
 uses
   base64;
+
+{$IFDEF WINDOWS}
+// Marks a parameter of a fixed cross-platform signature as intentionally
+// unused, the same diagnostic-free helper the vendored Free Vision units use.
+// Declared locally on purpose: it hides the WinAPI DDE record accessors of the
+// same name that the Windows unit brings into scope.
+procedure Unused(const A); begin if @A = nil then; end;
+{$ENDIF}
 
 function ValidWindowClassName(const AName: string): boolean;
 var
@@ -290,70 +298,70 @@ var
   Sec, TempName: string;
 begin
   TempName := BeginConfigRewriteLocked(FileName, 'classes');
+  try
+    Ini := TIniFile.Create(TempName);
+    SL := TStringList.Create;
     try
-      Ini := TIniFile.Create(TempName);
-      SL := TStringList.Create;
-      try
-        Ini.CacheUpdates := True;
-    // erase everything of ours: [class.*] and the legacy [t-*]
-    // (so the first save absorbs and migrates the user's [t-*])
-    Ini.ReadSections(SL);
-    for i := 0 to SL.Count - 1 do
-      if IsLegacyTermSection(SL[i]) or
-         (LowerCase(Copy(SL[i], 1, Length('class.'))) = 'class.') then
-        Ini.EraseSection(SL[i]);
-    for i := 0 to High(AClasses) do
-    begin
-      if AClasses[i].Origin <> coUser then
-        continue;
-      if not ValidWindowClassName(AClasses[i].Name) then
-        raise EConfigWriteError.CreateFmt('Invalid window class name: %s',
-          [AClasses[i].Name]);
-      Sec := 'class.' + AClasses[i].Name;
-      Ini.WriteString(Sec, 'name', AClasses[i].Name);
-      Ini.WriteInteger(Sec, 'enabled', Ord(AClasses[i].Enabled));
-      if AClasses[i].Title <> '' then
-        Ini.WriteString(Sec, 'title', IniQuoteGuard(AClasses[i].Title));
-      if AClasses[i].Shell <> '' then
-        Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
-      if AClasses[i].Cmd <> '' then
-        Ini.WriteString(Sec, 'cmd', IniQuoteGuard(AClasses[i].Cmd));
-      if AClasses[i].Cwd <> '' then
-        Ini.WriteString(Sec, 'cwd', IniQuoteGuard(AClasses[i].Cwd));
-      if AClasses[i].Host <> '' then
-        Ini.WriteString(Sec, 'host', AClasses[i].Host);
-      if AClasses[i].User <> '' then
-        Ini.WriteString(Sec, 'user', AClasses[i].User);
-      if AClasses[i].Port > 0 then
-        Ini.WriteInteger(Sec, 'port', AClasses[i].Port);
-      if AClasses[i].KeyFile <> '' then
-        Ini.WriteString(Sec, 'key', AClasses[i].KeyFile);
-      if AClasses[i].Password <> '' then
-        Ini.WriteString(Sec, 'password',
-          EncodeStringBase64(AClasses[i].Password));
-      if AClasses[i].Connect <> '' then
-        Ini.WriteString(Sec, 'connect', IniQuoteGuard(AClasses[i].Connect));
-      if AClasses[i].PostConnect <> '' then
-        Ini.WriteString(Sec, 'postconnect',
-          IniQuoteGuard(AClasses[i].PostConnect));
-      if (AClasses[i].ScrollBack > 0) and
-         (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
-        Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
-      if AClasses[i].Cols > 0 then
-        Ini.WriteInteger(Sec, 'cols', AClasses[i].Cols);
-      if AClasses[i].Rows > 0 then
-        Ini.WriteInteger(Sec, 'rows', AClasses[i].Rows);
-    end;
-        Ini.UpdateFile;
-      finally
-        SL.Free;
-        Ini.Free;
+      Ini.CacheUpdates := True;
+      // erase everything of ours: [class.*] and the legacy [t-*]
+      // (so the first save absorbs and migrates the user's [t-*])
+      Ini.ReadSections(SL);
+      for i := 0 to SL.Count - 1 do
+        if IsLegacyTermSection(SL[i]) or
+           (LowerCase(Copy(SL[i], 1, Length('class.'))) = 'class.') then
+          Ini.EraseSection(SL[i]);
+      for i := 0 to High(AClasses) do
+      begin
+        if AClasses[i].Origin <> coUser then
+          continue;
+        if not ValidWindowClassName(AClasses[i].Name) then
+          raise EConfigWriteError.CreateFmt('Invalid window class name: %s',
+            [AClasses[i].Name]);
+        Sec := 'class.' + AClasses[i].Name;
+        Ini.WriteString(Sec, 'name', AClasses[i].Name);
+        Ini.WriteInteger(Sec, 'enabled', Ord(AClasses[i].Enabled));
+        if AClasses[i].Title <> '' then
+          Ini.WriteString(Sec, 'title', IniQuoteGuard(AClasses[i].Title));
+        if AClasses[i].Shell <> '' then
+          Ini.WriteString(Sec, 'shell', AClasses[i].Shell);
+        if AClasses[i].Cmd <> '' then
+          Ini.WriteString(Sec, 'cmd', IniQuoteGuard(AClasses[i].Cmd));
+        if AClasses[i].Cwd <> '' then
+          Ini.WriteString(Sec, 'cwd', IniQuoteGuard(AClasses[i].Cwd));
+        if AClasses[i].Host <> '' then
+          Ini.WriteString(Sec, 'host', AClasses[i].Host);
+        if AClasses[i].User <> '' then
+          Ini.WriteString(Sec, 'user', AClasses[i].User);
+        if AClasses[i].Port > 0 then
+          Ini.WriteInteger(Sec, 'port', AClasses[i].Port);
+        if AClasses[i].KeyFile <> '' then
+          Ini.WriteString(Sec, 'key', AClasses[i].KeyFile);
+        if AClasses[i].Password <> '' then
+          Ini.WriteString(Sec, 'password',
+            EncodeStringBase64(AClasses[i].Password));
+        if AClasses[i].Connect <> '' then
+          Ini.WriteString(Sec, 'connect', IniQuoteGuard(AClasses[i].Connect));
+        if AClasses[i].PostConnect <> '' then
+          Ini.WriteString(Sec, 'postconnect',
+            IniQuoteGuard(AClasses[i].PostConnect));
+        if (AClasses[i].ScrollBack > 0) and
+           (AClasses[i].ScrollBack <> DEFAULT_SCROLLBACK) then
+          Ini.WriteInteger(Sec, 'scrollback', AClasses[i].ScrollBack);
+        if AClasses[i].Cols > 0 then
+          Ini.WriteInteger(Sec, 'cols', AClasses[i].Cols);
+        if AClasses[i].Rows > 0 then
+          Ini.WriteInteger(Sec, 'rows', AClasses[i].Rows);
       end;
-      CommitConfigRewriteLocked(TempName, FileName);
+      Ini.UpdateFile;
     finally
-      if TempName <> '' then
-        DeleteFile(TempName);
+      SL.Free;
+      Ini.Free;
     end;
+    CommitConfigRewriteLocked(TempName, FileName);
+  finally
+    if TempName <> '' then
+      DeleteFile(TempName);
+  end;
 end;
 
 procedure SaveWindowClasses(const FileName: string;
@@ -480,8 +488,11 @@ end;
 procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;
   Args: TStringList; out Secret: string; const CommandOverride: string);
 var
-  Target, Path, Item: string;
+  Target: string;
+  {$IFDEF UNIX}
+  Path, Item: string;
   Start, Sep: integer;
+  {$ENDIF}
   HaveSshPass: boolean;
 begin
   ProgramName := '';
@@ -495,6 +506,7 @@ begin
   if C.Password <> '' then
   begin
     Secret := C.Password;
+    {$IFDEF UNIX}
     Path := GetEnvironmentVariable('PATH');
     Start := 1;
     while Start <= Length(Path) + 1 do
@@ -512,6 +524,7 @@ begin
       end;
       Start := Sep + 1;
     end;
+    {$ENDIF}
   end;
   if HaveSshPass then
   begin
@@ -559,9 +572,16 @@ begin
   Result := Trim(AConnect);
   if Result = '' then
     Exit;
+  {$IFDEF UNIX}
   if Trim(APostConnect) <> '' then
     Result := 'printf ''%s\n'' ' + ShellQuote(Trim(APostConnect)) +
       ' | (' + Result + ')';
+  {$ELSE}
+  // The POSIX form pipes the post-connect command into the connection's
+  // standard input with printf and a subshell, none of which cmd or
+  // PowerShell provide. Windows Phase 1 runs the connection alone.
+  Unused(APostConnect);
+  {$ENDIF}
 end;
 
 function CommandWithInteractiveShell(const Command, AShell: string;
@@ -572,6 +592,12 @@ begin
   Result := Trim(Command);
   if Result = '' then
     Exit;
+  {$IFDEF WINDOWS}
+  // TPty selects cmd /K or PowerShell -NoExit, which run this command and
+  // keep the same ConPTY interactive. POSIX `exec`, `-l` and `-i` syntax is
+  // invalid in those shells.
+  Exit;
+  {$ENDIF}
   if LoginShell then
     ModeArg := ' -l'
   else

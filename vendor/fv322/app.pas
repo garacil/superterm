@@ -52,9 +52,9 @@ UNIT App;
 {====================================================================}
 
 USES
-   {$IFDEF OS_WINDOWS}                                { WIN/NT CODE }
-       Windows,                                       { Standard units }
-   {$ENDIF}
+   { The upstream OS_WINDOWS branch pulled in the Windows unit, but nothing in
+     this vendored copy calls the WinAPI: the platform work lives in the
+     project's own units. Keeping it would be an unused dependency. }
 
    {$IFDEF OS_OS2}                                    { OS2 CODE }
      {$IFDEF PPC_FPC}
