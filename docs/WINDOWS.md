@@ -323,34 +323,78 @@ injected keystrokes — and captures what Windows Terminal renders, so the check
 needs nobody at the keyboard. `TORESOLVE.md` §2.1 is the full account and §4
 the per-file merge map.
 
-## Code signing and the SmartScreen warning
+## Code signing, SmartScreen, and the Wacatac false positive
 
-A downloaded `SuperTerm-<version>-windows-x64-setup.exe` is met by "Windows
-protected your PC" (SmartScreen) and, if it gets past that, a "Publisher:
-Unknown" prompt. Both come from one fact: the file carries no Authenticode
-signature, so Windows has no publisher to name and no reputation to consult.
-Nothing in the code can change that. What removes the warnings is signing
-`superterm.exe`, the setup and its uninstaller with a **code-signing
-certificate issued by a CA in Microsoft's trust program**, with an RFC 3161
-timestamp so the signature outlives the certificate. The publisher Windows
-then shows is the certificate's subject. A self-signed certificate does not
-help outside machines where it has been installed by hand.
+A downloaded, unsigned `SuperTerm-<version>-windows-x64-setup.exe` meets three
+escalating obstacles:
 
-What to obtain, checked against the CA's current terms before buying:
+1. **"Windows protected your PC"** (SmartScreen) and a **"Publisher: Unknown"**
+   prompt, because the file carries no Authenticode signature.
+2. **`Trojan:Win32/Wacatac.B!ml`** — Microsoft Defender's machine-learning
+   heuristic deletes the file outright on download or launch. This is a **false
+   positive**, confirmed here: the flagged component is the unsigned installer
+   and, once a copy carries the download Mark-of-the-Web, the unsigned
+   `superterm.exe` too. What the model reacts to is ordinary but
+   malware-shaped behaviour in an unsigned binary from an unknown publisher —
+   most of all the session server launching a copy of itself with
+   `DETACHED_PROCESS` and no window (the legitimate `--session-daemon`). The
+   `!ml` suffix means "machine-learning guess", not a signature match.
 
-- **Azure Trusted Signing** (Microsoft's cloud signing service): a monthly
-  subscription with identity validation, no hardware token, and signatures
-  that SmartScreen treats as coming from a known publisher. `signtool` uses it
-  through `/dlib` with `Azure.CodeSigning.Dlib.dll` and a metadata JSON.
-- **An OV or EV code-signing certificate** from a CA (DigiCert, Sectigo,
-  GlobalSign, SSL.com, Certum and others). Since 2023 the private key must
-  live on a hardware token or an HSM; the certificate then appears in the
-  user's store and is selected by thumbprint. EV certificates have
-  historically started with SmartScreen reputation; OV ones earn it as the
-  signed files are downloaded. Certum offers a reduced-price certificate for
-  open-source projects.
+Only one thing removes all three at once, for everyone: **an Authenticode
+signature from a code-signing certificate issued by a CA in Microsoft's trust
+program**, with an RFC 3161 timestamp, on `superterm.exe`, the setup and its
+uninstaller. A trusted, reputable signature both names the publisher and lets
+the ML model treat the file as coming from a known source, which clears the
+Wacatac verdict in the overwhelming majority of cases. Nothing in the code can
+substitute for it: the behaviour the model dislikes is the feature. A
+self-signed certificate does not help anyone but the machine that has trusted
+it by hand, and does not reliably clear the ML verdict even there.
 
-What the project already does, so that signing is one switch:
+### What to obtain (the only step this project cannot do for you)
+
+Each route needs identity validation and payment, and cannot be automated here.
+**The project takes the first one**, with 7kas as the publisher;
+`packaging/windows/README.md`, "Azure Trusted Signing", carries the onboarding
+steps and the environment the build machine needs.
+
+- **Azure Trusted Signing** — Microsoft's cloud signing service, about
+  US$10/month, identity validation for an individual or an organization, **no
+  hardware token**. It is a Microsoft-operated CA already in the trust program,
+  so signatures are trusted immediately. Recommended for a single publisher:
+  cheapest, nothing to ship, works from a script. `signtool` uses it through
+  `/dlib Azure.CodeSigning.Dlib.dll /dmdf <metadata.json>`; set
+  `SUPERTERM_SIGN_DLIB` and `SUPERTERM_SIGN_METADATA` for `sign.ps1`.
+  Organisation validation returns the registered legal name and nothing else:
+  that exact string becomes the publisher Windows shows, and `CompanyName` in
+  `src/superterm.rc` and `AppPublisher` in `superterm.iss` have to be changed
+  to match it, or the version resource and the signature will disagree.
+- **OV certificate on a hardware token** — DigiCert, Sectigo, SSL.com,
+  GlobalSign, Certum and others, roughly US$180–400/year; since 2023 the
+  private key must live on a shipped FIPS token or an HSM. The certificate
+  appears in the user's store and is selected by thumbprint
+  (`SUPERTERM_SIGN_THUMBPRINT`). SmartScreen reputation builds as signed files
+  are downloaded. **Certum's "Open Source Code Signing"** is the cheap route
+  (~US$70–100/year) if SuperTerm ships as open source.
+- **EV certificate** — same shape as OV but with instant SmartScreen
+  reputation, roughly US$300–600/year. Overkill for one publisher.
+
+### Until the certificate exists
+
+- **The GitHub release keeps both assets;** the flagged one is the installer.
+  Downloaded copies of either the installer or the zip's `superterm.exe` will
+  be flagged once they carry the Mark-of-the-Web, so there is no unsigned
+  download that is reliably clean for other people.
+- **Report the false positive to Microsoft** at
+  <https://www.microsoft.com/en-us/wdsi/filesubmission> (choose "Software
+  developer", point it at the release asset or upload the file, mark it a false
+  positive). An analyst review typically clears it for all Defender users
+  within a day or two — but per file hash, so every new build needs a fresh
+  submission until the binary is signed.
+- **On your own machine**, allow it in Windows Security → Virus & threat
+  protection → Protection history → Allow, or add a folder exclusion, to
+  install locally now.
+
+### What the project already does, so that signing is one switch
 
 - `src/superterm.rc` gives `superterm.exe` a version resource: publisher,
   product, description, copyright and the version from `VERSION` (the

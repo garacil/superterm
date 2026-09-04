@@ -3,6 +3,11 @@
 // "File description"). An executable without one looks anonymous to every
 // heuristic that judges downloaded programs.
 //
+// CompanyName is the publisher: it must read exactly as the Authenticode
+// certificate's subject, which for Azure Trusted Signing is the registered
+// legal name returned by identity validation. If the two disagree, Explorer
+// shows one name and the signature another.
+//
 // The version comes from the VERSION file: the Makefile writes it into
 // superterm_version.rh and regenerates superterm.res with windres. To do it
 // by hand after writing that header:
@@ -26,11 +31,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName",      "German Luis Aracil Boned"
+      VALUE "CompanyName",      "7kas Servicios Internet, S.L."
       VALUE "FileDescription",  "SuperTerm terminal workspaces"
       VALUE "FileVersion",      ST_VER_STRING
       VALUE "InternalName",     "superterm"
-      VALUE "LegalCopyright",   "Copyright (C) 2026 German Luis Aracil Boned. GNU GPL v3."
+      VALUE "LegalCopyright",   "Copyright (C) 2026 7kas Servicios Internet, S.L. GNU GPL v3."
       VALUE "OriginalFilename", "superterm.exe"
       VALUE "ProductName",      "SuperTerm"
       VALUE "ProductVersion",   ST_VER_STRING

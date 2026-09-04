@@ -14,11 +14,26 @@ param(
   [switch]$Sign,
   [switch]$Upload,
   [switch]$SkipBuild,
-  [string]$Iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+  [string]$Iscc,
   [string]$Repo = 'garacil/superterm'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Inno Setup 7 installs under the 64-bit Program Files, 6 under the 32-bit one,
+# so neither path alone survives an upgrade: take -Iscc, else SUPERTERM_ISCC,
+# else the newest installation found. The script is compatible with both.
+if (-not $Iscc) {
+  if ($env:SUPERTERM_ISCC) {
+    $Iscc = $env:SUPERTERM_ISCC
+  } else {
+    $Iscc = @(7, 6) |
+      ForEach-Object { $v = $_; @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+        ForEach-Object { Join-Path $_ "Inno Setup $v\ISCC.exe" } } |
+      Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  }
+}
+if (-not $Iscc) { throw 'Inno Setup compiler not found; install it or set SUPERTERM_ISCC' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 $dist = Join-Path $root 'dist'

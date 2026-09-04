@@ -8,6 +8,7 @@ Windows assets lives in this directory. The macOS equivalent belongs in
 |---|---|
 | `superterm.iss` | Inno Setup 6 script: per-user x64 installer, publisher and version information, optional Authenticode signing (`/DSIGN`). |
 | `sign.ps1` | Signs and verifies executables with `signtool` and an RFC 3161 timestamp; refuses without a certificate. |
+| `trusted-signing.json` | Azure Trusted Signing account metadata handed to `signtool /dmdf`. Carries no secret; the account and profile names are filled in after onboarding. |
 | `release.ps1` | The whole release in one command: build, version checks, signing, installer, flat zip, checksums, upload. |
 | `superterm-launch.cmd` | What the Start-menu and desktop shortcuts run: opens SuperTerm in a new Windows Terminal window when `wt.exe` exists, else in `cmd.exe`. |
 | `alien-hacker.ico` | Application and installer icon. The executable embeds it through `src/superterm.rc`. |
@@ -85,6 +86,39 @@ $env:SUPERTERM_SIGN_THUMBPRINT = '<thumbprint>'
 powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload
 ```
 
+### Azure Trusted Signing
+
+The route chosen for the project. The certificate is short-lived and lives in
+Microsoft's service, so there is no token to plug in and no `.pfx` to guard;
+what has to be present on the build machine is the dlib, the metadata file and
+an Azure login.
+
+1. In the Azure portal, create a **Trusted Signing account**, then an
+   **Identity Validation** for the publisher. Organisation validation asks for
+   a legal entity with three or more years of verifiable history, and the
+   subject it returns is the exact registered name — that name, not a trading
+   name, is what Windows shows as the publisher and what `CompanyName` in
+   `src/superterm.rc` and `AppPublisher` in `superterm.iss` must match.
+2. Create a **Certificate Profile** of type *Public Trust* against that
+   identity, and give the signing principal the **Trusted Signing Certificate
+   Profile Signer** role on the account. The portal role alone does not sign;
+   this one does.
+3. Fill `trusted-signing.json` with the account's region endpoint, the account
+   name and the profile name.
+4. Get the dlib: extract the `Microsoft.Trusted.Signing.Client` NuGet package
+   and take `bin\x64\Azure.CodeSigning.Dlib.dll`. `signtool` must come from
+   Windows SDK 10.0.22621 or newer for `/dlib` to work.
+
+```powershell
+az login
+$env:SUPERTERM_SIGN_DLIB     = 'C:\tools\trusted-signing\bin\x64\Azure.CodeSigning.Dlib.dll'
+$env:SUPERTERM_SIGN_METADATA = 'packaging\windows\trusted-signing.json'
+powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload
+```
+
+In CI the login becomes `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+`AZURE_CLIENT_SECRET`, which `DefaultAzureCredential` picks up on its own.
+
 Signing by hand, for a single file:
 
 ```powershell
@@ -97,6 +131,17 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\sign.ps1 bin\superter
   fix and the version resource and replaced on the release. **They are not
   signed: no code-signing certificate exists yet**, and the warnings remain
   until one is obtained and the release is re-run with `-Sign -Upload`.
+  Azure Trusted Signing, publisher 7kas, is the route being taken; the
+  onboarding above is what remains.
+- 2026-09-04: Defender started quarantining
+  `dist\SuperTerm-5.2.2-windows-x64-setup.exe` as `Trojan:Win32/Wacatac.B!ml`
+  (threat 2147735505), both on build and on download from the release. Only
+  the installer is hit; `bin\superterm.exe` is left alone, so the detach
+  feature is not what triggers it. It is the ordinary shape of the false
+  positive: an unsigned, solid-LZMA2 Inno Setup installer that nothing in
+  the world has run yet. Retuning compression only changes the hash. The
+  answers are the false-positive submission (below) and, permanently,
+  signing.
 
 ## Things that bite
 

@@ -13,7 +13,15 @@
 #   SUPERTERM_SIGN_DLIB         Azure Trusted Signing: path of
 #                               Azure.CodeSigning.Dlib.dll, with
 #   SUPERTERM_SIGN_METADATA     the JSON metadata file for the account
+#                               (packaging\windows\trusted-signing.json)
 #   SUPERTERM_SIGN_TIMESTAMP    timestamp server (default DigiCert's)
+#
+# Trusted Signing authenticates through DefaultAzureCredential, which this
+# script does not touch: the dlib reads it from the environment. Either run
+# `az login` as a principal with the Trusted Signing Certificate Profile
+# Signer role, or set AZURE_TENANT_ID, AZURE_CLIENT_ID and
+# AZURE_CLIENT_SECRET. Without credentials signtool fails inside the dlib,
+# not here, and the message names the account rather than the login.
 #
 # Exit codes: 0 signed and verified, 2 no certificate configured, 3 signtool
 # not found, 1 signing or verification failed. Without a certificate this
@@ -51,7 +59,7 @@ if (-not $signtool) {
 
 $ts = if ($env:SUPERTERM_SIGN_TIMESTAMP) { $env:SUPERTERM_SIGN_TIMESTAMP } else { 'http://timestamp.digicert.com' }
 $common = @('sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', $ts,
-            '/d', 'SuperTerm', '/du', 'https://github.com/garacil/superterm')
+            '/d', 'SuperTerm', '/du', 'https://superterm.org')
 
 if ($env:SUPERTERM_SIGN_THUMBPRINT) {
   $cred = @('/sha1', $env:SUPERTERM_SIGN_THUMBPRINT)
