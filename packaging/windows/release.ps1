@@ -8,12 +8,19 @@
 # -Sign needs a certificate configured for sign.ps1 (see docs/WINDOWS.md);
 # without it the build stops rather than shipping unsigned. -Upload takes the
 # GitHub token from Git Credential Manager (git credential fill) and expects
-# the release tag v<version> to exist already; assets with the same names are
-# replaced.
+# the release tag v<version> to exist already.
+#
+# A published asset URL is immutable: the upload refuses to overwrite a name
+# the release already carries, because a download URL whose bytes change is
+# exactly what Microsoft Store policy 10.2.9 forbids, and the Store is not the
+# only consumer that assumes a checksum stays true. Ship a new binary under a
+# new VERSION, which gives it a new tag and a new URL. -Replace overrides this
+# for a release nobody has consumed yet, and says plainly what it is breaking.
 param(
   [switch]$Sign,
   [switch]$Upload,
   [switch]$SkipBuild,
+  [switch]$Replace,
   [string]$Iscc,
   [string]$Repo = 'garacil/superterm'
 )
@@ -122,17 +129,30 @@ if ($Upload) {
   if (-not $token) { throw 'no GitHub credential from git credential fill' }
   $hdr = @{ Authorization = "Bearer $token"; 'User-Agent' = 'superterm-release' }
   $rel = Invoke-RestMethod -Headers $hdr -Uri "https://api.github.com/repos/$Repo/releases/tags/v$version"
+  # Refuse the whole upload before changing anything: a run that replaced two
+  # assets and then stopped would leave the release in a state nobody chose.
+  $clash = @($assets | ForEach-Object { Split-Path $_ -Leaf } |
+    Where-Object { $n = $_; $rel.assets | Where-Object { $_.name -eq $n } })
+  if ($clash -and -not $Replace) {
+    throw ("v$version already publishes " + ($clash -join ', ') +
+      ". Those URLs are handed out and must keep their bytes; bump VERSION and " +
+      'release again, or pass -Replace if this release has not been consumed.')
+  }
   foreach ($f in $assets) {
     $n = Split-Path $f -Leaf
     $old = $rel.assets | Where-Object { $_.name -eq $n }
     foreach ($o in $old) {
       Invoke-RestMethod -Headers $hdr -Method Delete -Uri "https://api.github.com/repos/$Repo/releases/assets/$($o.id)" | Out-Null
-      Write-Output "  replaced $n"
+      Write-Warning "replaced ${n}: anyone who already downloaded this URL has different bytes"
     }
     $ct = if ($n -like '*.sha256') { 'text/plain' } elseif ($n -like '*.zip') { 'application/zip' } else { 'application/octet-stream' }
     $r = Invoke-RestMethod -Headers $hdr -Method Post -ContentType $ct -InFile $f -Uri "https://uploads.github.com/repos/$Repo/releases/$($rel.id)/assets?name=$n"
     Write-Output "  uploaded $n ($($r.size) bytes)"
   }
+  # What Partner Center wants in the submission's download URL field.
+  Write-Output ''
+  Write-Output '  Microsoft Store download URL for this version:'
+  Write-Output "    https://github.com/$Repo/releases/download/v$version/$setupName"
 }
 
 Step 'done'

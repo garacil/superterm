@@ -426,6 +426,44 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Up
 Until a certificate exists, `release.ps1` without `-Sign` produces the same
 unsigned assets as before, and the warnings remain.
 
+## Publishing on the Microsoft Store
+
+The Store takes two kinds of submission, and the one that fits SuperTerm is not
+the one Microsoft recommends.
+
+**MSIX** is the recommended format and it is tempting: Microsoft signs the
+package itself, hosts it on its CDN, handles updates, and `AppExecutionAlias`
+would put `superterm` on the path of every terminal. But MSIX runs the
+application inside a container with filesystem and registry virtualisation, and
+SuperTerm's defining feature is a detached session server that outlives the
+client (see "Detached sessions" below). Full-trust packaging may well carry it,
+but the risk lands on the one thing the product exists for, and it is only
+discovered after the packaging work is done.
+
+**An unpackaged EXE submission** (policy 10.2.9, allowed since June 2021) keeps
+the Inno Setup installer exactly as it is: the Store hosts the listing and links
+to a URL served from the GitHub release. What it requires of us:
+
+| Requirement | Where it is met |
+|---|---|
+| `.exe` or `.msi` installer | `superterm.iss` |
+| Installer **and every PE file inside it** signed by a CA in the Microsoft Trusted Root Program | `-Sign`, once Trusted Signing is live — this covers `superterm.exe`, not just the setup |
+| Silent install, no UI (a UAC prompt is allowed) | `/VERYSILENT`; the `[Code]` prompts stand down under `WizardSilent` and `UninstallSilent`, and `[Run]` is `skipifsilent`. `PrivilegesRequired=lowest` means no UAC at all |
+| A versioned download URL whose binary never changes | `release.ps1` refuses to overwrite a published asset; see `packaging/windows/README.md` |
+| Standalone installer, nothing downloaded at run time | `superterm.iss` carries every file |
+
+Three things the Store needs that live outside this repository: a **company**
+developer account in Partner Center (policy 10.14 requires one when the
+publisher name is a business entity, which `7kas Servicios Internet, S.L.` is —
+the customer-facing publisher display name can still be plain `7kas`), a
+**privacy policy URL**, which policy 10.5.1 demands of every Win32 product
+whether or not it collects anything, and the IARC age-rating questionnaire
+answered at submission.
+
+Nothing in the Store policies restricts the licence: the GPLv3 prohibition that
+search results still surface was a Windows 8-era rule and is absent from the
+current policies.
+
 ## Native Phase-1 limitations
 
 - Detached sessions now work (see the section below). Multi-client sharing

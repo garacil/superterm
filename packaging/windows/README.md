@@ -38,16 +38,35 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [
    `LICENSE`, `WINDOWS.md` and every `backgrounds\*.art`.
 5. **Checksums.** A `.sha256` next to each, one line:
    `<lowercase sha256>  <filename>`.
-6. **Upload** (`-Upload`). Replaces the four Windows assets on the GitHub
-   release `v<version>`, which must already exist (the GNU/Linux and macOS
-   assets are published from their own branches). There is no `gh` CLI on
-   the build machine; the script talks to the REST API with the token Git
-   Credential Manager already holds (`git credential fill`).
+6. **Upload** (`-Upload`). Puts the four Windows assets on the GitHub release
+   `v<version>`, which must already exist (the GNU/Linux and macOS assets are
+   published from their own branches). There is no `gh` CLI on the build
+   machine; the script talks to the REST API with the token Git Credential
+   Manager already holds (`git credential fill`). It ends by printing the
+   download URL to paste into a Microsoft Store submission.
 
 Asset names are part of the download links and must not change:
 
 - `SuperTerm-<version>-windows-x64-setup.exe` and `.sha256`
 - `superterm-<version>-windows-x86_64.zip` and `.sha256`
+
+### A published URL keeps its bytes
+
+Because the names are fixed per version, the download URL is fixed per version
+too, and **the upload refuses to overwrite an asset the release already
+carries**. It checks every name first and aborts before deleting anything, so a
+refused run leaves the release exactly as it was.
+
+This is not tidiness. A download URL whose contents change breaks the `.sha256`
+published beside it, breaks anyone who pinned the link, and is specifically
+forbidden by Microsoft Store policy 10.2.9, which requires that the binary
+behind a submitted URL never change. A new binary means a new `VERSION`, a new
+tag and a new URL — and, for the Store, a new submission pointing at it.
+
+`-Replace` overrides the refusal and deletes the old assets first. It is for a
+release nobody has downloaded yet; every replacement prints a warning naming
+what it broke. If the version has been announced, or its URL sits in a Store
+submission, bump `VERSION` instead.
 
 ## Where the version lives
 
