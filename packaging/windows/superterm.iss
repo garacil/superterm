@@ -93,11 +93,16 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, Rc) and (Rc = 0);
 end;
 
+// Deliberately without /T. Updating from inside a SuperTerm session is the
+// natural thing to do with a terminal program, and there Setup is a descendant
+// of superterm.exe: /T would kill the tree it belongs to and take Setup down
+// mid-install. Killing the images alone leaves Setup standing, and the shells
+// held by a session go with their ConPTY when the server dies.
 procedure CloseSuperTerm;
 var
   Rc: Integer;
 begin
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM superterm.exe',
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM superterm.exe',
     '', SW_HIDE, ewWaitUntilTerminated, Rc);
   Sleep(700);
 end;
