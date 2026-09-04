@@ -146,21 +146,59 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\sign.ps1 bin\superter
 
 ## Status
 
-- 2026-09-04: the v5.2.2 Windows assets were rebuilt with the console-resize
-  fix and the version resource and replaced on the release. **They are not
-  signed: no code-signing certificate exists yet**, and the warnings remain
-  until one is obtained and the release is re-run with `-Sign -Upload`.
-  Azure Trusted Signing, publisher 7kas, is the route being taken; the
-  onboarding above is what remains.
-- 2026-09-04: Defender started quarantining
+### Where to pick this up
+
+Everything the build needs in order to sign is in place. **What is missing is
+the certificate itself, and obtaining it is manual**: creating the Azure
+Trusted Signing account, passing identity validation and paying for it cannot
+be scripted. "Azure Trusted Signing" above is the checklist.
+
+When the account exists, the whole of it is:
+
+```powershell
+az login
+$env:SUPERTERM_SIGN_DLIB     = '<path>\Azure.CodeSigning.Dlib.dll'
+$env:SUPERTERM_SIGN_METADATA = 'packaging\windows\trusted-signing.json'
+powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload -Replace
+```
+
+Two things to check before that first signed run, both of which fail loudly
+rather than quietly:
+
+- `trusted-signing.json` still holds `REPLACE-account-name` and
+  `REPLACE-profile-name`. They come from the portal.
+- Identity validation returns the registered legal name, and the certificate
+  subject carries it verbatim. It should read `7kas Servicios Internet, S.L.`,
+  which is what `CompanyName` and `LegalCopyright` in `src/superterm.rc` and
+  `AppPublisher`, `VersionInfoCompany` and `VersionInfoCopyright` in
+  `superterm.iss` already say. If Azure spells it differently — capitals, `SL`
+  without stops — those five values follow Azure, not the other way round.
+
+`-Replace` is needed there because v5.2.2 is already published; signing does
+not change the version, only the bytes. Once a download URL has gone into a
+Microsoft Store submission that stops being acceptable and the signed build
+must go out as a new version instead.
+
+### How it got here
+
+- 2026-09-04: Defender began quarantining
   `dist\SuperTerm-5.2.2-windows-x64-setup.exe` as `Trojan:Win32/Wacatac.B!ml`
-  (threat 2147735505), both on build and on download from the release. Only
-  the installer is hit; `bin\superterm.exe` is left alone, so the detach
-  feature is not what triggers it. It is the ordinary shape of the false
-  positive: an unsigned, solid-LZMA2 Inno Setup installer that nothing in
-  the world has run yet. Retuning compression only changes the hash. The
-  answers are the false-positive submission (below) and, permanently,
-  signing.
+  (threat 2147735505), on build and on download from the release alike. Only
+  the installer was hit; `bin\superterm.exe` was left alone, so the detach
+  feature is not what triggered it. It is the ordinary shape of the false
+  positive: an unsigned, solid-LZMA2 Inno Setup installer that nothing in the
+  world had run yet.
+- 2026-09-04: moving to Inno Setup 7 produced a different setup stub and the
+  detection stopped. **That is non-detection, not a fix.** The file is still
+  unsigned, so a definition update can flag it again at any time, and
+  SmartScreen still reports an unknown publisher. The real answers are the
+  false-positive submission and, permanently, signing.
+- 2026-09-04: the publisher became `7kas Servicios Internet, S.L.` across the
+  version resource and the installer, the URLs moved to 7ks.ai and
+  superterm.org, and Azure Trusted Signing was chosen as the route.
+- 2026-09-04: the v5.2.2 Windows assets were replaced with a build that closes
+  a running SuperTerm before replacing the executable. **They are still
+  unsigned**, and the warnings remain until the certificate exists.
 
 ## Things that bite
 
