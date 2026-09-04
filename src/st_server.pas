@@ -950,6 +950,10 @@ type
     FGeom: array[0..MAX_PANES - 1] of TPaneGeom;
     FGeomValid: boolean;
     FDeskW, FDeskH: Longint;
+    // Last physical terminal size a client reported (cols x rows including UI
+    // bars). Persisted in the sidecar so a re-attaching launcher can reopen
+    // the window at the size the session was last used at.
+    FLastTermCols, FLastTermRows: Longint;
     FRevision: QWord;
     // Owner of a structural transaction (tree changes, pane creation and
     // removal).  This must be independent of the per-pane owner array: when
@@ -5738,6 +5742,11 @@ begin
     end;
     FClients[Slot].HostW := HostW;
     FClients[Slot].HostH := HostH;
+    if (HostW > 0) and (HostH > 0) then
+    begin
+      FLastTermCols := HostW;
+      FLastTermRows := HostH;
+    end;
     Move(AFirstData[3 * SizeOf(Longint)], FClients[Slot].Caps,
       SizeOf(Longint));
     // tail 2: the client's own session chain (absent from older clients)
@@ -7450,6 +7459,8 @@ begin
           // dedicated event reaches lease owners as well as ordinary viewers.
           FClients[AIdx].HostW := Cols;
           FClients[AIdx].HostH := Rows;
+          FLastTermCols := Cols;
+          FLastTermRows := Rows;
           if DebugFull then
             DebugLog(Format('client-size: owner=%d host=%dx%d',
               [AIdx, Cols, Rows]));
@@ -8245,6 +8256,12 @@ begin
       // the identity the panes carry in SUPERTERM_SESSION_CHAIN
       Ini.WriteString('session', 'id', PaneSessionId);
       Ini.WriteString('session', 'client_chains', ClientChainsUnion);
+      // Window size hint for a re-attaching launcher (see the tray).
+      if (FLastTermCols > 0) and (FLastTermRows > 0) then
+      begin
+        Ini.WriteInteger('terminal', 'cols', FLastTermCols);
+        Ini.WriteInteger('terminal', 'rows', FLastTermRows);
+      end;
       Ini.UpdateFile;
     finally
       FreeAndNil(Ini);

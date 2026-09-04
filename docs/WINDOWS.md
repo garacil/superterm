@@ -579,6 +579,11 @@ are still alive, or bringing one back.
 - **Close** runs `superterm kill NAME` with no window, ending that session and
   the programs inside it.
 
+On reopening, the tray restores the window to the size the session was last
+used at (recorded by the daemon in the session file) and centres it on the
+monitor; a session closed maximised reopens maximised. `superterm-tray --attach
+NAME` performs the same sized, centred reopen from the command line.
+
 It reads sessions straight from `%LOCALAPPDATA%\superterm\sessions\*.sock` —
 the same names `superterm list` shows — and runs a single instance, guarded by
 a named mutex (`Local\SuperTermTraySingleton`); a second launch exits at once.

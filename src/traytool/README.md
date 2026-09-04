@@ -23,6 +23,12 @@ that `superterm.exe` sits next to the tray binary in the install folder.
 - **Close** runs `superterm kill NAME` with no window, ending that session and
   the programs inside it.
 
+When it reopens a session, the tray restores the window to the size it was
+last used at (the daemon records that size in the session file) and centres it
+on the monitor. A session closed while maximised reopens maximised; one closed
+minimised reopens at its normal size, centred. `superterm-tray --attach NAME`
+does the same from the command line without the tray icon.
+
 Sessions are read straight from `%LOCALAPPDATA%\superterm\sessions\*.sock` —
 the same names `superterm list` shows. Only one tray instance runs at a time
 (a named mutex); a second launch exits immediately.

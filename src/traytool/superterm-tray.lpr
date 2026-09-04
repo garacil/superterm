@@ -36,7 +36,7 @@ program supertermtray;
 {$apptype gui}
 
 uses
-  Windows, ShellApi, SysUtils;
+  Windows, ShellApi, SysUtils, Classes;
 
 const
   WM_TRAYICON = WM_APP + 1;
@@ -116,23 +116,215 @@ begin
   Result := GExeDir + 'superterm.exe';
 end;
 
+// ---- restoring the terminal window's last size, centred ------------------
+
+const
+  MONITOR_DEFAULTTONEAREST_ = $00000002;
+  SWP_NOSIZE_ = $0001;
+  SWP_NOZORDER_ = $0004;
+  SWP_NOACTIVATE_ = $0010;
+
+type
+  TMonInfo = record
+    cbSize: DWORD;
+    rcMonitor: TRect;
+    rcWork: TRect;
+    dwFlags: DWORD;
+  end;
+
+function MonitorFromWindow(hWnd: HWND; dwFlags: DWORD): THandle; stdcall;
+  external 'user32' name 'MonitorFromWindow';
+function GetMonitorInfoW(hMonitor: THandle; var lpmi: TMonInfo): LongBool;
+  stdcall; external 'user32' name 'GetMonitorInfoW';
+
+var
+  GFindTitle: UnicodeString;
+  GFindResult: HWND;
+
+{$push}{$hints off}
+// AParam is unused; EnumWindows fixes the signature. GFindTitle/GFindResult
+// carry the query and answer.
+function FindWindowEnum(AWnd: HWND; AParam: LPARAM): LongBool; stdcall;
+var
+  Buf: array[0..511] of WideChar;
+  I: integer;
+begin
+  Result := True;
+  if not IsWindowVisible(AWnd) then
+    Exit;
+  for I := 0 to High(Buf) do
+    Buf[I] := #0;
+  GetWindowTextW(AWnd, @Buf[0], Length(Buf));
+  if Pos(GFindTitle, UnicodeString(PWideChar(@Buf[0]))) > 0 then
+  begin
+    GFindResult := AWnd;
+    Result := False;   // stop enumeration
+  end;
+end;
+{$pop}
+
+function FindSessionWindow(const ATitle: UnicodeString): HWND;
+begin
+  GFindTitle := ATitle;
+  GFindResult := 0;
+  EnumWindows(@FindWindowEnum, 0);
+  Result := GFindResult;
+end;
+
+// Read the whole (small) sidecar as bytes through a Unicode path, so no
+// AnsiString/UnicodeString conversion of the path is needed.
+function ReadFileBytes(const APath: UnicodeString): AnsiString;
+var
+  H: THandle;
+  Sz, Got: DWORD;
+begin
+  Result := '';
+  H := CreateFileW(PWideChar(APath), GENERIC_READ,
+    FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL, 0);
+  if H = INVALID_HANDLE_VALUE then
+    Exit;
+  try
+    Sz := GetFileSize(H, nil);
+    if (Sz = 0) or (Sz = DWORD($FFFFFFFF)) or (Sz > 1 shl 20) then
+      Exit;
+    SetLength(Result, Sz);
+    Got := 0;
+    if ReadFile(H, Result[1], Sz, Got, nil) then
+      SetLength(Result, Got)
+    else
+      Result := '';
+  finally
+    CloseHandle(H);
+  end;
+end;
+
+// Read the size hint the daemon wrote to <name>.ini ([terminal] cols/rows).
+function ReadTermSize(const AName: UnicodeString; out ACols, ARows: integer): boolean;
+var
+  Data, Line, Trimmed, Section, Key, Val: AnsiString;
+  P, LineEnd, Eq: integer;
+begin
+  Result := False;
+  ACols := 0;
+  ARows := 0;
+  Data := ReadFileBytes(SessionsDir + '\' + AName + '.ini');
+  if Data = '' then
+    Exit;
+  Section := '';
+  P := 1;
+  while P <= Length(Data) do
+  begin
+    LineEnd := P;
+    while (LineEnd <= Length(Data)) and (Data[LineEnd] <> #10) do
+      Inc(LineEnd);
+    Line := Copy(Data, P, LineEnd - P);
+    P := LineEnd + 1;
+    Trimmed := Trim(Line);   // Trim also drops the trailing #13
+    if Trimmed = '' then
+      Continue;
+    if Trimmed[1] = '[' then
+    begin
+      Section := LowerCase(Copy(Trimmed, 2, Length(Trimmed) - 2));
+      Continue;
+    end;
+    if Section <> 'terminal' then
+      Continue;
+    Eq := Pos('=', Trimmed);
+    if Eq < 2 then
+      Continue;
+    Key := LowerCase(Trim(Copy(Trimmed, 1, Eq - 1)));
+    Val := Trim(Copy(Trimmed, Eq + 1, Length(Trimmed)));
+    if Key = 'cols' then
+      ACols := StrToIntDef(Val, 0)
+    else if Key = 'rows' then
+      ARows := StrToIntDef(Val, 0);
+  end;
+  Result := (ACols >= 1) and (ARows >= 3);
+end;
+
+// Give the freshly opened window a comfortable home: centre it on its monitor,
+// or, if it fills almost the whole work area (it was closed maximised), leave
+// it maximised. Minimising never shrinks the reported size, so a session
+// closed minimised reopens at its normal size, centred.
+procedure PlaceWindowNicely(const ATitle: UnicodeString);
+var
+  H: HWND;
+  I, WinW, WinH, WorkW, WorkH, X, Y: integer;
+  R: TRect;
+  Mon: THandle;
+  Mi: TMonInfo;
+begin
+  H := 0;
+  for I := 1 to 12 do
+  begin
+    H := FindSessionWindow(ATitle);
+    if H <> 0 then
+      Break;
+    Sleep(150);
+  end;
+  if H = 0 then
+    Exit;
+  // let wt finish sizing to --size before measuring
+  Sleep(250);
+  R := Default(TRect);
+  if not GetWindowRect(H, R) then
+    Exit;
+  WinW := R.Right - R.Left;
+  WinH := R.Bottom - R.Top;
+  Mon := MonitorFromWindow(H, MONITOR_DEFAULTTONEAREST_);
+  Mi := Default(TMonInfo);
+  Mi.cbSize := SizeOf(Mi);
+  if not GetMonitorInfoW(Mon, Mi) then
+    Exit;
+  WorkW := Mi.rcWork.Right - Mi.rcWork.Left;
+  WorkH := Mi.rcWork.Bottom - Mi.rcWork.Top;
+  if (WorkW <= 0) or (WorkH <= 0) then
+    Exit;
+  // Closed maximised: the size hint is near the whole work area. Reopen maximised.
+  if (WinW >= (WorkW * 9) div 10) and (WinH >= (WorkH * 9) div 10) then
+  begin
+    ShowWindow(H, SW_MAXIMIZE);
+    Exit;
+  end;
+  X := Mi.rcWork.Left + (WorkW - WinW) div 2;
+  Y := Mi.rcWork.Top + (WorkH - WinH) div 2;
+  if X < Mi.rcWork.Left then X := Mi.rcWork.Left;
+  if Y < Mi.rcWork.Top then Y := Mi.rcWork.Top;
+  SetWindowPos(H, 0, X, Y, 0, 0,
+    SWP_NOSIZE_ or SWP_NOZORDER_ or SWP_NOACTIVATE_);
+end;
+
 // Open a session in a new terminal window. Windows Terminal when present,
 // otherwise superterm in its own console; both run "superterm attach NAME".
 procedure AttachSession(const AName: UnicodeString);
 var
-  WtArgs: UnicodeString;
+  WtArgs, Title, SizeOpt: UnicodeString;
   Rc: HINST;
+  Cols, Rows: integer;
 begin
-  WtArgs := '-w -1 new-tab --title "superterm: ' + AName +
+  Title := 'superterm: ' + AName;
+  // Restore the last window size the daemon recorded; a fresh window (not
+  // -w -1) is required or wt ignores --size. The window is then centred by
+  // PlaceWindowNicely below.
+  SizeOpt := '';
+  if ReadTermSize(AName, Cols, Rows) then
+    SizeOpt := '--size ' + UnicodeString(IntToStr(Cols)) + ',' +
+      UnicodeString(IntToStr(Rows)) + ' ';
+  WtArgs := SizeOpt + 'new-tab --title "' + Title +
     '" --suppressApplicationTitle -- "' + SuperTermExe + '" attach "' +
     AName + '"';
   Rc := ShellExecuteW(0, 'open', 'wt.exe', PWideChar(WtArgs),
     PWideChar(GExeDir), SW_SHOWNORMAL);
   if Rc <= 32 then
+  begin
     // no Windows Terminal: a GUI-launched console app gets its own console
     ShellExecuteW(0, 'open', PWideChar(SuperTermExe),
       PWideChar(UnicodeString('attach "') + AName + '"'),
       PWideChar(GExeDir), SW_SHOWNORMAL);
+    Exit;
+  end;
+  PlaceWindowNicely(Title);
 end;
 
 // Close a session with no flashing console: superterm kill NAME, hidden.
@@ -300,6 +492,20 @@ var
   I: integer;
 
 begin
+  GInstance := GetModuleHandleW(nil);
+  for I := 0 to High(ExePath) do ExePath[I] := #0;
+  GetModuleFileNameW(0, @ExePath[0], MAX_PATH);
+  GExeDir := IncludeTrailingPathDelimiter(ExtractFilePath(UnicodeString(ExePath)));
+
+  // "superterm-tray --attach NAME" reopens one session in a sized, centred
+  // window and exits, without touching the tray icon. A shortcut or another
+  // launcher can use it; it is also how the behaviour is exercised in tests.
+  if (ParamCount >= 2) and (ParamStr(1) = '--attach') then
+  begin
+    AttachSession(UnicodeString(ParamStr(2)));
+    Halt(0);
+  end;
+
   // One tray icon is enough; a second launch just exits.
   GMutex := CreateMutexW(nil, True, TRAY_MUTEX);
   if (GMutex <> 0) and (GetLastError = ERROR_ALREADY_EXISTS) then
@@ -308,10 +514,6 @@ begin
     Halt(0);
   end;
 
-  GInstance := GetModuleHandleW(nil);
-  for I := 0 to High(ExePath) do ExePath[I] := #0;
-  GetModuleFileNameW(0, @ExePath[0], MAX_PATH);
-  GExeDir := IncludeTrailingPathDelimiter(ExtractFilePath(UnicodeString(ExePath)));
   GIcon := LoadTrayIcon;
   GSessionCount := 0;
 
