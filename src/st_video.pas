@@ -852,6 +852,8 @@ begin
     178: Result := '▓';
     179: Result := '│';
     180: Result := '┤';
+    181: Result := '╡';
+    182: Result := '╢';
     185: Result := '╣';
     186: Result := '║';
     187: Result := '╗';
