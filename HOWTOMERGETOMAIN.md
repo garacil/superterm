@@ -72,12 +72,45 @@ the next up-merge checks them first instead of trusting the plan.
    used; reworded. Neither changes a compiled byte on Windows.
 
 The §4 procedure and §5 checklist still apply; the GNU/Linux gate was run on
-the result (release and debug builds, `make test`). `restore_test.py` fails
-on this build host with the same three checks on `main` itself, so it is an
-environment failure, not a merge one; `ssh_entry_test.py` fails whenever
+the result (release and debug builds, `make test`). `restore_test.py` failed
+its last three checks here and on `main` alike, and this document first
+recorded that as an environment failure. That diagnosis was wrong, and the
+label is why it went unfixed: it was a defect in the test. Runs C and D
+hand-write a `session.ini` whose pane `cwd` named the old fixed HOME,
+`/tmp/opencode/st-restore`, literally. When `e581f9d` moved HOME to
+`fresh_home()` it dropped the `os.makedirs` and left the six literals
+behind, so they named a directory nothing creates. The product then behaved
+correctly and fail-closed -- `st_pty` refuses to `chdir` into a missing
+directory rather than silently starting the pane somewhere else -- so no
+pane spawned, and C and D had nothing to assert against. It reproduced on
+any clean machine and passed only where an older run of the test had left
+that directory behind. The fixture now uses a directory inside the suite's
+own HOME; `ssh_entry_test.py` fails whenever
 the suite is started under `nohup`, on `main` exactly as here: nohup sets
 SIGHUP to ignored and every child inherits that, so the forced-command client
 the test HUPs never exits. Start `make test` from a plain shell.
+
+`fresh_install_defaults_test.py` failed four checks for the same class of
+reason as `restore_test.py`: a defect in the test, not the host. It read
+`client.screen.display` as soon as the daemon reported its final state, while
+the client was still inside its first DECSET 2026 transaction -- the raw
+stream held one `?2026h` and no `?2026l`, so the window frames and the
+minimized icon had not been written yet. The fixture now waits for a balanced,
+non-zero begin/end pair before each snapshot. No assertion was relaxed; the
+existing "only one final synchronized surface" check still requires exactly
+one pair, and it passes.
+
+`layout_transition_test.py` fails six checks under `fullscreen out`, and this
+one is NOT a test defect. Leaving full screen produces zero contraction rings
+where the test expects eight show/hide pairs; entering full screen and leaving
+an ordinary maximize both animate correctly, so the expectation is coherent
+and the gap is in the product. `TSuperApp.FinishRemoteZoomAnimation` is
+deferred to the post-ACK `Idle` pass and gated on `not PassthroughActive`,
+which is precisely the flag being torn down on the path out of full screen.
+It reproduces identically on `main` at `95b769e`, before the macOS merge, so
+it is pre-existing and unrelated to that work. It is cosmetic -- geometry,
+focus and PTY size all round-trip correctly -- and is recorded here rather
+than worked around in the test.
 
 ## 2. Is it possible? — verdict
 
