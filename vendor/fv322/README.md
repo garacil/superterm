@@ -25,3 +25,12 @@ exit assumes that every owner starts inside its parent; SuperTerm's fixed
 logical desktop uses a negative local origin for a client-side viewport.  The
 complete traversal is the inverse of `MakeGlobal` and keeps mouse coordinates
 correct while that viewport is scrolled.
+
+`dialogs.pas` carries a second small `{$IFDEF DARWIN}` change: `TButton.Draw`'s
+shadow half-blocks (#220/#223, drawn "as fp IDE") paint their ink in the palette's
+shadow colour, which resolves to pure black over the dialog's light grey. On a DOS
+VGA cell that read as a soft shade; a modern terminal font renders it as a solid
+black bar. The darwin branch keeps the glyphs and lifts only the ink to dark grey
+(`(Bc and $F0) or $08`), matching the dark-grey window shadows (`ShadowAttr $08`).
+GNU/Linux and Windows builds are byte-identical to before (the branch is compiled
+out).

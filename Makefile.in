@@ -55,6 +55,18 @@ BASE_FLAGS := -Mobjfpc -Sh -Sewnh -vewnh -vm11030,11031 \
   -FU$(UNITDIR) \
   -FE$(PROJECT_DIR)/bin
 
+# macOS-only build noise (Linux is already clean, so keep these guarded):
+#  -vm6058: the aarch64-darwin RTL does not inline FillChar/Move inside vendored
+#           FreeVision, so it emits ~69 "inline is not inlined" notes that Linux
+#           never produces. Mute the note; the code is unaffected.
+#  -k-w:    FPC 3.2.4 invokes Xcode's ld64 with a duplicate -lc; pass -w to the
+#           linker to silence that warning. (GNU ld lacks -w.) The
+#           "-macosx_version_min renamed" note ld still prints is an FPC 3.2.4
+#           artifact, not suppressible without upgrading FPC.
+ifeq ($(shell uname -s),Darwin)
+BASE_FLAGS += -vm6058 -k-w
+endif
+
 ifeq ($(MODE),debug)
 # Keep -Crtoi explicit: /etc/fpc.cfg enables it through its "#IFDEF DEBUG"
 # branch, but runtime checks must not depend on global compiler configuration.

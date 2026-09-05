@@ -1930,10 +1930,24 @@ BEGIN
     end;
     If not DownFlag then
       Bc:=GetColor(8);
+{$IFDEF DARWIN}
+    { The button shadow is CP437 #220/#223 in the palette's shadow colour, whose
+      ink resolves to pure black over the dialog's light grey. On a DOS VGA cell
+      that read as a soft shade; a modern terminal font renders it as a solid
+      black bar. Keep the glyphs, soften only the ink to dark grey so the half
+      blocks read as a shadow again. Window shadows already use dark grey
+      (ShadowAttr $08), so this matches them. Compile-time and darwin-only:
+      GNU and Windows builds keep the byte-identical classic look. }
+    If not DownFlag then
+      Bc:=(Bc and $F0) or $08;
+{$ENDIF}
     MoveChar(Db[Size.X-1],' ',Bc,1);
     WriteLine(0, 0, Size.X,1, Db);                  { Write the title }
     If Size.Y>1 then Begin
       Bc:=GetColor(8);
+{$IFDEF DARWIN}
+      Bc:=(Bc and $F0) or $08;                       { Same softening below }
+{$ENDIF}
       if not DownFlag then
         begin
           c := #220;                                   { Shadow, as fp IDE }
