@@ -604,6 +604,17 @@ uses
   st_keys, st_kbd
   {$IFDEF UNIX}, st_ssh_entry{$ENDIF};
 
+const
+{$IFDEF DARWIN}
+  { On macOS the Alt key is Option; shortcut labels show its symbol. #235 is a
+    CP437 code nothing else emits, mapped to the Option glyph by Utf8VgaChar on
+    darwin only. Input handling is untouched: Option already produces Alt. }
+  KEY_ALT = #235;
+{$ELSE}
+  KEY_ALT = 'Alt-';
+{$ENDIF}
+
+
 {$IFDEF WINDOWS}
 type
   TStConsoleCoord = packed record
@@ -7296,13 +7307,13 @@ begin
   // standard dialog: dialog palette with proper contrast (the old
   // THelpDialog painted with GetColor(1), the passive frame color)
   Lines[0] := UiText(
-    'F2/F3 split panes; F6/F7 next/prev pane; Alt-1..9 go to pane N',
-    'F2/F3 dividen paneles; F6/F7 panel sig./ant.; Alt-1..9 ir al panel N');
+    'F2/F3 split panes; F6/F7 next/prev pane; ' + KEY_ALT + '1..9 go to pane N',
+    'F2/F3 dividen paneles; F6/F7 panel sig./ant.; ' + KEY_ALT + '1..9 ir al panel N');
   Lines[1] := UiText(
     PrefixKeyLabel(Cfg.PrefixKey) +
-    ' f fullscreen; Alt-F9 min; Ctrl-F5 move/resize; Alt-F3 close',
+    ' f fullscreen; ' + KEY_ALT + 'F9 min; Ctrl-F5 move/resize; ' + KEY_ALT + 'F3 close',
     PrefixKeyLabel(Cfg.PrefixKey) +
-    ' f pantalla; Alt-F9 min.; Ctrl-F5 mover/tamano; Alt-F3 cierra');
+    ' f pantalla; ' + KEY_ALT + 'F9 min.; Ctrl-F5 mover/tamano; ' + KEY_ALT + 'F3 cierra');
   Lines[2] := UiText(
     'F8/F9 next/prev window; ' + PrefixKeyLabel(Cfg.PrefixKey) +
     ' 1..9 go to window N',
@@ -7336,8 +7347,8 @@ begin
     'Profiles menu saves and restores named workspaces',
     'El menu Perfiles guarda y restaura areas de trabajo con nombre');
   Lines[7] := UiText(
-    'Alt-X exits; the last viewer closes the live session',
-    'Alt-X sale; el ultimo cliente cierra la sesion viva');
+    KEY_ALT + 'X exits; the last viewer closes the live session',
+    KEY_ALT + 'X sale; el ultimo cliente cierra la sesion viva');
   R.Assign(0, 0, 74, 14);
   D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
   D^.Options := D^.Options or ofCentered;
@@ -11509,7 +11520,7 @@ begin
   // something you ask for. It is on the Sessions menu too; this is where the
   // hand already is after closing panes.
   PaneItems := NewItem(UiText('E~x~it superterm', 'Sa~l~ir de superterm'),
-    'Alt-X', kbAltX, cmQuit, hcNoContext, PaneItems);
+    KEY_ALT + 'X', kbAltX, cmQuit, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
     '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
@@ -11540,7 +11551,7 @@ begin
       if Chain <> nil then
         PaneItems := Chain;
     end;
-  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), 'Alt-F9',
+  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), KEY_ALT + 'F9',
     kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~F~ull screen', '~P~antalla completa'),
     PrefixKeyLabel(Cfg.PrefixKey) + ' f', kbNoKey, cmFullScreen,
@@ -11549,13 +11560,13 @@ begin
     '', kbNoKey, cmZoom, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewInfoItem(UiText('Go to pane 1-9', 'Ir al panel 1-9'),
-    'Alt-1..9', PaneItems);
+    KEY_ALT + '1..9', PaneItems);
   PaneItems := NewItem(UiText('~P~revious pane', 'Panel an~t~erior'), 'F7',
     kbF7, cmPanePrev, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~N~ext pane', 'Siguie~n~te panel'), 'F6',
     kbF6, cmPaneNext, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
-  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'), 'Alt-F3',
+  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'), KEY_ALT + 'F3',
     kbAltF3, cmPaneClose, hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('Split ~h~orizontal', 'Dividir ~h~orizontal'),
     'F3', kbF3, cmSplitH, hcNoContext, PaneItems);
@@ -11602,7 +11613,7 @@ begin
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
     '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'), 'Alt-0', kbAlt0,
+  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'), KEY_ALT + '0', kbAlt0,
     cmPaneList, hcNoContext, WindowItems);
   WindowItems := NewItem(UiText('Cascad~e~', 'Cascad~a~'), '', kbNoKey,
     cmPaneCascade, hcNoContext, WindowItems);
@@ -11738,7 +11749,7 @@ begin
   // ---- Sessions: detach and application life cycle ----
   SessItems := nil;
   SessItems := NewItem(UiText('E~x~it', 'Sa~l~ir'),
-    'Alt-X', kbAltX, cmQuit, hcNoContext, SessItems);
+    KEY_ALT + 'X', kbAltX, cmQuit, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('Quick session ~w~izard...',
     '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,

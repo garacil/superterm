@@ -880,6 +880,9 @@ begin
     219: Result := '█';
     220: Result := '▄';
     223: Result := '▀';
+    {$IFDEF DARWIN}
+    235: Result := '⌥';  // Option-key symbol for shortcut labels (KEY_ALT)
+    {$ENDIF}
     250: Result := '·';
     254: Result := '■';
   else
@@ -950,6 +953,9 @@ begin
       begin AGlyph := 'l'; AACS := True; end;  // upper-left
     1, 2, 7, 9, 10: AGlyph := 'o';
     3..6, 13..15, 22, 254: AGlyph := '*';
+    {$IFDEF DARWIN}
+    235: AGlyph := '*';  // KEY_ALT on a 7-bit host: degrade like the suits do
+    {$ENDIF}
     11: AGlyph := 'M';
     12: AGlyph := 'F';
     19: AGlyph := '!';
