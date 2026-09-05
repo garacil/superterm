@@ -79,6 +79,16 @@ superterm-<version>-macos-universal.tar.gz  + .sha256
 After uploading, add the macOS section to the release notes if it is not there —
 `notes-snippet.md` is the block we use, with the version substituted.
 
+## The Dock app
+
+`make-app.sh` builds **SuperTerm.app** — a thin launcher that opens the real binary in
+iTerm2 (or Terminal.app when iTerm2 is absent), with an icon derived from the Windows
+`alien-hacker.ico` so both platforms share the same face. `--install` copies it to
+`/Applications`; open it once and right-click its Dock icon → Options → Keep in Dock.
+The launcher prefers `/usr/local/bin/superterm` and falls back to the repo build, so
+remember `make install` (or an `install -m0755`) after upgrading, or the Dock will keep
+launching the old version.
+
 ## Where the version lives
 
 `VERSION` at the repo root, injected into `src/st_version.inc` by the Makefile. The release
