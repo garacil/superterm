@@ -11,8 +11,11 @@ not anything in the code, that decides what users see.
 
 ## Where this project stands
 
-Azure's side is complete. Nothing in **Part 1** has to be done again until the
-identity validation expires on **2028-12-07**.
+**The first signed release went out on 2026-09-09.** `superterm.exe`,
+`superterm-tray.exe`, the installer and its uninstaller all verify as `Valid`
+under `CN="7kas Servicios Internet, S.L."`, and the v5.2.2 assets on GitHub are
+those. Nothing in **Part 1** has to be done again until the identity validation
+expires on **2028-12-07**.
 
 | | |
 |---|---|
@@ -26,6 +29,25 @@ identity validation expires on **2028-12-07**.
 
 `trusted-signing.json` already carries the endpoint, the account and the
 profile. **Start at Part 2.**
+
+### There is no private key to keep
+
+Worth being explicit, because it inverts the habit of every other code-signing
+certificate: **Microsoft never hands over a key.** The private key is generated
+and used inside their HSM and never leaves it. There is no `.pfx` on this
+machine, no token in a drawer, no secret in the repository, and nothing to back
+up or to lose.
+
+Recreating this on another PC therefore needs three things, none of them
+confidential:
+
+1. **`trusted-signing.json`**, in this directory and committed — endpoint,
+   account name, profile name, and nothing else.
+2. The two tools from **Part 2**, both public downloads.
+3. An Azure login for a principal holding **Artifact Signing Certificate Profile
+   Signer** on the `signing-7kas` account.
+
+If this machine dies, nothing is lost but the twenty minutes of Part 2.
 
 ## Part 1 — Azure, once per organisation
 
@@ -116,13 +138,23 @@ winget install --id Microsoft.AzureCLI -e
 
 ## Part 3 — the signed release
 
+These are the paths the 2026-09-09 release actually used, with the signtool that
+came out of the package at 10.0.28000. Give `SUPERTERM_SIGN_METADATA` an
+absolute path: it is handed down to `signtool` through Inno Setup, which does not
+run from the repository root.
+
 ```powershell
 az login
-$env:SUPERTERM_SIGNTOOL      = 'C:\tools\signing\sdk\bin\<version>\x64\signtool.exe'
+$env:SUPERTERM_SIGNTOOL      = 'C:\tools\signing\sdk\bin\10.0.28000.0\x64\signtool.exe'
 $env:SUPERTERM_SIGN_DLIB     = 'C:\tools\signing\dlib\bin\x64\Azure.CodeSigning.Dlib.dll'
-$env:SUPERTERM_SIGN_METADATA = 'packaging\windows\trusted-signing.json'
+$env:SUPERTERM_SIGN_METADATA = 'D:\sources\superterm\packaging\windows\trusted-signing.json'
 powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload -Replace
 ```
+
+`az` may not be on the PATH of a shell that was open when it was installed;
+`C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin` is where it lands. Check the
+session is the right one before signing — `az account show` should name the
+7Kas subscription and the tenant `e91cd423-a399-472b-9d02-86368d44d9aa`.
 
 In CI the login becomes `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
 `AZURE_CLIENT_SECRET`, which `DefaultAzureCredential` reads on its own.

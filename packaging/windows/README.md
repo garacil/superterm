@@ -138,12 +138,16 @@ subject is `CN=7kas Servicios Internet, S.L.`, exactly what the five publisher
 strings in `src/superterm.rc` and `superterm.iss` already say, so nothing in the
 repository has to move.
 
-**What is left is the build machine**, which as of that date still had no
-`signtool` new enough for `/dlib` (the newest Windows Kit on it was 10.0.19041,
-and 10.0.22621 is the minimum), no `Azure.CodeSigning.Dlib.dll` and no Azure
-CLI. [`SIGNING.md`](SIGNING.md), "Part 2", is that shopping list; "Part 3" is the
-one command that follows it. The identifiers of the account, subscription and
-validation live there too.
+**The first signed release went out the same day.** `superterm.exe`,
+`superterm-tray.exe`, the installer and its uninstaller verify as `Valid` under
+that subject, and the v5.2.2 assets on GitHub are those. The build machine took
+a current `signtool` — its newest Windows Kit was 10.0.19041 and `/dlib` needs
+10.0.22621 — plus the dlib and an Azure login.
+
+[`SIGNING.md`](SIGNING.md) is the whole procedure, and holds the account,
+subscription and validation identifiers. Nothing secret lives on the build
+machine: Trusted Signing keeps the private key in Microsoft's HSM, so a new
+machine needs only that file, two public downloads and an Azure login.
 
 ### How it got here
 
