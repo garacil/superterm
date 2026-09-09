@@ -223,7 +223,10 @@ survive a host reboot; profiles and preferences do.
   chord restores the previous window rectangle.
 - Normal maximize and fullscreen always derive from the canonical desktop,
   never from the smallest or most recently attached terminal. Restore returns
-  to the exact pre-maximize rectangle.
+  to the exact pre-maximize rectangle. A maximize stops immediately above the
+  minimized icons instead of burying them, on the first paint and on every
+  frame of the zoom animation; minimizing or restoring any other window
+  re-fits it. Fullscreen is the exception and still owns the whole terminal.
 - Minimized icons keep stable slots, filled left to right in rows from the
   bottom. Restoring leaves a hole and the next minimization reuses the first
   free hole; existing icons never jump. Minimizing a focused window preserves

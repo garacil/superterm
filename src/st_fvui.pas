@@ -459,6 +459,11 @@ type
     procedure ShowAbout;
     procedure RenameFocusedWindow;
     procedure ArrangeIcons;
+    procedure IconDesktop(out ARect: Objects.TRect);
+    procedure IconMetrics(out AIconW, APerRow: Longint);
+    function HighestIconSlot: integer;
+    function IconBandRows: integer;
+    function MaximizeRect(ADeskW, ADeskH: integer): Objects.TRect;
     function FirstFreeIconSlot: integer;
     procedure DoTilePanes;
     procedure DoCascadePanes;
@@ -2375,7 +2380,7 @@ end;
 procedure TTermWindow.Zoom;
 var
   App: PSuperApp;
-  i: integer;
+  i, DeskW, DeskH: integer;
   WasZoomed: boolean;
   R: Objects.TRect;
 begin
@@ -2386,12 +2391,14 @@ begin
       if (i <> PaneIdx) and (App^.Win[i] <> nil) and
          App^.Win[i]^.Zoomed then
         App^.Win[i]^.Zoom;
-  if (App <> nil) and App^.RemoteMode then
+  if App <> nil then
   begin
     // FreeVision's TWindow.Zoom infers enter/leave by comparing Size with
-    // SizeLimits.Max. A shared maximum may deliberately be smaller than the
-    // canonical desktop, so that inference would treat an unzoom as another
-    // zoom and overwrite ZoomRect. The explicit state is authoritative here.
+    // SizeLimits.Max. The maximum here is deliberately not the whole desktop
+    // -- it stops above the minimized icons, and that limit moves whenever a
+    // window is minimized or restored -- so the inference would treat an
+    // unzoom as another zoom and overwrite ZoomRect. The explicit state is
+    // authoritative in both modes.
     if WasZoomed then
     begin
       R := ZoomRect;
@@ -2404,7 +2411,17 @@ begin
       // daemon's canonical Cols/Rows.  Do not derive a different rectangle
       // from this viewer's current membership summary here: an attach must
       // never make two clients draw two versions of the same shared window.
-      R.Assign(0, 0, App^.RemoteDeskW, App^.RemoteDeskH);
+      DeskW := 0;
+      DeskH := 0;
+      if App^.RemoteMode and (App^.RemoteDeskW > 0) and
+         (App^.RemoteDeskH > 0) then
+      begin
+        DeskW := App^.RemoteDeskW;
+        DeskH := App^.RemoteDeskH;
+      end
+      else
+        App^.CanonicalDesktopSize(DeskW, DeskH);
+      R := App^.MaximizeRect(DeskW, DeskH);
       Locate(R);
     end;
   end
@@ -2516,6 +2533,9 @@ type
 // something. Unaccented Spanish, as everywhere else in the chrome.
 function LimitLabelTexts: TLimitLabelTexts;
 begin
+  // FPC's flow analysis does not accept SetLength as initialising a managed
+  // result at -O1, and every diagnostic is fatal here.
+  Result := nil;
   SetLength(Result, 2);
   Result[0] := UiText('DESKTOP LIMIT', 'LIMITE DEL ESCRITORIO');
   Result[1] := UiText('LIMIT', 'LIMITE');
@@ -3335,7 +3355,13 @@ begin
           end;
           if Win[I]^.Zoomed then
           begin
-            R.Assign(0, 0, W, H);
+            // Fullscreen owns the terminal, icons included; an ordinary
+            // maximize stops above them. ArrangeIcons below re-applies this
+            // once the icons have taken their slots in the new desktop.
+            if Win[I]^.FullScreen then
+              R.Assign(0, 0, W, H)
+            else
+              R := MaximizeRect(W, H);
             Win[I]^.ChangeBounds(R);
             if Win[I]^.FullScreen then
               RequestPaneSize(I, W, H + 2);
@@ -4627,37 +4653,84 @@ end;
 // leaves a hole; a later minimize reuses the first free hole.  This routine
 // maps stable slot numbers to coordinates and raises icons above normal panes,
 // but never compacts or renumbers them.
+// The desktop rectangle the icon row is laid out in: canonical in a shared
+// session, this viewer's desktop otherwise. Kept in one place so the icon
+// positions and the maximize rectangle can never be computed from different
+// desktops.
+procedure TSuperApp.IconDesktop(out ARect: Objects.TRect);
+begin
+  ARect := Default(Objects.TRect);
+  if Desktop <> nil then
+    Desktop^.GetExtent(ARect);
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+    ARect.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+end;
+
+procedure TSuperApp.IconMetrics(out AIconW, APerRow: Longint);
+var
+  RD: Objects.TRect;
+begin
+  IconDesktop(RD);
+  st_layout.IconRowMetrics(RD.B.X - RD.A.X, RD.B.Y - RD.A.Y,
+    AIconW, APerRow);
+end;
+
+// The highest icon slot in use, or -1 when nothing is minimized. This is the
+// one number the daemon needs to reach the same band as this viewer.
+function TSuperApp.HighestIconSlot: integer;
+var
+  i, Slot: integer;
+begin
+  HighestIconSlot := -1;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
+      Slot := Win[i]^.IconSlot;
+      if (Slot >= 0) and (Slot < MAX_PANES) and (Slot > HighestIconSlot) then
+        HighestIconSlot := Slot;
+    end;
+end;
+
+// Rows the icons actually occupy at the bottom of the desktop: zero when
+// nothing is minimized, so a workspace without icons maximizes exactly as it
+// always did. Derived from the highest slot in use, which is what ArrangeIcons
+// draws, not from the number of minimized windows.
+function TSuperApp.IconBandRows: integer;
+var
+  RD: Objects.TRect;
+begin
+  IconDesktop(RD);
+  IconBandRows := st_layout.IconBandRows(RD.B.X - RD.A.X, RD.B.Y - RD.A.Y,
+    HighestIconSlot);
+end;
+
+// A maximized window fills the desktop except for the icon row: it must sit
+// immediately above the minimized windows, never on top of them. Fullscreen is
+// a different thing -- it owns the terminal -- and does not come through here.
+function TSuperApp.MaximizeRect(ADeskW, ADeskH: integer): Objects.TRect;
+var
+  W, H, C, R: integer;
+begin
+  // Deliberately the published maximum, not a second formula beside it: the
+  // rectangle this viewer draws and the Cols/Rows the daemon stores have to
+  // be the same number or a maximize would settle in two steps.
+  SharedMaximizedSize(ADeskW, ADeskH, W, H, C, R);
+  Result := Default(Objects.TRect);
+  Result.Assign(0, 0, W, H);
+end;
+
 procedure TSuperApp.ArrangeIcons;
-const
-  DEFAULT_ICON_W = 26;
-  MIN_ICON_W = 10;
-  ICON_H = 2;
 var
   RD, R: Objects.TRect;
   Used: TIconSlotUsed;
-  i, Slot, PerRow, DeskW, DeskH, IconW, RowsAvail, ColsNeeded: integer;
+  i, Slot: integer;
+  PerRow, IconW: Longint;
   SavedOptions: word;
 begin
   if Desktop = nil then
     Exit;
-  RD := Default(Objects.TRect);
-  Desktop^.GetExtent(RD);
-  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
-    RD.Assign(0, 0, RemoteDeskW, RemoteDeskH);
-  DeskW := RD.B.X - RD.A.X;
-  DeskH := RD.B.Y - RD.A.Y;
-  IconW := DEFAULT_ICON_W;
-  RowsAvail := DeskH div ICON_H;
-  if RowsAvail < 1 then RowsAvail := 1;
-  ColsNeeded := (MAX_PANES + RowsAvail - 1) div RowsAvail;
-  if ColsNeeded < 1 then ColsNeeded := 1;
-  if (DeskW div IconW) < ColsNeeded then
-    IconW := DeskW div ColsNeeded;
-  if IconW < MIN_ICON_W then IconW := MIN_ICON_W;
-  if IconW > DeskW then IconW := DeskW;
-  PerRow := DeskW div IconW;
-  if PerRow < 1 then
-    PerRow := 1;
+  IconDesktop(RD);
+  IconMetrics(IconW, PerRow);
   Used := Default(TIconSlotUsed);
   // Repair only malformed/duplicate legacy state. Valid occupied slots never
   // move, regardless of pane index or holes before them.
@@ -4705,6 +4778,11 @@ begin
         DebugLog(Format('icon: pane=%d slot=%d rect=%d,%d %dx%d',
           [i, Slot, R.A.X, R.A.Y, R.B.X - R.A.X, R.B.Y - R.A.Y]));
     end;
+  // Deliberately no re-fit of maximized windows here. The daemon owns the
+  // definitive grid for a maximize and re-normalises it against this same icon
+  // row before publishing the revision, so a viewer that also resized and
+  // published would only race the authority it is going to obey anyway -- and
+  // in a shared session the two viewers would not even race identically.
 end;
 
 procedure TSuperApp.MinimizeWindow(i: integer);
@@ -8201,6 +8279,11 @@ procedure TSuperApp.SharedMaximizedSize(ACanonicalDeskW,
 begin
   ADeskW := ACanonicalDeskW;
   ADeskH := ACanonicalDeskH;
+  // A maximized window stops immediately above the minimized icons instead of
+  // burying them. Every publisher of a maximum goes through here, so the size
+  // the daemon stores and echoes back already accounts for the icon row: no
+  // viewer has to notice afterwards and correct itself.
+  Dec(ADeskH, IconBandRows);
   // Match TWindow.SizeLimits/FreeVision's MinWinSize exactly. Otherwise the
   // daemon could install a 4-column PTY while Locate silently paints a
   // 16-column frame on a malformed/tiny host.

@@ -37,6 +37,13 @@ with open(INI, 'w') as stream:
     stream.write('[ui]\n'
                  'language=en\n'
                  'background=none\n'
+                 # frame_rect below accepts 176/177 as frame corners, because
+                 # that is how a lease-locked remote frame is drawn. The dead
+                 # area outside the canonical desktop is screened with those
+                 # same codes, so leave it off here: this suite is about the
+                 # zoom hand-off, not about the backdrop, and the detector
+                 # would otherwise read the screen as a phantom frame.
+                 'desktop_limit_marks=0\n'
                  '[session]\n'
                  'server=always\n'
                  'autosave=0\n'

@@ -52,6 +52,7 @@ enforces the mapping and the required coverage areas.
 | layout_preview_protocol_test.py | protocol, UI | Layout previews are ordered, transient, owner-scoped, and never canonical mutations. |
 | layout_transition_test.py | rendering, sessions | Shared layout operations preserve exact ordered show/hide and native-control feedback without rollback; an exact software-cursor reverse toggle may share an otherwise valid frame. |
 | max_panes_test.py | UI, sessions | Pane sixteen is usable and pane seventeen receives the documented refusal. |
+| maximize_icon_row_test.py | UI, sessions | A maximize stops immediately above the minimized icons at every instant, and the icon row moving re-fits an already maximized pane in both directions. |
 | maximize_min_viewport_test.py | UI, sessions | Normal maximize follows the logical desktop rather than a smaller viewer. |
 | mouse_focus_test.py | input, UI | Mouse menu activation and exclusive pane focus work under the documented terminal chain. |
 | mouse_backend_test.py | input, lifecycle | The mouse driver is installed before FreeVision without a dependency cycle, real consoles use `KDGETMODE`, GPM is probed nonblockingly and wakes the event loop by descriptor, and PTY startup never waits for GPM. |

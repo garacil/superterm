@@ -45,6 +45,27 @@ extra, and an updated client shows it the moment it attaches to a session that
 is already running. `[ui] desktop_limit_marks=0` or
 `Desktop -> Mark the desktop limit` restores the flat fill.
 
+### A maximize no longer buries the minimized icons
+
+Minimized windows park as icons along the bottom of the canonical desktop, and
+a maximized window took the whole desktop and covered them. It then corrected
+itself on the next unrelated event -- a click in the window was enough -- so
+the size appeared to settle in two steps.
+
+The size of a maximize is daemon-owned shared state, so this is fixed where it
+is decided: `SharedZoomedPaneSize` subtracts the icon row before the daemon
+stores the pane's Cols/Rows and echoes them, and every viewer therefore draws
+the right rectangle on the first paint. A client that shrank its own rectangle
+would only have raced the authority it was going to obey. The icon geometry
+moved to `st_layout`, the unit client and daemon already share, because the
+row has to be the same cell count on both sides.
+
+Minimizing or restoring some other window changes that row without naming the
+maximized pane, so every maximized pane is re-fitted before a revision is
+published, in the layout transaction and in the minimize/restore window op
+alike. A minimized maximized pane keeps the grid it will be restored to.
+Fullscreen is unchanged: it owns the terminal, icons included.
+
 ### Reproducible engineering and performance baseline
 
 The build now treats every visible Free Pascal warning, note, and hint as an

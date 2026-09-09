@@ -110,6 +110,7 @@ TESTS := drive_test.py large_screen_test.py mouse_backend_test.py mouse_test.py 
   desktop_persistence_test.py \
   desktop_limit_marks_test.py \
   maximize_min_viewport_test.py \
+  maximize_icon_row_test.py \
   zoom_exclusive_switch_test.py \
   host_summary_lease_test.py \
   client_notifications_test.py \
