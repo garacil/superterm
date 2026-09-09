@@ -199,8 +199,14 @@ survive a host reboot; profiles and preferences do.
   profile/session. Attach and host `SIGWINCH` only change that viewer's local
   viewport: they never resize the desktop, its windows or its PTYs. A smaller
   terminal starts at desktop coordinate `(0,0)` and gets horizontal/vertical
-  scrollbars; a larger one leaves margin. Bounded flow control prevents a
-  stalled viewer from blocking the rest.
+  scrollbars; a larger one leaves margin. That margin is marked rather than
+  left blank: the CP437 shades `178/177/176` screen it, solid against the
+  desktop edge and thinning outward through a cloud-like scatter rather than
+  hard bands, with `LIMIT` set on a diagonal in reverse video -- the letters
+  are the cells left unpainted. It is
+  drawn by each client from its own viewport, so it costs the daemon nothing
+  and differs per viewer; `Desktop -> Mark the desktop limit` turns it off.
+  Bounded flow control prevents a stalled viewer from blocking the rest.
 - The `Desktop` / `Escritorio` menu is the only interactive way to change the
   canonical desktop: adopt the current terminal's usable character area, enter
   dimensions from `20x25` through `8192x4094`, or inspect the logical desktop,

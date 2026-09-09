@@ -30,6 +30,7 @@ enforces the mapping and the required coverage areas.
 | control_wm_test.py | CLI, sessions | Detached-daemon window-management commands preserve their public results. |
 | cursor_test.py | UI, cleanup | Every client exit path restores the launch cursor position. |
 | daemon_identity_safety_test.py | lifecycle, cleanup | Stale or malformed sidecars cannot authorize signals to a reused PID. |
+| desktop_limit_marks_test.py | UI, rendering | The dead area a viewer sees outside the canonical desktop is screened with 178/177/176 and a reverse-video word, locally, without touching shared geometry. |
 | desktop_persistence_test.py | sessions, configuration | Session save/load preserves fixed logical desktop dimensions. |
 | desktop_resize_protocol_test.py | protocol, sessions | Only the daemon-authoritative transaction changes canonical desktop geometry. |
 | detach_test.py | sessions, lifecycle | Detach keeps PTYs live and reattach restores their current screens. |

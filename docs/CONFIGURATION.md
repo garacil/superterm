@@ -46,6 +46,7 @@ palette=mono
 background=goody
 background_mode=center
 desktop_notifications=1
+desktop_limit_marks=1
 
 [session]
 server=always
@@ -109,6 +110,21 @@ to suppress only that toast. The status line still records the ordered event,
 the resulting number of attached viewers, and its client-local bell; none of
 this cosmetic feedback changes the shared desktop or pane output. Toggle the
 same preference at runtime with `Desktop -> Show desktop notifications`.
+
+`desktop_limit_marks=1` (the default) marks the dead area a viewer sees when
+its terminal is larger than the canonical desktop. The band is screened with
+the CP437 shades `178/177/176`: the mix of each neighbouring pair runs
+continuously with the distance from the desktop edge, and each cell picks its
+code against a threshold that is half an ordered matrix and half a hash of its
+own coordinates, so the transition scatters like cloud instead of stepping
+from a run of one code to a run of the next. The word `LIMIT` is knocked out
+of it in reverse video on a diagonal: the letters are the cells left
+unpainted. Set it to `0` to leave that area as the
+flat `desktop_color` fill. It is drawn by each client from its own viewport,
+so two viewers of different sizes mark different extents, nothing is sent to
+the daemon and no shared geometry changes. Toggle it at runtime with
+`Desktop -> Mark the desktop limit`
+(`Escritorio -> Marcar el limite del escritorio`).
 
 ### [ui] new window size
 

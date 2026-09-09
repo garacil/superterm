@@ -18,7 +18,7 @@ uses
   {$ENDIF}
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
-  st_mouse, st_clipboard, st_os;
+  st_mouse, st_clipboard, st_os, st_deskedge;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -97,6 +97,9 @@ const
   cmDesktopFitTerminal = 2768;  // explicit shared logical desktop resize
   cmDesktopModify      = 2769;
   cmDesktopShowSize    = 2770;
+  // Every platform has the dead area, so this toggle stays outside the
+  // Unix-only notification block below.
+  cmToggleDesktopLimitMarks = 2772;
   {$IFDEF UNIX}
   // Client activity notifications (desktop toast and status-line tail) are a
   // Unix-host feature; the Windows client does not carry them. Every piece of
@@ -260,7 +263,15 @@ type
 
   PDesktopBackdrop = ^TDesktopBackdrop;
   TDesktopBackdrop = object(TView)
+    // The filler behind the logical desktop marks the dead area outside it;
+    // the identical view used for the scrollbar corner does not, so it keeps
+    // the flat fill even when the desktop is scrolled hard against its edge.
+    ShowLimit: boolean;
+    constructor Init(var Bounds: Objects.TRect; AShowLimit: boolean);
     procedure Draw; virtual;
+  private
+    function PlainAttr: byte;
+    function ShadeAttr: byte;
   end;
 
   PGeometryStatusLine = ^TGeometryStatusLine;
@@ -2486,23 +2497,168 @@ begin
     App^.SetDesktopViewport(App^.ViewportX, Value);
 end;
 
+type
+  TLimitLabelTexts = array of string;
+
+// Wording for the dead area, longest first: the widest one that fits the band
+// wins, so a generous margin says it in full and a tight one still says
+// something. Unaccented Spanish, as everywhere else in the chrome.
+function LimitLabelTexts: TLimitLabelTexts;
+begin
+  SetLength(Result, 2);
+  Result[0] := UiText('DESKTOP LIMIT', 'LIMITE DEL ESCRITORIO');
+  Result[1] := UiText('LIMIT', 'LIMITE');
+end;
+
+constructor TDesktopBackdrop.Init(var Bounds: Objects.TRect;
+  AShowLimit: boolean);
+begin
+  inherited Init(Bounds);
+  ShowLimit := AShowLimit;
+end;
+
+function TDesktopBackdrop.PlainAttr: byte;
+var
+  App: PSuperApp;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  PlainAttr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+end;
+
+// Same ground as the flat fill, with a grey ink on it: the dead area stays
+// coherent with a non-black desktop colour instead of becoming a second
+// colour of its own. Dark grey reads as "not workspace" without competing
+// with the windows; on a dark-grey desktop it would vanish, so step up.
+function TDesktopBackdrop.ShadeAttr: byte;
+var
+  App: PSuperApp;
+  Bg, Fg: byte;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  Bg := byte(App^.Cfg.DesktopColor and $0F);
+  if Bg = 8 then
+    Fg := 7
+  else
+    Fg := 8;
+  ShadeAttr := byte((Bg shl 4) or Fg);
+end;
+
 procedure TDesktopBackdrop.Draw;
 var
   App: PSuperApp;
   B: TDrawBuffer;
-  Attr: byte;
-  W: integer;
+  Plain, Shade: byte;
+  W, VisW, VisH: integer;
+  DeskR, DeskB, RightX0, BottomW: integer;
+  x, y, SegX, SegW, Pos: integer;
+  Texts: TLimitLabelTexts;
+  RightLabel, BottomLabel: TEdgeLabel;
+
+  // Chebyshev distance to the canonical rectangle, as a position on the
+  // shade ramp. A corner cell is past the desktop on both axes and takes the
+  // fainter of the two, so the cloud thins out continuously around the
+  // corner. -1 means the cell is inside the desktop and is not ours.
+  function CellPos(AX, AY: integer): integer;
+  var
+    P: integer;
+  begin
+    CellPos := -1;
+    if AX >= DeskR then
+      CellPos := EdgeShadePos(AX - DeskR + 1, VisW - DeskR);
+    if AY >= DeskB then
+    begin
+      P := EdgeShadePos(AY - DeskB + 1, VisH - DeskB);
+      if P > CellPos then
+        CellPos := P;
+    end;
+  end;
+
 begin
   App := PSuperApp(Application);
-  Attr := 0;
-  if App <> nil then
-    Attr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+  Plain := PlainAttr;
   W := Size.X;
   if W > MaxViewWidth then W := MaxViewWidth;
   if W < 0 then W := 0;
   B := Default(TDrawBuffer);
-  MoveChar(B, ' ', Attr, W);
+  MoveChar(B, ' ', Plain, W);
   WriteLine(0, 0, W, Size.Y, B);
+  // With no dead area this must cost exactly what it cost before the feature
+  // existed: the flat fill above and nothing else.
+  if (not ShowLimit) or (App = nil) or (Desktop = nil) or
+     (not App^.Cfg.DesktopLimitMarks) then
+    Exit;
+
+  VisW := App^.ViewportW;
+  if VisW > W then VisW := W;
+  VisH := App^.ViewportH;
+  if VisH > Size.Y then VisH := Size.Y;
+  if (VisW < 1) or (VisH < 1) then
+    Exit;
+  // Backdrop and desktop are siblings at the root, so one subtraction puts
+  // the canonical rectangle in this view's own coordinates. Reading it from
+  // the live views rather than recomputing it keeps the two in step whatever
+  // the viewport offsets are.
+  DeskR := (Desktop^.Origin.X - Origin.X) + Desktop^.Size.X;
+  DeskB := (Desktop^.Origin.Y - Origin.Y) + Desktop^.Size.Y;
+  if DeskR < 0 then DeskR := 0;
+  if DeskB < 0 then DeskB := 0;
+  if (DeskR >= VisW) and (DeskB >= VisH) then
+    Exit;
+
+  Shade := ShadeAttr;
+  RightX0 := DeskR;
+  if RightX0 > VisW then RightX0 := VisW;
+  BottomW := RightX0;
+  RightLabel := Default(TEdgeLabel);
+  BottomLabel := Default(TEdgeLabel);
+  // One label per band. The corner belongs to the right band, so the two can
+  // never overlap and each is laid out inside a rectangle it owns whole.
+  Texts := LimitLabelTexts;
+  if VisW > RightX0 then
+    RightLabel := PlaceEdgeLabel(VisW - RightX0, VisH, Texts);
+  if (VisH > DeskB) and (BottomW > 0) then
+    BottomLabel := PlaceEdgeLabel(BottomW, VisH - DeskB, Texts);
+
+  for y := 0 to VisH - 1 do
+  begin
+    if y >= DeskB then
+    begin
+      SegX := 0;
+      SegW := VisW;
+    end
+    else if VisW > RightX0 then
+    begin
+      SegX := RightX0;
+      SegW := VisW - RightX0;
+    end
+    else
+      Continue;
+    for x := SegX to SegX + SegW - 1 do
+    begin
+      Pos := CellPos(x, y);
+      if Pos < 0 then
+      begin
+        // Inside the canonical rectangle: never ours to mark. The desktop
+        // draws over it anyway; leave the flat ground so a stale buffer cell
+        // can never reach the screen.
+        B[x - SegX] := (word(Plain) shl 8) or word(byte(' '));
+        Continue;
+      end;
+      // Reverse video, and nothing more: a stroke of the word is a cell left
+      // unpainted. The ramp runs through and around it untouched, so the
+      // holes are what form the letters.
+      if ((x >= RightX0) and EdgeLabelCovers(RightLabel, x - RightX0, y)) or
+         ((x < RightX0) and EdgeLabelCovers(BottomLabel, x, y - DeskB)) then
+        B[x - SegX] := (word(Plain) shl 8) or word(byte(' '))
+      else
+        B[x - SegX] := (word(Shade) shl 8) or word(EdgeShadeByte(Pos, x, y));
+    end;
+    WriteLine(SegX, y, SegW, 1, B);
+  end;
 end;
 
 {$IFDEF UNIX}
@@ -2948,10 +3104,10 @@ begin
     Exit;
 
   R.Assign(0, 0, 1, 1);
-  DesktopBackdrop := New(PDesktopBackdrop, Init(R));
+  DesktopBackdrop := New(PDesktopBackdrop, Init(R, True));
   DesktopHBar := New(PDesktopScrollBar, Init(R, 0));
   DesktopVBar := New(PDesktopScrollBar, Init(R, 1));
-  DesktopCorner := New(PDesktopBackdrop, Init(R));
+  DesktopCorner := New(PDesktopBackdrop, Init(R, False));
   {$IFDEF UNIX}
   DesktopNotification := New(PDesktopNotification, Init(R));
   {$ENDIF}
@@ -10211,6 +10367,15 @@ begin
           ResetVideoSurface;   // every cell's colour changes
           ReDraw;
         end;
+      cmToggleDesktopLimitMarks:
+        begin
+          Cfg.DesktopLimitMarks := not Cfg.DesktopLimitMarks;
+          SaveConfigFields(Cfg, [cfDesktopLimitMarks]);
+          RebuildMenu;
+          // Only the backdrop changes, and it is behind everything else, so
+          // the ordinary redraw path plus the per-cell differ is enough.
+          ReDraw;
+        end;
       cmDesktopColor:
         begin
           DeskCol := Cfg.DesktopColor;
@@ -11622,6 +11787,10 @@ begin
            'Mostrar ~n~otificaciones del escritorio'), '', kbNoKey,
     cmToggleDesktopNotifications, hcNoContext, DesktopItems);
   {$ENDIF}
+  DesktopItems := NewItem(ActiveMark(Cfg.DesktopLimitMarks) +
+    UiText('Mark the desktop ~l~imit',
+           'Marcar el ~l~imite del escritorio'), '', kbNoKey,
+    cmToggleDesktopLimitMarks, hcNoContext, DesktopItems);
   DesktopItems := NewItem(UiText('~M~odify dimensions...',
     'Modificar ~d~imensiones...'), '', kbNoKey,
     cmDesktopModify, hcNoContext, DesktopItems);
