@@ -120,122 +120,30 @@ Microsoft's service, so there is no token to plug in and no `.pfx` to guard;
 what has to be present on the build machine is the dlib, the metadata file and
 an Azure login.
 
-**Microsoft has renamed the service to Artifact Signing.** The portal calls the
-resource a *cuenta para firmar artefactos*, and the RBAC roles were renamed with
-it: searching the role list for "Trusted" returns nothing at all. Only the
-tooling still says Trusted Signing — the NuGet package, the dlib and the
-`weu.codesigning.azure.net` endpoint keep their old names.
-
-1. In the Azure portal, create an **Artifact Signing account**. It needs a
-   pay-as-you-go subscription; the free trial credit does not cover it. Basic
-   (about US$10/month) is the right SKU: the tiers differ in how many
-   certificate profiles and signatures they allow, not in what they can do, and
-   one Public Trust profile is all this project uses.
-2. **Accept the terms of use**, which the identity validation blade offers in a
-   banner. They are a contract with the company, and the person accepting
-   warrants they can bind it.
-3. **Assign the roles on the account**, in Control de acceso (IAM). Owner on the
-   subscription grants neither of them, and the blade stays greyed out until
-   they are in place:
-   - **Artifact Signing Identity Verifier** — *manage identity or business
-     verification requests*. Without it, "Create identity validation" is
-     disabled.
-   - **Artifact Signing Certificate Profile Signer** — *sign files with a
-     certificate profile*. This is the one the build machine needs. Assign both
-     in one pass; the second is easy to forget until the first signed run fails
-     obscurely.
-
-   Role assignments take a few minutes to take effect. If the wizard is left on
-   the Miembros tab without reaching *Revisar y asignar*, nothing is assigned —
-   check that the resource's role list shows them before blaming propagation.
-4. Create an **Identity Validation** of type **Público**. Privado issues
-   certificates trusted only inside your own organisation and is not what
-   public distribution needs. Organisation validation asks for a legal entity
-   with three or more years of verifiable history. For a Spanish company the
-   business identifier is *Identificación fiscal* (the CIF); the DUNS number the
-   field defaults to is not required. The country list is in English whatever
-   the portal's language.
-
-   Before submitting, read the **certificate signer preview** at the foot of the
-   form: it shows the subject the certificate will carry. Its `CN` is what
-   Windows displays as the publisher, and it must equal `CompanyName` in
-   `src/superterm.rc` and `AppPublisher` in `superterm.iss`. A wrong field here
-   means revalidation, so it is worth a second read.
-5. Once validation passes, create a **Certificate Profile** of type *Public
-   Trust* against that identity.
-6. Fill `trusted-signing.json` with the account's region endpoint, the account
-   name and the profile name.
-7. Get the dlib: extract the `Microsoft.Trusted.Signing.Client` NuGet package
-   and take `bin\x64\Azure.CodeSigning.Dlib.dll`. `signtool` must come from
-   Windows SDK 10.0.22621 or newer for `/dlib` to work.
-
-```powershell
-az login
-$env:SUPERTERM_SIGN_DLIB     = 'C:\tools\trusted-signing\bin\x64\Azure.CodeSigning.Dlib.dll'
-$env:SUPERTERM_SIGN_METADATA = 'packaging\windows\trusted-signing.json'
-powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload
-```
-
-In CI the login becomes `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
-`AZURE_CLIENT_SECRET`, which `DefaultAzureCredential` picks up on its own.
-
-Signing by hand, for a single file:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging\windows\sign.ps1 bin\superterm.exe
-```
+**The procedure is [`SIGNING.md`](SIGNING.md)**, next to this file: what to do in
+the Azure portal once per organisation, what to install on a build machine once
+per machine, the command that produces the signed release, and the traps — the
+sharpest being that Microsoft renamed the service to **Artifact Signing**, so
+searching the portal for "Trusted" finds nothing, while the NuGet package, the
+dlib and the endpoint keep the old name.
 
 ## Status
 
 ### Where to pick this up
 
-Everything the build needs in order to sign is in place, and so is the account.
-**What is missing is Microsoft's answer.** The identity validation was submitted
-on 2026-09-04 and sits at *En curso*; organisation validation runs in business
-days, and Microsoft may verify by mail to the contact addresses or by telephone.
+Microsoft completed the identity validation on 2026-09-09 and the public trust
+certificate profile `public-7kas` is active, so **Azure's side is finished** and
+`trusted-signing.json` carries the endpoint, account and profile. The issued
+subject is `CN=7kas Servicios Internet, S.L.`, exactly what the five publisher
+strings in `src/superterm.rc` and `superterm.iss` already say, so nothing in the
+repository has to move.
 
-| | |
-|---|---|
-| Subscription | **7Kas** `5537b9cc-c817-41cf-b4b9-29f406ace60d` |
-| Tenant | 7kas.com `e91cd423-a399-472b-9d02-86368d44d9aa` |
-| Account | **`signing-7kas`**, resource group `signing-7kas`, West Europe, SKU Basic |
-| Endpoint | `https://weu.codesigning.azure.net` — already in `trusted-signing.json` |
-| Identity validation | `a33951cd-d91f-4269-9404-1049…`, type Público, **En curso** |
-| Contacts | `soporte@7kas.com` primary, `garacil@7kas.com` secondary |
-
-The subject the validation will return was previewed at submission as
-`CN=7kas Servicios Internet, S.L., O=7kas Servicios Internet, S.L.,
-STREET=Calle Columbretes 38, L=Benicasim, S=Castellón, C=ES, PC=12560`. That
-`CN` already matches the five publisher strings in the build, so nothing in the
-repository has to change.
-
-When validation completes, create the Public Trust certificate profile, put its
-name in `trusted-signing.json`, and the whole of the release is:
-
-```powershell
-az login
-$env:SUPERTERM_SIGN_DLIB     = '<path>\Azure.CodeSigning.Dlib.dll'
-$env:SUPERTERM_SIGN_METADATA = 'packaging\windows\trusted-signing.json'
-powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 -Sign -Upload -Replace
-```
-
-Two things to check before that first signed run, both of which fail loudly
-rather than quietly:
-
-- `trusted-signing.json` still holds `REPLACE-account-name` and
-  `REPLACE-profile-name`. The account is `signing-7kas`; the profile name comes
-  from the portal once the profile exists.
-- The certificate subject carries the registered legal name verbatim. It should
-  read `7kas Servicios Internet, S.L.`, which is what `CompanyName` and
-  `LegalCopyright` in `src/superterm.rc` and `AppPublisher`,
-  `VersionInfoCompany` and `VersionInfoCopyright` in `superterm.iss` already
-  say. If the issued certificate spells it differently — capitals, `SL` without
-  stops — those five values follow the certificate, not the other way round.
-
-`-Replace` is needed there because v5.2.2 is already published; signing does
-not change the version, only the bytes. Once a download URL has gone into a
-Microsoft Store submission that stops being acceptable and the signed build
-must go out as a new version instead.
+**What is left is the build machine**, which as of that date still had no
+`signtool` new enough for `/dlib` (the newest Windows Kit on it was 10.0.19041,
+and 10.0.22621 is the minimum), no `Azure.CodeSigning.Dlib.dll` and no Azure
+CLI. [`SIGNING.md`](SIGNING.md), "Part 2", is that shopping list; "Part 3" is the
+one command that follows it. The identifiers of the account, subscription and
+validation live there too.
 
 ### How it got here
 
