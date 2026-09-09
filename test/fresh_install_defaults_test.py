@@ -78,6 +78,31 @@ def daemon_state(sock_path):
         peer.close()
 
 
+SYNC_BEGIN = b'\x1b[?2026h'
+SYNC_END = b'\x1b[?2026l'
+
+
+def wait_presented(client, after=0, timeout=5.0):
+    """Wait until the client has finished presenting a synchronized frame.
+
+    WideUpdateScreen wraps every physical update in DECSET 2026, so the raw
+    stream carries a balanced begin/end pair per presented surface. The daemon
+    reaches its final state before the client has written the last cell of the
+    first frame, and snapshotting there reads a half-drawn surface: the frames
+    and the minimized icon simply are not on it yet. Wait for a balanced pair
+    beyond `after` instead of sleeping a fixed amount.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        begins = client._raw.count(SYNC_BEGIN)
+        ends = client._raw.count(SYNC_END)
+        if ends > after and begins == ends:
+            return True
+        client.drain(0.05)
+    return (client._raw.count(SYNC_END) > after and
+            client._raw.count(SYNC_BEGIN) == client._raw.count(SYNC_END))
+
+
 def alien_palette():
     art = ART_DIR / 'goody.art'
     for line in art.read_text(encoding='utf-8').splitlines():
@@ -124,6 +149,8 @@ try:
 
     # Slot zero is the first stable 26x2 icon at the bottom-left of the
     # canonical desktop.  Desktop row 48 is physical row 49 below the menu.
+    check('first presentation completes before it is observed',
+          wait_presented(client))
     rows = client.screen.display
     icon_ok = (rows[49][0] in ('┌', '╔') and
                rows[49][25] in ('┐', '╗') and
@@ -163,6 +190,7 @@ try:
     # The icon is only the presentation state. Restoring it must recover the
     # exact centred rectangle and must not reinterpret 80x25 as outer bounds.
     session = os.path.basename(socket_path)[:-5] if socket_path else ''
+    frames_before_restore = client._raw.count(SYNC_END)
     restored = (stlib.run_cli(['restore', session + ':1'], home)
                 if session else None)
     deadline = time.monotonic() + 5.0
@@ -181,6 +209,8 @@ try:
           restored_pane.get('size') == PTY_SIZE and
           restored_pane.get('geom') == SAVED_GEOM and
           not restored_pane.get('minimized'))
+    check('restore presentation completes before it is observed',
+          wait_presented(client, after=frames_before_restore))
     rows = client.screen.display
     restored_frame = (
         rows[12][19] in ('┌', '╔') and

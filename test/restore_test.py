@@ -10,6 +10,11 @@ from stlib import close_all_daemons, feed_pyte, fresh_home, wait_pid
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
 HOME = fresh_home('restore')
+# Runs C and D hand-write a session.ini, so their pane cwd must be a real
+# directory this suite owns. It used to name the old fixed HOME literally;
+# once HOME became a mkdtemp the literal survived and pointed at a path
+# nothing creates, so every pane failed to spawn on a clean machine.
+RESTORE_CWD = HOME + '/cwd'
 SESS = HOME + '/.superterm/session.ini'
 DEBUG_LOG = HOME + '/foreground-debug.log'
 W, H = 110, 35
@@ -174,6 +179,7 @@ def foreground_diagnostics(offset, shell_pid):
 
 close_all_daemons(HOME)
 os.makedirs(HOME + '/.superterm', exist_ok=True)
+os.makedirs(RESTORE_CWD, exist_ok=True)
 with open(HOME + '/.superterm/superterm.ini', 'w') as f:
     # Saved fallback layouts are a local-mode feature. Live sessions retain
     # their in-memory state and deliberately have no save/no-save Exit split.
@@ -294,33 +300,33 @@ b.close()
 
 # A restored command must leave an interactive shell after it exits normally.
 with open(SESS, 'w') as f:
-    f.write("""[layout]
+    f.write(f"""[layout]
 nodes=V:500;H:500;L;L;H:500;L;L
 count=4
 focused=1
 
 [pane0]
 cmd=
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=0
 
 [pane1]
 cmd=/usr/bin/true
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=1
 arg0=/usr/bin/true
 
 [pane2]
 cmd=
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=0
 
 [pane3]
 cmd=
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=0
 """)
@@ -345,13 +351,13 @@ deskh={DESKH}
 
 [pane0]
 cmd=
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=0
 
 [pane1]
 cmd=
-cwd=/tmp/opencode/st-restore
+cwd={RESTORE_CWD}
 term=
 argc=0
 bx={BX}

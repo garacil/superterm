@@ -18,3 +18,5 @@ AUDIT-3x.md
 
 # captures written by the Windows console harness
 /test/windows/shots/
+packaging/macos/dist/
+dist_macos/
