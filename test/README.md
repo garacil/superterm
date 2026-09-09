@@ -30,6 +30,7 @@ enforces the mapping and the required coverage areas.
 | control_wm_test.py | CLI, sessions | Detached-daemon window-management commands preserve their public results. |
 | cursor_test.py | UI, cleanup | Every client exit path restores the launch cursor position. |
 | daemon_identity_safety_test.py | lifecycle, cleanup | Stale or malformed sidecars cannot authorize signals to a reused PID. |
+| desktop_limit_marks_test.py | UI, rendering | The dead area a viewer sees outside the canonical desktop is screened with 178/177/176 and a reverse-video word, locally, without touching shared geometry. |
 | desktop_persistence_test.py | sessions, configuration | Session save/load preserves fixed logical desktop dimensions. |
 | desktop_resize_protocol_test.py | protocol, sessions | Only the daemon-authoritative transaction changes canonical desktop geometry. |
 | detach_test.py | sessions, lifecycle | Detach keeps PTYs live and reattach restores their current screens. |
@@ -51,6 +52,7 @@ enforces the mapping and the required coverage areas.
 | layout_preview_protocol_test.py | protocol, UI | Layout previews are ordered, transient, owner-scoped, and never canonical mutations. |
 | layout_transition_test.py | rendering, sessions | Shared layout operations preserve exact ordered show/hide and native-control feedback without rollback; an exact software-cursor reverse toggle may share an otherwise valid frame. |
 | max_panes_test.py | UI, sessions | Pane sixteen is usable and pane seventeen receives the documented refusal. |
+| maximize_icon_row_test.py | UI, sessions | A maximize stops immediately above the minimized icons at every instant, and the icon row moving re-fits an already maximized pane in both directions. |
 | maximize_min_viewport_test.py | UI, sessions | Normal maximize follows the logical desktop rather than a smaller viewer. |
 | mouse_focus_test.py | input, UI | Mouse menu activation and exclusive pane focus work under the documented terminal chain. |
 | mouse_backend_test.py | input, lifecycle | The mouse driver is installed before FreeVision without a dependency cycle, real consoles use `KDGETMODE`, GPM is probed nonblockingly and wakes the event loop by descriptor, and PTY startup never waits for GPM. |

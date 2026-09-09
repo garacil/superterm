@@ -33,6 +33,21 @@ const
   MIN_WIN_W = 16;
   MIN_WIN_H = 6;
   CASCADE_STEP_X = 3;   // horizontal stagger between cascaded windows
+  // Minimized windows park as Turbo Vision icons along the bottom of the
+  // desktop. The client draws that row and the daemon has to keep a maximized
+  // pane off it, and the two are only consistent if they compute it from the
+  // same numbers -- hence here, in the unit both of them already share.
+  ICON_H = 2;
+  DEFAULT_ICON_W = 26;
+  MIN_ICON_W = 10;
+
+// Width of one minimized icon and how many fit across a desktop of this size.
+procedure IconRowMetrics(ADeskW, ADeskH: Longint; out AIconW, APerRow: Longint);
+
+// Rows the icon row occupies, given the highest icon slot in use (-1 when
+// nothing is minimized, which yields 0: a workspace without icons maximizes
+// exactly as it always did).
+function IconBandRows(ADeskW, ADeskH, AMaxSlot: Longint): Longint;
 
 type
   TSplitDir = (sdV, sdH); // sdV: side by side | sdH: top/bottom
@@ -115,6 +130,35 @@ function KeepWindowTitleReachable(var AX, AY: Longint;
 
 
 implementation
+
+procedure IconRowMetrics(ADeskW, ADeskH: Longint; out AIconW, APerRow: Longint);
+var
+  RowsAvail, ColsNeeded: Longint;
+begin
+  AIconW := DEFAULT_ICON_W;
+  RowsAvail := ADeskH div ICON_H;
+  if RowsAvail < 1 then RowsAvail := 1;
+  ColsNeeded := (MAX_PANES + RowsAvail - 1) div RowsAvail;
+  if ColsNeeded < 1 then ColsNeeded := 1;
+  if (ADeskW div AIconW) < ColsNeeded then
+    AIconW := ADeskW div ColsNeeded;
+  if AIconW < MIN_ICON_W then AIconW := MIN_ICON_W;
+  if AIconW > ADeskW then AIconW := ADeskW;
+  APerRow := ADeskW div AIconW;
+  if APerRow < 1 then
+    APerRow := 1;
+end;
+
+function IconBandRows(ADeskW, ADeskH, AMaxSlot: Longint): Longint;
+var
+  IconW, PerRow: Longint;
+begin
+  IconBandRows := 0;
+  if (AMaxSlot < 0) or (AMaxSlot >= MAX_PANES) then
+    Exit;
+  IconRowMetrics(ADeskW, ADeskH, IconW, PerRow);
+  IconBandRows := (AMaxSlot div PerRow + 1) * ICON_H;
+end;
 
 function IsDesktopSizeValid(AWidth, AHeight: Longint): boolean;
 begin

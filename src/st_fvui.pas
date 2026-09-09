@@ -18,7 +18,7 @@ uses
   {$ENDIF}
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
-  st_mouse, st_clipboard, st_os;
+  st_mouse, st_clipboard, st_os, st_deskedge;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -97,6 +97,9 @@ const
   cmDesktopFitTerminal = 2768;  // explicit shared logical desktop resize
   cmDesktopModify      = 2769;
   cmDesktopShowSize    = 2770;
+  // Every platform has the dead area, so this toggle stays outside the
+  // Unix-only notification block below.
+  cmToggleDesktopLimitMarks = 2772;
   {$IFDEF UNIX}
   // Client activity notifications (desktop toast and status-line tail) are a
   // Unix-host feature; the Windows client does not carry them. Every piece of
@@ -260,7 +263,15 @@ type
 
   PDesktopBackdrop = ^TDesktopBackdrop;
   TDesktopBackdrop = object(TView)
+    // The filler behind the logical desktop marks the dead area outside it;
+    // the identical view used for the scrollbar corner does not, so it keeps
+    // the flat fill even when the desktop is scrolled hard against its edge.
+    ShowLimit: boolean;
+    constructor Init(var Bounds: Objects.TRect; AShowLimit: boolean);
     procedure Draw; virtual;
+  private
+    function PlainAttr: byte;
+    function ShadeAttr: byte;
   end;
 
   PGeometryStatusLine = ^TGeometryStatusLine;
@@ -448,6 +459,11 @@ type
     procedure ShowAbout;
     procedure RenameFocusedWindow;
     procedure ArrangeIcons;
+    procedure IconDesktop(out ARect: Objects.TRect);
+    procedure IconMetrics(out AIconW, APerRow: Longint);
+    function HighestIconSlot: integer;
+    function IconBandRows: integer;
+    function MaximizeRect(ADeskW, ADeskH: integer): Objects.TRect;
     function FirstFreeIconSlot: integer;
     procedure DoTilePanes;
     procedure DoCascadePanes;
@@ -2364,7 +2380,7 @@ end;
 procedure TTermWindow.Zoom;
 var
   App: PSuperApp;
-  i: integer;
+  i, DeskW, DeskH: integer;
   WasZoomed: boolean;
   R: Objects.TRect;
 begin
@@ -2375,12 +2391,14 @@ begin
       if (i <> PaneIdx) and (App^.Win[i] <> nil) and
          App^.Win[i]^.Zoomed then
         App^.Win[i]^.Zoom;
-  if (App <> nil) and App^.RemoteMode then
+  if App <> nil then
   begin
     // FreeVision's TWindow.Zoom infers enter/leave by comparing Size with
-    // SizeLimits.Max. A shared maximum may deliberately be smaller than the
-    // canonical desktop, so that inference would treat an unzoom as another
-    // zoom and overwrite ZoomRect. The explicit state is authoritative here.
+    // SizeLimits.Max. The maximum here is deliberately not the whole desktop
+    // -- it stops above the minimized icons, and that limit moves whenever a
+    // window is minimized or restored -- so the inference would treat an
+    // unzoom as another zoom and overwrite ZoomRect. The explicit state is
+    // authoritative in both modes.
     if WasZoomed then
     begin
       R := ZoomRect;
@@ -2393,7 +2411,17 @@ begin
       // daemon's canonical Cols/Rows.  Do not derive a different rectangle
       // from this viewer's current membership summary here: an attach must
       // never make two clients draw two versions of the same shared window.
-      R.Assign(0, 0, App^.RemoteDeskW, App^.RemoteDeskH);
+      DeskW := 0;
+      DeskH := 0;
+      if App^.RemoteMode and (App^.RemoteDeskW > 0) and
+         (App^.RemoteDeskH > 0) then
+      begin
+        DeskW := App^.RemoteDeskW;
+        DeskH := App^.RemoteDeskH;
+      end
+      else
+        App^.CanonicalDesktopSize(DeskW, DeskH);
+      R := App^.MaximizeRect(DeskW, DeskH);
       Locate(R);
     end;
   end
@@ -2497,23 +2525,171 @@ begin
     App^.SetDesktopViewport(App^.ViewportX, Value);
 end;
 
+type
+  TLimitLabelTexts = array of string;
+
+// Wording for the dead area, longest first: the widest one that fits the band
+// wins, so a generous margin says it in full and a tight one still says
+// something. Unaccented Spanish, as everywhere else in the chrome.
+function LimitLabelTexts: TLimitLabelTexts;
+begin
+  // FPC's flow analysis does not accept SetLength as initialising a managed
+  // result at -O1, and every diagnostic is fatal here.
+  Result := nil;
+  SetLength(Result, 2);
+  Result[0] := UiText('DESKTOP LIMIT', 'LIMITE DEL ESCRITORIO');
+  Result[1] := UiText('LIMIT', 'LIMITE');
+end;
+
+constructor TDesktopBackdrop.Init(var Bounds: Objects.TRect;
+  AShowLimit: boolean);
+begin
+  inherited Init(Bounds);
+  ShowLimit := AShowLimit;
+end;
+
+function TDesktopBackdrop.PlainAttr: byte;
+var
+  App: PSuperApp;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  PlainAttr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+end;
+
+// Same ground as the flat fill, with a grey ink on it: the dead area stays
+// coherent with a non-black desktop colour instead of becoming a second
+// colour of its own. Dark grey reads as "not workspace" without competing
+// with the windows; on a dark-grey desktop it would vanish, so step up.
+function TDesktopBackdrop.ShadeAttr: byte;
+var
+  App: PSuperApp;
+  Bg, Fg: byte;
+begin
+  App := PSuperApp(Application);
+  if App = nil then
+    Exit(0);
+  Bg := byte(App^.Cfg.DesktopColor and $0F);
+  if Bg = 8 then
+    Fg := 7
+  else
+    Fg := 8;
+  ShadeAttr := byte((Bg shl 4) or Fg);
+end;
+
 procedure TDesktopBackdrop.Draw;
 var
   App: PSuperApp;
   B: TDrawBuffer;
-  Attr: byte;
-  W: integer;
+  Plain, Shade: byte;
+  W, VisW, VisH: integer;
+  DeskR, DeskB, RightX0, BottomW: integer;
+  x, y, SegX, SegW, Pos: integer;
+  Texts: TLimitLabelTexts;
+  RightLabel, BottomLabel: TEdgeLabel;
+
+  // Chebyshev distance to the canonical rectangle, as a position on the
+  // shade ramp. A corner cell is past the desktop on both axes and takes the
+  // fainter of the two, so the cloud thins out continuously around the
+  // corner. -1 means the cell is inside the desktop and is not ours.
+  function CellPos(AX, AY: integer): integer;
+  var
+    P: integer;
+  begin
+    CellPos := -1;
+    if AX >= DeskR then
+      CellPos := EdgeShadePos(AX - DeskR + 1, VisW - DeskR);
+    if AY >= DeskB then
+    begin
+      P := EdgeShadePos(AY - DeskB + 1, VisH - DeskB);
+      if P > CellPos then
+        CellPos := P;
+    end;
+  end;
+
 begin
   App := PSuperApp(Application);
-  Attr := 0;
-  if App <> nil then
-    Attr := byte((App^.Cfg.DesktopColor and $0F) shl 4);
+  Plain := PlainAttr;
   W := Size.X;
   if W > MaxViewWidth then W := MaxViewWidth;
   if W < 0 then W := 0;
   B := Default(TDrawBuffer);
-  MoveChar(B, ' ', Attr, W);
+  MoveChar(B, ' ', Plain, W);
   WriteLine(0, 0, W, Size.Y, B);
+  // With no dead area this must cost exactly what it cost before the feature
+  // existed: the flat fill above and nothing else.
+  if (not ShowLimit) or (App = nil) or (Desktop = nil) or
+     (not App^.Cfg.DesktopLimitMarks) then
+    Exit;
+
+  VisW := App^.ViewportW;
+  if VisW > W then VisW := W;
+  VisH := App^.ViewportH;
+  if VisH > Size.Y then VisH := Size.Y;
+  if (VisW < 1) or (VisH < 1) then
+    Exit;
+  // Backdrop and desktop are siblings at the root, so one subtraction puts
+  // the canonical rectangle in this view's own coordinates. Reading it from
+  // the live views rather than recomputing it keeps the two in step whatever
+  // the viewport offsets are.
+  DeskR := (Desktop^.Origin.X - Origin.X) + Desktop^.Size.X;
+  DeskB := (Desktop^.Origin.Y - Origin.Y) + Desktop^.Size.Y;
+  if DeskR < 0 then DeskR := 0;
+  if DeskB < 0 then DeskB := 0;
+  if (DeskR >= VisW) and (DeskB >= VisH) then
+    Exit;
+
+  Shade := ShadeAttr;
+  RightX0 := DeskR;
+  if RightX0 > VisW then RightX0 := VisW;
+  BottomW := RightX0;
+  RightLabel := Default(TEdgeLabel);
+  BottomLabel := Default(TEdgeLabel);
+  // One label per band. The corner belongs to the right band, so the two can
+  // never overlap and each is laid out inside a rectangle it owns whole.
+  Texts := LimitLabelTexts;
+  if VisW > RightX0 then
+    RightLabel := PlaceEdgeLabel(VisW - RightX0, VisH, Texts);
+  if (VisH > DeskB) and (BottomW > 0) then
+    BottomLabel := PlaceEdgeLabel(BottomW, VisH - DeskB, Texts);
+
+  for y := 0 to VisH - 1 do
+  begin
+    if y >= DeskB then
+    begin
+      SegX := 0;
+      SegW := VisW;
+    end
+    else if VisW > RightX0 then
+    begin
+      SegX := RightX0;
+      SegW := VisW - RightX0;
+    end
+    else
+      Continue;
+    for x := SegX to SegX + SegW - 1 do
+    begin
+      Pos := CellPos(x, y);
+      if Pos < 0 then
+      begin
+        // Inside the canonical rectangle: never ours to mark. The desktop
+        // draws over it anyway; leave the flat ground so a stale buffer cell
+        // can never reach the screen.
+        B[x - SegX] := (word(Plain) shl 8) or word(byte(' '));
+        Continue;
+      end;
+      // Reverse video, and nothing more: a stroke of the word is a cell left
+      // unpainted. The ramp runs through and around it untouched, so the
+      // holes are what form the letters.
+      if ((x >= RightX0) and EdgeLabelCovers(RightLabel, x - RightX0, y)) or
+         ((x < RightX0) and EdgeLabelCovers(BottomLabel, x, y - DeskB)) then
+        B[x - SegX] := (word(Plain) shl 8) or word(byte(' '))
+      else
+        B[x - SegX] := (word(Shade) shl 8) or word(EdgeShadeByte(Pos, x, y));
+    end;
+    WriteLine(SegX, y, SegW, 1, B);
+  end;
 end;
 
 {$IFDEF UNIX}
@@ -2959,10 +3135,10 @@ begin
     Exit;
 
   R.Assign(0, 0, 1, 1);
-  DesktopBackdrop := New(PDesktopBackdrop, Init(R));
+  DesktopBackdrop := New(PDesktopBackdrop, Init(R, True));
   DesktopHBar := New(PDesktopScrollBar, Init(R, 0));
   DesktopVBar := New(PDesktopScrollBar, Init(R, 1));
-  DesktopCorner := New(PDesktopBackdrop, Init(R));
+  DesktopCorner := New(PDesktopBackdrop, Init(R, False));
   {$IFDEF UNIX}
   DesktopNotification := New(PDesktopNotification, Init(R));
   {$ENDIF}
@@ -3179,7 +3355,13 @@ begin
           end;
           if Win[I]^.Zoomed then
           begin
-            R.Assign(0, 0, W, H);
+            // Fullscreen owns the terminal, icons included; an ordinary
+            // maximize stops above them. ArrangeIcons below re-applies this
+            // once the icons have taken their slots in the new desktop.
+            if Win[I]^.FullScreen then
+              R.Assign(0, 0, W, H)
+            else
+              R := MaximizeRect(W, H);
             Win[I]^.ChangeBounds(R);
             if Win[I]^.FullScreen then
               RequestPaneSize(I, W, H + 2);
@@ -4471,37 +4653,84 @@ end;
 // leaves a hole; a later minimize reuses the first free hole.  This routine
 // maps stable slot numbers to coordinates and raises icons above normal panes,
 // but never compacts or renumbers them.
+// The desktop rectangle the icon row is laid out in: canonical in a shared
+// session, this viewer's desktop otherwise. Kept in one place so the icon
+// positions and the maximize rectangle can never be computed from different
+// desktops.
+procedure TSuperApp.IconDesktop(out ARect: Objects.TRect);
+begin
+  ARect := Default(Objects.TRect);
+  if Desktop <> nil then
+    Desktop^.GetExtent(ARect);
+  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
+    ARect.Assign(0, 0, RemoteDeskW, RemoteDeskH);
+end;
+
+procedure TSuperApp.IconMetrics(out AIconW, APerRow: Longint);
+var
+  RD: Objects.TRect;
+begin
+  IconDesktop(RD);
+  st_layout.IconRowMetrics(RD.B.X - RD.A.X, RD.B.Y - RD.A.Y,
+    AIconW, APerRow);
+end;
+
+// The highest icon slot in use, or -1 when nothing is minimized. This is the
+// one number the daemon needs to reach the same band as this viewer.
+function TSuperApp.HighestIconSlot: integer;
+var
+  i, Slot: integer;
+begin
+  HighestIconSlot := -1;
+  for i := 0 to MAX_PANES - 1 do
+    if (Win[i] <> nil) and Win[i]^.Minimized then
+    begin
+      Slot := Win[i]^.IconSlot;
+      if (Slot >= 0) and (Slot < MAX_PANES) and (Slot > HighestIconSlot) then
+        HighestIconSlot := Slot;
+    end;
+end;
+
+// Rows the icons actually occupy at the bottom of the desktop: zero when
+// nothing is minimized, so a workspace without icons maximizes exactly as it
+// always did. Derived from the highest slot in use, which is what ArrangeIcons
+// draws, not from the number of minimized windows.
+function TSuperApp.IconBandRows: integer;
+var
+  RD: Objects.TRect;
+begin
+  IconDesktop(RD);
+  IconBandRows := st_layout.IconBandRows(RD.B.X - RD.A.X, RD.B.Y - RD.A.Y,
+    HighestIconSlot);
+end;
+
+// A maximized window fills the desktop except for the icon row: it must sit
+// immediately above the minimized windows, never on top of them. Fullscreen is
+// a different thing -- it owns the terminal -- and does not come through here.
+function TSuperApp.MaximizeRect(ADeskW, ADeskH: integer): Objects.TRect;
+var
+  W, H, C, R: integer;
+begin
+  // Deliberately the published maximum, not a second formula beside it: the
+  // rectangle this viewer draws and the Cols/Rows the daemon stores have to
+  // be the same number or a maximize would settle in two steps.
+  SharedMaximizedSize(ADeskW, ADeskH, W, H, C, R);
+  Result := Default(Objects.TRect);
+  Result.Assign(0, 0, W, H);
+end;
+
 procedure TSuperApp.ArrangeIcons;
-const
-  DEFAULT_ICON_W = 26;
-  MIN_ICON_W = 10;
-  ICON_H = 2;
 var
   RD, R: Objects.TRect;
   Used: TIconSlotUsed;
-  i, Slot, PerRow, DeskW, DeskH, IconW, RowsAvail, ColsNeeded: integer;
+  i, Slot: integer;
+  PerRow, IconW: Longint;
   SavedOptions: word;
 begin
   if Desktop = nil then
     Exit;
-  RD := Default(Objects.TRect);
-  Desktop^.GetExtent(RD);
-  if RemoteMode and (RemoteDeskW > 0) and (RemoteDeskH > 0) then
-    RD.Assign(0, 0, RemoteDeskW, RemoteDeskH);
-  DeskW := RD.B.X - RD.A.X;
-  DeskH := RD.B.Y - RD.A.Y;
-  IconW := DEFAULT_ICON_W;
-  RowsAvail := DeskH div ICON_H;
-  if RowsAvail < 1 then RowsAvail := 1;
-  ColsNeeded := (MAX_PANES + RowsAvail - 1) div RowsAvail;
-  if ColsNeeded < 1 then ColsNeeded := 1;
-  if (DeskW div IconW) < ColsNeeded then
-    IconW := DeskW div ColsNeeded;
-  if IconW < MIN_ICON_W then IconW := MIN_ICON_W;
-  if IconW > DeskW then IconW := DeskW;
-  PerRow := DeskW div IconW;
-  if PerRow < 1 then
-    PerRow := 1;
+  IconDesktop(RD);
+  IconMetrics(IconW, PerRow);
   Used := Default(TIconSlotUsed);
   // Repair only malformed/duplicate legacy state. Valid occupied slots never
   // move, regardless of pane index or holes before them.
@@ -4549,6 +4778,11 @@ begin
         DebugLog(Format('icon: pane=%d slot=%d rect=%d,%d %dx%d',
           [i, Slot, R.A.X, R.A.Y, R.B.X - R.A.X, R.B.Y - R.A.Y]));
     end;
+  // Deliberately no re-fit of maximized windows here. The daemon owns the
+  // definitive grid for a maximize and re-normalises it against this same icon
+  // row before publishing the revision, so a viewer that also resized and
+  // published would only race the authority it is going to obey anyway -- and
+  // in a shared session the two viewers would not even race identically.
 end;
 
 procedure TSuperApp.MinimizeWindow(i: integer);
@@ -8045,6 +8279,11 @@ procedure TSuperApp.SharedMaximizedSize(ACanonicalDeskW,
 begin
   ADeskW := ACanonicalDeskW;
   ADeskH := ACanonicalDeskH;
+  // A maximized window stops immediately above the minimized icons instead of
+  // burying them. Every publisher of a maximum goes through here, so the size
+  // the daemon stores and echoes back already accounts for the icon row: no
+  // viewer has to notice afterwards and correct itself.
+  Dec(ADeskH, IconBandRows);
   // Match TWindow.SizeLimits/FreeVision's MinWinSize exactly. Otherwise the
   // daemon could install a 4-column PTY while Locate silently paints a
   // 16-column frame on a malformed/tiny host.
@@ -10222,6 +10461,15 @@ begin
           ResetVideoSurface;   // every cell's colour changes
           ReDraw;
         end;
+      cmToggleDesktopLimitMarks:
+        begin
+          Cfg.DesktopLimitMarks := not Cfg.DesktopLimitMarks;
+          SaveConfigFields(Cfg, [cfDesktopLimitMarks]);
+          RebuildMenu;
+          // Only the backdrop changes, and it is behind everything else, so
+          // the ordinary redraw path plus the per-cell differ is enough.
+          ReDraw;
+        end;
       cmDesktopColor:
         begin
           DeskCol := Cfg.DesktopColor;
@@ -11633,6 +11881,10 @@ begin
            'Mostrar ~n~otificaciones del escritorio'), '', kbNoKey,
     cmToggleDesktopNotifications, hcNoContext, DesktopItems);
   {$ENDIF}
+  DesktopItems := NewItem(ActiveMark(Cfg.DesktopLimitMarks) +
+    UiText('Mark the desktop ~l~imit',
+           'Marcar el ~l~imite del escritorio'), '', kbNoKey,
+    cmToggleDesktopLimitMarks, hcNoContext, DesktopItems);
   DesktopItems := NewItem(UiText('~M~odify dimensions...',
     'Modificar ~d~imensiones...'), '', kbNoKey,
     cmDesktopModify, hcNoContext, DesktopItems);

@@ -84,6 +84,10 @@ type
     // canonical desktop coordinate (0,0). The status-line notice remains
     // visible regardless, so a small or clipped desktop never hides it.
     DesktopNotifications: boolean;
+    // Local cosmetic preference: mark the dead area a viewer sees when its
+    // terminal is larger than the canonical desktop, instead of leaving it
+    // as flat colour indistinguishable from empty workspace.
+    DesktopLimitMarks: boolean;
   end;
 
   // Field-scoped persistence prevents two attached clients changing
@@ -92,7 +96,7 @@ type
   TConfigField = (cfShell, cfLoginShell, cfUser, cfPrefixKey,
     cfServerMode, cfMultiThread, cfAutoSave, cfAutoRestore, cfDragContent,
     cfZoomAnim, cfDesktopColor, cfSolidBg, cfNewWinCols, cfNewWinRows,
-    cfDesktopNotifications,
+    cfDesktopNotifications, cfDesktopLimitMarks,
     cfBackground, cfBackgroundMode, cfDefaultProfile, cfDefaultTemplate,
     cfDefaultSession, cfSshSessionMode, cfSshLastSession, cfDefaultWindow,
     cfLanguage, cfPalette);
@@ -469,6 +473,7 @@ begin
   Cfg.DesktopColor := 0;        // black
   Cfg.SolidBg := True;
   Cfg.DesktopNotifications := True;
+  Cfg.DesktopLimitMarks := True;
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -505,6 +510,8 @@ begin
     Cfg.SolidBg := Ini.ReadBool('ui', 'solid_background', Cfg.SolidBg);
     Cfg.DesktopNotifications := Ini.ReadBool('ui', 'desktop_notifications',
       Cfg.DesktopNotifications);
+    Cfg.DesktopLimitMarks := Ini.ReadBool('ui', 'desktop_limit_marks',
+      Cfg.DesktopLimitMarks);
     if (Cfg.DesktopColor < 0) or (Cfg.DesktopColor > 15) then
       Cfg.DesktopColor := 0;
     Cfg.NewWinCols := Ini.ReadInteger('ui', 'newwincols', Cfg.NewWinCols);
@@ -989,6 +996,8 @@ begin
         if cfDesktopNotifications in Fields then
           Ini.WriteBool('ui', 'desktop_notifications',
             Cfg.DesktopNotifications);
+        if cfDesktopLimitMarks in Fields then
+          Ini.WriteBool('ui', 'desktop_limit_marks', Cfg.DesktopLimitMarks);
         if cfNewWinCols in Fields then
           Ini.WriteInteger('ui', 'newwincols', Cfg.NewWinCols);
         if cfNewWinRows in Fields then

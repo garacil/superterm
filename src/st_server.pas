@@ -1001,6 +1001,8 @@ type
     function HasLegacyClient: boolean;
     procedure ClientSizeSummary(out AMinW, AMinH: Longint;
       out AAllMatch: boolean);
+    function HighestIconSlot: Longint;
+    function RenormalizeZoomedPanes: boolean;
     procedure SharedZoomedPaneSize(ADeskW, ADeskH: Longint;
       AFullScreen: boolean; out ACols, ARows: Longint);
     procedure BroadcastHostSummaryEv;
@@ -4374,8 +4376,47 @@ end;
 // Derive a zoomed PTY only from the one canonical desktop. Physical client
 // sizes are viewports: a smaller viewer scrolls and can never shrink the
 // shared pane merely by attaching or reporting FRAME_CLIENT_SIZE.
+// The highest icon slot in use, or -1 when nothing is minimized. It is the
+// only thing st_layout needs to derive the same icon row the clients draw.
+function TDetachedSession.HighestIconSlot: Longint;
+var
+  I: Longint;
+begin
+  HighestIconSlot := -1;
+  for I := 0 to High(FGeom) do
+    if FGeom[I].Minimized and (FGeom[I].IconSlot >= 0) and
+       (FGeom[I].IconSlot < MAX_PANES) and
+       (FGeom[I].IconSlot > HighestIconSlot) then
+      HighestIconSlot := FGeom[I].IconSlot;
+end;
+
+// Re-normalise every maximized pane against the current icon row. A maximize
+// depends on how many icons are parked, and minimizing or restoring some other
+// window changes that without naming the maximized pane at all. Returns True
+// when anything actually moved, so callers can mark the layout changed.
+function TDetachedSession.RenormalizeZoomedPanes: boolean;
+var
+  I, C, R: Longint;
+begin
+  RenormalizeZoomedPanes := False;
+  for I := 0 to FPaneCount - 1 do
+    if FGeom[I].Zoomed and (not FGeom[I].Minimized) then
+    begin
+      SharedZoomedPaneSize(FDeskW, FDeskH, FGeom[I].FullScreen, C, R);
+      if (FGeom[I].Cols <> C) or (FGeom[I].Rows <> R) then
+      begin
+        FGeom[I].Cols := C;
+        FGeom[I].Rows := R;
+        ApplyCanonicalResize(I, C, R, False, True);
+        RenormalizeZoomedPanes := True;
+      end;
+    end;
+end;
+
 procedure TDetachedSession.SharedZoomedPaneSize(ADeskW, ADeskH: Longint;
   AFullScreen: boolean; out ACols, ARows: Longint);
+var
+  Band: Longint;
 begin
   if DebugFull then
     DebugLog(Format('shared-zoom-size: desk=%dx%d full=%d',
@@ -4387,8 +4428,13 @@ begin
   end
   else
   begin
+    // The daemon owns the definitive grid, so this is where a maximized pane
+    // is kept off the minimized icons: a client that shrank its own rectangle
+    // would just have it overwritten by the next authoritative layout.
+    // st_layout gives both sides the same row count from the same slot.
+    Band := st_layout.IconBandRows(ADeskW, ADeskH, HighestIconSlot);
     ACols := ADeskW - 2;
-    ARows := ADeskH - 2;
+    ARows := ADeskH - 2 - Band;
   end;
   if AFullScreen then
   begin
@@ -6122,7 +6168,10 @@ begin
         FGeom[I] := Geom[I];
         // The daemon, not the actor's possibly stale host summary, owns the
         // definitive grid for both normal maximize and fullscreen.
-        if FGeom[I].Zoomed then
+        // A minimized pane keeps the grid it will be restored to: its own icon
+        // is part of the row now, and re-fitting it here would shrink the very
+        // size the Zoomed flag exists to remember.
+        if FGeom[I].Zoomed and (not FGeom[I].Minimized) then
         begin
           SharedZoomedPaneSize(FDeskW, FDeskH, FGeom[I].FullScreen,
             NormalizedCols, NormalizedRows);
@@ -6135,6 +6184,10 @@ begin
         ApplyCanonicalResize(I, FGeom[I].Cols, FGeom[I].Rows, False, True);
         Changed := True;
       end;
+    // Panes this transaction never named can still need a new grid: it may
+    // have parked or freed an icon, which moves the row a maximize stops at.
+    if RenormalizeZoomedPanes then
+      Changed := True;
     // Restore+focus is the sole geometry transaction allowed to replace a
     // valid focus. Otherwise only a structurally invalid index is repaired;
     // a minimized pane remains the focused pane by design.
@@ -6894,6 +6947,9 @@ begin
               end;
             end;
         end;
+        // Minimize and restore change the icon row, so a pane maximized
+        // earlier has to be re-fitted before this revision is published.
+        RenormalizeZoomedPanes;
         NormalizeFocusedPane;
         FGeomValid := True;
         Inc(FRevision);

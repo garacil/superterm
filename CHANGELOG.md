@@ -20,6 +20,52 @@ readable history rather than parallel futures. The selected work is
 `e581f9d`, `b27f4a1`, `947982b` and `b609745`, promoted through `newfeatures`
 and merged into `main` as `e1181c0`, on top of `dbcc21f`.
 
+### The area outside the desktop says so
+
+The logical desktop is canonical and shared, so a viewer whose terminal is
+larger than it has always had a leftover band on the right and below. That
+band was painted the same flat colour as the desktop, which made dead space
+indistinguishable from empty workspace: save a small desktop on one machine,
+attach from a bigger one, and nothing said where the workspace ended.
+
+It is now screened with the CP437 shades `178/177/176`, solid against the
+desktop edge and thinning outward. The mix of each neighbouring pair runs
+continuously with distance, and every cell picks its code against a threshold
+that is half an 8x8 ordered matrix and half a hash of its own coordinates:
+ordered alone weaves a visible grid and collapses to a checkerboard at the
+midpoint, pure noise clumps, half of each scatters like cloud. `LIMIT` is set
+on a diagonal in reverse video: the letters are the cells left unpainted and
+the screen running around them is what forms them. The word shrinks and re-angles to
+whatever the band can hold whole, and disappears rather than being clipped.
+
+It is client-side chrome and nothing else. Each viewer derives it from its own
+viewport, so two viewers of different physical sizes mark different extents;
+no frame kind, payload or `ATTACH_PROTO_VER` changed, the daemon sends nothing
+extra, and an updated client shows it the moment it attaches to a session that
+is already running. `[ui] desktop_limit_marks=0` or
+`Desktop -> Mark the desktop limit` restores the flat fill.
+
+### A maximize no longer buries the minimized icons
+
+Minimized windows park as icons along the bottom of the canonical desktop, and
+a maximized window took the whole desktop and covered them. It then corrected
+itself on the next unrelated event -- a click in the window was enough -- so
+the size appeared to settle in two steps.
+
+The size of a maximize is daemon-owned shared state, so this is fixed where it
+is decided: `SharedZoomedPaneSize` subtracts the icon row before the daemon
+stores the pane's Cols/Rows and echoes them, and every viewer therefore draws
+the right rectangle on the first paint. A client that shrank its own rectangle
+would only have raced the authority it was going to obey. The icon geometry
+moved to `st_layout`, the unit client and daemon already share, because the
+row has to be the same cell count on both sides.
+
+Minimizing or restoring some other window changes that row without naming the
+maximized pane, so every maximized pane is re-fitted before a revision is
+published, in the layout transaction and in the minimize/restore window op
+alike. A minimized maximized pane keeps the grid it will be restored to.
+Fullscreen is unchanged: it owns the terminal, icons included.
+
 ### Reproducible engineering and performance baseline
 
 The build now treats every visible Free Pascal warning, note, and hint as an
