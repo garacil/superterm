@@ -1,6 +1,6 @@
 {
   "Endpoint": "https://weu.codesigning.azure.net",
-  "CodeSigningAccountName": "REPLACE-account-name",
-  "CertificateProfileName": "REPLACE-profile-name",
+  "CodeSigningAccountName": "signing-7kas",
+  "CertificateProfileName": "public-7kas",
   "CorrelationId": "superterm"
 }
