@@ -16,6 +16,10 @@ AUDIT-3x.md
 # local working notes, never published
 /notes/local/
 
+# gh writes its device id under $HOME/.local/state; a gh run whose HOME is
+# not the invoking user's drops it here instead
+/.local/
+
 # captures written by the Windows console harness
 /test/windows/shots/
 packaging/macos/dist/
