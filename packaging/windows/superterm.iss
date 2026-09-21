@@ -7,7 +7,7 @@
 ;   ISCC.exe /DSIGN "/Ssuperterm=powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\windows\sign.ps1 $f" packaging\windows\superterm.iss
 ; packaging\windows\release.ps1 -Sign does all of that in one step.
 
-#define AppVersion "5.2.2"
+#define AppVersion "5.2.9"
 #ifdef SIGN
   #define SignFlag "signonce"
 #else

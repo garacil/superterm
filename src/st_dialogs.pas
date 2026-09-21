@@ -106,6 +106,7 @@ const
   cmSesAttach   = 3320;
   cmSesDelete   = 3321;
   cmSesStart    = 3322;
+  cmSesRename   = 3323;
   cmSesProfileChanged = 3330;
   cmSesNameChanged    = 3331;
 
@@ -1446,7 +1447,7 @@ begin
   with D^ do
   begin
     CmdLo := cmSesAttach;
-    CmdHi := cmSesStart;
+    CmdHi := cmSesRename;
     SelectCmd := cmSesAttach;   // double click = attach
     R.Assign(3, 1, 63, 2);
     Insert(New(PStaticText, Init(R, Format('%-20s %-14s %5s  %s',
@@ -1461,6 +1462,8 @@ begin
     NewButton(3, 12, 12, 2, UiText('Attach', 'Conectar'), cmSesAttach,
       hcNoContext, bfDefault);   // Enter = attach
     NewButton(17, 12, 12, 2, UiText('Delete', 'Eliminar'), cmSesDelete,
+      hcNoContext, bfNormal);
+    NewButton(48, 12, 13, 2, UiText('Rena~m~e', 'Reno~m~brar'), cmSesRename,
       hcNoContext, bfNormal);
     // Esc remains cancel.  The explicit Start new button has its own command
     // so startup can distinguish "continue normally" from "open the new
@@ -1863,6 +1866,8 @@ var
   Infos: TSessionInfoArray;
   Cmd: word;
   Idx, FocusRow, i: integer;
+  NewName, Failure, Settled: string;
+  Buf: ShortString;   // InputBox requires var ShortString (msgbox unit)
 begin
   ASocketPath := '';
   Result := spCancel;
@@ -1906,6 +1911,27 @@ begin
             if FocusRow > 0 then
               Dec(FocusRow);
           end;
+      cmSesRename:
+        if (Idx >= 0) and (Idx <= High(Infos)) then
+        begin
+          Buf := Copy(Infos[Idx].Name, 1, 64);
+          if InputBox(UiText('Rename session', 'Renombrar sesion'),
+             UiText('New name', 'Nuevo nombre'), Buf, 64) = cmOK then
+          begin
+            NewName := Trim(Buf);
+            if (NewName <> '') and (NewName <> Infos[Idx].Name) then
+            begin
+              // The daemon owns the name: it moves the socket, the sidecar and
+              // the creation lock together, and answers with what it settled
+              // on after sanitizing. The next pass re-enumerates and shows it.
+              Failure := RenameSessionAt(Infos[Idx].SocketPath, NewName,
+                Settled);
+              if Failure <> '' then
+                MessageBox(UiText('Cannot rename: ', 'No se puede renombrar: ')
+                  + Failure, nil, mfError or mfOKButton);
+            end;
+          end;
+        end;
       cmSesStart:
         if AllowStartNew then
           Exit(spStartNew);

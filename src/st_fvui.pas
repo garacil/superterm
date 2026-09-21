@@ -82,6 +82,7 @@ const
   cmDetach        = 2550;
   cmSessionPick   = 2551;   // picker/manager of detached sessions
   cmSessionNew    = 2552;   // create another named session from a profile
+  cmSessionRename = 2553;   // rename the session this client is in
   cmSessionWizard = 2560;
   cmShowMaxPanes  = 2561;   // deferred daemon rejection dialog
   cmHelp        = 2600;
@@ -600,6 +601,7 @@ type
     function PickSessionSocketUI(AForAttach: boolean): string;
     function PromptAttachOnStart: boolean;
     procedure DoSessionPick;
+    procedure DoRenameSession;
     function DoNewSession(APreserveCurrent: boolean = True): boolean;
     function DetachRemoteForSwitch: boolean;
     procedure BuildEmptyWorkspace(AProfile: integer);
@@ -6185,6 +6187,11 @@ begin
     Lay.Focused := Snapshot.Focused;
     CurrentSessionName := Snapshot.Name;
     CurrentSessionSocket := APath;
+    // AttachRemoteSession rebuilds the menu once it knows the session; this
+    // path never did, so the rows that only exist for a named session -- the
+    // "Session:" line, and now Rename session -- were missing for everyone
+    // who runs with [session] server=always, which is the default.
+    RebuildMenu;
     ResetSizeRequests;
     RemoteLayoutHash := ComputeLayoutHash;
     RemoteHostSizeArmed := True;
@@ -6512,6 +6519,41 @@ end;
 // old daemon is detached, never closed, and is reattached if the target
 // cannot be loaded. This is also how a restricted SSH user reaches another
 // live session without needing a remote command or a shell.
+// Rename the session this client is attached to. The daemon does the work --
+// it owns the socket, the sidecar and the name lock, and they only make sense
+// moved together -- and answers with the name it settled on after sanitizing,
+// which is what this client must then call it.
+procedure TSuperApp.DoRenameSession;
+var
+  Buf: ShortString;   // InputBox requires var ShortString (msgbox unit)
+  Want, Failure, Settled: string;
+begin
+  if CurrentSessionName = '' then
+    Exit;
+  Buf := Copy(CurrentSessionName, 1, 64);
+  if InputBox(UiText('Rename session', 'Renombrar sesion'),
+     UiText('New name', 'Nuevo nombre'), Buf, 64) <> cmOK then
+    Exit;
+  Want := Trim(Buf);
+  if (Want = '') or (Want = CurrentSessionName) then
+    Exit;
+  Failure := RenameSessionAt(CurrentSessionSocket, Want, Settled);
+  if Failure <> '' then
+  begin
+    MessageBox(UiText('Cannot rename: ', 'No se puede renombrar: ') + Failure,
+      nil, mfError or mfOKButton);
+    Exit;
+  end;
+  if Settled <> '' then
+  begin
+    CurrentSessionName := Settled;
+    // The socket moved with the name; keep the path this client talks through
+    // in step or the next control request goes to a file that is gone.
+    CurrentSessionSocket := SessionSocketPathFor(Settled);
+  end;
+  RebuildMenu;
+end;
+
 procedure TSuperApp.DoSessionPick;
 var
   Act: TSessionPickAction;
@@ -10553,6 +10595,7 @@ begin
       cmSessionNew: DoNewSession;
       cmDetach: RequestDetach;
       cmSessionPick: DoSessionPick;
+      cmSessionRename: DoRenameSession;
       cmClassPick:
         begin
           ReloadWindowClassCatalog;
@@ -11107,6 +11150,20 @@ begin
           end;
         sekResizeEv: ApplyRemoteResize(RemoteEvent.Pane, RemoteEvent.Data);
         sekTitleEv: ApplyRemoteTitle(RemoteEvent.Pane, RemoteEvent.Data);
+        sekSessionRenamedEv:
+          if RemoteEvent.Text <> '' then
+          begin
+            // The socket moved with the name. Following it matters for more
+            // than the label: every later control request this client makes
+            // goes through that path.
+            CurrentSessionName := RemoteEvent.Text;
+            CurrentSessionSocket :=
+              SessionSocketPathFor(CurrentSessionName);
+            {$IFDEF UNIX}
+            RememberSshEntrySession(CurrentSessionName);
+            {$ENDIF}
+            RebuildMenu;
+          end;
         sekFocusEv:
           if (RemoteEvent.Pane >= 0) and (RemoteEvent.Pane < MAX_PANES) and
              (Win[RemoteEvent.Pane] <> nil) then
@@ -12033,6 +12090,13 @@ begin
   SessItems := NewItem(UiText('~N~ew session...', '~N~ueva sesion...'), '',
     kbNoKey, cmSessionNew, hcNoContext, SessItems);
   SessItems := NewLine(SessItems);
+  // Renaming the session you are in. The picker renames any other one; this
+  // row is for the common case of realising halfway through what this session
+  // should have been called.
+  if RemoteMode and (CurrentSessionName <> '') then
+    SessItems := NewItem(UiText('~R~ename session...',
+      '~R~enombrar sesion...'), '', kbNoKey, cmSessionRename, hcNoContext,
+      SessItems);
   SessItems := NewItem(UiText('~A~ttach / manage sessions...',
     '~C~onectar / gestionar...'), PrefixKeyLabel(Cfg.PrefixKey) + ' s', kbNoKey,
     cmSessionPick, hcNoContext, SessItems);

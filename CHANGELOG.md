@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## 5.2.9 - 2026-09
+
+One patch level per change, seven of them: the four issues #1..#4, the XTSAVE
+defect found while fixing them, renaming a session, and the Sessions menu
+finally knowing which session it is in.
+
+### A session can be renamed
+
+A session's name was fixed at creation. It is not just a label: it names the
+socket clients connect through, the sidecar that describes the session, and
+the lock that stops two sessions sharing it. `superterm rename-session
+SESSION NEW_NAME` moves all three together, with the new name's lock taken
+before the old one is released so nothing can slip into either. Attached
+clients are told and follow -- which matters for more than the label they
+show, because the socket path each one holds moved with it.
+
+It is also a button in the session picker (`Ctrl-Q s`) and a row in the
+Sessions menu, which renames the session you are in.
+
+`superterm rename SESSION NEW_NAME` still renames the focused pane, which is
+the documented rule for every pane command and not something to make rename an
+exception to. Its report now names the session as well, so it cannot be read
+as confirmation by someone who meant to rename the session.
+
+### The Sessions menu knows which session it is in
+
+`Session: <name>` is a row the menu has always had, and nobody running the
+default `[session] server=always` ever saw it: that path attaches through
+`AttachPromotedSession`, which never rebuilt the menu once it knew the name.
+The other attach path always did.
 
 ### The prefix owns every superterm action, and nothing else
 

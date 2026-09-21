@@ -1,4 +1,4 @@
-# superterm 5.2.2
+# superterm 5.2.9
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
@@ -28,7 +28,7 @@ changes or custom network clients to install on that device:
 ssh -p 8022 user@server
 ```
 
-**[Download 5.2.2](https://github.com/garacil/superterm/releases/latest)** ·
+**[Download 5.2.9](https://github.com/garacil/superterm/releases/latest)** ·
 **[Run it locally](#run-locally)** ·
 **[Publish it over SSH](#publish-it-over-ssh)** ·
 **[AI-ready SSH deployment](docs/SSH_QUICKSTART.md)** ·
@@ -734,12 +734,13 @@ Most chords are the ones tmux binds, so the muscle memory transfers.
 | `Ctrl-Q Home` / `Ctrl-Q End` | History: oldest line / back to live |
 | `Ctrl-Q 1..9` | Go to profile window N |
 | `Ctrl-Q n` / `Ctrl-Q p` | Next / previous profile window |
-| `Ctrl-Q ,` | Rename the focused window |
+| `Ctrl-Q ,` | Rename the focused pane's title |
 | `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q r` | Refresh the display |
 | `Ctrl-Q c` | Open a window class in a new pane |
-| `Ctrl-Q s` | Session picker: attach to or close detached sessions |
+| `Ctrl-Q s` | Session picker: attach to, rename or close sessions |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
+| `Sessions` → `Rename session...` | Rename the session you are attached to |
 | `Ctrl-Q [` | Enter pane copy mode. Move with arrows/PgUp/PgDn, press Space to start a selection and Enter to copy; mouse drag also copies |
 | `Ctrl-Q ]` | Paste the newest clipboard-history item into the focused pane |
 | `Ctrl-Q h` | Choose one of the ten most recent clipboard items to paste |
@@ -753,6 +754,35 @@ Most chords are the ones tmux binds, so the muscle memory transfers.
 | Mouse wheel | Scroll the pane's history (three lines a notch), with no prefix: a wheel is not a key. On the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
 | Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
 | Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel — including a wheel notch taken while a button is held, which does not end the drag — in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
+
+### Two different things are called a name
+
+A **pane title** is the text in a window's title bar. It belongs to that pane
+and is forgotten when the pane closes. Change it with `Ctrl-Q ,`, or from
+another shell with `superterm rename TARGET NEW_TITLE`.
+
+A **session name** is the identity of the workspace itself: it is what you
+attach to (`superterm --attach NAME`), what the control CLI addresses
+(`superterm send NAME:2 ...`), and what `superterm list` shows. It outlives
+every pane in it. Change it with `superterm rename-session SESSION NEW_NAME`,
+from the session picker (`Ctrl-Q s`), or from `Sessions` → `Rename session...`
+for the one you are in.
+
+They are separate commands because they are separate objects, and `rename`
+only ever means the title:
+
+```sh
+superterm rename         build:2 Nightly build   # the title of pane 2
+superterm rename-session build   nightly         # the session, now addressed as nightly:2
+```
+
+Omitting `:PANE` selects the focused pane — the same rule every pane command
+follows — so `superterm rename build Nightly` retitles a pane and says which
+session it was in. It does not rename the session.
+
+Renaming a live session is safe with clients attached: the socket they connect
+through, the session's description and its name lock all move together, and
+attached clients follow the new name without interruption.
 
 Everything else goes straight to the focused pane, and to nowhere at all when
 no pane is focused. That includes Alt: `Alt-b`, `Alt-f`, `Alt-.` and the rest

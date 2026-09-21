@@ -1155,8 +1155,55 @@ begin
     Exit(rc);
   Result := DoWinOp(Info, Pane, WINOP_RENAME, PasStr(NewName), Reply);
   if Result = 0 then
-    WriteLn(Format(T('superterm: pane %d renamed to "%s"',
-      'superterm: panel %d renombrado a "%s"'), [Pane + 1, NewName]));
+    // Name the session as well. Omitting :PANE selects the focused pane, which
+    // is the documented rule for every pane command -- but someone who meant
+    // to rename the session would otherwise read "renamed" and believe it.
+    WriteLn(Format(T('superterm: pane %d of session "%s" renamed to "%s"',
+      'superterm: panel %d de la sesion "%s" renombrado a "%s"'),
+      [Pane + 1, Info.Name, NewName]));
+end;
+
+// Rename the session itself, which is a different object from the pane title
+// CmdRename changes. A detached session is reached exactly like an attached
+// one -- its daemon is alive either way, and the daemon is what owns the
+// socket, the sidecar and the name lock that all have to move together.
+function CmdRenameSession(const AArgs: array of string): integer;
+var
+  Info: TSessionInfo;
+  NewName, Reply: string;
+  rc, i: integer;
+begin
+  if Length(AArgs) < 2 then
+  begin
+    ErrLn(T('superterm: usage: rename-session SESSION NEW_NAME',
+      'superterm: uso: renombrar-sesion SESION NUEVO_NOMBRE'));
+    Exit(2);
+  end;
+  NewName := '';
+  for i := 1 to High(AArgs) do
+  begin
+    if NewName <> '' then
+      NewName := NewName + ' ';
+    NewName := NewName + AArgs[i];
+  end;
+  NewName := Trim(NewName);
+  if NewName = '' then
+  begin
+    ErrLn(T('superterm: usage: rename-session SESSION NEW_NAME',
+      'superterm: uso: renombrar-sesion SESION NUEVO_NOMBRE'));
+    Exit(2);
+  end;
+  rc := ResolveSession(AArgs[0], True, Info);
+  if rc <> 0 then
+    Exit(rc);
+  Reply := '';
+  Result := DoWinOp(Info, -1, WINOP_RENAME_SESSION, PasStr(NewName), Reply);
+  if Result = 0 then
+    // The daemon answers with the name it actually settled on: the request is
+    // sanitized there, so this is the truth rather than what was asked for.
+    WriteLn(Format(T('superterm: session "%s" renamed to "%s"',
+      'superterm: sesion "%s" renombrada a "%s"'),
+      [Info.Name, Trim(Reply)]));
 end;
 
 function CmdResize(const AArgs: array of string): integer;
@@ -1263,6 +1310,7 @@ const
   CLI_RESIZE = 13;
   CLI_ATTACH = 14;
   CLI_VERSION = 15;
+  CLI_RENAME_SESSION = 16;
 
 // One alias table drives both execution and command-specific help.  Topic
 // aliases which are not executable commands remain in st_cli_help.
@@ -1284,6 +1332,7 @@ begin
     'resize', 'tamano', 'redimensionar': Result := CLI_RESIZE;
     'attach', 'conectar': Result := CLI_ATTACH;
     'version': Result := CLI_VERSION;
+    'rename-session', 'renombrar-sesion': Result := CLI_RENAME_SESSION;
   else
     Result := CLI_NONE;
   end;
@@ -1517,6 +1566,7 @@ begin
     CLI_ZOOM: rc := CmdSimpleOp(Rest, WINOP_ZOOM, True);
     CLI_ORGANIZE: rc := CmdOrganize(Rest);
     CLI_RENAME: rc := CmdRename(Rest);
+    CLI_RENAME_SESSION: rc := CmdRenameSession(Rest);
     CLI_RESIZE: rc := CmdResize(Rest);
   end;
   AExitCode := rc;

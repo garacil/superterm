@@ -78,6 +78,7 @@ enforces the mapping and the required coverage areas.
 | passthrough_multiclient_test.py | protocol, rendering | Raw fullscreen is allowed only for compatible viewers with canonical geometry. |
 | passthrough_test.py | protocol, rendering | Eligible fullscreen output reaches the host byte-for-byte and returns safely to rendered mode. |
 | performance_harness_test.py | foundation, rendering | The interleaved baseline covers every required geometry and interaction and preserves raw latency/byte/cell/frame evidence. |
+| rename_session_test.py | sessions, CLI | Renaming a session moves its socket, sidecar and name lock together, and attached clients follow. |
 | prefix_test.py | input, configuration | Configurable prefix keys and legacy migration preserve command routing. |
 | profile_default_test.py | configuration | The explicit default profile survives save and exit bookkeeping. |
 | profile_shell_fallback_test.py | configuration, lifecycle | A restored console application returns to a live shell. |

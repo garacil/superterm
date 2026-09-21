@@ -83,6 +83,10 @@ const
   // Changes, so those panes remain locally interactive while every peer
   // commit and viewer-relative lock bit is applied immediately.
   FRAME_LAYOUT_PEER_EV = 37;
+  // string NewName (pane -1). An attached client holds the session's name
+  // and the socket path derived from it; both move when it is renamed, and
+  // a client left on the old path would be talking to a file that is gone.
+  FRAME_SESSION_RENAMED_EV = 38;
 
   // FRAME_LAYOUT_PREVIEW operations. Bounds, wireframe and outline show/hide
   // carry a desktop-local X,Y,W,H rectangle. Tail/clear operations are
@@ -117,6 +121,8 @@ const
   WINOP_ORGANIZE = 8;   // byte How: 0 grid, 1 tile, 2 cascade
   WINOP_RENAME = 9;     // string NewTitle
   WINOP_RESIZE = 10;    // Longint Cols, Rows (terminal size)
+  WINOP_RENAME_SESSION = 11;  // string NewName; the pane in the header is
+                              // ignored -- this renames the session itself
 
   // Ceiling for one frame. FRAME_SCREEN carries a pane's whole grid plus its
   // scrollback as raw TCell records, so this limit is really a CELL budget:
@@ -330,7 +336,8 @@ type
 
   TSessionEventKind = (sekOutput, sekExit, sekError, sekLost,
     sekLayoutEv, sekLayoutPeerEv, sekKillPaneEv, sekNewPaneEv, sekResizeEv, sekTitleEv,
-    sekFocusEv, sekHostSummaryEv, sekLayoutPreviewEv, sekShutdown, sekIgnore);
+    sekFocusEv, sekHostSummaryEv, sekLayoutPreviewEv, sekShutdown,
+    sekSessionRenamedEv, sekIgnore);
 
   TSessionEvent = record
     Kind: TSessionEventKind;
@@ -491,6 +498,11 @@ function SuggestSessionName(const ABase: string): string;
 // permanent close of a detached session via its socket (FRAME_CLOSE);
 // waits briefly and returns True only if the daemon really died
 function CloseSessionAt(const APath: string): boolean;
+// Rename the session listening on APath. Returns '' on success, or the
+// daemon's reason for refusing. ANewName comes back sanitized in ASettled,
+// which is the name the session actually has afterwards.
+function RenameSessionAt(const APath, ANewName: string;
+  out ASettled: string): string;
 
 type
   // data callback for control requests with chunked replies
@@ -523,6 +535,11 @@ function CtlStream(const ASocket: string; AKind: byte; APane: integer;
 // POSIX record-lock descriptors for the same session.
 function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
 procedure ReleaseHeldSessionNameLock;
+// Move the held lock from the current name to ANewName without ever being
+// unlocked in between: the new name is taken first and the old one released
+// only once that succeeded. Releasing first would open a window in which a
+// second superterm could claim either name.
+function TrySwapSessionNameLock(const ANewName: string): TSessionNameLockResult;
 
 function StartDetachedServer(const AName, AProfile: string; ALay: TLayout;
   const APanes: TPtyArray; const AScreens: TScreenArray;
@@ -1091,6 +1108,10 @@ type
     procedure UnlockPane(APane: integer);
     procedure SignalReady(var AFd: cint; AOk: boolean);
     procedure WriteSidecar;
+    // Rename this live session. Returns '' on success, or the reason it was
+    // refused. See the implementation for the order the pieces move in.
+    function RenameSessionTo(const ANewName: string): string;
+    procedure BroadcastSessionRenamed;
     function ClientChainsUnion: string;
     procedure DoKillPane(APane: integer);
     procedure DoKillAllPanes;
@@ -2135,6 +2156,34 @@ begin
   HeldSessionNameLockHandle := 0;
   HeldSessionNameLockName := '';
 end;
+
+function TrySwapSessionNameLock(const ANewName: string): TSessionNameLockResult;
+var
+  LockPath: string;
+  H: THandle;
+  Want: string;
+begin
+  Want := SanitizeSessionName(ANewName);
+  if Want = '' then
+    Exit(snlError);
+  if HeldSessionNameLockName = Want then
+    Exit(snlAcquired);
+  LockPath := SessionsDir + PathDelim + '.create-' + Want + '.lock';
+  H := CreateFileW(PWideChar(UnicodeString(LockPath)),
+    GENERIC_READ or GENERIC_WRITE, 0, nil, OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL, 0);
+  if H = INVALID_HANDLE_VALUE then
+  begin
+    if GetLastError = ERROR_SHARING_VIOLATION then
+      Exit(snlBusy);
+    Exit(snlError);
+  end;
+  if HeldSessionNameLockHandle <> 0 then
+    CloseHandle(HeldSessionNameLockHandle);
+  HeldSessionNameLockHandle := H;
+  HeldSessionNameLockName := Want;
+  Result := snlAcquired;
+end;
 {$ELSE}
 function TryHoldSessionNameLock(const AName: string): TSessionNameLockResult;
 var
@@ -2195,6 +2244,55 @@ begin
     FpClose(HeldSessionNameLockFD);
   HeldSessionNameLockFD := -1;
   HeldSessionNameLockName := '';
+end;
+
+function TrySwapSessionNameLock(const ANewName: string): TSessionNameLockResult;
+var
+  Region: flock;
+  LockPath, Want: string;
+  St: Stat;
+  ErrNo: cint;
+  Fd: cint;
+begin
+  Want := SanitizeSessionName(ANewName);
+  if Want = '' then
+    Exit(snlError);
+  if HeldSessionNameLockName = Want then
+    Exit(snlAcquired);
+  Result := snlError;
+  LockPath := SessionsDir + '/.create-' + Want + '.lock';
+  Fd := FpOpen(PAnsiChar(LockPath), O_RDWR or O_CREAT or Open_NoFollow, &600);
+  if Fd < 0 then
+    Exit;
+  St := Default(Stat);
+  if (FpFStat(Fd, St) <> 0) or (not FpS_ISREG(St.st_mode)) or
+     (St.st_uid <> FpGetEUid) or
+     ((St.st_mode and (S_IWGRP or S_IWOTH)) <> 0) or
+     (FpFcntl(Fd, 2 {F_SETFD}, 1 {FD_CLOEXEC}) <> 0) then
+  begin
+    FpClose(Fd);
+    Exit;
+  end;
+  Region := Default(flock);
+  Region.l_type := SESSION_F_WRLCK;
+  Region.l_whence := SEEK_SET;
+  Region.l_start := 0;
+  Region.l_len := 0;
+  repeat
+    if FpFcntl(Fd, F_SETLK, Region) = 0 then
+    begin
+      // The new name is ours; only now does the old one go.
+      if HeldSessionNameLockFD >= 0 then
+        FpClose(HeldSessionNameLockFD);
+      HeldSessionNameLockFD := Fd;
+      HeldSessionNameLockName := Want;
+      Exit(snlAcquired);
+    end;
+    ErrNo := FpGetErrNo;
+  until ErrNo <> ESysEINTR;
+  FpClose(Fd);
+  if (ErrNo = ESysEACCES) or (ErrNo = ESysEAGAIN) then
+    Result := snlBusy;
 end;
 {$ENDIF}
 
@@ -2420,6 +2518,35 @@ begin
   end;
 end;
 
+function RenameSessionAt(const APath, ANewName: string;
+  out ASettled: string): string;
+var
+  Payload: TByteArray;
+  Reply: string;
+  L: Longint;
+begin
+  ASettled := '';
+  // The wire string is a Longint length followed by the bytes, the same shape
+  // the daemon's RdStr reads. Built here rather than borrowed from st_cli,
+  // which depends on this unit and not the other way round.
+  L := Length(ANewName);
+  Payload := nil;
+  SetLength(Payload, 1 + SizeOf(Longint) + L);
+  Payload[0] := WINOP_RENAME_SESSION;
+  Move(L, Payload[1], SizeOf(Longint));
+  if L > 0 then
+    Move(ANewName[1], Payload[1 + SizeOf(Longint)], L);
+  Reply := '';
+  if CtlSimple(APath, FRAME_CTL_WINOP, -1, Payload, Reply) then
+  begin
+    ASettled := Trim(Reply);
+    Exit('');
+  end;
+  if Reply <> '' then
+    Exit(Reply);
+  Result := 'cannot reach the session';
+end;
+
 function CtlSimple(const ASocket: string; AKind: byte; APane: integer;
   const APayload: TByteArray; out AReply: string): boolean;
 var
@@ -2443,7 +2570,15 @@ begin
        Deadline) then
       Exit;
     if RKind = FRAME_CTL_OK then
-      Result := True
+    begin
+      Result := True;
+      // An OK may carry a payload of its own -- the name a rename settled on,
+      // for instance. Both callers read AReply only after a failure, so
+      // handing it back on success costs them nothing and stops the one
+      // command that answers something from having to guess it.
+      if Length(RData) > 0 then
+        SetString(AReply, PAnsiChar(@RData[0]), Length(RData));
+    end
     else if (RKind = FRAME_CTL_ERR) and (Length(RData) > 0) then
       SetString(AReply, PAnsiChar(@RData[0]), Length(RData));
   finally
@@ -2950,6 +3085,12 @@ begin
         // previews in one Idle batch without translating managed objects.
         if DecodeLayoutPreviewBlob(AData, Preview) then
           AEvent.Kind := sekLayoutPreviewEv;
+      end;
+    FRAME_SESSION_RENAMED_EV:
+      begin
+        AEvent.Kind := sekSessionRenamedEv;
+        if Length(AData) > 0 then
+          SetString(AEvent.Text, PAnsiChar(@AData[0]), Length(AData));
       end;
     FRAME_SHUTDOWN_EV: AEvent.Kind := sekShutdown;
   else
@@ -7076,6 +7217,20 @@ begin
         FTitleFixed[APane] := True;
         CtlReplyOk(AFd, '');
       end;
+    WINOP_RENAME_SESSION:
+      begin
+        TitleS := RdStr;
+        if (not StringsValid) or (Ofs <> Length(AData)) then
+        begin
+          CtlReplyErr(AFd, 'bad request');
+          Exit;
+        end;
+        TitleS := RenameSessionTo(TitleS);
+        if TitleS <> '' then
+          CtlReplyErr(AFd, TitleS)
+        else
+          CtlReplyOk(AFd, FName);
+      end;
     WINOP_RESIZE:
       begin
         if (APane < 0) or (APane >= FPaneCount) or
@@ -8291,6 +8446,79 @@ begin
         end;
       end;
     end;
+end;
+
+// Renaming a live session moves three things that all carry the name: the
+// AF_UNIX socket clients connect through, the sidecar that describes the
+// session, and the creation lock that stops two sessions sharing a name.
+//
+// The order is what makes it safe. The new name's lock is taken first, so
+// nothing else can claim it while this runs. The socket moves next, because
+// that is the rendezvous point and a rename is atomic within the directory --
+// a client connecting is either on the old path or the new one, never on a
+// half-built name. The sidecar follows; if it fails the socket is put back and
+// the session keeps the name it had.
+//
+// The session identity the panes carry (SUPERTERM_SESSION_CHAIN) is a pid and
+// a tick, not the name, so nested-session detection is unaffected by this.
+function TDetachedSession.RenameSessionTo(const ANewName: string): string;
+var
+  Want, NewSock, NewMeta, OldSock, OldMeta: string;
+begin
+  // Sanitize substitutes a default for an empty name and truncates at 64, so
+  // the caller's own text is what decides whether this was a real request.
+  if Trim(ANewName) = '' then
+    Exit('empty name');
+  Want := SanitizeSessionName(Trim(ANewName));
+  if Want = FName then
+    Exit('');                      // already called that: nothing to do
+  NewSock := SessionSocketPathFor(Want);
+  NewMeta := SessionMetaPathFor(Want);
+  if FileExists(NewSock) or FileExists(NewMeta) then
+    Exit('name already in use');
+  case TrySwapSessionNameLock(Want) of
+    snlBusy: Exit('name already in use');
+    snlError: Exit('cannot lock that name');
+  end;
+  OldSock := FSocketPath;
+  OldMeta := FMetaPath;
+  if (OldSock <> '') and (not RenameFile(OldSock, NewSock)) then
+  begin
+    TrySwapSessionNameLock(FName);
+    Exit('cannot move the session socket');
+  end;
+  if (OldMeta <> '') and FileExists(OldMeta) and
+     (not RenameFile(OldMeta, NewMeta)) then
+  begin
+    if OldSock <> '' then
+      RenameFile(NewSock, OldSock);
+    TrySwapSessionNameLock(FName);
+    Exit('cannot move the session description');
+  end;
+  FName := Want;
+  FSocketPath := NewSock;
+  FMetaPath := NewMeta;
+  // FileExists above is a real guard and not only belt-and-braces: it answers
+  // true for a bound AF_UNIX socket, so a live session's name is seen even
+  // before its creation lock is consulted.
+  Inc(FRevision);
+  WriteSidecar;
+  BroadcastSessionRenamed;
+  Result := '';
+end;
+
+// Tell every attached client the session answers to a new name now. Old
+// clients decode unknown frames as sekIgnore, so this is safe to send to all.
+procedure TDetachedSession.BroadcastSessionRenamed;
+var
+  Data: TByteArray;
+begin
+  Data := nil;
+  SetLength(Data, Length(FName));
+  if Length(FName) > 0 then
+    Move(FName[1], Data[0], Length(FName));
+  if Length(Data) > 0 then
+    Broadcast(FRAME_SESSION_RENAMED_EV, -1, Data[0], Length(Data), True, -1);
 end;
 
 procedure TDetachedSession.WriteSidecar;

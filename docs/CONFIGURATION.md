@@ -593,6 +593,14 @@ simply disconnects the client, instantly and with no dialog:
 - Socket: `~/.superterm/sessions/<name>.sock` (directory mode `700`).
 - Metadata sidecar: `~/.superterm/sessions/<name>.ini` with the session
   name, profile, pane count, server PID, and creation time (mode `600`).
+- Creation lock: `~/.superterm/sessions/.create-<name>.lock`, held for as
+  long as the session owns that name, so two sessions can never share one.
+
+The name is not fixed for the life of the session. `superterm rename-session
+SESSION NEW_NAME`, the `Rename` button in the session picker (`Ctrl-Q s`) and
+`Sessions -> Rename session...` all move those three files together, taking
+the new name before releasing the old one. Attached clients are told and
+follow; nothing is interrupted.
 
 Session names are sanitized to `A-Z a-z 0-9 . _ -`; other characters become
 `-`, leading dots and dashes are stripped, and names are limited to 64

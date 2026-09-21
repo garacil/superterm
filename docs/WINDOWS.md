@@ -181,7 +181,7 @@ release are one command, documented in `packaging/windows/README.md`:
 powershell -ExecutionPolicy Bypass -File packaging\windows\release.ps1 [-Sign] [-Upload]
 ```
 
-The installer is `dist\SuperTerm-5.2.2-windows-x64-setup.exe`; it installs
+The installer is `dist\SuperTerm-5.2.9-windows-x64-setup.exe`; it installs
 under `%LOCALAPPDATA%\Programs\SuperTerm` without elevation and includes both
 executables (`superterm.exe` and `superterm-tray.exe`), documentation, the
 configuration example, and desktop backgrounds. Compiling it alone, from

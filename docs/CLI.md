@@ -84,6 +84,8 @@ commands always require an explicit target (`.` counts as explicit).
 superterm list [SESSION]         sessions table, or pane details of one
 superterm attach [SESSION]       attach the interactive terminal
 superterm kill SESSION           terminate a session and its programs
+superterm rename-session SESSION NEW_NAME
+                                 rename a live session
 superterm --session NAME         name the session created at launch
 ```
 
@@ -91,6 +93,25 @@ superterm --session NAME         name the session created at launch
 argument it prints per pane: index, title, type (`local`/`ssh`/`command`),
 target (`user@host`), the live running command, terminal size, scrollback
 lines and flags (`*` focused, `M` minimized, `Z` zoomed, `!` dead).
+
+`rename-session` changes the identity of the workspace, not a pane title. The
+name is what `attach` connects to and what the first half of every `TARGET`
+refers to, so after renaming `build` to `nightly` the pane addressed as
+`build:2` is addressed as `nightly:2`.
+
+It is safe on a session with clients attached. The name is carried by three
+things at once -- the socket clients connect through, the sidecar that
+describes the session, and the lock that stops two sessions sharing a name --
+and all three move together, the new name being taken before the old one is
+released so nothing can claim either in between. Attached clients are told and
+follow; nothing is interrupted and no program notices.
+
+The name is reduced to `[A-Za-z0-9._-]`, any other character becoming `-`, and
+cut at 64 characters; the reply states the name that was actually settled on.
+A name another session already holds is refused, and so is an empty one.
+
+Renaming a **pane title** is the separate `rename` command under Windows
+below.
 
 ### Panes
 
@@ -124,13 +145,20 @@ superterm new SESSION[:PANE]     open (split) a new pane
   -d, --down | -r, --right       split direction (default: down)
 superterm close TARGET           close a pane
 superterm focus TARGET           set the focused pane ('.' follows it when unique)
-superterm rename TARGET NAME     set a title retained by the live session
+superterm rename TARGET NAME     retitle a pane (the session keeps it)
 superterm resize TARGET WxH      explicitly resize the shared PTY, e.g. 100x30
 superterm minimize TARGET        minimize the window
 superterm restore TARGET         undo minimize and zoom
 superterm zoom TARGET            maximize and focus the window
 superterm organize SESSION [grid|tile|cascade]
 ```
+
+`rename` sets a **pane title**: the text in that window's title bar, which the
+live session keeps until the pane closes and the shell can no longer overwrite.
+Omitting `:PANE` selects the focused pane, as every pane command does, so the
+report names the session the pane belongs to. To rename the session itself --
+a different object, with a different command -- see `rename-session` under
+Sessions.
 
 `resize` accepts a normal or minimized window. A maximized/fullscreen pane must
 be restored first so its canonical frame and PTY cannot describe different grids.
@@ -285,6 +313,8 @@ explícito).
 superterm listar [SESION]        tabla de sesiones, o detalle de una
 superterm conectar [SESION]      conecta el terminal interactivo
 superterm matar SESION           termina una sesión y sus programas
+superterm renombrar-sesion SESION NOMBRE
+                                 renombra una sesión viva
 superterm --sesion NOMBRE        nombra la sesión creada al arrancar
 ```
 
@@ -292,6 +322,24 @@ superterm --sesion NOMBRE        nombra la sesión creada al arrancar
 sesión, imprime por panel: índice, título, tipo (`local`/`ssh`/`command`),
 destino (`usuario@host`), el comando vivo, tamaño del terminal, líneas de
 historial y estado (`*` foco, `M` minimizada, `Z` zoom, `!` muerto).
+
+`renombrar-sesion` cambia la identidad del espacio de trabajo, no el título de
+un panel. El nombre es aquello a lo que `conectar` se une y lo que nombra la
+primera mitad de todo `DESTINO`: tras renombrar `build` a `nightly`, el panel
+`build:2` pasa a ser `nightly:2`.
+
+Es seguro con clientes conectados. El nombre lo llevan tres cosas a la vez --el
+socket por el que conectan los clientes, el fichero que describe la sesión y el
+candado que impide que dos sesiones lo compartan-- y las tres se mueven juntas,
+tomando el nombre nuevo antes de soltar el viejo para que nadie pueda quedarse
+con ninguno entre medias. A los clientes conectados se les avisa y siguen; nada
+se interrumpe y ningún programa se entera.
+
+El nombre se reduce a `[A-Za-z0-9._-]`, cualquier otro carácter pasa a `-`, y
+se corta a 64 caracteres; la respuesta dice el nombre que quedó. Un nombre que
+ya tenga otra sesión se rechaza, y uno vacío también.
+
+Renombrar el **título de un panel** es la orden aparte `renombrar`, en Ventanas.
 
 ### Paneles
 
@@ -325,7 +373,7 @@ superterm nueva SESION[:PANEL]   abre (divide) un panel nuevo
   -d, --abajo | -r, --derecha    dirección de la división (por defecto: abajo)
 superterm cerrar DESTINO         cierra un panel
 superterm foco DESTINO           fija el foco ('.' lo sigue si la sesión es única)
-superterm renombrar DESTINO NOMBRE  fija un título retenido en la sesión viva
+superterm renombrar DESTINO NOMBRE  retitula un panel (la sesión lo conserva)
 superterm tamano DESTINO WxH     redimensiona el PTY compartido, ej. 100x30
 superterm minimizar DESTINO      minimiza la ventana
 superterm restaurar DESTINO      deshace minimizar y zoom

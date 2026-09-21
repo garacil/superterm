@@ -129,11 +129,11 @@ begin
   Blank;
   H(ALanguage, 'COMMAND PAGES', 'PAGINAS DE ORDEN');
   H(ALanguage,
-    '  list, attach, kill; send, capture; new, close, focus, rename, resize',
+    '  list, attach, kill; send, capture; new, close, focus, rename, resize,',
     '  listar, conectar, matar; enviar, capturar; nueva, cerrar, foco, renombrar, tamano');
   H(ALanguage,
-    '  minimize, restore, zoom, organize',
-    '  minimizar, restaurar, ampliar, organizar');
+    '  rename-session, minimize, restore, zoom, organize',
+    '  renombrar-sesion, minimizar, restaurar, ampliar, organizar');
   Blank;
   H(ALanguage, 'QUICK EXAMPLES', 'EJEMPLOS RAPIDOS');
   H(ALanguage, '  superterm --help sessions',
@@ -683,6 +683,15 @@ begin
   H(ALanguage,
     '  one trimmed non-empty fixed title. The shell cannot overwrite it.',
     '  en un titulo fijo recortado y no vacio. El shell no lo sobrescribe.');
+  H(ALanguage,
+    '  This renames a pane. Omitting :PANE takes the focused one, so the',
+    '  Esto renombra un panel. Sin :PANEL toma el que tiene el foco, asi que');
+  H(ALanguage,
+    '  report names the session too. To rename the session itself:',
+    '  el mensaje nombra tambien la sesion. Para renombrar la sesion:');
+  H(ALanguage,
+    '  superterm rename-session.',
+    '  superterm renombrar-sesion.');
   Blank;
   H(ALanguage, 'EXAMPLES', 'EJEMPLOS');
   H(ALanguage, '  superterm rename prod:2 Production logs',
@@ -692,6 +701,47 @@ begin
   Blank;
   SeeAlso(ALanguage, 'superterm --help targets; superterm --help windows',
     'superterm --ayuda destinos; superterm --ayuda ventanas');
+end;
+
+procedure HelpRenameSession(ALanguage: TUiLanguage);
+begin
+  Page(ALanguage, 'COMMAND: rename-session', 'ORDEN: renombrar-sesion');
+  H(ALanguage, 'SYNOPSIS', 'SINOPSIS');
+  H(ALanguage, '  superterm rename-session SESSION NEW_NAME...',
+    '  superterm renombrar-sesion SESION NUEVO_NOMBRE...');
+  H(ALanguage, 'ALIASES', 'ALIAS');
+  H(ALanguage, '  rename-session, renombrar-sesion',
+    '  renombrar-sesion, rename-session');
+  H(ALanguage, 'OPTIONS', 'OPCIONES');
+  H(ALanguage, '  none; every word after SESSION belongs to the new name',
+    '  ninguna; todo lo posterior a SESION es el nombre nuevo');
+  Blank;
+  H(ALanguage, 'BEHAVIOR', 'COMPORTAMIENTO');
+  H(ALanguage,
+    '  Renames the session itself, not a pane title. The socket clients',
+    '  Renombra la sesion, no el titulo de un panel. El socket por el que');
+  H(ALanguage,
+    '  connect through, its description and its name lock all move together,',
+    '  conectan los clientes, su descripcion y su candado de nombre se mueven');
+  H(ALanguage,
+    '  so attached clients keep working and nothing is interrupted.',
+    '  juntos, asi que los clientes conectados siguen sin enterarse.');
+  H(ALanguage,
+    '  The name is reduced to [A-Za-z0-9._-] and cut at 64 characters; the',
+    '  El nombre se reduce a [A-Za-z0-9._-] y se corta a 64 caracteres; la');
+  H(ALanguage,
+    '  reply reports the name that was actually settled on. A name already',
+    '  respuesta dice el nombre que quedo. Un nombre ya usado por otra sesion');
+  H(ALanguage,
+    '  taken by another session is refused.',
+    '  se rechaza.');
+  Blank;
+  H(ALanguage, 'EXAMPLES', 'EJEMPLOS');
+  H(ALanguage, '  superterm rename-session session production',
+    '  superterm renombrar-sesion session produccion');
+  Blank;
+  SeeAlso(ALanguage, 'superterm --help rename; superterm --help targets',
+    'superterm --ayuda renombrar; superterm --ayuda destinos');
 end;
 
 procedure HelpResize(ALanguage: TUiLanguage);
@@ -1621,6 +1671,7 @@ begin
     'close', 'cerrar': HelpClose(ALanguage);
     'focus', 'select', 'foco', 'seleccionar': HelpFocus(ALanguage);
     'rename', 'renombrar': HelpRename(ALanguage);
+    'rename-session', 'renombrar-sesion': HelpRenameSession(ALanguage);
     'resize', 'tamano', 'redimensionar': HelpResize(ALanguage);
     'minimize', 'minimizar': HelpMinimize(ALanguage);
     'restore', 'restaurar': HelpRestore(ALanguage);
