@@ -4,7 +4,9 @@ superterm runs natively on macOS from the same sources as GNU/Linux. There is no
 port and no macOS-only source tree: every darwin difference lives behind `{$IFDEF DARWIN}`
 in the shared files, and all of it is already merged into `main`.
 
-Written against superterm 5.2.2 on macOS 15.6 / Apple Silicon, FPC 3.2.4.
+Written against superterm 5.2.2 on macOS 15.6 / Apple Silicon, FPC 3.2.4. The 5.2.9
+assets were built by this same procedure, unchanged, on macOS 26.3.1 / Apple Silicon
+with the same compiler.
 
 ## What `macos-support` actually adds over `main`
 
@@ -143,4 +145,4 @@ suite runs. When triaging test failures here, **run the suite directly** —
 several suites fail on this machine purely from contention and pass in isolation.
 
 macOS assets have shipped for 2.1, 3.0, 3.0.1, 3.2, 3.3, 3.4.1, 3.4.2, 3.4.3, 3.5.0, 3.5.1,
-3.5.2 and 5.2.2.
+3.5.2, 5.2.2 and 5.2.9.
