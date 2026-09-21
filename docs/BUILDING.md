@@ -315,6 +315,39 @@ keys and configuration. A user-local, unprivileged uninstall cannot own such a
 service and therefore touches no host service. A `DESTDIR` uninstall only
 changes the staging tree.
 
+## Release packages
+
+```sh
+./packaging/linux/build-packages.sh [OUTDIR]     # default: ./dist
+```
+
+Builds the four GNU/Linux release artifacts from one staged tree: the portable
+`superterm-<version>-gnu-x86_64.tar.gz`, and a native package for each family
+-- `.pkg.tar.zst` (Arch), `.rpm`, `.deb` -- each with a `.sha256` beside it.
+The version comes from `VERSION`; nothing is passed on the command line.
+
+The installed layout is the same in all three packages:
+
+| Path | Contents |
+| --- | --- |
+| `/usr/bin/superterm` | the binary, stripped |
+| `/usr/share/doc/superterm/` | `README.md`, `CHANGELOG.md`, every `docs/*.md` |
+| `/usr/share/superterm/backgrounds/` | the `.art` desktop pictures |
+| `/usr/share/superterm/examples/` | `superterm.ini.example` |
+
+They differ only where the family requires it: the licence goes to
+`/usr/share/licenses/superterm/LICENSE` on Arch, `/usr/share/doc/superterm/
+LICENSE` in the RPM and `/usr/share/doc/superterm/copyright` in the deb; the
+declared dependency is `glibc`, `libc6`, and whatever the RPM tooling reads out
+of the ELF.
+
+`makepkg` refuses to run as root, so when the script is run by root the Arch
+package is built by the owner of the source tree. `dpkg-deb` and `rpm-tools`
+must be installed; on Arch they are `dpkg` and `rpm-tools`.
+
+macOS packaging is `packaging/macos/release.sh`; Windows is
+`packaging/windows/superterm.iss` with Inno Setup.
+
 ## Debugging
 
 The application writes runtime diagnostics when `SUPERTERM_DEBUG` names a
