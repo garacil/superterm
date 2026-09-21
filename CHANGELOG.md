@@ -57,6 +57,45 @@ now undone by st_kbd itself, next to the table that applies it.
 `Ctrl-PgUp`, `Ctrl-PgDn` and `Ctrl-Ins` translate to their xterm sequences
 instead of being dropped.
 
+### One cursor, and it is the one you configured
+
+Superterm drew a second cursor: an inverted cell painted under the terminal's
+own, always a block and always in superterm's colours. On top of that it
+translated FreeVision's cursor type into DECSCUSR and sent it to the host on
+every frame, so the shape a user had configured was overridden as well. With a
+block cursor the two coincide and nobody notices; with an underline cursor you
+see both at once, a grey block with a yellow underline under it. Reported by
+[@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue #4.
+
+The painted block is gone and the host's own cursor is the only one. The
+focused pane's DECSCUSR is mirrored onto it, so the shape is whatever the
+application asked for -- and nothing is sent at all until an application asks,
+which is what leaves a configured cursor alone. The 530ms repaint of the
+focused pane went with it: the terminal blinks its own cursor, so an idle pane
+is now genuinely idle.
+
+The same defect was the whole of issue #3, "Backspace in Kitty does not delete
+the character in front of the cursor but at a space". It does; the grey block
+sat on the empty cell the cursor occupies, and that block is what the eye
+follows. Reproduced under kitty with an underline cursor, against both builds,
+and the second cursor is visibly the only difference.
+
+### The wheel keeps working while a button is held
+
+The RTL's default mouse queue does not deliver what it is given. On the way
+out, `GetPendingEvent` recomputes the action from the button delta, and when
+the previous buttons are non-zero it calls the new event a release. A wheel
+notch taken during a drag therefore arrived as a release: the application never
+saw the wheel, and superterm reported a release for a button still held, ending
+the drag halfway through. The RTL even tried to exempt the wheel, but tested
+the previous event's buttons rather than this one's, so the exemption never
+fires in the one case that needs it. Reported by
+[@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue #2.
+
+st_kbd decodes SGR and X10, where press and release are explicit in the
+protocol, so it now owns the queue as well: what it decoded is what the
+application receives, in order and unmodified.
+
 ### XTSAVE is not save-cursor
 
 `CSI ? Pm s` (XTSAVE) and `CSI ? Pm r` (XTRESTORE) save and restore DEC

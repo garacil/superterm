@@ -48,6 +48,20 @@ procedure HostPasteOn;
 // terminal already sends the ESC form, and both modes are private, so a
 // terminal that does not implement them ignores this.
 procedure HostMetaEscapeOn;
+// Give the host terminal the cursor shape the focused pane asked for, as
+// DECSCUSR (CSI Ps SP q).
+//
+// The emulator has always recorded a pane's DECSCUSR and then drawn its own
+// cursor as an inverted cell, which landed on top of the terminal's real
+// cursor: two cursors at once, and the painted one in the wrong shape and
+// colour. The real cursor is the only one now, so the style has to reach it.
+//
+// Nothing is written until a pane actually asks for a style, so a user who
+// configured an underline or a colour keeps it -- superterm never had an
+// opinion about the cursor, only the applications inside it do. Once one has
+// asked, its later request for 0 is passed on as well, exactly as it would
+// reach a bare terminal.
+procedure HostCursorStyle(AStyle: integer);
 // Hand the terminal back exactly as it was found: every mouse mode off,
 // bracketed paste off, and anything the terminal already reported dropped.
 // Call at the very end, after the application is done.
@@ -189,6 +203,10 @@ var
   UseSyncOutput: Boolean = False;  // DECSET 2026; opt-in via SUPERTERM_SYNC=1
   HostUtf8: Boolean = True;
   ProbeHostEncoding: Boolean = True;
+  // DECSCUSR mirroring: what was last sent to the host, and whether anything
+  // was ever sent at all. Both matter -- see HostCursorStyle.
+  HostCursorStyleLast: Integer = 0;
+  HostCursorStyleSet: Boolean = False;
 
 {$IFDEF UNIX}
 const
@@ -682,6 +700,21 @@ begin
   WriteRaw(#27'[?1034l'#27'[?1036h');
 end;
 
+procedure HostCursorStyle(AStyle: integer);
+begin
+  if (AStyle < 0) or (AStyle > 6) then
+    Exit;
+  // Silence until something asks. HostCursorStyleSet stays False while every
+  // pane is still on 0, which is the state of a terminal nobody has touched.
+  if (AStyle = 0) and (not HostCursorStyleSet) then
+    Exit;
+  if AStyle = HostCursorStyleLast then
+    Exit;
+  HostCursorStyleLast := AStyle;
+  HostCursorStyleSet := True;
+  WriteRaw(#27'[' + IntToStr(AStyle) + ' q');
+end;
+
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
 var
   Cell: PVideoCell;
@@ -998,15 +1031,17 @@ end;
 
 function CursorTypeSequence(AType: Word): AnsiString;
 begin
-  case AType of
-    crHidden: Result := #27'[?25l';
-    crBlock: Result := #27'[2 q'#27'[?25h';
+  // Visibility only. This used to translate FreeVision's cursor type into a
+  // DECSCUSR shape as well -- crBlock to CSI 2 SP q, everything else to
+  // CSI 4 SP q -- which meant superterm overrode the shape the user had
+  // configured in their own terminal, every single frame, for no reason it
+  // could articulate. The shape now has one owner, HostCursorStyle, which
+  // speaks only for the application running in the focused pane and stays
+  // quiet while no application has an opinion.
+  if AType = crHidden then
+    Result := #27'[?25l'
   else
-    // crUnderline and the platform fallbacks use a steady underline. A host
-    // which does not implement DECSCUSR simply ignores the style selector and
-    // still honours the standard visibility sequence.
-    Result := #27'[4 q'#27'[?25h';
-  end;
+    Result := #27'[?25h';
 end;
 
 procedure QueueLatestCursorState;
@@ -2628,6 +2663,12 @@ begin
   // user had already reconfigured by hand.
   WriteRaw(#27'[?1003l'#27'[?1002l'#27'[?1000l'#27'[?1015l'#27'[?1006l' +
     #27'[?2004l'#27'[?9l'#27'[?1034h'#27'[?1036l');
+  // Only if a pane ever changed the cursor shape. Ps=0 is "the terminal's
+  // configured cursor" on the terminals that implement DECSCUSR properly, and
+  // sending it to a user who never had their cursor touched would be the very
+  // thing this release stopped doing.
+  if HostCursorStyleSet then
+    WriteRaw(#27'[0 q');
   {$IFDEF WINDOWS}
   FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
   RestoreVTConsole;

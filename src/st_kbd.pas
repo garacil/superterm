@@ -72,6 +72,7 @@ const
   PASTE_TIMEOUT_MS = 2000;
   MAX_HOST_PASTE = 1024 * 1024 - 16;
   HOST_PASTE_QUEUE = 8;
+  MOUSE_QUEUE = 64;      // this unit's own mouse ring; see SuperPutMouseEvent
 
 // The RTL's mouse queue is allocated by Mouse.InitMouse, which FreeVision
 // only calls when it believes a mouse exists (Drivers.InitEvents, gated on
@@ -109,6 +110,10 @@ var
   CursorReplyPending: boolean = False;
   DeferredInput: RawByteString = '';
   DeferredPos: integer = 1;
+  MQ: array[0..MOUSE_QUEUE - 1] of TMouseEvent;
+  MQHead: integer = 0;
+  MQTail: integer = 0;
+  MQCount: integer = 0;
 
 procedure ArmCursorPositionReply;
 begin
@@ -1204,9 +1209,59 @@ begin
   Result := 0; // an xterm pty cannot report standalone modifiers
 end;
 
+// The RTL's default mouse queue does not deliver what it was given: on the
+// way out, GetPendingEvent recomputes Action from the button delta.
+//
+//   if (Last.Buttons <> New.Buttons) then
+//     if Last.Buttons = 0 then Action := Down
+//     else if (Last.Buttons and (MouseButton4 or MouseButton5)) = 0 then
+//       Action := Up;
+//
+// That is written for a driver which reports a raw button state and lets the
+// queue infer the gesture. This unit does the opposite: it decodes SGR and
+// X10, where press and release are explicit in the protocol, and the button
+// state is already correct. The rewrite therefore only damages it -- turning
+// a wheel notch taken while another button is held into a release, because
+// Last.Buttons is then non-zero. The RTL even tried to exempt the wheel, but
+// tested the previous event's buttons instead of this one's, so the exemption
+// never fires in exactly the case that needs it. Reported as issue #2.
+//
+// Owning the queue is the whole fix: what this unit decoded is what the
+// application receives, in order and unmodified.
+procedure SuperPutMouseEvent(const AEvent: TMouseEvent);
+begin
+  if MQCount >= MOUSE_QUEUE then
+    Exit;   // a full queue drops the newest rather than corrupt the ring
+  MQ[MQTail] := AEvent;
+  MQTail := (MQTail + 1) mod MOUSE_QUEUE;
+  Inc(MQCount);
+end;
+
+function SuperPollMouseEvent(var AEvent: TMouseEvent): boolean;
+begin
+  Result := MQCount > 0;
+  if Result then
+    AEvent := MQ[MQHead]
+  else
+    AEvent := Default(TMouseEvent);
+end;
+
+procedure SuperGetMouseEvent(var AEvent: TMouseEvent);
+begin
+  if MQCount = 0 then
+  begin
+    AEvent := Default(TMouseEvent);
+    Exit;
+  end;
+  AEvent := MQ[MQHead];
+  MQHead := (MQHead + 1) mod MOUSE_QUEUE;
+  Dec(MQCount);
+end;
+
 procedure InstallSuperKeyboard;
 var
   Drv: TKeyboardDriver;
+  MDrv: TMouseDriver;
 begin
   Drv := Default(TKeyboardDriver);
   Drv.InitDriver := @KInit;
@@ -1215,6 +1270,15 @@ begin
   Drv.PollKeyEvent := @KPoll;
   Drv.GetShiftState := @KShiftState;
   SetKeyboardDriver(Drv);
+  // Keep everything the platform driver does -- detection, show/hide, the
+  // pointer position -- and take over only the queue.
+  MDrv := Default(TMouseDriver);
+  GetMouseDriver(MDrv);
+  MDrv.UseDefaultQueue := False;
+  MDrv.PutMouseEvent := @SuperPutMouseEvent;
+  MDrv.PollMouseEvent := @SuperPollMouseEvent;
+  MDrv.GetMouseEvent := @SuperGetMouseEvent;
+  SetMouseDriver(MDrv);
 end;
 
 end.

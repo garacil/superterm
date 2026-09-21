@@ -752,7 +752,7 @@ Most chords are the ones tmux binds, so the muscle memory transfers.
 | `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
 | Mouse wheel | Scroll the pane's history (three lines a notch), with no prefix: a wheel is not a key. On the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
 | Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
-| Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
+| Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel — including a wheel notch taken while a button is held, which does not end the drag — in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
 
 Everything else goes straight to the focused pane, and to nowhere at all when
 no pane is focused. That includes Alt: `Alt-b`, `Alt-f`, `Alt-.` and the rest
@@ -1035,11 +1035,17 @@ Author: Germán Luis Aracil Boned — August 2026.
 
 ### Thanks
 
-- [@fp-textmode-ide](https://github.com/fp-textmode-ide) — reported
-  [#1](https://github.com/garacil/superterm/issues/1), `Alt`+key not reaching
-  the pane under xterm. The report turned out to cover two independent defects
-  and led to the key policy this version ships: every superterm action behind
-  the prefix, and no bare key taken from the program in the pane. Fixed.
+- [@fp-textmode-ide](https://github.com/fp-textmode-ide) — reported all four
+  of the issues this release closes, and every one of them was real:
+  [#1](https://github.com/garacil/superterm/issues/1) `Alt`+key never reaching
+  the pane, which turned out to be two independent defects and led to the key
+  policy this version ships;
+  [#2](https://github.com/garacil/superterm/issues/2) the wheel being lost
+  while a button is held;
+  [#3](https://github.com/garacil/superterm/issues/3) backspace appearing to
+  delete at the wrong place under kitty; and
+  [#4](https://github.com/garacil/superterm/issues/4) a block cursor drawn over
+  a configured underline one — #3 and #4 being the same second cursor. Fixed.
 
 superterm is free software, released under the GNU General Public License
 version 3 (see the `LICENSE` file). The bundled FreeVision fork in

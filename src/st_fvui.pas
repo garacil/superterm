@@ -664,9 +664,6 @@ function StWaitForMultipleObjects(ACount: LongWord; AHandles: Pointer;
   external 'kernel32' name 'WaitForMultipleObjects';
 {$ENDIF}
 
-var
-  CursorPhase: boolean = False;
-
 function FirstWord(const S: string): string;
 var
   i: integer;
@@ -1123,7 +1120,6 @@ var
   Row: TRow;
   RowLen: integer;
   Scrolled: boolean;
-  ShowBlk: boolean;
   BlankWord: word;
   GOrig: Objects.TPoint;   // this view's global (screen) origin, computed once
   // rectangles of the windows stacked IN FRONT of this one, in global screen
@@ -1287,11 +1283,13 @@ begin
   ViewY := 0;
   cx := App^.Scr[PaneIdx].CursorX - ViewX;
   cy := App^.Scr[PaneIdx].CursorY - ViewY;
-  // DECSCUSR 2/4/6 = steady style (no blink); 0/1/3/5 blinks
-  ShowBlk := GetState(sfSelected) and (not Scrolled) and
-    (not (App^.CopyMode and (App^.CopyPane = PaneIdx))) and
-    App^.Scr[PaneIdx].CursorVisible and
-    (CursorPhase or (App^.Scr[PaneIdx].CursorStyle in [2, 4, 6]));
+  // The focused pane used to get a second cursor here: an inverted cell
+  // painted under the terminal's real one, in superterm's colours and always
+  // a block. Someone running an underline cursor saw both at once, which is
+  // what issue #4 reported. The real cursor is the only cursor now, and the
+  // pane's DECSCUSR is mirrored onto it below so the shape is the one the
+  // application asked for -- including its blink, which the terminal does
+  // itself and no longer needs a repaint twice a second to fake.
   NonBlank := 0;
   // global origin of the view and a blank cell carrying the pane's current
   // color, so padding/empty cells register richly too (a truecolor background
@@ -1353,7 +1351,7 @@ begin
              Inc(NonBlank);
            B[x] := RenderAttr(cell.Attr) or word(TranslitByte(cell));
            Marked := App^.ClipboardCellMarked(PaneIdx, AbsY, SourceX);
-           InvertCell := Marked or (ShowBlk and (x = cx) and (y = cy));
+           InvertCell := Marked;
            if InvertCell then
            begin
              fg := (B[x] shr 8) and $0F;
@@ -1466,7 +1464,12 @@ begin
       SetCursor(0, 0);
     if (cx >= 0) and (cx < w) and (cy >= 0) and (cy < h) and
        GetState(sfSelected) and App^.Scr[PaneIdx].CursorVisible then
-      ShowCursor
+    begin
+      // Give the host the shape this pane asked for, so the one visible
+      // cursor is the application's, not a guess.
+      HostCursorStyle(App^.Scr[PaneIdx].CursorStyle);
+      ShowCursor;
+    end
     else
       HideCursor;
   end;
@@ -4185,6 +4188,19 @@ begin
   MouseGrabButton := MB_NONE;
 end;
 
+// The RTL button bit for one of our MB_* numbers, so a release can be checked
+// against the button it claims to release.
+function GrabButtonMask(AButton: integer): word;
+begin
+  case AButton of
+    MB_LEFT: Result := 1;
+    MB_RIGHT: Result := 2;
+    MB_MIDDLE: Result := 4;
+  else
+    Result := 0;
+  end;
+end;
+
 function TSuperApp.ForwardMouse(i: integer; const Event: TEvent;
   const ALocal: Objects.TPoint): boolean;
 var
@@ -4245,6 +4261,12 @@ begin
           MouseGrabPane := -1;
           Exit(MouseGrabPane = i);
         end;
+        // A wheel notch taken during a drag also arrives as a release -- the
+        // decoder fabricates one so the wheel bit never sticks. The held
+        // button is still down and its bit is still set, so reporting a
+        // release here ended the application's drag halfway through it.
+        if (Event.Buttons and GrabButtonMask(MouseGrabButton)) <> 0 then
+          Exit(True);
         Seq := EncodeMouseReport(Scr[i].MouseProto, MouseGrabButton, Col, Row, False);
         MouseGrabPane := -1;
         MouseGrabButton := MB_NONE;
@@ -10712,7 +10734,7 @@ var
   HostPaste: RawByteString;
   const
     LastTitle: cardinal = 0;
-    LastBlink: cardinal = 0;
+    LastRemoteRefresh: cardinal = 0;
     {$IFNDEF WINDOWS}
     LastSizeCheck: cardinal = 0;
     {$ENDIF}
@@ -11193,15 +11215,17 @@ begin
       if ComputeLayoutHash <> RemoteLayoutHash then
         SyncRemoteLayout;
     end;
-    if Tick - LastBlink >= 530 then
+    // An attached client has no pty of its own to wake it: the daemon's
+    // stream is the only thing that changes, and this is where the focused
+    // pane is brought back into step with it. It used to be filed under
+    // blinking the cursor superterm painted; that cursor is gone, the refresh
+    // is not, and losing it left a client's mirror behind the canonical
+    // screen. TTermView.Draw also republishes FreeVision's hardware-cursor
+    // state, which a raw fullscreen pane must not have written over it.
+    if Tick - LastRemoteRefresh >= 530 then
     begin
-      LastBlink := Tick;
-      CursorPhase := not CursorPhase;
+      LastRemoteRefresh := Tick;
       i := Lay.Focused;
-      // TTermView.Draw also updates FreeVision's hardware-cursor state.
-      // Even though the video framebuffer flush is suppressed in raw mode,
-      // that cursor path can emit a relative movement (for example ESC[3B)
-      // on top of the pane's output. The application owns the cursor too.
       if (not PassthroughActive) and
          (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
          (Win[i]^.Term <> nil) then
@@ -11320,17 +11344,9 @@ begin
       end;
     end;
   {$ENDIF}
-  // blinking cursor of the focused pane
-  if Tick - LastBlink >= 530 then
-  begin
-    LastBlink := Tick;
-    CursorPhase := not CursorPhase;
-    i := Lay.Focused;
-    if (not PassthroughActive) and
-       (i >= 0) and (i < MAX_PANES) and (Win[i] <> nil) and
-       (Win[i]^.Term <> nil) then
-      RepaintPane(i);
-  end;
+  { The focused pane used to be repainted every 530ms to blink a cursor
+    superterm painted itself. The terminal's own cursor blinks on its own, so
+    an idle pane is now genuinely idle. }
   // periodic titles
   if Tick - LastTitle > 1500 then
   begin
