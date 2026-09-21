@@ -96,7 +96,7 @@ def frame_number_slot(client):
 
 
 def open_class_menu(client):
-    client.send(b'\x1bc', 0.35)       # Alt-C: Classes
+    client.send(b'\x11mc', 0.35)       # Alt-C: Classes
     return 'Local shell' in client.text() and 'vr1' in client.text()
 
 

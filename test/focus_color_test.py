@@ -18,7 +18,7 @@ with open(HOME + '/.superterm/superterm.ini', 'w') as f:
 
 c = stlib.Client(HOME, w=100, h=30, lang='en')
 c.drain(2.0)
-c.send(b'\x1bOQ', 1.4)             # F2: add the second pane
+c.send(b'\x11v', 1.4)             # F2: add the second pane
 c.send(b'\x11', 0.2)
 c.send(b't', 1.2)                   # tile so both interiors stay visible
 
@@ -131,7 +131,7 @@ check('second right focus sends chrome only',
       b'38;2;20;220;80' not in focus_delta and
       b'38;2;250;40;20' not in focus_delta)
 
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

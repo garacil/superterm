@@ -34,7 +34,7 @@ c.drain(4.0)
 check('the client survived opening it', c.alive())
 
 # whatever came up, closing a pane must not take the client with it
-c.send(b'\x1b[13;3~', 2.5)
+c.send(b'\x11k', 2.5)
 check('the client survived closing a pane', c.alive())
 
 # and so must saving the session, which reads the class name by index
@@ -42,7 +42,7 @@ c.send(b'\x13', 1.5)                      # Ctrl-S: save
 check('the client survived saving', c.alive())
 
 if c.alive():
-    c.send(b'\x1bx', 1.0)
+    c.send(b'\x11x', 1.0)
     c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

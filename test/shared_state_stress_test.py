@@ -183,7 +183,7 @@ def click(client, x, y):
 
 a = stlib.Client(HOME, w=100, h=30, lang='en')
 a.drain(2.5)
-a.send(b'\x1bOQ', 1.5)          # F2: second pane
+a.send(b'\x11v', 1.5)          # F2: second pane
 sockets = stlib.session_sockets(HOME)
 check('session server exists', len(sockets) == 1)
 session = os.path.basename(sockets[0])[:-5] if sockets else ''

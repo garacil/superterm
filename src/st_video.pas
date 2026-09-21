@@ -38,6 +38,16 @@ procedure RestoreConsoleCursor;
 // Ask the outer terminal to delimit paste operations. st_kbd consumes those
 // delimiters and delivers the payload atomically to the application.
 procedure HostPasteOn;
+// Ask the outer terminal to send Alt+key as ESC followed by the key.
+//
+// xterm ships with eightBitInput on and metaSendsEscape off, so Alt+a arrives
+// as the single byte $E1 ('a' or $80) instead of ESC 'a'. A lone high byte is
+// indistinguishable here from the first byte of a UTF-8 character -- which is
+// exactly how an accented letter arrives -- so it cannot be classified after
+// the fact; it reached the pane as one invalid UTF-8 byte. Every other
+// terminal already sends the ESC form, and both modes are private, so a
+// terminal that does not implement them ignores this.
+procedure HostMetaEscapeOn;
 // Hand the terminal back exactly as it was found: every mouse mode off,
 // bracketed paste off, and anything the terminal already reported dropped.
 // Call at the very end, after the application is done.
@@ -660,6 +670,18 @@ begin
   WriteRaw(#27'[?2004h');
 end;
 
+procedure HostMetaEscapeOn;
+begin
+  // Plain DECRST/DECSET, never XTSAVE. Saving the previous values with
+  // CSI ? Pm s and putting them back with CSI ? Pm r would be the polite
+  // form, but those two finals are 's' = save-cursor and 'r' = scrolling
+  // region to any parser that does not special-case the private flag --
+  // which includes pyte and, until this commit, superterm's own emulator.
+  // ReleaseConsoleInput restores xterm's documented defaults instead: a
+  // mode set is universally understood, and there is nothing to misparse.
+  WriteRaw(#27'[?1034l'#27'[?1036h');
+end;
+
 function VideoCellAt(ABuffer: PVideoBuf; AIndex: LongInt): TVideoCell; inline;
 var
   Cell: PVideoCell;
@@ -881,7 +903,7 @@ begin
     220: Result := '▄';
     223: Result := '▀';
     {$IFDEF DARWIN}
-    235: Result := '⌥';  // Option-key symbol for shortcut labels (KEY_ALT)
+    235: Result := '⌥';  // Option-key symbol (CP437 235 is free for it)
     {$ENDIF}
     250: Result := '·';
     254: Result := '■';
@@ -954,7 +976,7 @@ begin
     1, 2, 7, 9, 10: AGlyph := 'o';
     3..6, 13..15, 22, 254: AGlyph := '*';
     {$IFDEF DARWIN}
-    235: AGlyph := '*';  // KEY_ALT on a 7-bit host: degrade like the suits do
+    235: AGlyph := '*';  // Option glyph on a 7-bit host: degrade like the suits
     {$ENDIF}
     11: AGlyph := 'M';
     12: AGlyph := 'F';
@@ -2600,9 +2622,12 @@ end;
 procedure ReleaseConsoleInput;
 begin
   // order matters: SGR last, so the tracking modes are already off and
-  // nothing new can arrive in either encoding
+  // nothing new can arrive in either encoding. The last two put the meta
+  // modes back to xterm's own defaults -- eightBitInput on, metaSendsEscape
+  // off -- which is what HostMetaEscapeOn found on all but a terminal the
+  // user had already reconfigured by hand.
   WriteRaw(#27'[?1003l'#27'[?1002l'#27'[?1000l'#27'[?1015l'#27'[?1006l' +
-    #27'[?2004l'#27'[?9l');
+    #27'[?2004l'#27'[?9l'#27'[?1034h'#27'[?1036l');
   {$IFDEF WINDOWS}
   FlushConsoleInputBuffer(GetStdHandle(STD_INPUT_HANDLE));
   RestoreVTConsole;

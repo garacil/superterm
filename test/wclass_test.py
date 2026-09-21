@@ -63,7 +63,7 @@ def check(name, cond):
 # ---- phase 0: 1-pane session so the classes do not autostart ----
 s = Session()
 s.drain(2.0)
-s.send(b'\x1bx', 1.0)          # Alt-X: local Exit autosaves the fallback
+s.send(b'\x11x', 1.0)          # Alt-X: local Exit autosaves the fallback
 s.close()
 time.sleep(0.4)
 check("bootstrap session saved", os.path.exists(SESS))
@@ -112,11 +112,11 @@ cmd=echo SHADOW_SYS_TOKEN; exec /bin/bash -i
 # Classes menu (Alt-C): '1 Local shell', then classes with digits 2..9 in
 # user-first order: 2 local-echo, 3 shadowme, 4 freeconn, 5 postonly, 6 syslegacy
 def open_class(sess, digit, t=1.5):
-    sess.send(b'\x1bc', 0.6)   # Alt-C opens the menu
+    sess.send(b'\x11mc', 0.6)   # Alt-C opens the menu
     sess.send(digit, t)        # digit with the menu open = open class
 
 def close_pane(sess):
-    sess.send(b'\x1bp', 0.5)   # Alt-P: Panes menu
+    sess.send(b'\x11mp', 0.5)   # Alt-P: Panes menu
     sess.send(b'c', 1.0)       # Close pane
 
 s = Session()
@@ -126,7 +126,7 @@ check("menu Classes visible", "Classes" in scr)
 check("no class autostart", all(t not in scr for t in TOKENS))
 
 # menu contents with Alt-C open
-s.send(b'\x1bc', 0.6)
+s.send(b'\x11mc', 0.6)
 scr = s.text()
 check("menu: Local shell row", "Local shell" in scr)
 check("menu: user local-echo", "local-echo" in scr)
@@ -169,7 +169,7 @@ s.send(b'echo STILL_$((41+1))_ALIVE\r', 1.2)
 scr = s.text()
 check("postonly shell alive", "STILL_42_ALIVE" in scr)
 
-s.send(b'\x1bx', 1.0)          # Alt-X: the single Exit path
+s.send(b'\x11x', 1.0)          # Alt-X: the single Exit path
 s.close()
 
 sys.exit(1 if fails else 0)

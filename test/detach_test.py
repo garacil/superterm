@@ -114,7 +114,7 @@ try:
     second.send(b'echo ATTACHED_OK\r', 1.0)
     stlib.check('reattached pane accepts input',
                 'ATTACHED_OK' in second.text())
-    second.send(b'\x1bx', 1.0)
+    second.send(b'\x11x', 1.0)
     second_status = second.wait_exit(6.0)
     stlib.check('permanent close exits client', second_status is not None and
                 os.WIFEXITED(second_status) and
@@ -136,7 +136,7 @@ try:
     exit_client = stlib.Client(HOME, w=W, h=H, dsr_row=10, dsr_col=20)
     stlib.feed_pyte(exit_client.stream, b'\033[10;20H', 'detach seed')
     exit_client.drain(1.5)
-    exit_client.send(b'\x1bx', 1.0)
+    exit_client.send(b'\x11x', 1.0)
     exit_status = exit_client.wait_exit(6.0)
     stlib.check('cursor restored after exit',
                 exit_status is not None and

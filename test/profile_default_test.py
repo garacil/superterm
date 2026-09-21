@@ -66,7 +66,7 @@ def click_text(label):
 
 
 def open_manager():
-    c.send(b'\x1br', 0.4)
+    c.send(b'\x11mr', 0.4)
     c.send(b'm', 0.8)
     return 'Set default' in c.text() and 'alpha' in c.text() and 'beta' in c.text()
 
@@ -102,7 +102,7 @@ with open(INI) as f:
 check('default persisted in config', 'default_profile=beta' in saved)
 check('default window follows beta', 'default_window=work' in saved)
 
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 c.close()
 stlib.close_all_daemons(HOME)
 stlib.report()

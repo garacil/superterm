@@ -1394,7 +1394,20 @@ def circle_window(clients, session, cycles=1, step_pause=0.20):
 
 
 def local_focus(client, pane):
-    client.send(b'\x1b' + str(pane).encode(), 0.35)
+    """Focus a pane through this client's own keyboard path.
+
+    This used to send Alt+digit, which superterm claimed before the pane saw
+    it.  It claims nothing now, so Alt+digit reaches the shell -- and readline
+    reads ESC-3 as a numeric argument, which silently swallowed the next
+    command typed into that pane.  The pane list is the keyboard route that
+    survives the rule: prefix w opens it, Home selects the first pane, Down
+    walks to the wanted one, Enter focuses it.
+    """
+    client.send(b'\x11w', 0.5)
+    client.send(b'\x1b[1~', 0.2)              # Home: first entry
+    for _ in range(pane - 1):
+        client.send(b'\x1b[B', 0.1)           # Down
+    client.send(b'\r', 0.35)
 
 
 def exact_round(clients, session, number, extra=None):
@@ -1823,7 +1836,7 @@ def live_stress(clients, session, seconds):
             daemon_pid = session_daemon_pid(session)
             fifo_before = (-1 if not fifo_log else
                            client_fifo_dequeue_count(fifo_log, daemon_pid))
-            sequences = [stlib.FULLSCREEN_CHORD, b'\x1bwr', b'\x11t']
+            sequences = [stlib.FULLSCREEN_CHORD, b'\x11mwr', b'\x11t']
             RNG.shuffle(sequences)
             writes = []
             for client, sequence in zip(clients, sequences):
@@ -1955,8 +1968,8 @@ else:
     creator = track_client(stlib.Client(
         HOME, w=CLIENT_W, h=CLIENT_H, lang='en', env=DEBUG_ENV))
     creator.drain(2.5)
-    creator.send(b'\x1bOQ', 1.0)
-    creator.send(b'\x1bOQ', 1.0)
+    creator.send(b'\x11v', 1.0)
+    creator.send(b'\x11v', 1.0)
     creator.send(b'\x11', 0.1)
     creator.send(b't', 1.0)
     sockets = stlib.session_sockets(HOME)
@@ -2041,18 +2054,19 @@ for number in range(ROUNDS):
           pane_visual_map(churn) == pane_visual_map(clients[0]))
 
     # A real concurrent geometry burst: the three writes are released by one
-    # barrier, while the fourth client detaches.  Each contender first asks
-    # for a different pane and then performs a non-reversing minimize. Shared
-    # focus may legitimately reorder those requests before Alt-F9 is decoded,
-    # so the oracle requires material canonical mutation and exact visual
-    # convergence rather than falsely claiming all three panes must minimize.
+    # barrier, while the fourth client detaches.  Each contender walks the
+    # shared focus to a different pane and then performs a non-reversing
+    # minimize.  Pane selection is relative (Ctrl-Q o / Ctrl-Q i) because
+    # superterm binds no bare key at all any more, so the contenders race on
+    # the shared focus itself rather than on absolute pane numbers -- a
+    # stronger version of the same conflict.  Shared focus may legitimately
+    # reorder those requests before Ctrl-Q - is decoded, so the oracle
+    # requires material canonical mutation and exact visual convergence
+    # rather than falsely claiming all three panes must minimize.
     patterns = (
-        (b'\x1b1\x1b[20;3~', b'\x1b2\x1b[20;3~',
-         b'\x1b3\x1b[20;3~'),
-        (b'\x1b2\x1b[20;3~', b'\x1b3\x1b[20;3~',
-         b'\x1b1\x1b[20;3~'),
-        (b'\x1b3\x1b[20;3~', b'\x1b1\x1b[20;3~',
-         b'\x1b2\x1b[20;3~'),
+        (b'\x11o\x11-', b'\x11i\x11-', b'\x11o\x11-'),
+        (b'\x11i\x11-', b'\x11o\x11-', b'\x11i\x11-'),
+        (b'\x11o\x11-', b'\x11o\x11-', b'\x11i\x11-'),
     )
     seqs = list(RNG.choice(patterns))
     RNG.shuffle(seqs)

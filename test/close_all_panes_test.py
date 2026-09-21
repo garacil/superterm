@@ -245,12 +245,12 @@ def check_single_empty_paint(label, records, initial_count,
 
 
 def open_close_all_menu(client):
-    client.send(b'\x1bw', 0.40)       # Alt-W: Windows
+    client.send(b'\x11mw', 0.40)       # Alt-W: Windows
     return 'Close all windows' in client.text()
 
 
 def open_local_shell(client):
-    client.send(b'\x1bc', 0.35)       # Alt-C: Classes
+    client.send(b'\x11mc', 0.35)       # Alt-C: Classes
     visible = 'Local shell' in client.text()
     client.send(b'1', 0.06)
     return visible
@@ -436,7 +436,7 @@ try:
     local = stlib.Client(local_home, w=120, h=38, lang='en', env=SYNC_ENV)
     local.drain(2.0)
     for _ in range(3):
-        local.send(b'\x1bOQ', 0.45)   # F2: create another local pane
+        local.send(b'\x11v', 0.45)   # F2: create another local pane
     local.send(b'\x11', 0.08)
     local.send(b't', 0.9)
     check('local branch starts with four panes',
@@ -465,7 +465,7 @@ try:
           local_marker in local.text())
 finally:
     if local is not None and local.alive():
-        local.send(b'\x1bx', 0.4)     # Alt-X: Exit
+        local.send(b'\x11x', 0.4)     # Alt-X: Exit
         local.wait_exit(timeout=6.0)
     if local is not None:
         local.close()

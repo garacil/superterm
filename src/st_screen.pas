@@ -1633,6 +1633,9 @@ begin
         end;
       end;
     'r':
+      // CSI ? Pm r is XTRESTORE, the counterpart of XTSAVE above; it is not
+      // DECSTBM and must not touch the scrolling region.
+      if not FPPriv then
       begin
         p1 := GetParam(0, 1);
         p2 := GetParam(1, Height);
@@ -1647,6 +1650,13 @@ begin
         end;
       end;
     's':
+      // CSI ? Pm s is XTSAVE, which saves DEC private modes and has nothing to
+      // do with the cursor. Without this guard a program that brackets its
+      // mouse or bracketed-paste changes with XTSAVE/XTRESTORE -- a common and
+      // correct thing to do -- silently moved this pane's saved cursor. The
+      // guard is a condition rather than an Exit because DoCSI has an epilogue
+      // that every branch owes it.
+      if not FPPriv then
       begin
         // CSI s (SCP) is xterm's save-cursor: same slot and same payload as
         // DECSC, so it carries the graphic rendition too. Saving only the

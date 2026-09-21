@@ -287,7 +287,7 @@ try:
           frame_rect(a, BASE_TITLE) == frame_rect(b, BASE_TITLE))
 
     baseline_frames = frame_rects(a)
-    a.send(b'\x1bc', 0.45)          # Alt-C: Classes
+    a.send(b'\x11mc', 0.45)          # Alt-C: Classes
     check('actor opens configured Classes menu', 'precise' in a.text())
     allowed_pre_states = (baseline_frames, frame_rects(a))
     a.begin_transition_capture()
@@ -330,7 +330,7 @@ try:
     local.drain(2.2)
     check('local branch has no daemon', not stlib.session_sockets(local_home))
     baseline_frames = frame_rects(local)
-    local.send(b'\x1bc', 0.45)
+    local.send(b'\x11mc', 0.45)
     check('local opens configured Classes menu', 'precise' in local.text())
     allowed_pre_states = (baseline_frames, frame_rects(local))
     local.begin_transition_capture()
@@ -343,7 +343,7 @@ try:
           frame_rect(local, CLASS_TITLE) == EXPECTED)
 finally:
     if local is not None:
-        local.send(b'\x1bx', 0.30)  # Alt-X: the single Exit path
+        local.send(b'\x11x', 0.30)  # Alt-X: the single Exit path
         local.wait_exit(timeout=6.0)
         local.close()
     stlib.close_all_daemons(local_home)

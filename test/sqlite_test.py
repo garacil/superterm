@@ -92,7 +92,7 @@ class Session:
 
     def close(self):
         try:
-            os.write(self.fd, b'\x1bx')
+            os.write(self.fd, b'\x11x')
             self.drain(0.5)
         except OSError:
             pass
@@ -110,7 +110,7 @@ try:
     text = session.text()
     if 'db-shell' not in text:
         fails.append('SQLite template starts terminal')
-    os.write(session.fd, b'\x1br')
+    os.write(session.fd, b'\x11mr')
     session.drain(0.4)
     if 'database-template' not in session.text():
         fails.append('SQLite template appears in menu')

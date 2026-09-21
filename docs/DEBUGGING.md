@@ -274,10 +274,11 @@ The close-all test starts 16 panes with two attached clients and requires one
 atomic 16-to-0 presentation in each, then proves that either client can create
 and use the first pane again.
 
-Useful keys: `\x11f` fullscreen with the default prefix, `\x1b[15~` physical
-F5 passed to the pane, `\x1bOQ` F2, `\x1b[17~` F6,
-`\x1b[20;3~` Alt-F9, `\x1b1` Alt-1, `\x11` the prefix key (Ctrl-Q by
-default), `\x1bx` Alt-X. Mouse
+Useful keys, all of them the prefix byte (`\x11`, Ctrl-Q by default) plus a
+chord: `\x11f` fullscreen, `\x11z` maximize, `\x11x` close the pane, `\x11o`
+next pane, `\x111` go to window 1, `\x11x` exit. `\x11\x11` sends one literal
+prefix. Bare keys now prove the opposite: `\x1b[15~` (F5), `\x1bOQ` (F2) and
+`\x1bb` (Alt-b) must arrive at the pane unchanged and trigger nothing. Mouse
 reports are SGR 1006: `\x1b[<0;COL;ROWM` presses and `...m` releases. Row 1 is
 the menu bar — a click there opens a menu and swallows the keys that follow.
 

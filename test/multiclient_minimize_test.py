@@ -30,7 +30,7 @@ DEBUG_ENV = {
 a = stlib.Client(HOME, w=110, h=34, lang='en', env=DEBUG_ENV)
 a.drain(2.0)
 for _ in range(5):
-    a.send(b'\x1bOQ', 0.55)       # F2: six panes total
+    a.send(b'\x11v', 0.55)       # F2: six panes total
 a.send(b'\x11', 0.10)
 a.send(b't', 0.9)                 # deterministic non-overlapping baseline
 
@@ -243,7 +243,7 @@ check('restore leaves a hole without moving icons',
 # Exercise the real Alt-F9 UI path from the pane just restored by mouse.  It
 # must reuse the released slot and retain pane two as shared logical focus even
 # though that pane is now represented by an icon.
-a.send(b'\x1b[20;3~', 0.10)       # xterm Alt-F9: minimize focused window
+a.send(b'\x11-', 0.10)       # xterm Alt-F9: minimize focused window
 check('focused minimize keeps shared focus',
       wait_flags(set(slot_order), focused=2))
 icons_ok, reused_detail = wait_visual_icons(set(slot_order))
@@ -283,7 +283,7 @@ for cycle in range(12):
 
 # Minimize all is a UI-global transaction.  Pane one takes the next free slot,
 # while the already-minimized focused pane remains the shared focus.
-a.send(b'\x1bw', 0.05)            # Alt-W: Windows menu
+a.send(b'\x11mw', 0.05)            # Alt-W: Windows menu
 menu_ready = a.wait_until(lambda text: 'Minimize all windows' in text,
                           timeout=2.0)
 check('minimize all menu is observable', menu_ready)

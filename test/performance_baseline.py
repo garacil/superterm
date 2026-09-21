@@ -370,7 +370,7 @@ class ScenarioContext:
             if data:
                 last_ns = now_ns
             if (first_ns is None and
-                    ('F2 Split' in client.text() or SYNC_END in client._raw)):
+                    ('Ctrl-Q v Split' in client.text() or SYNC_END in client._raw)):
                 first_ns = now_ns
             if (first_ns is not None and not data and
                     (now_ns - last_ns) / 1_000_000_000 >= 0.025):
@@ -427,7 +427,7 @@ class ScenarioContext:
                         'changed_cells': 0}
             y = arrows[0]
             data = mouse(0, right, y) + mouse(0, right, y, release=True)
-            cleanup = lambda: unmeasured_input(client, b'\x1b[1;3F', 0.04)
+            cleanup = lambda: unmeasured_input(client, b'\x11\x1b[4~', 0.04)
         elif scenario in ('mouse_drag_input', 'content_drag',
                           'wireframe_drag'):
             rectangles = frame_rects(client)
@@ -462,10 +462,10 @@ class ScenarioContext:
             else:
                 data = motion + release
         elif scenario == 'menu_open':
-            data = b'\x1bp'
+            data = b'\x11mp'
             cleanup = lambda: unmeasured_input(client, b'\x1b')
         elif scenario == 'dialog_open':
-            data = b'\x1bh\r'
+            data = b'\x11mh\r'
             cleanup = lambda: unmeasured_input(client, b'\x1b')
         elif scenario == 'resize':
             target_w = self.base_width - (iteration % 2)
@@ -480,7 +480,7 @@ class ScenarioContext:
 
             return measure_action(client, resize_trigger)
         elif scenario == 'maximize_restore':
-            data = b'\x1bpx'
+            data = b'\x11mpz'
         elif scenario == 'fullscreen_return':
             data = stlib.FULLSCREEN_CHORD
         elif scenario == 'viewport_pan':

@@ -86,7 +86,7 @@ check('Clipboard immediately before Help',
       menu_row[menu_row.find('Clipboard') + len('Clipboard'):
                menu_row.find('Help')].strip() == '')
 check('outer bracketed paste enabled', b'\x1b[?2004h' in c.raw())
-c.send(b'\x1bb', 0.5)  # Alt-B
+c.send(b'\x11mb', 0.5)  # Alt-B
 menu = c.text()
 check('Clipboard menu copy action', 'Copy from pane' in menu)
 check('Clipboard menu history action', 'Paste from history' in menu)
@@ -192,7 +192,7 @@ check('passthrough blocks OSC 52 query',
       b'\x1b]52;c;?\x07' not in c.raw()[before:])
 c.send(FULLSCREEN_CHORD, 0.8)
 
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 c.close()
 close_all_daemons(home)
 
@@ -212,7 +212,7 @@ check('Spanish Clipboard immediately before Help',
       menu_row.find('Portapapeles') < menu_row.find('Ayuda') and
       menu_row[menu_row.find('Portapapeles') + len('Portapapeles'):
                menu_row.find('Ayuda')].strip() == '')
-es.send(b'\x1bt', 0.4)  # Alt-T: Por-t-apapeles
+es.send(b'\x11mt', 0.4)  # Alt-T: Por-t-apapeles
 check('Spanish Clipboard actions',
       'Copiar del panel' in es.text() and 'Pegar del historial' in es.text())
 es.send(b'\x1b', 0.2)
@@ -233,7 +233,7 @@ es.resize(88, 25, 0.5)
 check('Spanish menu returns to compact form',
       all(label in es.screen.display[0]
           for label in ('Perf.', 'Ses.', 'Opc.', 'Portapapeles', 'Ayuda')))
-es.send(b'\x1bx', 0.7)
+es.send(b'\x11x', 0.7)
 es.close()
 close_all_daemons(home_es)
 
@@ -248,7 +248,7 @@ check('English 80-column menu keeps every full name',
       all(label in menu_row for label in
           ('Desktop', 'Profiles', 'Sessions', 'Options',
            'Clipboard', 'Help')))
-en80.send(b'\x1bx', 0.7)
+en80.send(b'\x11x', 0.7)
 en80.close()
 close_all_daemons(home_en80)
 

@@ -67,20 +67,31 @@ default_profile=daily
 
 ### [keymap]
 
-`prefix` selects the prefix key for tmux-style chords (`Ctrl-Q d` detach,
-`Ctrl-Q c` open class, `Ctrl-Q s` session picker, `Ctrl-Q f` fullscreen,
-`Ctrl-Q t` tile the
-windows, `Ctrl-Q 1..9` go to window, `Ctrl-Q n`/`p` next/previous window,
-`Ctrl-Q` arrows resize the pane, prefix twice sends one literal prefix
-byte). Accepted values:
+`prefix` selects the prefix key. Every superterm action is a chord behind it
+and **no bare key is bound at all**, so whatever is typed without the prefix
+goes to the program in the focused pane -- function keys, Alt, the navigation
+cluster, everything. The complete map is in the README, in every menu row, and
+in `Ctrl-Q ?`. Pressing the prefix twice sends one literal prefix byte to the
+pane, and the prefix followed by an unbound key sends both, so nothing is ever
+lost. Accepted values:
 
 - `ctrl-a` .. `ctrl-z`, for example `prefix=ctrl-q`.
 - A single letter `a` .. `z`, shorthand for the same Ctrl key.
 - A number `1` .. `26`, the raw control code (`17` = Ctrl-Q).
 
-The default is `Ctrl-Q`. Migration note: the numeric value `2` was the old
-default (Ctrl-B) and is migrated to Ctrl-Q so the prefix does not collide
-with a remote tmux. To really use Ctrl-B, write `prefix=ctrl-b` explicitly.
+The default is `Ctrl-Q`, and it is the cheapest control key there is to take.
+No Ctrl-letter is unclaimed: the line discipline reserves `^C ^D ^Z ^\ ^U ^W
+^V ^O ^R ^Q ^S ^?`, and readline binds nearly all of the rest. `Ctrl-Q` is the
+only one whose two claims are both redundant -- its readline binding
+(`quoted-insert`) is duplicated on `Ctrl-V`, and its line-discipline role
+(`XON`) only matters to someone who has just pressed `Ctrl-S`. `Ctrl-G`
+(readline `abort`) is the one defensible alternative; `Ctrl-A` costs
+`beginning-of-line`, which is used constantly, and `Ctrl-T` is `SIGINFO` on
+macOS.
+
+Migration note: the numeric value `2` was the old default (Ctrl-B) and is
+migrated to Ctrl-Q so the prefix does not collide with a remote tmux. To
+really use Ctrl-B, write `prefix=ctrl-b` explicitly.
 The application saves the setting back in the `ctrl-x` form. For a SuperTerm
 nested inside a pane, double the outer prefix and then press `f`; with the
 default this is `Ctrl-Q Ctrl-Q f`, which delivers `Ctrl-Q f` to the inner
@@ -410,7 +421,7 @@ Fields:
 
 Every way of opening a window behaves the same: it appears centred on the
 desktop at that size, on top of whatever is there, and nothing already open is
-moved or resized -- `F2`/`F3` included. Tiling is on demand (`Windows -> Tile`,
+moved or resized. Tiling is on demand (`Windows -> Tile`,
 or prefix + `t`).
 
 The class type is derived when loading and is never stored:
@@ -569,7 +580,7 @@ icons instead of packing them again. Restored panes omit it.
 
 At runtime, use the `Profiles` menu to activate a profile, `Save current as
 profile...` to capture the current workspace, and `Manage profiles...` to
-edit them. `Ctrl-Q 1..9`, `Ctrl-Q n`/`p`, and `F8`/`F9` switch between the
+edit them. `Ctrl-Q 1..9` and `Ctrl-Q n`/`p` switch between the
 windows of the active profile.
 
 ## Detached sessions

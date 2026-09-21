@@ -1046,7 +1046,7 @@ cmd=echo SSH_TRANSPORT_READY; exec /bin/bash -i
         second.resize(124, 37, 0.4)
         resize_applied = wait_for(
             lambda: (pane_size() == before_resize and
-                     'F2 Split' in second.screen.display[second.height - 1]),
+                     'Ctrl-Q v Split' in second.screen.display[second.height - 1]),
             (second,), timeout=12.0)
         resized_size = pane_size()
         check('SIGWINCH updates only the SSH client viewport',

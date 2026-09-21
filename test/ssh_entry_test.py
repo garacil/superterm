@@ -412,7 +412,7 @@ try:
         lambda: config_value(ROUTE_HOME, 'session',
                              'ssh_last_session') == 'home', (route,)))
 
-    route.send(b'\x1bs', 0.35)       # Alt-S: Sessions
+    route.send(b'\x11ms', 0.35)       # Alt-S: Sessions
     check('SSH client exposes new-session action',
           route.wait_until(lambda text: 'New session' in text))
     route.send(b'n', 0.45)
@@ -579,7 +579,7 @@ try:
     check('empty session draws no pane frame',
           not any(('╔' in row or '┌' in row)
                   for row in empty.screen.display))
-    empty.send(b'\x1bc', 0.3)
+    empty.send(b'\x11mc', 0.3)
     empty.send(b'1', 1.5)
     check('empty SSH session accepts first pane', wait_for(
         lambda: sidecar(EMPTY_HOME, 'void')['panes'] == 1, (empty,)))

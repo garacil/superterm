@@ -32,7 +32,7 @@ ENV = {
 
 a = stlib.Client(HOME, w=110, h=34, lang='en', env=ENV)
 a.drain(2.0)
-a.send(b'\x1bOQ', 0.9)       # F2: exactly two panes
+a.send(b'\x11v', 0.9)       # F2: exactly two panes
 
 sockets = stlib.session_sockets(HOME)
 check('restore-focus session exists', len(sockets) == 1)

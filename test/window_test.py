@@ -122,9 +122,9 @@ s = Session()
 try:
     s.drain(1.5)
     check('window shortcuts visible',
-          'Ctrl-Q f Full screen' in s.text() and 'F8 Window' in s.text())
+          'Ctrl-Q m Menu' in s.text() and 'Ctrl-Q d Detach' in s.text())
 
-    s.send(b'\x1bOQ')                  # F2: vertical split
+    s.send(b'\x11v')                  # F2: vertical split
     s.send(b'echo WINDOW_TWO_VISIBLE\r')
     check('split window created', 'WINDOW_TWO_VISIBLE' in s.text())
 
@@ -167,10 +167,10 @@ try:
     # xterm modifyOtherKeys form decoded by st_kbd: CSI 20;3~ is Alt-F9.
     # ESC + an unmodified F9 is two independent sequences and can leave a
     # literal Escape pending, so it is not an honest shortcut test.
-    s.send(b'\x1b[20;3~')               # Alt-F9: minimize focused window
+    s.send(b'\x11-')               # Alt-F9: minimize focused window
     check('window minimized', windows() == 1)
 
-    s.send(b'\x1bw')                  # Alt-W: whole-window actions live here
+    s.send(b'\x11mw')                  # Alt-W: whole-window actions live here
     menu = s.text()
     check('window-wide actions listed',
           'Minimize all windows' in menu and 'Restore all windows' in menu)
@@ -179,19 +179,19 @@ try:
 
     # Exercise both batch commands from Windows. Per-pane restore entries stay
     # in Panes, and prove that both windows reached the minimized state.
-    s.send(b'\x1bw')
+    s.send(b'\x11mw')
     s.send(b'a')                      # Minimize all windows
-    s.send(b'\x1bp')
+    s.send(b'\x11mp')
     menu = s.text()
     check('all windows minimized',
           'Restore 1' in menu and 'Restore 2' in menu)
     s.send(b'\x1b')
-    s.send(b'\x1bw')
+    s.send(b'\x11mw')
     s.send(b'r')                      # Restore all windows
     check('batch restore shows all windows', windows() == 2)
 finally:
     try:
-        s.send(b'\x1bx', 0.5)          # Alt-X: the single Exit path
+        s.send(b'\x11x', 0.5)          # Alt-X: the single Exit path
     except OSError:
         pass
     stlib.close_all_daemons(HOME)

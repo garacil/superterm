@@ -71,7 +71,7 @@ check('first window spans the desktop',
 full_w = f0[first][0] if first else 0
 
 # --- F2: the new window is centred and NOTHING already open moves
-c.send(b'\x1bOQ', 2.0)
+c.send(b'\x11v', 2.0)
 f1 = frames(c)
 check('split: now two windows', len(f1) == 2)
 check('split: the old window kept its place', first in f1)
@@ -85,7 +85,7 @@ if new:
 
 # --- a second one: still nothing already open moves
 before = dict(f1)
-c.send(b'\x1bOQ', 2.0)
+c.send(b'\x11v', 2.0)
 f2 = frames(c)
 check('second window: the first is untouched',
       first in f2 and f2[first] == before[first])
@@ -119,7 +119,7 @@ c.send(b't', 1.5)
 tiled = corners(c)
 check('prefix + t tiles them', len(tiled) == 4 and tiled != stacked)
 
-c.send(b'\x1bx', 1.0)
+c.send(b'\x11x', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

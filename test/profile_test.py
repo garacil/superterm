@@ -147,13 +147,13 @@ check("dev pane b token", "PROF_PANE_B" in scr)
 check("dev two panes", scr.count("╔") + scr.count("┌") >= 2)
 
 # Windows menu (Alt-W) lists the windows of the active profile
-s.send(b'\x1bw', 0.5)
+s.send(b'\x11mw', 0.5)
 scr = s.text()
 check("windows menu lists web", "(*) web" in scr)
 s.send(b'\x1b', 0.4)               # close the menu
 
 # ---- 2: Profiles menu (Alt-R) with the (*) mark on the active one ----
-s.send(b'\x1br', 0.5)
+s.send(b'\x11mr', 0.5)
 scr = s.text()
 check("profiles menu open", "Save current as profile" in scr)
 check("dev has active mark", "(*) dev" in scr)
@@ -186,7 +186,7 @@ python_observed = s.wait_until(
                      any(ch in row for ch in '═─') for row in rows) and
                  any('>>>' in row for row in rows))
 check("foreground Python observed", python_observed)
-s.send(b'\x1br', 0.5)
+s.send(b'\x11mr', 0.5)
 s.send(b's', 0.6)
 scr = s.text()
 check("save-as input box", "Profile name:" in scr)
@@ -254,7 +254,7 @@ check("ini keeps class section", "[class.keepme]" in txt)
 check("template absorbed", "[template.oldtpl]" not in txt)
 check("oldtpl now a profile", "[profile.oldtpl]" in txt)
 
-s.send(b'\x1bx', 1.0)              # the single Exit path
+s.send(b'\x11x', 1.0)              # the single Exit path
 s.close()
 time.sleep(0.4)
 
@@ -263,7 +263,7 @@ s = Session()
 s.drain(2.0)
 scr = s.text()
 check("restart: dev default", "PROF_PANE_A" in scr)
-s.send(b'\x1br', 0.5)
+s.send(b'\x11mr', 0.5)
 scr = s.text()
 check("restart menu: oldtpl", "oldtpl" in scr)
 check("restart menu: captured", "captured" in scr)
@@ -275,7 +275,7 @@ scr = s.text()
 check("oldtpl activates", "OLDTPL_TOKEN" in scr)
 
 # activate captured (row 3): its pane relaunches the captured python3
-s.send(b'\x1br', 0.5)
+s.send(b'\x11mr', 0.5)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\x1b[B', 0.2)
 s.send(b'\r', 1.8)
@@ -292,7 +292,7 @@ s.send(b'print(40600+2)\r', 0.8)
 scr = s.text()
 check("captured activates", "40602" in scr)
 
-s.send(b'\x1bx', 1.0)              # the single Exit path
+s.send(b'\x11x', 1.0)              # the single Exit path
 s.close()
 
 sys.exit(1 if fails else 0)

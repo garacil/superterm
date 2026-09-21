@@ -103,7 +103,7 @@ def click(client, x, y):
 
 def set_manual_desktop(client, width, height):
     """Drive the real Desktop dialog and replace both selected input lines."""
-    client.send(b'\x1bd', 0.0)
+    client.send(b'\x11md', 0.0)
     if not client.wait_until(lambda text: 'Modify dimensions' in text, 4.0):
         return False
     client.send(b'm', 0.0)
@@ -175,7 +175,7 @@ try:
     # Exercise the actual new top-level Desktop menu. Its accelerator is D;
     # Adjust is A. The authoritative layout event is observed through the
     # large full frame plus the small client's local scrollbar chrome.
-    large.send(b'\x1bd', 0.0)
+    large.send(b'\x11md', 0.0)
     menu_open = large.wait_until(
         lambda text: 'Adjust to this terminal size' in text, 5.0)
     check('Desktop menu exposes explicit fit command', menu_open)
@@ -205,7 +205,7 @@ try:
 
     # Show current dimensions is another independent UI oracle for the exact
     # logical size chosen above, rather than an inference from a pane grid.
-    large.send(b'\x1bd', 0.0)
+    large.send(b'\x11md', 0.0)
     large.wait_until(lambda text: 'Show current dimensions' in text, 4.0)
     large.send(b's', 0.0)
     shown = large.wait_until(
@@ -221,7 +221,7 @@ try:
     # maximize checks below.
     manual_ok = set_manual_desktop(large, *MANUAL_DESK)
     check('manual Desktop dialog accepts explicit dimensions', manual_ok)
-    large.send(b'\x1bd', 0.0)
+    large.send(b'\x11md', 0.0)
     large.wait_until(lambda text: 'Show current dimensions' in text, 4.0)
     large.send(b's', 0.0)
     manual_shown = large.wait_until(
@@ -232,7 +232,7 @@ try:
           pane_state(session)[0] == original_pty)
     large.send(b'\r', 0.0)
     large.wait_until(lambda text: 'Logical desktop:' not in text, 5.0)
-    large.send(b'\x1bd', 0.0)
+    large.send(b'\x11md', 0.0)
     large.wait_until(lambda text: 'Adjust to this terminal size' in text, 4.0)
     large.send(b'a', 0.0)
     check('fit restores terminal logical dimensions after manual edit',

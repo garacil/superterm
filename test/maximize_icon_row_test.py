@@ -89,7 +89,7 @@ def icon_rows(client):
 
 c = stlib.Client(HOME, args=['--session', SESSION], w=W, h=H, lang='en')
 c.drain(2.5)
-c.send(b'\x1bc', 0.4)
+c.send(b'\x11mc', 0.4)
 c.wait_until(lambda text: 'Local shell' in text, 3.0)
 stlib.write_all(c.fd, b'1')
 c.drain(2.0)
@@ -113,7 +113,8 @@ rows = icon_rows(c)
 check('the icon is parked at the bottom of the desktop',
       len(rows) >= 2 and max(rows) == DESK_H)
 
-stlib.write_all(c.fd, b'\x1b1')               # focus pane 1
+check('focus pane 1', run_cli(['focus', f'{SESSION}:1'], HOME)
+      .returncode == 0)
 c.drain(1.2)
 zx, zy = button(c, '[↑]')
 check('the focused pane shows its zoom button', zx > 0)

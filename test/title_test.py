@@ -60,7 +60,7 @@ reset('[ui]\nlanguage=en\n[session]\nserver=detach\n'
       'autosave=1\nautorestore=1\n')
 sc, st, pid, fd = launch()
 drain(sc, st, fd, 2.0)
-os.write(fd, b'\x1bp'); drain(sc, st, fd, 0.6)   # Panes menu
+os.write(fd, b'\x11mp'); drain(sc, st, fd, 0.6)   # Panes menu
 os.write(fd, b'i'); drain(sc, st, fd, 0.7)        # Rename title (accel i)
 check('rename dialog opens',
       'Window title' in text(sc) or 'Rename window' in text(sc))
@@ -70,7 +70,7 @@ os.write(fd, b'MY-TITLE\r'); drain(sc, st, fd, 0.8)
 check('title set to custom', 'MY-TITLE' in text(sc))
 os.write(fd, b'cd /etc\r'); drain(sc, st, fd, 2.2)  # would refresh title from cwd
 check('custom title not overwritten by cwd', 'MY-TITLE' in text(sc))
-os.write(fd, b'\x1bx'); drain(sc, st, fd, 1.5)      # local Exit autosaves
+os.write(fd, b'\x11x'); drain(sc, st, fd, 1.5)      # local Exit autosaves
 time.sleep(0.4)
 try:
     os.close(fd)
@@ -79,7 +79,7 @@ except OSError:
 sc, st, pid, fd = launch()
 drain(sc, st, fd, 2.5)
 check('custom title restored after save', 'MY-TITLE' in text(sc))
-os.write(fd, b'\x1bx'); drain(sc, st, fd, 0.8)
+os.write(fd, b'\x11x'); drain(sc, st, fd, 0.8)
 try:
     os.close(fd)
 except OSError:
@@ -108,10 +108,10 @@ cmd=
 ''')
 sc, st, pid, fd = launch()
 drain(sc, st, fd, 2.0)
-os.write(fd, b'\x1bc'); drain(sc, st, fd, 0.5)   # Classes menu
+os.write(fd, b'\x11mc'); drain(sc, st, fd, 0.5)   # Classes menu
 os.write(fd, b'2'); drain(sc, st, fd, 0.9)        # open class mybox
 check('class default title on window', 'Production DB' in text(sc))
-os.write(fd, b'\x1bx'); drain(sc, st, fd, 0.8)
+os.write(fd, b'\x11x'); drain(sc, st, fd, 0.8)
 try:
     os.close(fd)
 except OSError:

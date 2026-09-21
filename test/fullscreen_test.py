@@ -28,8 +28,10 @@ with open(HOME + '/.superterm/superterm.ini', 'w') as f:
 c = stlib.Client(HOME, w=100, h=30, lang='en')
 c.drain(2.5)
 check('the IDE is up', 'Panes' in c.text() and 'Detach' in c.text())
-check('fullscreen chord is advertised', 'Ctrl-Q f Full screen' in c.text())
-check('F5 is not advertised as fullscreen', 'F5 Full screen' not in c.text())
+check('the status line advertises the prefix',
+      'Ctrl-Q m Menu' in c.text() and 'Ctrl-Q v Split' in c.text())
+check('no bare key is advertised anywhere',
+      'F5' not in c.text() and 'Alt-' not in c.text())
 
 
 def framed():
@@ -51,7 +53,7 @@ def wait_raw(offset, marker, timeout=6.0):
 # ---- maximise: bigger window, same IDE ----
 c.send(b'\x1b[<0;4;1M', 0.2)      # the Panes menu
 c.send(b'\x1b[<0;4;1m', 0.8)
-c.send(b'x', 0.1)                 # Ma~x~imize/restore
+c.send(b'z', 0.1)                 # Maximi~z~e/restore
 c.wait_until(lambda _text: framed() and
              'Panes' in c.text() and 'Detach' in c.text(), 6.0)
 txt = c.text()
@@ -141,7 +143,7 @@ c.send(b'echo BACK_IN_THE_IDE\r', 1.2)
 c.wait_until(lambda t: 'BACK_IN_THE_IDE' in t, 6.0)
 check('the pane still runs', 'BACK_IN_THE_IDE' in c.text())
 
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

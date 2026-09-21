@@ -60,7 +60,7 @@ bh=10
 
 
 def toggle_limit_marks(client):
-    client.send(b'\x1bd', 0.0)
+    client.send(b'\x11md', 0.0)
     if not client.wait_until(
             lambda text: 'Mark the desktop limit' in text, 4.0):
         return False
@@ -70,7 +70,7 @@ def toggle_limit_marks(client):
 
 
 def shown_desktop(client, expected):
-    client.send(b'\x1bd', 0.0)
+    client.send(b'\x11md', 0.0)
     opened = client.wait_until(
         lambda text: 'Show current dimensions' in text, 5.0)
     if opened:

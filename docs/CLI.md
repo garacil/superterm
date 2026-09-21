@@ -206,7 +206,7 @@ attach exclusively, exactly as before.
 `Ctrl-Q d` disconnects only that viewer. No save or restore occurs: the live
 daemon object remains exactly as it was, and the next attach receives it.
 
-Exiting an interactive client with `Alt-X` disconnects only that client while
+Exiting an interactive client with `Ctrl-Q x` disconnects only that client while
 another UI is attached. The last interactive client to exit closes the
 session. A live detached session already is the current state; there is no
 separate save/no-save exit. The explicit
@@ -412,7 +412,7 @@ a 3.0) siguen conectando en exclusiva, igual que siempre.
 el objeto vivo del daemon queda exactamente como estaba y el siguiente attach
 lo recibe directamente.
 
-Salir de un cliente interactivo con `Alt-X` desconecta solo ese cliente
+Salir de un cliente interactivo con `Ctrl-Q x` desconecta solo ese cliente
 mientras haya otra interfaz conectada. Cuando sale el último cliente
 interactivo, se cierra la sesión. Una sesión viva separada ya es el estado
 actual; no hay salidas distintas con/sin guardado. El comando

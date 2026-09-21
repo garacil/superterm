@@ -95,7 +95,7 @@ class Session:
 
     def close(self):
         try:
-            os.write(self.fd, b'\x1bx')
+            os.write(self.fd, b'\x11x')
             self.drain(0.5)
         except OSError:
             pass
@@ -122,7 +122,7 @@ try:
     text = s.text()
     check('template starts two panes',
           'ALPHA_ONE' in text and 'ALPHA_TWO' in text)
-    os.write(s.fd, b'\x1br')
+    os.write(s.fd, b'\x11mr')
     s.drain(0.4)
     check('template menu opens', 'Profiles' in s.text())
     check('template menu lists alpha', 'alpha' in s.text())
@@ -136,7 +136,7 @@ try:
     # F8 on a loaded host.  `text` is the already-proven dashboard presentation
     # captured before opening that transient overlay.
     dashboard_before_f8 = text
-    os.write(s.fd, b'\x1b[19~')
+    os.write(s.fd, b'\x11n')
     deadline = time.time() + 5.0
     logs_after_f8 = dashboard_before_f8
     while time.time() < deadline:
@@ -152,7 +152,7 @@ try:
           'ALPHA_ONE' not in logs_after_f8)
 
     # Return to the template menu and select the second template.
-    os.write(s.fd, b'\x1br')
+    os.write(s.fd, b'\x11mr')
     s.drain(0.2)
     os.write(s.fd, b'\x1b[B\r')
     s.drain(1.0)

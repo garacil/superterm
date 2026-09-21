@@ -130,7 +130,7 @@ check('second client starts with old profile snapshot',
 
 # Profiles -> New empty profile. The command persists data but never activates
 # it, so the alpha terminal and its daemon must remain untouched.
-c.send(b'\x1br', 0.4)                 # Alt-R: Profiles
+c.send(b'\x11mr', 0.4)                 # Alt-R: Profiles
 check('new-empty profile menu item',
       c.wait_until(lambda text: 'New empty profile' in text))
 c.send(b'n', 0.4)
@@ -144,7 +144,7 @@ check('profile creation keeps daemon', session_names() == ['alpha'])
 
 # The already-open peer loaded Profiles before scratch existed. Opening New
 # session must refresh the shared catalogue rather than showing that snapshot.
-peer.send(b'\x1bs', 0.3)
+peer.send(b'\x11ms', 0.3)
 peer.send(b'n', 0.5)
 check('other client sees newly created profile immediately',
       peer.wait_until(lambda text:
@@ -159,7 +159,7 @@ peer.close()
 # Sessions -> New session. Default alpha is row 1; Up selects the explicit
 # Empty/no-profile row and automatically changes the untouched name proposal
 # from alpha-2 to session.
-c.send(b'\x1bs', 0.4)                 # Alt-S: Sessions
+c.send(b'\x11ms', 0.4)                 # Alt-S: Sessions
 check('new-session menu item',
       c.wait_until(lambda text: 'New session' in text))
 c.send(b'n', 0.5)
@@ -181,7 +181,7 @@ check('old alpha remains exact', old_capture.returncode == 0 and
       'ALPHA_SESSION_READY' in old_capture.stdout)
 
 # The first pane can be created normally in the zero-pane session.
-c.send(b'\x1bc', 0.3)
+c.send(b'\x11mc', 0.3)
 c.send(b'1', 0.0)
 check('first pane created from zero',
       wait_for(lambda: sidecar('session')['panes'] == 1, c))
@@ -193,7 +193,7 @@ check('first pane accepts and executes input',
 # default selected profile and the live alpha daemon makes its deterministic
 # suggestion alpha-2.  Metadata alone is not enough: capture the new pane to
 # prove that the configured command was actually materialized there.
-c.send(b'\x1bs', 0.4)
+c.send(b'\x11ms', 0.4)
 c.send(b'n', 0.5)
 check('non-empty profile is selected by default',
       c.wait_until(lambda _text: session_name_field(c) == 'alpha-2'))
@@ -215,7 +215,7 @@ check('previous populated session remains live after profile creation',
 
 # Create another session from the newly persisted empty profile. The dialog
 # starts on alpha; Down selects scratch. The current session must only detach.
-c.send(b'\x1bs', 0.4)
+c.send(b'\x11ms', 0.4)
 c.send(b'n', 0.5)
 c.send(b'\x1b[B', 0.25)
 check('profile choice suggests scratch',
@@ -304,7 +304,7 @@ check('53-object catalogue session starts', poll_until(
 
 # cmProfileManage used to equal cmProfileBase+51.  End proves that the manager
 # received all 53 rows, including disabled ones, rather than activating row 51.
-catalog_client.send(b'\x1br', 0.0)
+catalog_client.send(b'\x11mr', 0.0)
 check('large profile menu advertises bounded direct list',
       catalog_client.wait_until(
           lambda text: '(more profiles in Manage...)' in text))
@@ -319,7 +319,7 @@ catalog_client.send(b'\x1b', 0.2)
 
 # cmProfileNewEmpty used to equal cmProfileBase+52.  A complete persisted
 # section proves the direct command ran instead of activating profile 52.
-catalog_client.send(b'\x1br', 0.0)
+catalog_client.send(b'\x11mr', 0.0)
 check('large profile direct menu remains reachable',
       catalog_client.wait_until(lambda text: 'New empty profile' in text))
 catalog_client.send(b'n', 0.0)
@@ -332,7 +332,7 @@ check('large-catalogue New empty commits complete profile',
 
 # The class direct commands occupy the former dynamic slots 20 and 21.
 # Manage must open the 53-row manager; Open must open the enabled-only picker.
-catalog_client.send(b'\x1bc', 0.0)
+catalog_client.send(b'\x11mc', 0.0)
 check('large class direct menu remains reachable',
       catalog_client.wait_until(lambda text: 'Manage classes' in text and
                                 'Open class in new pane' in text))
@@ -345,7 +345,7 @@ check('class manager contains all 53 catalogue rows',
       catalog_client.wait_until(lambda text: 'class-52' in text))
 catalog_client.send(b'\x1b', 0.2)
 
-catalog_client.send(b'\x1bc', 0.0)
+catalog_client.send(b'\x11mc', 0.0)
 check('large class Open action remains reachable',
       catalog_client.wait_until(lambda text: 'Manage classes' in text and
                                 'Open class in new pane' in text))

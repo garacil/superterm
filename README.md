@@ -389,7 +389,7 @@ included:
 ![A menu over the desktop picture](screenshots/menu-shadow.png)
 
 **The history is reachable** with the scrollbar in every window's right frame
-column, the wheel, and `Alt-PgUp`/`PgDn`:
+column, the wheel, and `Ctrl-Q PgUp`/`PgDn`:
 
 ![Scrolling back through a pane's history](screenshots/scrollback.png)
 
@@ -692,7 +692,7 @@ sessions exist. Every launch starts a per-user session server at
 still recognized). The server owns the PTY masters, process groups,
 terminal parsers, and scrollback, so leaving the client — or losing it —
 does not close local shells or remote SSH connections. With several clients,
-`Alt-X` closes only the client that requested the exit; the session ends when
+`Ctrl-Q x` closes only the client that requested the exit; the session ends when
 its last attached client exits. A detached live session already is the saved
 state, so there are no separate "save and exit" or "exit without saving"
 paths. The explicit CLI `kill`
@@ -711,42 +711,52 @@ Do not put passwords in command lines or debug logs.
 
 ## Controls
 
-`Ctrl-Q` is the default prefix key; `[keymap] prefix` can change it. After
-the prefix, an unbound key sends the prefix byte plus that key to the pane.
+**Every superterm action starts with the prefix. No bare key is ever taken
+from the program running in the pane** -- not a function key, not Alt, not
+Tab, nothing. `Ctrl-Q` is the default prefix; `[keymap] prefix` can change it.
+After the prefix, an unbound key sends the prefix byte plus that key to the
+pane, so nothing is lost either way.
 
-| Key | Action |
+Most chords are the ones tmux binds, so the muscle memory transfers.
+
+| Chord | Action |
 | --- | --- |
-| `F2` / `F3` | Open a window; it appears centred and nothing already open is moved or resized |
-| `Alt-F3` / `Alt-F4` | Close the focused pane; closing the last one leaves an empty desktop |
-| `F6` / `F7` | Next / previous pane |
-| `Alt-1..9` | Go to pane N |
-| `Alt-0` | Pane list: pick a pane, restoring it if minimized |
+| `Ctrl-Q v` / `Ctrl-Q b` | Split the focused pane vertically / horizontally |
+| `Ctrl-Q k` | Close (kill) the focused pane; closing the last one leaves an empty desktop |
+| `Ctrl-Q o` / `Ctrl-Q i` | Next / previous pane |
+| `Ctrl-Q w` | Pane list: pick a pane, restoring it if minimized |
+| `Ctrl-Q z` | Maximize or restore the focused pane |
 | `Ctrl-Q f` | Give the focused pane the whole terminal, or restore the IDE |
-| `F5` | Send physical F5 to the focused pane (when the host/browser forwards it) |
-| `Ctrl-F5` | Move or resize the focused pane |
-| `Alt-F9` | Minimize the focused pane |
-| `F8` / `F9` | Next / previous profile window |
+| `Ctrl-Q -` / `Ctrl-Q +` | Minimize the focused pane / restore them all |
+| `Ctrl-Q g` | Move or resize the focused pane |
+| `Ctrl-Q` arrows | Resize the focused pane |
+| `Ctrl-Q PgUp` / `Ctrl-Q PgDn` | History: a page back / forward |
+| `Ctrl-Q Home` / `Ctrl-Q End` | History: oldest line / back to live |
 | `Ctrl-Q 1..9` | Go to profile window N |
 | `Ctrl-Q n` / `Ctrl-Q p` | Next / previous profile window |
-| `Ctrl-Q` arrows | Resize the focused pane |
+| `Ctrl-Q ,` | Rename the focused window |
+| `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
+| `Ctrl-Q r` | Refresh the display |
 | `Ctrl-Q c` | Open a window class in a new pane |
 | `Ctrl-Q s` | Session picker: attach to or close detached sessions |
-| `Ctrl-Q t` | Tile the windows (opening one no longer re-tiles) |
 | `Ctrl-Q d` | Detach the live session; reattach with `superterm --attach` |
 | `Ctrl-Q [` | Enter pane copy mode. Move with arrows/PgUp/PgDn, press Space to start a selection and Enter to copy; mouse drag also copies |
 | `Ctrl-Q ]` | Paste the newest clipboard-history item into the focused pane |
 | `Ctrl-Q h` | Choose one of the ten most recent clipboard items to paste |
-| Host terminal Paste | Add the pasted UTF-8 text to history and send it atomically to the focused local or SSH pane |
-| `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
+| `Ctrl-Q m` | Open the menu bar (it has no bare key of its own) |
+| `Ctrl-Q ?` | Help: the whole key map, in one dialog |
+| `Ctrl-Q x` | Exit; the last attached viewer closes the live session. It is `x`, not `q`: the prefix is already `Ctrl-Q`, and `q` is a key you press constantly to leave `less`, `man` and `vim` |
 | `Ctrl-Q Ctrl-Q` | Send one literal `Ctrl-Q` to the pane |
 | `Ctrl-Q Ctrl-Q f` | Toggle fullscreen in a SuperTerm nested inside the focused pane |
-| Mouse wheel | Scroll the pane's history (three lines a notch); on the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
+| Host terminal Paste | Add the pasted UTF-8 text to history and send it atomically to the focused local or SSH pane |
+| `superterm` inside a pane | Works: a new session, or any session this pane does not live inside of. Attaching to the pane's own session (or one above it) is refused -- it would mirror forever. The picker never offers those |
+| Mouse wheel | Scroll the pane's history (three lines a notch), with no prefix: a wheel is not a key. On the alternate screen -- `less`, `vim` -- it sends arrow keys instead |
 | Double-click a window title | Toggle that pane between its normal rectangle and IDE maximized size; the exact normal rectangle and focus are preserved |
 | Mouse, inside a pane | An application that asks for the mouse (`htop`, `mc`, `vim` with `mouse=a`, another superterm) gets it: clicks, drags, the wheel, in the protocol it asked for, at pane coordinates. The frame, title bar, menu and status line always stay superterm's |
-| `Alt-PgUp` / `Alt-PgDn` | History: a page back / forward (`Ctrl-PgUp`/`Ctrl-PgDn` and `Shift-PgUp`/`Shift-PgDn` do the same where the host terminal lets them through) |
-| `Alt-Home` / `Alt-End` | History: oldest line / back to live |
-| `Ctrl-S` | Save a local layout or profile selection (not needed or shown while attached to a live session) |
-| `Alt-X` | Exit; the last attached viewer closes the live session |
+
+Everything else goes straight to the focused pane, and to nowhere at all when
+no pane is focused. That includes Alt: `Alt-b`, `Alt-f`, `Alt-.` and the rest
+reach readline, emacs and vim as `ESC` plus the key, on every terminal.
 
 Changing pane focus changes only the window border/title and cursor. Terminal
 content keeps exactly the same colors and attributes in every pane, focused or
@@ -912,7 +922,7 @@ class=monitor
 
 Pane fields (`cmd`, `cwd`, `connect`, `postconnect`, `scrollback`) override
 the referenced class. Layout ratios range from `0` to `1000`. Switch profile
-windows with `Ctrl-Q 1..9`, `Ctrl-Q n`/`p`, or `F8`/`F9`.
+windows with `Ctrl-Q 1..9` or `Ctrl-Q n`/`p`.
 
 See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the complete
 grammar, the SSH command structure, postconnect semantics, detached session
@@ -1022,6 +1032,14 @@ Project site: <https://www.superterm.org> · Documentation:
 [GitHub](https://github.com/garacil/superterm/releases)
 
 Author: Germán Luis Aracil Boned — August 2026.
+
+### Thanks
+
+- [@fp-textmode-ide](https://github.com/fp-textmode-ide) — reported
+  [#1](https://github.com/garacil/superterm/issues/1), `Alt`+key not reaching
+  the pane under xterm. The report turned out to cover two independent defects
+  and led to the key policy this version ships: every superterm action behind
+  the prefix, and no bare key taken from the program in the pane. Fixed.
 
 superterm is free software, released under the GNU General Public License
 version 3 (see the `LICENSE` file). The bundled FreeVision fork in

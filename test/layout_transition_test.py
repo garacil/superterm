@@ -50,7 +50,7 @@ ENV = {
 
 a = stlib.Client(HOME, w=110, h=34, lang='en', env=ENV)
 a.drain(2.0)
-a.send(b'\x1bOQ', 1.0)       # F2: second pane
+a.send(b'\x11v', 1.0)       # F2: second pane
 a.send(b'\x11', 0.08)
 a.send(b't', 0.8)             # deterministic two-column baseline
 

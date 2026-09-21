@@ -100,9 +100,9 @@ wheel(True)
 check('another notch: three more', last() == want2 and want2 == want1 - 3)
 
 # --- Alt-PgUp: a page further back
-c.send(b'\x1b[5;3~', 0.8)
+c.send(b'\x11\x1b[5~', 0.8)
 page = last()
-check('Alt-PgUp pages back', 0 < page < 294)
+check('Ctrl-Q PgUp pages back', 0 < page < 294)
 
 # --- the view holds its place while new output arrives (injected through
 # the daemon, so no key is pressed on this client)
@@ -120,14 +120,18 @@ check('typing returns to live', last() == 330)
 want2 = expect_after(2)
 wheel(True); wheel(True)
 check('scrolled back again', last() == want2 and want2 < 330)
-c.send(b'\x1b[6;3~', 0.8)
-check('Alt-PgDn pages forward (to live here)', last() == 330)
+c.send(b'\x11\x1b[6~', 0.8)
+check('Ctrl-Q PgDn pages forward (to live here)', last() == 330)
 c.send(b'\x1b[5;5~', 0.8)
-check('Ctrl-PgUp pages back too', last() < 330)
-c.send(b'\x1b[1;3H', 0.8)
-check('Alt-Home goes to the oldest line', numbers() and numbers()[0] <= 2)
-c.send(b'\x1b[1;3F', 0.8)
-check('Alt-End returns to live', last() == 330)
+check('a bare Ctrl-PgUp no longer scrolls: it belongs to the pane',
+      last() == 330)
+c.send(b'\x15', 0.4)          # Ctrl-U: drop whatever readline made of it
+c.send(b'\x11\x1b[5~', 0.8)
+check('Ctrl-Q PgUp pages back', last() < 330)
+c.send(b'\x11\x1b[1~', 0.8)
+check('Ctrl-Q Home goes to the oldest line', numbers() and numbers()[0] <= 2)
+c.send(b'\x11\x1b[4~', 0.8)
+check('Ctrl-Q End returns to live', last() == 330)
 
 # --- alternate screen: no scrollbar, and the wheel becomes arrow keys
 c.send(b"printf '\\033[?1049h'; cat -v\r", 1.5)
@@ -158,16 +162,16 @@ if thumb and thumb[0] > 6:
     c.send(('\x1b[<0;%d;%dM' % (col + 1, y + 1)).encode(), 0.3)
     c.send(('\x1b[<0;%d;%dm' % (col + 1, y + 1)).encode(), 0.8)
     check('clicking the trough pages back', first() < was - 1)
-c.send(b'\x1b[1;3F', 0.6)
+c.send(b'\x11\x1b[4~', 0.6)
 
 # --- after panes are renumbered, the bar must still drive THIS pane.
 # A window points at its pane from three places -- itself, the terminal view
 # and the scrollbar -- and the scrollbar kept the old index when panes were
 # inserted or closed. It then moved ANOTHER pane's viewport: the thumb
 # jumped and snapped back on the next sync and this window never scrolled.
-c.send(b'\x1b[1;3F', 0.5)
-c.send(b'\x1bOQ', 2.0)            # F2: a second window (panes renumber)
-c.send(b'\x1b[13;3~', 2.0)        # Alt-F3: close it (they renumber again)
+c.send(b'\x11\x1b[4~', 0.5)
+c.send(b'\x11v', 2.0)            # F2: a second window (panes renumber)
+c.send(b'\x11k', 2.0)        # Ctrl-Q k: close it (they renumber again)
 c.drain(1.0)
 col = right_col()
 glyphs = [(y, c.screen.display[y][col]) for y in range(2, H - 3)
@@ -181,7 +185,7 @@ if up and first() > 0:
 else:
     check('the bar still drives this pane after renumbering', False)
 
-c.send(b'\x1bx', 1.0)
+c.send(b'\x11x', 1.0)
 c.wait_exit(timeout=8.0)
 close_all_daemons(home)
 report()

@@ -72,7 +72,7 @@ try:
 finally:
     if client is not None:
         if client.alive():
-            client.send(b'\x1bx', 0.5)
+            client.send(b'\x11x', 0.5)
             client.wait_exit(5.0)
         client.close()
     stlib.close_all_daemons(HOME)

@@ -322,7 +322,7 @@ try:
     creator = stlib.Client(HOME, w=CREATOR_SIZE[0], h=CREATOR_SIZE[1],
                            lang='en')
     creator.drain(2.2)
-    creator.send(b'\x1bOQ', 1.2)       # native F2: second pane
+    creator.send(b'\x11v', 1.2)       # native F2: second pane
 
     sockets = stlib.session_sockets(HOME)
     check('exclusive fixture session exists', len(sockets) == 1)
@@ -371,7 +371,7 @@ try:
           all(rect is not None for rect in baseline_frames[0]))
 
     # Native title button: pane 1 enters normal maximize.
-    creator.send(b'\x1b1', 0.45)       # inactive controls only focus on click 1
+    creator.send(b'\x11o', 0.45)       # inactive controls only focus on click 1
     focused_one = settled_state(
         clients, socket_path,
         lambda state: state['focused'] == 0 and
@@ -393,7 +393,7 @@ try:
 
     # Bring pane 2 forward, but do not restore pane 1.  The following native
     # click must be a compound hand-off, not a second independent Z flag.
-    observer.send(b'\x1b2', 0.7)       # Alt-2: shared focus/raise pane 2
+    observer.send(b'\x11o', 0.7)       # Ctrl-Q o: shared focus/raise the other pane
     focused_two = settled_state(
         clients, socket_path,
         lambda state: has_two_panes(state) and state['focused'] == 1 and

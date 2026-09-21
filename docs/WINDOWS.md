@@ -308,7 +308,7 @@ The complete native executable has also been exercised end to end in a real
 Windows console session. The Free Vision UI rendered, ConPTY started
 `cmd.exe`, its Windows banner and prompt appeared, typing
 `echo SUPERTERM_WINDOWS_FINAL_OK` reached the pane, the marker returned
-through ConPTY and appeared on screen, and Alt-X shut down SuperTerm and its
+through ConPTY and appeared on screen, and `Ctrl-Q x` shut down SuperTerm and its
 child process tree with exit code 0. The smoke run used an isolated writable
 `APPDATA` below `build` because this development workspace is sandboxed; it
 also created and atomically saved `session.ini` there.
@@ -620,7 +620,7 @@ shared tree ready for `main`. Full details in `src/traytool/README.md`.
 ## Further runtime validation
 
 The baseline local `cmd.exe` launch, input/output round trip, session save, and
-clean Alt-X exit are complete. Continue with broader coverage:
+clean `Ctrl-Q x` exit are complete. Continue with broader coverage:
 
 1. Exercise PowerShell, `pwsh` if installed, and Git Bash profiles. Include
    executable paths, working directories, and commands containing spaces,

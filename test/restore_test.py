@@ -194,7 +194,7 @@ if sys.platform.startswith('linux'):
     # One background child at an interactive prompt must not be mistaken for
     # foreground merely because job control makes it share bash's pgrp.
     a.send(b'set +m; sleep 986 &\r', 0.3)
-a.send(b'\x1bOQ', 1.2)              # F2 vertical split
+a.send(b'\x11v', 1.2)              # F2 vertical split
 if sys.platform.startswith('linux'):
     # Exercise the optional Linux path as it is actually used: with job
     # control disabled TIOCGPGRP still names bash, so the product must prove
@@ -268,7 +268,7 @@ if sys.platform.startswith('linux'):
                   foreground_observed and new_sleep_pid is not None and
                   new_sleep_pid != sleep_pid)
 check("A: foreground observed", foreground_observed)
-a.send(b'\x1bx', 1.0)               # Alt-X: local autosave on Exit
+a.send(b'\x11x', 1.0)               # Alt-X: local autosave on Exit
 a.close()
 time.sleep(0.4)
 
@@ -295,7 +295,7 @@ b.drain(2.5)
 restored_leaders, restored_sleeps = restored_processes(b.pid)
 check("B: two panes restored", len(restored_leaders) == 2)
 check("B: command restarted", len(restored_sleeps) == 1)
-b.send(b'\x1bx', 0.8)
+b.send(b'\x11x', 0.8)
 b.close()
 
 # A restored command must leave an interactive shell after it exits normally.
@@ -334,7 +334,7 @@ c = Session()
 c.drain(2.0)
 c.send(b'echo RESTORED_SHELL\r', 1.0)
 check("C: lower-left returns to shell", 'RESTORED_SHELL' in c.text())
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 c.close()
 
 # --- run D: manually moved/resized windows must restore at their saved
@@ -371,7 +371,7 @@ corner = d.screen.buffer[1 + BY][BX].data
 check("D: moved window at saved pos", corner == '╔')
 d.send(b'\x13', 1.0)  # Ctrl-S: save session
 d.send(b'\r', 0.5)    # close the "Session saved." notice
-d.send(b'\x1bx', 1.0) # Alt-X: the one Exit command
+d.send(b'\x11x', 1.0) # Alt-X: the one Exit command
 d.close()
 time.sleep(0.6)
 txt = open(SESS).read()

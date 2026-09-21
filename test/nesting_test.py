@@ -219,7 +219,7 @@ while time.monotonic() < shell_deadline:
     time.sleep(0.05)
 check('outer pane is usable after nested shutdown', shell_returned)
 
-a.send(b'\x1bx', 1.0)
+a.send(b'\x11x', 1.0)
 a_pid = a.pid
 a_status = a.wait_exit(timeout=8.0)
 if b_status is None or a_status is None or not nested_finished:

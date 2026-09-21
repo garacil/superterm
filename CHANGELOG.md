@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### The prefix owns every superterm action, and nothing else
+
+Superterm used to bind 24 bare key combinations -- `F2`, `F3`, `F6`..`F9`,
+`Alt-X`, `Alt-F3`, `Alt-F4`, `Alt-F9`, `Ctrl-F5`, `Alt-0`, `Alt-1..9` and the
+whole `Alt`+letter menu bar -- and the menu bar and status line are
+`ofPreProcess` views, so they got first refusal on all of them before the
+focused pane. A program running in a pane could not use those keys, which is
+the one thing a terminal must never do to it. Reported by
+[@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue #1.
+
+Every one of those bindings is gone. Each action is now a chord behind the
+prefix (`Ctrl-Q` by default, `[keymap] prefix` to change it), and the chords
+are tmux's where tmux has one: `v`/`b` split, `k` close, `o`/`i` cycle panes,
+`w` list, `z` maximize, `f` full screen, `g` move/resize, `t` tile, `,`
+rename, `[`/`]`/`h` clipboard, `r` refresh, `d` detach, `s` sessions, `c`
+class, `n`/`p`/`1..9` windows, `m` menu, `?` help, `x` exit. Exit is `x`
+rather than tmux-ish `q`, because the prefix is already `Ctrl-Q`: one
+stutter would quit, and `q` is what you press to leave `less`, `man` and
+`vim` all day. `x` is the letter the Exit menu row has always highlighted,
+so `k` takes closing a pane -- which is what tmux calls that command
+anyway (`kill-pane`). Scrolling the
+history moved behind the prefix with the rest -- `Ctrl-Q PgUp`/`PgDn`/`Home`/
+`End` -- because plain `PgUp` was a superterm key too, and one that silently
+changed meaning depending on whether anything had scrolled off yet. The mouse
+wheel still scrolls with no prefix: a wheel is not a key.
+
+Every menu row and the status line print the chord that reaches them, so the
+key map is discoverable from the UI rather than the manual, and `Ctrl-Q ?`
+shows all of it on one dialog. Nothing is bound to a bare key any more, not
+even the menu: `Ctrl-Q m` opens it.
+
+### Alt reaches the application, on every terminal
+
+The half of issue #1 that [@fp-textmode-ide](https://github.com/fp-textmode-ide)
+actually hit, and it was two defects wearing one coat.
+
+Alt was never forwarded to a pane by any code path, on any terminal: the
+translation table had no Alt cases at all, so `Alt-b`, `Alt-f` and `Alt-.`
+never reached readline, emacs or vim. Two further gaps sat behind that one.
+xterm ships with `eightBitInput` on and `metaSendsEscape` off, so `Alt-a`
+arrives as the single byte `$E1`, which is indistinguishable from the first
+byte of an accented character and reached the pane as invalid UTF-8 -- the
+"garbage" in the report. Superterm now asks the host terminal for the `ESC`
+form (`CSI ?1034l`, `CSI ?1036h`) and restores xterm's defaults on exit.
+
+`Alt`+key is now forwarded as Meta for *every* key, not just letters: `ESC`
+plus the character for `Alt-.` and `Alt-/`, and `ESC` plus the key's own
+sequence for `Alt-F9`, `Alt-Up` or `Alt-PgDn`. FreeVision keeps the Alt bit in
+a separate byte and blanks the keycode's low byte, and the vendor's own
+`GetAltChar` only knows letters and the number row, so the scancode folding is
+now undone by st_kbd itself, next to the table that applies it.
+
+`Ctrl-PgUp`, `Ctrl-PgDn` and `Ctrl-Ins` translate to their xterm sequences
+instead of being dropped.
+
+### XTSAVE is not save-cursor
+
+`CSI ? Pm s` (XTSAVE) and `CSI ? Pm r` (XTRESTORE) save and restore DEC
+private modes. Superterm's emulator ignored the private flag on both finals
+and treated them as `SCP` save-cursor and `DECSTBM` scrolling region, so a
+program that brackets a mouse-mode change with XTSAVE/XTRESTORE -- common and
+correct -- silently moved its pane's saved cursor or reset its margins.
+
 ## 5.2.2 - 2026-09
 
 ### One architecture, chosen by measurement

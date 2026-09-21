@@ -184,7 +184,7 @@ check('send works while attached',
       bool(frames) and frames[-1][0] == FRAME_CTL_OK)
 c2.wait_until(lambda t: 'WHILE_ATTACHED' in t)
 check('attached client sees sent text', 'WHILE_ATTACHED' in c2.text())
-c2.send(b'\x1bx', 1.0)      # Alt-X: final shutdown
+c2.send(b'\x11x', 1.0)      # Alt-X: final shutdown
 time.sleep(0.6)
 c2.close()
 

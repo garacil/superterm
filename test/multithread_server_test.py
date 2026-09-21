@@ -173,7 +173,7 @@ barrier = run_cli(['rename', session + ':1', 'LAST_PANE_READY'], HOME)
 check('client catches up before last close',
       barrier.returncode == 0 and
       client.wait_until(lambda text: 'LAST_PANE_READY' in text, 5.0))
-client.send(b'\x1b[13;3~', 0.2)
+client.send(b'\x11k', 0.2)
 state = wait_state(HOME, lambda s: s['panes'] == 0 and s['threads'] == 1)
 check('zero panes leaves network reactor', bool(state) and
       state['threads'] == 1)
@@ -188,7 +188,7 @@ check('worker recreated after empty session', bool(state) and
 if not state or state['panes'] != 1 or state['threads'] != expected_one:
     print('  final recreated-pane sidecar: ' + repr(state))
 
-client.send(b'\x1bx', 1.0)
+client.send(b'\x11x', 1.0)
 client.close()
 stlib.close_all_daemons(HOME)
 
@@ -215,7 +215,7 @@ if single_state:
 single.send(b'echo SINGLE_REACTOR_OK\r', 1.0)
 check('single reactor remains functional',
       single.wait_until(lambda text: 'SINGLE_REACTOR_OK' in text, 5.0))
-single.send(b'\x1bx', 1.0)
+single.send(b'\x11x', 1.0)
 single.close()
 stlib.close_all_daemons(SINGLE_HOME)
 
@@ -231,7 +231,7 @@ check('auto uses available CPU limit', bool(auto_state) and
       auto_state['thread_limit'] == auto_limit)
 check('auto creates only needed workers', bool(auto_state) and
       auto_state['threads'] == 1 + min(1, max(0, auto_limit - 1)))
-auto_client.send(b'\x1bx', 1.0)
+auto_client.send(b'\x11x', 1.0)
 auto_client.close()
 stlib.close_all_daemons(AUTO_HOME)
 

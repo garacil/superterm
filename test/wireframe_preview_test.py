@@ -393,7 +393,7 @@ def temporal_integrity(records, baseline, final, valid_rings, expected_attr,
                  if complete_ring(record, ring, expected_attr, locked)]
         surface = (bool(record['display']) and
                    'Panes' in record['display'][0] and
-                   any('F2 Split' in row for row in record['display']))
+                   any('Ctrl-Q v Split' in row for row in record['display']))
         # The lock shades the observer's old frame, whose corners deliberately
         # stop matching frame_rect().  A wireframe may otherwise coexist with
         # the baseline pane or replace it, but an intermediate real pane and a
@@ -613,7 +613,7 @@ def perform_keyboard_cancel(actor, observer, sock_path):
         client.begin_transition_capture()
     # xterm's standard Ctrl-F5 encoding selects FreeVision cmResize. Shift-
     # Right then chooses the grow branch of DragView.Change, one cell at time.
-    stlib.write_all(actor.fd, b'\x1b[15;5~')
+    stlib.write_all(actor.fd, b'\x11g')
     lock_deadline = time.monotonic() + 2.0
     while (time.monotonic() < lock_deadline and
            not (has_lock(observer) and not has_lock(actor))):
@@ -684,7 +684,7 @@ actor = observer = None
 try:
     actor = stlib.Client(HOME, w=WIDTH, h=HEIGHT, lang='en', env=ENV)
     actor.drain(2.0)
-    actor.send(b'\x1bOQ', 1.0)  # F2: create the second pane
+    actor.send(b'\x11v', 1.0)  # F2: create the second pane
     actor.send(b'\x11', 0.08)
     actor.send(b't', 0.8)       # deterministic two-column layout
     sockets = stlib.session_sockets(HOME)

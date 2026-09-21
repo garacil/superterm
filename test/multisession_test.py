@@ -172,7 +172,7 @@ d.send(b'\r', 2.0)                         # Enter = Attach button (default)
 scr = d.text()
 check("picker attaches alfa", "SESION_A_TOKEN" in scr)
 check("alfa not beta", "SESION_B_TOKEN" not in scr)
-d.send(b'\x1bx', 1.0)                      # Alt-X: permanent close
+d.send(b'\x11x', 1.0)                      # Alt-X: permanent close
 check("close client exits", exited_ok(d.wait()))
 d.close()
 check("alfa socket removed", wait_gone(spath('alfa')))
@@ -182,7 +182,7 @@ check("beta pair remains", os.path.exists(spath('beta')) and os.path.exists(mpat
 # ---- 6: cleanup: close beta; the directory ends up with no sessions ----
 e = Client(['--attach', 'beta'])
 e.drain(1.5)
-e.send(b'\x1bx', 1.0)
+e.send(b'\x11x', 1.0)
 check("beta close exits", exited_ok(e.wait()))
 e.close()
 check("beta socket removed", wait_gone(spath('beta')))

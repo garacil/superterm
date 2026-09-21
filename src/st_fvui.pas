@@ -59,6 +59,10 @@ const
   cmClipboardPaste = 2118;
   cmClipboardHistory = 2119;
   cmClipboardClear = 2120;
+  cmScrollUp    = 2121;    // history of the focused pane, one screen back
+  cmScrollDown  = 2122;
+  cmScrollTop   = 2123;    // oldest line kept
+  cmScrollLive  = 2124;    // back to the running output
   cmInfoRow    = 2199;     // informational menu rows, always disabled
   cmProfileBase = 2200;   // + stable menu slot (0..39)
   cmProfileSaveAs = 2250;  // save the workspace as a profile
@@ -620,16 +624,10 @@ uses
   st_keys, st_kbd
   {$IFDEF UNIX}, st_ssh_entry{$ENDIF};
 
-const
-{$IFDEF DARWIN}
-  { On macOS the Alt key is Option; shortcut labels show its symbol. #235 is a
-    CP437 code nothing else emits, mapped to the Option glyph by Utf8VgaChar on
-    darwin only. Input handling is untouched: Option already produces Alt. }
-  KEY_ALT = #235;
-{$ELSE}
-  KEY_ALT = 'Alt-';
-{$ENDIF}
-
+{ There was a KEY_ALT label constant here, used to print "Alt-X" and friends
+  beside the menu items that bound those keys. Superterm no longer binds any
+  bare key, so no label names Alt any more and the constant went with them.
+  The Option glyph it selected on macOS stays in st_video's CP437 table. }
 
 {$IFDEF WINDOWS}
 type
@@ -884,6 +882,7 @@ begin
   // slow terminal write.
   StartAsyncVideoOutput;
   HostPasteOn;
+  HostMetaEscapeOn;
   UpdatePassthrough;   // maximized pane -> passthrough, no grid flash
   if not PassthroughActive then
   begin
@@ -1562,59 +1561,15 @@ begin
     ClearEvent(Event);
     Exit;
   end;
-  if (Event.What = evKeyDown) and (App^.Scr[PaneIdx] <> nil) then
-  begin
-    // Plain PgUp/PgDn scroll the history too, but only where nothing else
-    // wants them: on the normal screen, and only once there is history to
-    // move through. An application on the alternate screen (less, vim, a
-    // pager) keeps them, and so does a shell before anything has scrolled
-    // off. Shift- is the conventional binding where the host terminal lets
-    // it through -- most keep it for their own history; Alt- and Ctrl-
-    // always work and are the ones to document.
-    if ((Event.KeyCode = kbPgUp) or (Event.KeyCode = kbPgDn)) and
-       (((Event.KeyShift and kbBothShifts) <> 0) or
-        ((not App^.Scr[PaneIdx].UsingAlt) and
-         (App^.Scr[PaneIdx].HistoryRows > 0))) then
-    begin
-      if Event.KeyCode = kbPgUp then
-        App^.Scr[PaneIdx].ScrollViewport(+Size.Y)
-      else
-        App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
-      App^.RepaintPane(PaneIdx);
-      ClearEvent(Event);
-      Exit;
-    end;
-    case Event.KeyCode of
-      kbAltPgUp, kbCtrlPgUp:
-        begin
-          App^.Scr[PaneIdx].ScrollViewport(+Size.Y);
-          App^.RepaintPane(PaneIdx);
-          ClearEvent(Event);
-          Exit;
-        end;
-      kbAltPgDn, kbCtrlPgDn:
-        begin
-          App^.Scr[PaneIdx].ScrollViewport(-Size.Y);
-          App^.RepaintPane(PaneIdx);
-          ClearEvent(Event);
-          Exit;
-        end;
-      kbAltHome:
-        begin
-          App^.Scr[PaneIdx].ScrollViewport(MaxInt);
-          App^.RepaintPane(PaneIdx);
-          ClearEvent(Event);
-          Exit;
-        end;
-      kbAltEnd:
-        begin
-          App^.Scr[PaneIdx].ScrollViewport(-MaxInt);
-          App^.RepaintPane(PaneIdx);
-          ClearEvent(Event);
-          Exit;
-        end;
-    end;
-  end;
+  { The history used to answer to PgUp/PgDn, Ctrl-PgUp/PgDn and Alt-Home/End
+    right here, ahead of the pane. That made superterm the first reader of
+    four keys the application below had every right to receive, and the plain
+    PgUp case even changed its mind depending on whether anything had scrolled
+    off yet -- the same keystroke did two different things. Scrolling is a
+    superterm option like any other, so it went behind the prefix with the
+    rest: Ctrl-Q PgUp/PgDn, Ctrl-Q Home/End. The wheel still scrolls without
+    a prefix, because a wheel is not a key and no application that asked for
+    mouse reporting ever loses it. }
   if (Event.What = evKeyDown) then
   begin
     seq := TranslateKey(Event.KeyCode,
@@ -7535,63 +7490,61 @@ procedure TSuperApp.ShowHelp;
 var
   R: Objects.TRect;
   D: PDialog;
-  Lines: array[0..7] of string;
+  Lines: array[0..12] of string;
   I: integer;
+  K: string;
 begin
   // standard dialog: dialog palette with proper contrast (the old
   // THelpDialog painted with GetColor(1), the passive frame color)
+  //
+  // This is the whole key map, and it is the only one: superterm owns the
+  // prefix and nothing else, so every line below starts from it. Keep this
+  // in step with the chord table in HandleEvent and with the menus.
+  K := PrefixKeyLabel(Cfg.PrefixKey);
   Lines[0] := UiText(
-    'F2/F3 split panes; F6/F7 next/prev pane; ' + KEY_ALT + '1..9 go to pane N',
-    'F2/F3 dividen paneles; F6/F7 panel sig./ant.; ' + KEY_ALT + '1..9 ir al panel N');
-  Lines[1] := UiText(
-    PrefixKeyLabel(Cfg.PrefixKey) +
-    ' f fullscreen; ' + KEY_ALT + 'F9 min; Ctrl-F5 move/resize; ' + KEY_ALT + 'F3 close',
-    PrefixKeyLabel(Cfg.PrefixKey) +
-    ' f pantalla; ' + KEY_ALT + 'F9 min.; Ctrl-F5 mover/tamano; ' + KEY_ALT + 'F3 cierra');
+    'Everything starts with ' + K + '. Every other key goes to the pane.',
+    'Todo empieza con ' + K + '. Las demas teclas van al panel.');
+  Lines[1] := '';
   Lines[2] := UiText(
-    'F8/F9 next/prev window; ' + PrefixKeyLabel(Cfg.PrefixKey) +
-    ' 1..9 go to window N',
-    'F8/F9 ventana sig./ant.; ' + PrefixKeyLabel(Cfg.PrefixKey) +
-    ' 1..9 ir a la ventana N');
+    'Panes    v split vertical      b split horizontal',
+    'Paneles  v dividir vertical    b dividir horizontal');
   Lines[3] := UiText(
-    PrefixKeyLabel(Cfg.PrefixKey) + ' c open a class in a new pane; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' arrows resize the pane',
-    PrefixKeyLabel(Cfg.PrefixKey) + ' c abre una clase en panel nuevo; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' flechas dan tamano');
-  if RemoteMode then
-    Lines[4] := UiText(
-      PrefixKeyLabel(Cfg.PrefixKey) +
-      ' d detach; --attach returns exactly where you left it',
-      PrefixKeyLabel(Cfg.PrefixKey) +
-      ' d separa; --attach vuelve exactamente a como estaba')
-  else
-    Lines[4] := UiText(
-      PrefixKeyLabel(Cfg.PrefixKey) +
-      ' d detach; superterm --attach returns; Ctrl-S save',
-      PrefixKeyLabel(Cfg.PrefixKey) +
-      ' d separa; superterm --attach vuelve; Ctrl-S guarda');
+    '         k close   z maximize   f full screen   - minimize',
+    '         k cerrar  z maximizar  f pantalla      - minimizar');
+  Lines[4] := UiText(
+    '         o next pane   i previous pane   w pane list',
+    '         o panel sig.  i panel anterior  w lista de paneles');
   Lines[5] := UiText(
-    PrefixKeyLabel(Cfg.PrefixKey) + ' [ copy; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' ] paste; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' h clipboard history',
-    PrefixKeyLabel(Cfg.PrefixKey) + ' [ copia; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' ] pega; ' +
-    PrefixKeyLabel(Cfg.PrefixKey) + ' h historial portapapeles');
+    '         g move/resize   arrows resize   + restore all',
+    '         g mover/tamano  flechas tamano  + restaurar todas');
   Lines[6] := UiText(
-    'Profiles menu saves and restores named workspaces',
-    'El menu Perfiles guarda y restaura areas de trabajo con nombre');
+    '         PgUp/PgDn history  Home oldest  End live  (wheel alone)',
+    '         RePag/AvPag historial  Inicio/Fin extremos (rueda sola)');
   Lines[7] := UiText(
-    KEY_ALT + 'X exits; the last viewer closes the live session',
-    KEY_ALT + 'X sale; el ultimo cliente cierra la sesion viva');
-  R.Assign(0, 0, 74, 14);
+    'Windows  n next   p previous   1..9 go to N   t tile   r refresh',
+    'Ventanas n sig.   p anterior   1..9 ir a N    t mosaico  r refrescar');
+  Lines[8] := UiText(
+    'Clipbrd  [ copy    ] paste    h history',
+    'Portapap [ copiar  ] pegar    h historial');
+  Lines[9] := UiText(
+    'Session  c class   s sessions   d detach   , rename title',
+    'Sesion   c clase   s sesiones   d separar   , renombrar');
+  Lines[10] := UiText(
+    'Program  m menu   ? this help   x exit superterm',
+    'Programa m menu   ? esta ayuda  x salir de superterm');
+  Lines[11] := '';
+  Lines[12] := UiText(
+    K + ' twice sends one literal ' + K + ' to the pane.',
+    K + ' dos veces manda un ' + K + ' literal al panel.');
+  R.Assign(0, 0, 76, 19);
   D := New(PDialog, Init(R, UiText('Help and shortcuts', 'Ayuda y atajos')));
   D^.Options := D^.Options or ofCentered;
   for I := 0 to High(Lines) do
   begin
-    R.Assign(3, 2 + I, 71, 3 + I);
+    R.Assign(3, 2 + I, 73, 3 + I);
     D^.Insert(New(PStaticText, Init(R, Lines[I])));
   end;
-  D^.NewButton(31, 11, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
+  D^.NewButton(32, 16, 12, 2, UiText('~O~K', '~A~ceptar'), cmOK,
     hcNoContext, bfDefault);
   Desktop^.ExecView(D);
   Dispose(D, Done);
@@ -7786,8 +7739,8 @@ begin
     Exit;
   // Closing the last window used to end the program. It leaves an empty
   // desktop instead: the menu, the status line and the picture stay, and
-  // Classes or Panes > Split open a pane again. Leaving is what Alt-X and
-  // Panes > Exit are for, said on purpose.
+  // Classes or Panes > Split open a pane again. Leaving is what the prefix's
+  // q chord and Panes > Exit are for, said on purpose.
   OldFocused := Lay.Focused;
   // in remote mode the pane lives in the daemon: kill it there and
   // compact mirroring it (same indexes); locally KillPane does the job
@@ -8227,6 +8180,8 @@ begin
   if ButtonCount <> 0 then
     HostMouseOn;
   HostPasteOn;
+  // A raw fullscreen pane may have reset these while it owned the terminal.
+  HostMetaEscapeOn;
   // HostMouseOn restores normal and button tracking; any-motion belongs to
   // whatever the focused pane asks for, so let the one place that knows decide
   SyncHostMouse;
@@ -10014,6 +9969,9 @@ var
   ResizeEvent: boolean;
   ResizeWidth, ResizeHeight: integer;
   PrefixByte: byte;
+  PrefixCmd: word;
+  AltChar: Char;
+  AltBase: word;
   PrefixSeq: RawByteString;
   ZoomSaveFlush: boolean;
   ZoomAnimOn, ZoomWasZoomed, ZoomLocked: boolean;
@@ -10244,98 +10202,61 @@ begin
     if PrefixPending then
     begin
       PrefixPending := False;
-      // prefix chords (tmux style): d=detach, c=class, s=session,
-      // f=fullscreen, n/p=window +-, t=tile, 1..9=window N,
-      // arrows=pane size, double prefix=literal
-      if (PrefixByte = Ord('d')) or (PrefixByte = Ord('D')) then
-      begin
-        RequestDetach;
-        ClearEvent(Event);
-        Exit;
+      // THE key map. Every superterm action is one chord behind the prefix,
+      // so no bare key is ever taken from the program running in the pane --
+      // not Alt, not a function key, not anything the terminal itself wants.
+      // Most chords are the ones tmux binds, so the muscle memory transfers.
+      // Whatever is added here must also appear in the menus, the status line
+      // and ShowHelp: a chord nobody can discover does not exist.
+      if (PrefixByte >= Ord('A')) and (PrefixByte <= Ord('Z')) then
+        Inc(PrefixByte, 32);          // chords ignore case; the prefix is 1..26
+      PrefixCmd := 0;
+      case Chr(PrefixByte) of
+        'v': PrefixCmd := cmSplitV;            // split vertical
+        'b': PrefixCmd := cmSplitH;            // split horizontal (below)
+        'k': PrefixCmd := cmPaneClose;         // kill pane, as tmux names it
+        'o': PrefixCmd := cmPaneNext;          // other pane
+        'i': PrefixCmd := cmPanePrev;          // previous pane
+        'w': PrefixCmd := cmPaneList;          // pane list
+        'z': PrefixCmd := cmZoom;              // maximize/restore
+        'f': PrefixCmd := cmFullScreen;        // own the whole terminal
+        '-': PrefixCmd := cmWindowMinimize;
+        '+': PrefixCmd := cmWindowRestoreAll;
+        'g': PrefixCmd := cmResize;            // move/resize by keyboard
+        't': PrefixCmd := cmPaneTile;
+        'n': PrefixCmd := cmWindowNext;        // profile window
+        'p': PrefixCmd := cmWindowPrev;
+        ',': PrefixCmd := cmRenameWindow;
+        '[': PrefixCmd := cmClipboardCopy;
+        ']': PrefixCmd := cmClipboardPaste;
+        'h': PrefixCmd := cmClipboardHistory;
+        'r': PrefixCmd := cmRedrawAll;
+        'm': PrefixCmd := cmMenu;              // the menu has no other key now
+        '?': PrefixCmd := cmHelp;
+        'd': PrefixCmd := cmDetach;
+        's': PrefixCmd := cmSessionPick;
+        'c': PrefixCmd := cmClassPick;
+        // Exit is x, not q: the prefix is Ctrl-Q, so prefix-then-q is one
+        // stutter away from quitting, and q is a key people press constantly
+        // to leave less, man and vim. x is the letter the Exit menu row has
+        // always highlighted.
+        'x': PrefixCmd := cmQuit;
+        '1'..'9': PrefixCmd := cmWindowBase + PrefixByte - Ord('1');
       end;
-      if (PrefixByte = Ord('c')) or (PrefixByte = Ord('C')) then
+      if PrefixCmd = 0 then
+        case Event.KeyCode of
+          kbRight: PrefixCmd := cmGrowV;
+          kbLeft: PrefixCmd := cmShrinkV;
+          kbDown: PrefixCmd := cmGrowH;
+          kbUp: PrefixCmd := cmShrinkH;
+          kbPgUp: PrefixCmd := cmScrollUp;
+          kbPgDn: PrefixCmd := cmScrollDown;
+          kbHome: PrefixCmd := cmScrollTop;
+          kbEnd: PrefixCmd := cmScrollLive;
+        end;
+      if PrefixCmd <> 0 then
       begin
-        Message(@Self, evCommand, cmClassPick, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte = Ord('s')) or (PrefixByte = Ord('S')) then
-      begin
-        Message(@Self, evCommand, cmSessionPick, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte = Ord('f')) or (PrefixByte = Ord('F')) then
-      begin
-        Message(@Self, evCommand, cmFullScreen, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte = Ord('n')) or (PrefixByte = Ord('N')) then
-      begin
-        Message(@Self, evCommand, cmWindowNext, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte = Ord('p')) or (PrefixByte = Ord('P')) then
-      begin
-        Message(@Self, evCommand, cmWindowPrev, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      // t=tile: creating a window no longer re-tiles, so there has to be a
-      // quick way to ask for it
-      if (PrefixByte = Ord('t')) or (PrefixByte = Ord('T')) then
-      begin
-        Message(@Self, evCommand, cmPaneTile, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if PrefixByte = Ord('[') then
-      begin
-        BeginCopyMode;
-        ClearEvent(Event);
-        Exit;
-      end;
-      if PrefixByte = Ord(']') then
-      begin
-        PasteLatestClipboard;
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte = Ord('h')) or (PrefixByte = Ord('H')) then
-      begin
-        Message(@Self, evCommand, cmClipboardHistory, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if (PrefixByte >= Ord('1')) and (PrefixByte <= Ord('9')) then
-      begin
-        Message(@Self, evCommand, cmWindowBase + PrefixByte - Ord('1'), nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if Event.KeyCode = kbRight then
-      begin
-        Message(@Self, evCommand, cmGrowV, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if Event.KeyCode = kbLeft then
-      begin
-        Message(@Self, evCommand, cmShrinkV, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if Event.KeyCode = kbDown then
-      begin
-        Message(@Self, evCommand, cmGrowH, nil);
-        ClearEvent(Event);
-        Exit;
-      end;
-      if Event.KeyCode = kbUp then
-      begin
-        Message(@Self, evCommand, cmShrinkH, nil);
+        Message(@Self, evCommand, PrefixCmd, nil);
         ClearEvent(Event);
         Exit;
       end;
@@ -10360,6 +10281,44 @@ begin
       ClearEvent(Event);
       Exit;
     end;
+    // Alt belongs to the application in the pane, never to superterm.
+    //
+    // This has to happen here, before the inherited call: FreeVision claims
+    // Alt in two places this unit does not own -- TProgram.HandleEvent turns
+    // Alt+1..9 into cmSelectWindowNum, and the menu bar is built on Alt+letter
+    // hotkeys, both of which run before the focused pane ever sees the key.
+    // Consuming it here is what makes Alt reach the pane at all.
+    //
+    // The desktop test keeps Alt working where FreeVision genuinely needs it:
+    // a modal dialog runs its own event loop and never reaches this handler,
+    // and an open menu is not the desktop, so its own hotkeys are unaffected.
+    //
+    // st_kbd's AltKeyChar/AltKeyBase undo the scancode folding DecodeEscape
+    // applied, and both forms go out as Meta: ESC plus the character for
+    // Alt-b, ESC plus the key's own sequence for Alt-F9 or Alt-Up. The
+    // vendor's GetAltChar was not enough here -- its table only knows letters
+    // and the number row, so Alt-. (readline's "last argument") and every
+    // Alt+function key came out as #0 and were silently eaten.
+    if (Current = PView(Desktop)) and
+       ((Event.KeyShift and kbAltShift) <> 0) then
+    begin
+      AltChar := AltKeyChar(Event.KeyCode);
+      if AltChar <> #0 then
+        PrefixSeq := #27 + AltChar
+      else
+      begin
+        AltBase := AltKeyBase(Event.KeyCode);
+        if AltBase = kbNoKey then
+          PrefixSeq := ''
+        else
+          PrefixSeq := #27 +
+            TranslateKey(AltBase, PaneWantsAppCursor(Lay.Focused));
+      end;
+      if PrefixSeq <> '' then
+        WritePaneInput(Lay.Focused, PrefixSeq);
+      ClearEvent(Event);
+      Exit;
+    end;
     // passthrough: the fullscreen pane owns the screen, so every ordinary key
     // goes to it -- including physical F5. The configurable prefix is handled
     // above; prefix+f is the only chord retained for leaving fullscreen.
@@ -10372,16 +10331,18 @@ begin
       Exit;
     end;
   end;
-  // Alt-1..9 NO longer intercepted: falls through to native TProgram,
-  // which selects pane N (cmSelectWindowNum); open class = Classes menu
-  // sync the layout focus with the selected window
+  // Sync the layout focus with whatever got selected. TProgram's own Alt-1..9
+  // handler can no longer be the cause: the Alt branch above consumes every
+  // Alt key before the inherited call, and going to window N is Ctrl-Q 1..9
+  // now. What still selects a window here is the mouse, and the pane commands
+  // themselves.
   for i := 0 to MAX_PANES - 1 do
     if (Win[i] <> nil) and Win[i]^.GetState(sfSelected) and
        ((i <> Lay.Focused) or
         (RemoteMode and (i <> RemoteSharedFocus))) then
       FocusPane(i);
   inherited HandleEvent(Event);
-  // TGroup/TWindow selects a mouse/Alt-N target inside the inherited call.
+  // TGroup/TWindow selects the mouse's target inside the inherited call.
   // Publish that result now too; otherwise it stayed private until another
   // event happened to pass through this handler.
   for i := 0 to MAX_PANES - 1 do
@@ -10439,6 +10400,21 @@ begin
         begin
           ResetVideoSurface;
           ReDraw;
+        end;
+      cmScrollUp, cmScrollDown, cmScrollTop, cmScrollLive:
+        // One screen at a time, measured on the pane rather than a fixed
+        // count, so a tall pane and a short one both move by what you can
+        // actually read. With no focused pane there is nothing to scroll and
+        // the command is simply dropped.
+        if (Lay.Focused >= 0) and (Scr[Lay.Focused] <> nil) then
+        begin
+          case Event.Command of
+            cmScrollUp: Scr[Lay.Focused].ScrollViewport(+Scr[Lay.Focused].Height);
+            cmScrollDown: Scr[Lay.Focused].ScrollViewport(-Scr[Lay.Focused].Height);
+            cmScrollTop: Scr[Lay.Focused].ScrollViewport(MaxInt);
+            cmScrollLive: Scr[Lay.Focused].ScrollViewport(-MaxInt);
+          end;
+          RepaintPane(Lay.Focused);
         end;
       cmToggleAutoSave:
         begin
@@ -11767,11 +11743,30 @@ begin
   // Closing the last window leaves an empty desktop now, so leaving has to be
   // something you ask for. It is on the Sessions menu too; this is where the
   // hand already is after closing panes.
-  PaneItems := NewItem(UiText('E~x~it superterm', 'Sa~l~ir de superterm'),
-    KEY_ALT + 'X', kbAltX, cmQuit, hcNoContext, PaneItems);
+  // Every item below is kbNoKey and carries its chord as the displayed
+  // shortcut. The menu bar is ofPreProcess, so a bound key here would be
+  // taken from the program in the pane; the prefix is the only keyboard
+  // route into superterm, and this column is where the user learns it.
+  PaneItems := NewItem(UiText('E~x~it superterm', 'Sali~r~ de superterm'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' x', kbNoKey, cmQuit, hcNoContext,
+    PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('Rename t~i~tle...', 'Renombrar t~i~tulo...'),
-    '', kbNoKey, cmRenameWindow, hcNoContext, PaneItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' ,', kbNoKey, cmRenameWindow,
+    hcNoContext, PaneItems);
+  PaneItems := NewLine(PaneItems);
+  PaneItems := NewItem(UiText('B~a~ck to live', 'Ir al ~f~inal'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' End', kbNoKey, cmScrollLive,
+    hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('O~l~dest line', 'Linea mas anti~g~ua'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' Home', kbNoKey, cmScrollTop,
+    hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Scroll forwar~d~', 'Avan~z~ar historial'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' PgDn', kbNoKey, cmScrollDown,
+    hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Scroll bac~k~', 'Retroce~d~er historial'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' PgUp', kbNoKey, cmScrollUp,
+    hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
   PaneItems := NewItem(UiText('~S~horter', 'Meno~s~ alto'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #24,
     kbNoKey, cmShrinkH, hcNoContext, PaneItems);
@@ -11782,8 +11777,9 @@ begin
   PaneItems := NewItem(UiText('~W~ider', 'Mas ~a~ncho'), PrefixKeyLabel(Cfg.PrefixKey) + ' ' + #26,
     kbNoKey, cmGrowV, hcNoContext, PaneItems);
   PaneItems := NewLine(PaneItems);
-  PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'), 'Ctrl-F5',
-    kbCtrlF5, cmResize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('M~o~ve/resize', 'M~o~ver/tamano'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' g', kbNoKey, cmResize, hcNoContext,
+    PaneItems);
   PaneItems := NewItem(UiText('Set PT~Y~ to this window',
     'Ajustar PT~Y~ a esta ventana'), '', kbNoKey,
     cmFitSessionSize, hcNoContext, PaneItems);
@@ -11799,27 +11795,32 @@ begin
       if Chain <> nil then
         PaneItems := Chain;
     end;
-  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'), KEY_ALT + 'F9',
-    kbAltF9, cmWindowMinimize, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~M~inimize', '~M~inimizar'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' -', kbNoKey, cmWindowMinimize,
+    hcNoContext, PaneItems);
   PaneItems := NewItem(UiText('~F~ull screen', '~P~antalla completa'),
     PrefixKeyLabel(Cfg.PrefixKey) + ' f', kbNoKey, cmFullScreen,
     hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('Ma~x~imize/restore', 'Ma~x~imizar/restaurar'),
-    '', kbNoKey, cmZoom, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('Maximi~z~e/restore', 'Ma~x~imizar/restaurar'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' z', kbNoKey, cmZoom, hcNoContext,
+    PaneItems);
   PaneItems := NewLine(PaneItems);
-  PaneItems := NewInfoItem(UiText('Go to pane 1-9', 'Ir al panel 1-9'),
-    KEY_ALT + '1..9', PaneItems);
-  PaneItems := NewItem(UiText('~P~revious pane', 'Panel an~t~erior'), 'F7',
-    kbF7, cmPanePrev, hcNoContext, PaneItems);
-  PaneItems := NewItem(UiText('~N~ext pane', 'Siguie~n~te panel'), 'F6',
-    kbF6, cmPaneNext, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~P~revious pane', 'Panel an~t~erior'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' i', kbNoKey, cmPanePrev, hcNoContext,
+    PaneItems);
+  PaneItems := NewItem(UiText('~N~ext pane', 'Siguie~n~te panel'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' o', kbNoKey, cmPaneNext, hcNoContext,
+    PaneItems);
   PaneItems := NewLine(PaneItems);
-  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'), KEY_ALT + 'F3',
-    kbAltF3, cmPaneClose, hcNoContext, PaneItems);
+  PaneItems := NewItem(UiText('~C~lose pane', '~C~errar panel'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' k', kbNoKey, cmPaneClose, hcNoContext,
+    PaneItems);
   PaneItems := NewItem(UiText('Split ~h~orizontal', 'Dividir ~h~orizontal'),
-    'F3', kbF3, cmSplitH, hcNoContext, PaneItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' b', kbNoKey, cmSplitH, hcNoContext,
+    PaneItems);
   PaneItems := NewItem(UiText('Split ~v~ertical', 'Dividir ~v~ertical'),
-    'F2', kbF2, cmSplitV, hcNoContext, PaneItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' v', kbNoKey, cmSplitV, hcNoContext,
+    PaneItems);
   MPanes := NewMenu(PaneItems);
 
   // ---- Windows: only workspace navigation of the active profile ----
@@ -11840,9 +11841,11 @@ begin
     if WindowItems <> nil then
       WindowItems := NewLine(WindowItems);
     WindowItems := NewItem(UiText('~P~revious window', 'Ventana an~t~erior'),
-      'F9', kbF9, cmWindowPrev, hcNoContext, WindowItems);
+      PrefixKeyLabel(Cfg.PrefixKey) + ' p', kbNoKey, cmWindowPrev,
+      hcNoContext, WindowItems);
     WindowItems := NewItem(UiText('~N~ext window', 'Siguie~n~te ventana'),
-      'F8', kbF8, cmWindowNext, hcNoContext, WindowItems);
+      PrefixKeyLabel(Cfg.PrefixKey) + ' n', kbNoKey, cmWindowNext,
+      hcNoContext, WindowItems);
   end
   else
     WindowItems := NewInfoItem(UiText('(no profile active)',
@@ -11850,7 +11853,8 @@ begin
   // whole-workspace visibility and arrangement (classic IDE Window menu)
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('~R~estore all windows',
-    '~R~estaurar todas las ventanas'), '', kbNoKey, cmWindowRestoreAll,
+    '~R~estaurar todas las ventanas'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' +', kbNoKey, cmWindowRestoreAll,
     hcNoContext, WindowItems);
   WindowItems := NewItem(UiText('Minimize ~a~ll windows',
     'Minimizar to~d~as las ventanas'), '', kbNoKey, cmWindowMinimizeAll,
@@ -11860,15 +11864,18 @@ begin
     hcNoContext, WindowItems);
   WindowItems := NewLine(WindowItems);
   WindowItems := NewItem(UiText('Re~f~resh display', 'Re~f~rescar pantalla'),
-    '', kbNoKey, cmRedrawAll, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'), KEY_ALT + '0', kbAlt0,
-    cmPaneList, hcNoContext, WindowItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' r', kbNoKey, cmRedrawAll, hcNoContext,
+    WindowItems);
+  WindowItems := NewItem(UiText('~L~ist...', '~L~ista...'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' w', kbNoKey, cmPaneList, hcNoContext,
+    WindowItems);
   WindowItems := NewItem(UiText('Cascad~e~', 'Cascad~a~'), '', kbNoKey,
     cmPaneCascade, hcNoContext, WindowItems);
   WindowItems := NewItem(UiText('~O~rganize', '~O~rganizar'), '', kbNoKey,
     cmPaneOrganize, hcNoContext, WindowItems);
-  WindowItems := NewItem(UiText('~T~ile', '~M~osaico'), '', kbNoKey,
-    cmPaneTile, hcNoContext, WindowItems);
+  WindowItems := NewItem(UiText('~T~ile', '~M~osaico'),
+    PrefixKeyLabel(Cfg.PrefixKey) + ' t', kbNoKey, cmPaneTile, hcNoContext,
+    WindowItems);
   MWindows := NewMenu(WindowItems);
 
   // ---- Desktop: one canonical shared work area, changed only explicitly ----
@@ -11894,7 +11901,7 @@ begin
   MDesktop := NewMenu(DesktopItems);
 
   // ---- Clipboard: copy mode and the ten client-local history entries ----
-  ClipboardItems := NewItem(UiText('~C~lear history...',
+  ClipboardItems := NewItem(UiText('Clear histor~y~...',
     '~B~orrar historial...'), '', kbNoKey, cmClipboardClear,
     hcNoContext, nil);
   ClipboardItems := NewLine(ClipboardItems);
@@ -12001,7 +12008,8 @@ begin
   // ---- Sessions: detach and application life cycle ----
   SessItems := nil;
   SessItems := NewItem(UiText('E~x~it', 'Sa~l~ir'),
-    KEY_ALT + 'X', kbAltX, cmQuit, hcNoContext, SessItems);
+    PrefixKeyLabel(Cfg.PrefixKey) + ' x', kbNoKey, cmQuit, hcNoContext,
+    SessItems);
   SessItems := NewLine(SessItems);
   SessItems := NewItem(UiText('Quick session ~w~izard...',
     '~A~sistente de sesion rapida...'), '', kbNoKey, cmSessionWizard,
@@ -12087,8 +12095,8 @@ begin
       kbNoKey, cmToggleZoomAnim, hcNoContext, nil ))))))))))));
 
   MHelp := NewMenu(
-    NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'), '', kbNoKey,
-      cmHelp, hcNoContext,
+    NewItem(UiText('~H~elp and shortcuts', '~A~yuda y atajos'),
+      PrefixKeyLabel(Cfg.PrefixKey) + ' ?', kbNoKey, cmHelp, hcNoContext,
     NewLine(
     NewItem(UiText('A~b~out...', 'A~c~erca de...'), '', kbNoKey,
       cmAbout, hcNoContext, nil))));
@@ -12115,32 +12123,31 @@ begin
   GetExtent(R);
   R.A.Y := R.B.Y - 1;
   Items := nil;
-  // invisible keys: dispatch without taking room in the status line
-  Items := NewStatusKey('', kbCtrlF5, cmResize, Items);
-  Items := NewStatusKey('', kbAltF9, cmWindowMinimize, Items);
-  Items := NewStatusKey('', kbAltF4, cmClose, Items);
-  Items := NewStatusKey('', kbAltF3, cmPaneClose, Items);
-  Items := NewStatusKey('', kbF9, cmWindowPrev, Items);
-  Items := NewStatusKey('', kbF7, cmPanePrev, Items);
-  Items := NewStatusKey('', kbF3, cmSplitH, Items);
-  // Exit remains an intentional keyboard command, but it is not advertised
-  // or clickable on the status line: the safe everyday action is Detach.
-  Items := NewStatusKey('', kbAltX, cmQuit, Items);
-  // visible: what a novice needs most, fitting in 80 columns
+  // Every entry is kbNoKey on purpose. The status line is ofPreProcess, so a
+  // bound key here is taken from the pane before the pane can ever see it --
+  // that is what made F2..F9, Ctrl-F5 and Alt unusable inside a program. The
+  // commands stay so the entries remain clickable; the keyboard route to all
+  // of them is the prefix, and the label is where the user reads which chord.
+  //
+  // Four entries, in the order a newcomer needs them: the menu (which has no
+  // other key now), splitting, moving between panes, and leaving safely.
+  // Deliberately sized to fit 80 columns in both languages.
   Items := NewStatusKey(UiText(
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Detach',
     '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' d~ Separar'),
     kbNoKey, cmDetach, Items);
   Items := NewStatusKey(UiText(
-    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' f~ Full screen',
-    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' f~ Pantalla'),
-    kbNoKey, cmFullScreen, Items);
-  Items := NewStatusKey(UiText('~F8~ Window', '~F8~ Ventana'), kbF8,
-    cmWindowNext, Items);
-  Items := NewStatusKey(UiText('~F6~ Pane', '~F6~ Panel'), kbF6,
-    cmPaneNext, Items);
-  Items := NewStatusKey(UiText('~F2~ Split', '~F2~ Dividir'), kbF2,
-    cmSplitV, Items);
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' o~ Pane',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' o~ Panel'),
+    kbNoKey, cmPaneNext, Items);
+  Items := NewStatusKey(UiText(
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' v~ Split',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' v~ Dividir'),
+    kbNoKey, cmSplitV, Items);
+  Items := NewStatusKey(UiText(
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' m~ Menu',
+    '~' + PrefixKeyLabel(Cfg.PrefixKey) + ' m~ Menu'),
+    kbNoKey, cmMenu, Items);
   StatusLine := New(PGeometryStatusLine, Init(R,
     NewStatusDef(0, $FFFF, Items, nil)));
 end;

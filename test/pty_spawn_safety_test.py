@@ -390,7 +390,7 @@ try:
 finally:
     if local_client is not None:
         if local_client.wait_exit(0.0) is None:
-            local_client.send(b'\x1bx', 0.5)
+            local_client.send(b'\x11x', 0.5)
         local_client.wait_exit(3.0)
         local_client.close()
 
@@ -431,7 +431,7 @@ try:
     check('resistant direct child starts', started and bool(kill_identity))
     began_exit = time.monotonic()
     if kill_client.wait_exit(0.0) is None:
-        kill_client.send(b'\x1bx', 0.2)
+        kill_client.send(b'\x11x', 0.2)
     kill_status = kill_client.wait_exit(5.0)
     kill_elapsed = time.monotonic() - began_exit
     killed = wait_until(
@@ -460,7 +460,7 @@ finally:
         check('resistant child leaves no cleanup survivor', False)
     if kill_client is not None:
         if kill_client.wait_exit(0.0) is None:
-            kill_client.send(b'\x1bx', 0.2)
+            kill_client.send(b'\x11x', 0.2)
         kill_client.wait_exit(3.0)
         kill_client.close()
 

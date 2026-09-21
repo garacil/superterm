@@ -80,10 +80,11 @@ if os.path.exists(SESS):
 
 s = Session()
 # wait for startup to draw menu + status line + first frame
-s.wait_until(lambda t: ("Panes" in t) and ("F2 Split" in t) and (t.count("╔") >= 1))
+s.wait_until(lambda t: ("Panes" in t) and ("Ctrl-Q v Split" in t) and
+             (t.count("╔") >= 1))
 scr = s.text()
 check("menubar Panels", "Panes" in scr)
-check("statusline F2", "F2 Split" in scr)
+check("statusline prefix chord", "Ctrl-Q v Split" in scr)
 check("window frame 1 shell", scr.count("╔") >= 1)
 check("OSC prompt hidden", "3008;start=" not in scr)
 
@@ -94,7 +95,7 @@ scr = s.text()
 check("cmd output visible", "ST_A=1" in scr and "ST_B=2" in scr)
 
 # vertical split: F2 (xterm: ESC OQ)
-s.send(b'\x1bOQ', 1.0)
+s.send(b'\x11v', 1.0)
 s.wait_until(lambda t: t.count("╔") + t.count("┌") >= 2)
 scr = s.text()
 check("after split: 2 windows", scr.count("╔") + scr.count("┌") >= 2)
@@ -105,15 +106,15 @@ s.wait_until(lambda t: "ST_SPLIT_OK" in t)
 scr = s.text()
 check("second pane interactive", "ST_SPLIT_OK" in scr)
 
-# close pane: menu via Alt-P then C: Panels -> Close
-s.send(b'\x1bp', 0.5)
+# close pane: menu via Ctrl-Q m, p then c: Panes -> Close
+s.send(b'\x11mp', 0.5)
 s.send(b'c', 1.0)
 s.wait_until(lambda t: "ST_SPLIT_OK" not in t)
 scr = s.text()
 check("pane closed", "ST_SPLIT_OK" not in scr)
 
 # the single Exit path autosaves this local fallback session
-s.send(b'\x1bx', 0.8)
+s.send(b'\x11x', 0.8)
 s.drain(0.5)
 s.close()
 # wait for the session to be written (up to 3s) instead of a fixed sleep

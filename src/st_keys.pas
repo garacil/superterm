@@ -119,6 +119,9 @@ begin
     kbCtrlDown: Result := #27'[1;5B';
     kbCtrlHome: Result := #27'[1;5H';
     kbCtrlEnd: Result := #27'[1;5F';
+    kbCtrlPgUp: Result := #27'[5;5~';
+    kbCtrlPgDn: Result := #27'[6;5~';
+    kbCtrlIns: Result := #27'[2;5~';
     kbCtrlDel: Result := #27'[3;5~';
     kbShiftDel: Result := #27'[3;2~';
   else

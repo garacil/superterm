@@ -27,8 +27,8 @@ with open(HOME + '/.superterm/superterm.ini', 'w') as f:
 
 c = stlib.Client(HOME, w=100, h=30, lang='en')
 c.drain(2.5)
-c.send(b'\x1bOQ', 1.6)            # F2: a second window to move the focus to
-c.send(b'\x1b1', 0.9)             # Alt-1: back to the first
+c.send(b'\x11v', 1.6)            # F2: a second window to move the focus to
+c.send(b'\x11o', 0.9)             # Ctrl-Q o: back to the other pane
 
 base = len(c.raw())
 c.send(b"printf '\\033[?1003h\\033[?1006h'\r", 1.6)
@@ -36,7 +36,7 @@ check('the host is asked for any-motion',
       b'\x1b[?1003h' in c.raw()[base:])
 
 base = len(c.raw())
-c.send(b'\x1b2', 1.4)             # Alt-2: the focus leaves that pane
+c.send(b'\x11o', 1.4)             # Ctrl-Q o: the focus leaves that pane
 out = c.raw()[base:]
 check('any-motion is taken back', b'\x1b[?1003l' in out)
 check('base tracking is re-asserted',
@@ -49,7 +49,7 @@ check('a click still opens the menu',
       ('Close pane' in c.text()) or ('Split vertical' in c.text()))
 c.send(b'\x1b', 0.5)
 
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 try:
     c.wait_exit(timeout=6)
 except Exception:

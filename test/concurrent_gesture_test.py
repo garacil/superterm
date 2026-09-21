@@ -375,7 +375,7 @@ def create_two_panes(home, session, env):
                            h=HEIGHT, lang='en', env=env)
     try:
         creator.drain(2.0)
-        creator.send(b'\x1bOQ', 0.9)  # F2: second pane
+        creator.send(b'\x11v', 0.9)  # F2: second pane
         creator.send(b'\x11', 0.08)
         creator.send(b't', 0.8)       # deterministic side-by-side layout
         for pane, title in enumerate(TITLES, 1):
@@ -1170,7 +1170,7 @@ def run_physical_mode(dragcontent):
                              h=HEIGHT, lang='en', env=env)
         clients.append(first)
         first.drain(2.0)
-        first.send(b'\x1bOQ', 0.9)
+        first.send(b'\x11v', 0.9)
         first.send(b'\x11', 0.08)
         first.send(b't', 0.8)
         for pane, title in enumerate(TITLES, 1):

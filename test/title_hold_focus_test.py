@@ -282,7 +282,7 @@ def run_mode(dragcontent):
 
     first = stlib.Client(home, w=110, h=34, lang='en', env=env)
     first.drain(2.0)
-    first.send(b'\x1bOQ', 1.0)       # F2: second pane
+    first.send(b'\x11v', 1.0)       # F2: second pane
     first.send(b'\x11', 0.08)
     first.send(b't', 0.8)             # deterministic two-column baseline
     sockets = stlib.session_sockets(home)
@@ -509,9 +509,9 @@ def run_mode(dragcontent):
             clients, actor, observer)
 
         # This must originate in the other attached UI, rather than in the
-        # daemon-control helper: Alt-2 follows the ordinary client focus path
-        # and its event reaches A while A's DragView is pumping Idle.
-        observer.send(b'\x1b2', 0.05)
+        # daemon-control helper: Ctrl-Q o follows the ordinary client focus
+        # path and its event reaches A while A's DragView is pumping Idle.
+        observer.send(b'\x11o', 0.05)
         focus_deadline = time.monotonic() + 3.0
         remote_focus_arrived = False
         while time.monotonic() < focus_deadline:

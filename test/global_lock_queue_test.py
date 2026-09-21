@@ -366,7 +366,7 @@ def control(home, args, attempts=30):
 
 
 def open_window_menu(client):
-    client.send(b'\x1bw', 0.35)
+    client.send(b'\x11mw', 0.35)
     return ('Cascade' in client.text() and 'Organize' in client.text() and
             'Tile' in client.text())
 
@@ -577,8 +577,8 @@ ui = stlib.Client(home, args=['--session', SESSION], w=WIDTH, h=HEIGHT,
                   lang='en', env=env)
 try:
     ui.drain(2.0)
-    ui.send(b'\x1bOQ', 0.75)
-    ui.send(b'\x1bOQ', 0.75)
+    ui.send(b'\x11v', 0.75)
+    ui.send(b'\x11v', 0.75)
     for pane, title in enumerate(TITLES, 1):
         renamed = control(home, ['rename', f'{SESSION}:{pane}', title])
         check('rename pane ' + str(pane),

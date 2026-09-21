@@ -125,7 +125,7 @@ try:
                 left_token not in capture(session, clicked_other))
 finally:
     try:
-        client.send(b'\x1bx', 0.5)
+        client.send(b'\x11x', 0.5)
         client.wait_exit(4.0)
     except OSError:
         pass

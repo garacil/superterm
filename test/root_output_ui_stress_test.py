@@ -304,7 +304,7 @@ try:
     check('stress session published', bool(session))
     result, rows = pane_rows(session)
     while len(rows) < PANES and client.alive():
-        client.send(b'\x1bOQ', 0.6)
+        client.send(b'\x11v', 0.6)
         result, rows = pane_rows(session)
     check('requested pane count created', len(rows) == PANES)
     for pane in range(1, PANES + 1):

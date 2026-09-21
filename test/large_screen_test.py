@@ -291,7 +291,7 @@ def settle(session, rectangle, timeout=15.0):
     while time.time() < end:
         session.drain(0.25)
         if (frame_corners(session) == want and
-                'F2 Split' in session.screen.display[session.height - 1]):
+                'Ctrl-Q v Split' in session.screen.display[session.height - 1]):
             return time.time()
     return None
 
@@ -308,7 +308,7 @@ def check_layout(session, label, rectangle):
     corners = frame_corners(session)
     check(f'{label}: full frame', expected <= corners)
     check(f'{label}: no stale corners', corners == expected)
-    check(f'{label}: status at bottom', 'F2 Split' in ''.join(status))
+    check(f'{label}: status at bottom', 'Ctrl-Q v Split' in ''.join(status))
     check(f'{label}: surface dimensions',
           len(top) == width and len(bottom) == width)
     check(f'{label}: frame matches canonical bounds',
@@ -337,7 +337,7 @@ def settle_clipped(session, pty, session_name, timeout=15.0):
                         (CANON_FRAME[3], CANON_FRAME[0], '╚')} and
                 horizontal_viewport_bar(session) and
                 pane_size(session_name) == pty and
-                'F2 Split' in session.screen.display[session.height - 1]):
+                'Ctrl-Q v Split' in session.screen.display[session.height - 1]):
             return True
     return False
 
@@ -382,7 +382,7 @@ try:
     check('200x80 clips behind a local horizontal scrollbar',
           settle_clipped(s, canonical_pty, session_name))
     check('200x80 status remains at physical bottom',
-          'F2 Split' in s.screen.display[s.height - 1])
+          'Ctrl-Q v Split' in s.screen.display[s.height - 1])
     check('200x80 keeps canonical PTY WxH',
           pane_size(session_name) == canonical_pty)
 
@@ -393,7 +393,7 @@ try:
           pane_size(session_name) == canonical_pty)
 finally:
     try:
-        s.send(b'\x1bx', 0.5)
+        s.send(b'\x11x', 0.5)
     except OSError:
         pass
     s.close()

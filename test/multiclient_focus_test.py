@@ -17,7 +17,7 @@ with open(INI, 'w') as f:
 
 a = stlib.Client(HOME, w=100, h=30, lang='en')
 a.drain(2.5)
-a.send(b'\x1bOQ', 1.5)          # F2: second pane
+a.send(b'\x11v', 1.5)          # F2: second pane
 a.send(b'\x11', 0.2)
 a.send(b't', 1.2)                # tile the two windows
 

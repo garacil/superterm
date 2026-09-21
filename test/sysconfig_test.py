@@ -103,7 +103,7 @@ time.sleep(0.3)
 check("t3 disabled no arranca", pgrep('sleep 777') == '')
 
 # The only Exit command obeys the explicit local autosave setting.
-s.send(b'\x1bx', 1.0)
+s.send(b'\x11x', 1.0)
 s.close()
 time.sleep(0.4)
 check("autosave=0 no guarda sesion", not os.path.exists(SESS))
@@ -128,25 +128,27 @@ scr = s.text()
 check("live: ultimos numeros", re.search(r'\b19[0-9]\b', scr) is not None)
 check("live: primeros no visibles", re.search(r'\b1[0-4][0-9]\b', scr) is None)
 
-# Alt-PgUp (ESC + PgUp) = scroll back one page
-s.send(b'\x1b\x1b[5~', 1.0)
+# Ctrl-Q PgUp = scroll back one page. Scrolling is a superterm action, so
+# it lives behind the prefix like every other one; a bare PgUp is the
+# pane's.
+s.send(b'\x11\x1b[5~', 1.0)
 scr = s.text()
 check("scrolled: muestra historial", re.search(r'\b1[0-4][0-9]\b', scr) is not None)
 
-# Alt-PgDn = back to the present
-s.send(b'\x1b\x1b[6~', 1.0)
+# Ctrl-Q PgDn = back towards the present
+s.send(b'\x11\x1b[6~', 1.0)
 scr = s.text()
 check("scroll fwd: de nuevo vivo", re.search(r'\b19[0-9]\b', scr) is not None)
 
-# Alt-Home / Alt-End (sequences the RTL translates to kbAltHome/kbAltEnd)
-s.send(b'\x1b\x1b[1~', 0.8)
+# Ctrl-Q Home / Ctrl-Q End: the two ends of the history
+s.send(b'\x11\x1b[1~', 0.8)
 scr = s.text()
-check("alt-home: top historial", re.search(r'\b[1-9]\b', scr) is not None and re.search(r'\b19[0-9]\b', scr) is None)
-s.send(b'\x1b\x1b[4~', 0.8)
+check("ctrl-q home: top historial", re.search(r'\b[1-9]\b', scr) is not None and re.search(r'\b19[0-9]\b', scr) is None)
+s.send(b'\x11\x1b[4~', 0.8)
 scr = s.text()
-check("alt-end: bottom", re.search(r'\b19[0-9]\b', scr) is not None)
+check("ctrl-q end: bottom", re.search(r'\b19[0-9]\b', scr) is not None)
 
-s.send(b'\x1bx', 0.8)
+s.send(b'\x11x', 0.8)
 s.close()
 time.sleep(0.3)
 check("autosave=0 sigue sin sesion", not os.path.exists(SESS))
@@ -156,7 +158,7 @@ close_all_daemons(HOME)
 write_user_config(True)
 s = Session()
 s.drain(2.0)
-s.send(b'\x1bx', 1.0)   # exit saving
+s.send(b'\x11x', 1.0)   # exit saving
 s.close()
 deadline = time.time() + 3.0
 while time.time() < deadline and not os.path.exists(SESS):
@@ -171,7 +173,7 @@ s = Session()
 s.drain(2.5)
 scr = s.text()
 check("restaura terminal por nombre", "solo" in scr)
-s.send(b'\x1bx', 0.8)
+s.send(b'\x11x', 0.8)
 s.close()
 close_all_daemons(HOME)
 

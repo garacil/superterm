@@ -161,10 +161,10 @@ try:
     after = frame_rect()
     check('mouse resize changes exact fixed-desktop frame',
           after == (0, 1, 217, 96))
-    check('mouse resize keeps statusline', 'F2 Split' in ''.join(s.screen.display[-1]))
+    check('mouse resize keeps statusline', 'Ctrl-Q v Split' in ''.join(s.screen.display[-1]))
 finally:
     try:
-        os.write(s.fd, b'\x1bx')
+        os.write(s.fd, b'\x11x')
         s.drain(0.5)
     except OSError:
         pass

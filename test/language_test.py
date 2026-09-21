@@ -63,7 +63,7 @@ class Session:
 
     def close(self):
         try:
-            os.write(self.fd, b'\x1bx')
+            os.write(self.fd, b'\x11x')
             self.drain(0.4)
         except OSError:
             pass
@@ -103,15 +103,15 @@ try:
     status = ''.join(s.screen.display[-1])
     check('Spanish status prefers Detach',
           'Separar' in status and 'Salir' not in status and
-          'Ctrl-Q f Pantalla' in status and 'F5 Pantalla' not in status)
+          'Ctrl-Q v Dividir' in status and 'F5' not in status)
 
-    s.send(b'\x1bv', 0.5)  # "Ventanas" menu
+    s.send(b'\x11mv', 0.5)  # "Ventanas" menu
     check('Spanish window-wide actions fit',
           'Minimizar todas las ventanas' in s.text() and
           'Restaurar todas las ventanas' in s.text())
     s.send(b'\x1b', 0.3)
 
-    s.send(b'\x1br', 0.5)  # "Perfiles" menu
+    s.send(b'\x11mr', 0.5)  # "Perfiles" menu
     s.send(b's', 0.7)  # -> "Gestionar perfiles..."
     check('Spanish profile manager opens',
           'Guardar actual' in s.text() and 'alpha' in s.text())
@@ -123,13 +123,13 @@ try:
     s.send(b'n', 0.4)  # decline without changing the profile
     s.send(b'\x1b', 0.3)  # close the profile manager
 
-    s.send(b'\x1bs', 0.5)  # "Sesiones" menu
+    s.send(b'\x11ms', 0.5)  # "Sesiones" menu
     s.send(b'a')  # -> "Asistente de sesion rapida" (quick session wizard)
     check('Spanish input dialog is localized',
           'Aceptar' in s.text() and 'Cancelar' in s.text())
     s.send(b'\t\t\r')
 
-    s.send(b'\x1bo', 0.5)  # "Opciones" menu
+    s.send(b'\x11mo', 0.5)  # "Opciones" menu
     s.send(b'i', 0.5)  # "Idioma" (Language)
     check('Spanish language menu offers English', 'English' in s.text())
     s.send(b'e')
@@ -138,22 +138,22 @@ try:
     status = ''.join(s.screen.display[-1])
     check('English status prefers Detach',
           'Detach' in status and 'Exit' not in status and
-          'Ctrl-Q f Full screen' in status and
-          'F5 Full screen' not in status)
+          'Ctrl-Q v Split' in status and 'F5' not in status)
     check('English switch persists', 'language=en' in open(CONFIG).read())
 
-    s.send(b'\x1bo', 0.5)  # Options
+    s.send(b'\x11mo', 0.5)  # Options
     s.send(b'l', 0.5)  # Language
     s.send(b's')
     check('Spanish switch updates the UI',
           'Paneles' in s.text() and 'Opciones' in s.text())
-    s.send(b'\x1ba\r')  # "Ayuda" -> "Ayuda y atajos" (Help -> Help and shortcuts)
+    s.send(b'\x11ma\r')  # "Ayuda" -> "Ayuda y atajos" (Help -> Help and shortcuts)
     check('Spanish message dialog is localized', 'Aceptar' in s.text())
-    check('Spanish help shows fullscreen chord',
-          'Ctrl-Q f pantalla' in s.text() and 'Alt-F3 cierra' in s.text())
+    check('Spanish help shows the chord map and no bare key',
+          'Todo empieza con Ctrl-Q' in s.text() and
+          'f pantalla' in s.text() and 'Alt-' not in s.text())
     s.send(b'\x1b', 0.5)  # close the help dialog
     s.send(b'\x1b', 0.5)  # and any menu still left open
-    s.send(b'\x1bx', 1.5)  # Alt-X: the single Exit command
+    s.send(b'\x11x', 1.5)  # Ctrl-Q x: the single Exit command
 finally:
     s.close()
 

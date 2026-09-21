@@ -119,7 +119,7 @@ try:
 
     # Desktop -> Show desktop notifications (Alt-D, then mnemonic N) changes
     # only the local overlay. It persists atomically in this client's config.
-    a.send(b'\x1bd', 0.30)
+    a.send(b'\x11md', 0.30)
     check('Desktop menu exposes notification preference',
           'Show desktop notification' in a.text())
     a.send(b'n', 0.60)
@@ -144,7 +144,7 @@ try:
     # Re-enable while the disconnect event is still active: the pending
     # current item becomes visible immediately, proving the preference only
     # controls the local desktop representation.
-    a.send(b'\x1bd', 0.25)
+    a.send(b'\x11md', 0.25)
     a.send(b'n', 0.60)
     with open(INI, encoding='utf-8') as stream:
         config_after_enable = stream.read().lower()

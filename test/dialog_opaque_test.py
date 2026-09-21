@@ -89,7 +89,7 @@ for palette in ('color', 'mono'):
         HOME, w=128, h=48, lang='en',
         env={'SUPERTERM_BACKGROUNDS': os.path.join(ROOT, 'backgrounds')})
     c.drain(3.0)
-    c.send(b'\x1b[20;3~', 1.2)          # Alt-F9: minimise, the picture shows
+    c.send(b'\x11-', 1.2)          # Alt-F9: minimise, the picture shows
     check('%s: the picture is on the desktop' % palette,
           any(len(cell.bg) == 6 and cell.bg != '000000'
               for y in range(4, 40) for cell in [c.screen.buffer[y][40]]) or
@@ -123,7 +123,7 @@ for palette in ('color', 'mono'):
     check('%s: the wizard is opaque' % palette, n == 0)
     c.send(b'\x1b', 0.6)
 
-    c.send(b'\x1bx', 0.8)
+    c.send(b'\x11x', 0.8)
     try:
         c.wait_exit(timeout=6)
     except Exception:

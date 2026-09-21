@@ -197,7 +197,7 @@ def wait_empty(label, clients):
 
 def open_local_shell(client):
     """Choose Classes -> Local shell through the actual UI."""
-    client.send(b'\x1bc', 0.05)       # Alt-C: Classes menu
+    client.send(b'\x11mc', 0.05)       # Alt-C: Classes menu
     menu_visible = client.wait_until(
         lambda text: 'Local shell' in text, 2.0)
     if menu_visible:
@@ -207,7 +207,7 @@ def open_local_shell(client):
 
 def close_last_pane(client):
     """Choose Panes -> Close pane through the actual UI."""
-    client.send(b'\x1bp', 0.05)       # Alt-P: Panes menu
+    client.send(b'\x11mp', 0.05)       # Alt-P: Panes menu
     menu_visible = client.wait_until(
         lambda text: 'Close pane' in text, 2.0)
     if menu_visible:
@@ -217,7 +217,7 @@ def close_last_pane(client):
 
 def choose_cycle_class(client, settle=0.05):
     """Choose the enabled test class, entry 2 after Local shell."""
-    client.send(b'\x1bc', settle)
+    client.send(b'\x11mc', settle)
     menu_visible = client.wait_until(lambda text: 'cycle' in text, 2.0)
     if menu_visible:
         stlib.write_all(client.fd, b'2')
@@ -227,7 +227,7 @@ def choose_cycle_class(client, settle=0.05):
 def close_pane_fast(client):
     """Use the public physical Alt-F3 command in the high-rate cycle."""
     try:
-        stlib.write_all(client.fd, b'\x1b[13;3~')
+        stlib.write_all(client.fd, b'\x11k')
         client.drain(0.05)
         return True
     except (OSError, TimeoutError):
@@ -298,7 +298,7 @@ check('temporal case baseline renamed', temporal_rename.returncode == 0 and
                'TEMPORAL_OLD_PANE' in b.text(), (a, b)))
 try:
     stlib.write_all(
-        b.fd, b'\x1bpc\x1bc1')  # Alt-P,c then Alt-C,1; no drain here
+        b.fd, b'\x11mpc\x11mc1')  # menu Panes,c then Classes,1; no drain here
     temporal_sent = True
 except OSError:
     temporal_sent = False
@@ -375,8 +375,8 @@ if not fresh_attach_ok:
 # never let both mutate pane zero simultaneously.
 def concurrent_first_pair(clients, cycle):
     left, right = clients
-    left.send(b'\x1bc', 0.05)
-    right.send(b'\x1bc', 0.05)
+    left.send(b'\x11mc', 0.05)
+    right.send(b'\x11mc', 0.05)
     menus = (left.wait_until(lambda text: 'cycle' in text, 2.0) and
              right.wait_until(lambda text: 'cycle' in text, 2.0))
     barrier = threading.Barrier(3)

@@ -52,7 +52,7 @@ def drive_wizard(client, token_one, token_two, label):
     host-specific MOTD/rc output which previously let timed keystrokes drift
     into the next pane's dialog.
     """
-    client.send(b'\x1bs', 0.25)
+    client.send(b'\x11ms', 0.25)
     check(label + ': menu exposes wizard',
           client.wait_until(lambda text: 'Quick session wizard' in text, 5.0))
     client.send(b'w', 0.15)
@@ -133,13 +133,14 @@ try:
         print('  list stderr:', repr(listed.stderr))
     check('wizard creates a divider', '│' in c.text())
 
-    c.send(b'\x1bh', 0.3)
+    c.send(b'\x11mh', 0.3)
     check('help menu is accessible', 'Help and shortcuts' in c.text())
     c.send(b'\r', 0.3)
-    check('help dialog opens', 'F2/F3 split' in c.text())
+    check('help dialog opens',
+          'Everything starts with Ctrl-Q' in c.text())
 finally:
     try:
-        c.send(b'\x1bx', 0.4)
+        c.send(b'\x11x', 0.4)
         c.wait_exit(5.0)
     except OSError:
         pass
@@ -215,7 +216,7 @@ try:
                          w=W, h=H, lang='en')
     check('detached alpha reattaches', local.wait_until(
         lambda text: 'LOCAL_ALPHA_READY' in text, 8.0))
-    local.send(b'\x1br', 0.3)
+    local.send(b'\x11mr', 0.3)
     check('both materialization profiles are offered', local.wait_until(
         lambda text: 'alpha' in text and 'beta' in text, 5.0))
     local.send(b'\x1b[B', 0.12)
@@ -252,7 +253,7 @@ try:
         lambda: session_names(LOCAL_HOME) == [], local))
 finally:
     try:
-        local.send(b'\x1bx', 0.4)
+        local.send(b'\x11x', 0.4)
         local.wait_exit(5.0)
     except OSError:
         pass

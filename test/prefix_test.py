@@ -82,9 +82,11 @@ def client_exited(c, timeout=3.0):
         c.drain(0.1)
     return False
 
-def detach_works(prefix_byte):
+def detach_works(prefix_byte, configured=b'\x11'):
     """Starts, sends prefix+d and returns whether the client detached (exited
-    leaving the socket alive); with always-server there is no name dialog."""
+    leaving the socket alive); with always-server there is no name dialog.
+    `configured` is the prefix the ini actually sets, which is what the Exit
+    chord needs when `prefix_byte` deliberately is not a prefix."""
     c = Client()
     c.drain(2.0)
     try:
@@ -99,7 +101,7 @@ def detach_works(prefix_byte):
     ok = client_exited(c) and bool(
         glob.glob(HOME + '/.superterm/sessions/*.sock'))
     if not ok:
-        c.send(b'\x1bx', 0.8)     # it was not a prefix: use the one Exit key
+        c.send(configured + b'x', 0.8)   # not a prefix: exit with the real one
     c.close()
     # clean up the session left alive for the next round
     for sock in glob.glob(HOME + '/.superterm/sessions/*.sock'):
@@ -131,20 +133,21 @@ check("prefix=ctrl-b respeta Ctrl-B", detach_works(b'\x02'))
 # ---- 4: with explicit ctrl-b, Ctrl-Q is NOT a prefix ----
 reset_home()
 write_ini('prefix=ctrl-b')
-check("ctrl-b: Ctrl-Q no es prefijo", not detach_works(b'\x11'))
+check("ctrl-b: Ctrl-Q no es prefijo",
+      not detach_works(b'\x11', configured=b'\x02'))
 
 # ---- 5: fullscreen follows an explicit non-default prefix ----
 reset_home()
 write_ini('prefix=ctrl-b')
 c = Client()
 c.drain(2.0)
-check("ctrl-b se anuncia para fullscreen",
-      'Ctrl-B f Full screen' in c.text())
+check("ctrl-b se anuncia en la barra de estado",
+      'Ctrl-B m Menu' in c.text() and 'Ctrl-B v Split' in c.text())
 c.send(b'\x02f', 1.2)
 check("ctrl-b f entra en fullscreen", 'Detach' not in c.text())
 c.send(b'\x02f', 1.2)
 check("ctrl-b f restaura el IDE", 'Detach' in c.text())
-c.send(b'\x1bx', 0.8)
+c.send(b'\x02x', 0.8)
 c.close()
 
 # ---- 6: prefix-s opens the session picker ----
@@ -156,7 +159,7 @@ c.send(b's', 1.0)
 t = c.text()
 check("prefijo-s abre selector", 'Attach' in t or 'Conectar' in t or 'Sessions' in t or 'Sesiones' in t)
 c.send(b'\x1b', 0.6)
-c.send(b'\x1bx', 0.8)
+c.send(b'\x11x', 0.8)
 c.close()
 
 # ---- 7: the session name is sanitized (no ../ nor spaces) ----

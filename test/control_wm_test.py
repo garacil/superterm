@@ -148,7 +148,7 @@ check('restore works while attached', r.returncode == 0)
 # list/send/capture keep working while attached
 r = run_cli(['capture', SES + ':1'], HOME)
 check('capture ok while attached', r.returncode == 0)
-c2.send(b'\x1bx', 1.0)
+c2.send(b'\x11x', 1.0)
 time.sleep(0.6)
 c2.close()
 

@@ -199,7 +199,7 @@ old_presentation = (cells(c), old_frames)
 # Open Profiles, move from active alpha to beta, then capture only Enter and
 # the resulting replacement.  Menu navigation itself is deliberately outside
 # the temporal contract being tested.
-c.send(b'\x1br', 0.45)
+c.send(b'\x11mr', 0.45)
 c.send(b'\x1b[B', 0.25)
 menu_frames = frame_rects(c)
 menu_presentation = (cells(c), menu_frames)

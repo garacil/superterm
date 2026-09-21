@@ -79,7 +79,7 @@ check('both clients receive output', all(
 # not resurrect the removed Save-and-exit protocol path.
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
-b.send(b'\x1bx', 1.0)
+b.send(b'\x11x', 1.0)
 check('attached Alt-X exits sender', b.wait_exit(timeout=8.0) == 0)
 b.close()
 check('secondary Exit keeps creator alive', a.alive())
@@ -90,7 +90,7 @@ check('secondary Exit does not save', not os.path.exists(SESS_INI))
 c = stlib.Client(HOME, args=['--attach', name], w=80, h=24, lang='en')
 c.drain(2.0)
 check('replacement client attaches', c.alive())
-c.send(b'\x1bx', 1.0)
+c.send(b'\x11x', 1.0)
 check('replacement Exit exits sender', c.wait_exit(timeout=8.0) == 0)
 c.close()
 check('replacement Exit keeps creator alive', a.alive())
@@ -100,7 +100,7 @@ a.wait_until(lambda text: 'CREATOR_STILL_WORKS' in text, 5.0)
 check('remaining client remains usable', 'CREATOR_STILL_WORKS' in a.text())
 
 # With A now the only attached UI, the same interactive exit closes the daemon.
-a.send(b'\x1bx', 1.0)
+a.send(b'\x11x', 1.0)
 check('last client exits', a.wait_exit(timeout=8.0) == 0)
 a.close()
 check('last client closes session', wait_for(lambda: sockets() == []))

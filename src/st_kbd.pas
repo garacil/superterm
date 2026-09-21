@@ -38,6 +38,27 @@ function ReadCursorPositionReply(out ARow, ACol: integer): boolean;
 // item to the focused pane.
 function TakeHostPaste(out AText: RawByteString): boolean;
 
+// Undo what DecodeEscape did to an Alt key, so the pane can be given the
+// Meta form of it.
+//
+// FreeVision carries the Alt bit in a separate KeyShift byte and requires the
+// keycode's low byte to be zero, so building an Alt event here throws the
+// character away and keeps only a scancode. These two invert that. They live
+// next to EvalScan and the NavEvent table that produce those scancodes,
+// because an inverse that drifts from its forward mapping is worse than no
+// inverse at all.
+//
+// AltKeyChar answers the character of an Alt+character key, always unshifted
+// and lower case: a scancode names a physical key, and st_kbd deliberately
+// folds Alt-A onto Alt-a. A PC scancode cannot tell Alt-. from Alt->, and the
+// unshifted form is the one that is actually bound in readline and friends.
+function AltKeyChar(KeyCode: word): AnsiChar;
+// AltKeyBase answers the plain keycode of an Alt+function/navigation key --
+// Alt-F9 gives kbF9 -- so the caller can send ESC followed by that key's own
+// sequence, which is the Meta convention every such application reads. It
+// answers kbNoKey for anything else.
+function AltKeyBase(KeyCode: word): word;
+
 implementation
 
 uses
@@ -537,6 +558,90 @@ begin
     else
       Result := LScan[b and $1F];
     end;
+end;
+
+function AltKeyChar(KeyCode: word): AnsiChar;
+begin
+  // The inverse of EvalScan above, restricted to the unshifted US layout --
+  // one entry per physical key, in row order. The number row carries the
+  // +$76 offset DecodeEscape adds to it.
+  case Hi(KeyCode) of
+    $29: Result := '`';
+    $78: Result := '1';
+    $79: Result := '2';
+    $7A: Result := '3';
+    $7B: Result := '4';
+    $7C: Result := '5';
+    $7D: Result := '6';
+    $7E: Result := '7';
+    $7F: Result := '8';
+    $80: Result := '9';
+    $81: Result := '0';
+    $82: Result := '-';
+    $83: Result := '=';
+    $10: Result := 'q';
+    $11: Result := 'w';
+    $12: Result := 'e';
+    $13: Result := 'r';
+    $14: Result := 't';
+    $15: Result := 'y';
+    $16: Result := 'u';
+    $17: Result := 'i';
+    $18: Result := 'o';
+    $19: Result := 'p';
+    $1A: Result := '[';
+    $1B: Result := ']';
+    $1E: Result := 'a';
+    $1F: Result := 's';
+    $20: Result := 'd';
+    $21: Result := 'f';
+    $22: Result := 'g';
+    $23: Result := 'h';
+    $24: Result := 'j';
+    $25: Result := 'k';
+    $26: Result := 'l';
+    $27: Result := ';';
+    $28: Result := '''';
+    $2B: Result := '\';
+    $2C: Result := 'z';
+    $2D: Result := 'x';
+    $2E: Result := 'c';
+    $2F: Result := 'v';
+    $30: Result := 'b';
+    $31: Result := 'n';
+    $32: Result := 'm';
+    $33: Result := ',';
+    $34: Result := '.';
+    $35: Result := '/';
+    $39: Result := ' ';
+  else
+    Result := #0;
+  end;
+end;
+
+function AltKeyBase(KeyCode: word): word;
+begin
+  // DecodeEscape offsets a function key by $2D ($06 for F11/F12) and picks a
+  // navigation key's Alt scancode out of the NavEvent table; both directions
+  // are written here side by side so neither can move alone.
+  case Hi(KeyCode) of
+    $68..$71: Result := (Hi(KeyCode) - $2D) shl 8;   // Alt-F1..Alt-F10
+    $8B, $8C: Result := (Hi(KeyCode) - $06) shl 8;   // Alt-F11, Alt-F12
+    $97: Result := kbHome;
+    $98: Result := kbUp;
+    $99: Result := kbPgUp;
+    $9B: Result := kbLeft;
+    $9D: Result := kbRight;
+    $9F: Result := kbEnd;
+    $A0: Result := kbDown;
+    $A1: Result := kbPgDn;
+    $A2: Result := kbIns;
+    $A3: Result := kbDel;
+    $08: Result := kbBack;                           // kbAltBack
+    $A5: Result := kbTab;                            // kbAltTab
+  else
+    Result := kbNoKey;
+  end;
 end;
 
 function KEv(ch: AnsiChar; scan: byte; state: byte): TKeyEvent;

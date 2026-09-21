@@ -88,7 +88,7 @@ run_cli(['send', '%s:1' % SES, 'echo STILL_ALIVE'], HOME)
 c.wait_until(lambda t: 'STILL_ALIVE' in t, 6.0)
 check('the surviving panes still run', 'STILL_ALIVE' in c.text())
 
-c.send(b'\x1bx', 1.5)
+c.send(b'\x11x', 1.5)
 try:
     c.wait_exit(timeout=8)
 except Exception:

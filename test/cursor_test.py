@@ -107,10 +107,10 @@ def final_position_ok(name, out, row, col):
         ok = b'\x1b[H' not in tail[1:]
     check(name, ok)
 
-# 1. normal local Exit: Alt-X
-answered, out = run_session([], 23, 7, b'\x1bx')
-check("DSR consultado (Alt-X local)", answered)
-final_position_ok("cursor tras Alt-X local", out, 23, 7)
+# 1. normal local Exit: Ctrl-Q x
+answered, out = run_session([], 23, 7, b'\x11x')
+check("DSR consultado (Ctrl-Q x local)", answered)
+final_position_ok("cursor tras Ctrl-Q x local", out, 23, 7)
 
 # 2. detach leaving everything running: Ctrl-Q d (+\r accepts the name)
 answered, out = run_session([], 11, 5, b'\x11d\r')
@@ -118,8 +118,8 @@ check("DSR consultado (detach)", answered)
 final_position_ok("cursor tras detach Ctrl-Q d", out, 11, 5)
 check("servidor sigue vivo tras detach", os.path.exists(SOCK))
 
-# 3. reattach and final close: superterm --attach + Alt-X
-answered, out = run_session(['--attach'], 17, 3, b'\x1bx')
+# 3. reattach and final close: superterm --attach + Ctrl-Q x
+answered, out = run_session(['--attach'], 17, 3, b'\x11x')
 check("DSR consultado (--attach)", answered)
 final_position_ok("cursor tras cierre definitivo", out, 17, 3)
 time.sleep(0.5)

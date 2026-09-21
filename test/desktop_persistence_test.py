@@ -63,7 +63,7 @@ def wait_saved(expected, timeout=6.0):
 
 
 def show_desktop(client, expected):
-    client.send(b'\x1bd', 0.0)
+    client.send(b'\x11md', 0.0)
     opened = client.wait_until(
         lambda text: 'Show current dimensions' in text, 5.0)
     if opened:
@@ -93,7 +93,7 @@ def exact_saved_frame(client):
 
 
 def fit_to_terminal(client):
-    client.send(b'\x1bd', 0.0)
+    client.send(b'\x11md', 0.0)
     opened = client.wait_until(
         lambda text: 'Adjust to this terminal size' in text, 5.0)
     if opened:
@@ -138,7 +138,7 @@ def oversized_dialog_anchored(client):
         5.0)
     if not scrolled:
         return True, False
-    client.send(b'\x1bh', 0.0)
+    client.send(b'\x11mh', 0.0)
     menu = client.wait_until(lambda text: 'About...' in text, 4.0)
     if menu:
         client.send(b'b', 0.0)
@@ -179,7 +179,7 @@ try:
     # INI proves the local-mode Exit autosave serialized live state instead of
     # re-reading our seed.
     os.unlink(SESSION_INI)
-    first.send(b'\x1bx', 0.0)
+    first.send(b'\x11x', 0.0)
     exit_status = first.wait_exit(timeout=8.0)
     check('autosaving session exit completes', exit_status == 0)
     check('session save preserves DeskW/H and bounds',
@@ -189,6 +189,13 @@ try:
     # A new process with a different physical viewport must reload the same
     # logical values; host geometry is never substituted during restore.
     second = stlib.Client(HOME, w=104, h=32, lang='en')
+    # Wait for the restored window before driving the menu, as `first` and
+    # `legacy` already do. A menu is reached with a three-byte chord now, and
+    # those bytes must not be split across the end of the boot sequence.
+    check('restart draws the restored window',
+          second.wait_until(
+              lambda _text: second.screen.display[BOUNDS[1] + 1][BOUNDS[0]]
+              in ('╔', '┌'), 8.0))
     check('restart reloads exact DeskW/H', show_desktop(second, FIT_DESK))
     check('smaller restart owns local viewport bars',
           second.wait_until(lambda _text: desktop_bars(second), 5.0))
@@ -255,7 +262,7 @@ try:
                                  [LEGACY_REPAIRED[0]] in ('╔', '┌')),
         8.0)
     check('legacy session preserves accessible saved position', legacy_ready)
-    legacy.send(b'\x1bx', 0.0)  # autosave serializes the restored live bounds
+    legacy.send(b'\x11x', 0.0)  # autosave serializes the restored live bounds
     saved_ok = legacy.wait_exit(timeout=8.0) == 0
     parser = configparser.ConfigParser(interpolation=None)
     parser.read(LEGACY_INI)
@@ -269,7 +276,7 @@ try:
           saved_ok and hidden_saved == LEGACY_REPAIRED)
 finally:
     if legacy.alive():
-        legacy.send(b'\x1bx', 0.0)
+        legacy.send(b'\x11x', 0.0)
         legacy.wait_exit(timeout=5.0)
     legacy.close()
     stlib.close_all_daemons(LEGACY_HOME)

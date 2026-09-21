@@ -112,7 +112,7 @@ def has_complete_surface(value):
     rows = display_of(value)
     return (bool(rows) and 'Panes' in rows[0] and
             active_frame_attr(value) is not None and
-            any('F2 Split' in row for row in rows))
+            any('Ctrl-Q v Split' in row for row in rows))
 
 
 def compact(values):
@@ -297,7 +297,7 @@ try:
     # navigation is outside the capture; the contract starts with the one 'm'
     # key which chooses Monochrome.  No click or subsequent input is allowed to
     # make the palette finally take effect.
-    c.send(b'\x1bo', 0.45)
+    c.send(b'\x11mo', 0.45)
     c.send(b'p', 0.45)
     check('keyboard opens palette submenu', 'Monochrome' in c.text())
     c.begin_transition_capture()

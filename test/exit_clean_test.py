@@ -65,7 +65,7 @@ c.send(FULLSCREEN_CHORD, 1.2)      # enter passthrough
 check('quit: passthrough entered',
       last_word(c.raw()[mark:], 1000) == 'l')
 c.send(FULLSCREEN_CHORD, 1.2)      # restore and re-assert the mouse modes
-c.send(b'\x1bx', 2.0)             # Alt-X: quit
+c.send(b'\x11x', 2.0)             # Alt-X: quit
 c.wait_exit(timeout=8.0)
 c.drain(0.6)
 check_clean(c.raw(), 'quit')

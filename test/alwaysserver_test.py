@@ -57,7 +57,7 @@ check('capture works from launch', 'LIVE_FROM_CLI' in r.stdout)
 # ---- 2: the last viewer's single Exit path closes the live session ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
-a.send(b'\x1bx', 1.0)
+a.send(b'\x11x', 1.0)
 check('Alt-X exits last client', a.wait_exit(timeout=8.0) == 0)
 a.close()
 check('last Exit closes daemon', wait_for(lambda: socks() == []))
@@ -74,7 +74,7 @@ c.send(b'\x1b', 0.6)   # the selector appears (a live session exists): Esc = new
 c.drain(1.5)
 check('collision gets suffix', wait_for(
     lambda: len([s for s in socks() if 'Trabajo' in s]) == 2))
-c.send(b'\x1bx', 1.0)
+c.send(b'\x11x', 1.0)
 c.wait_exit(timeout=8.0)
 c.close()
 
@@ -102,7 +102,7 @@ check('reattach after kill works', 'BACK_AGAIN' in e.text())
 # ---- 5: final Exit after detach/reattach closes without a save variant ----
 if os.path.exists(SESS_INI):
     os.remove(SESS_INI)
-e.send(b'\x1bx', 1.0)
+e.send(b'\x11x', 1.0)
 check('Alt-X exits client', e.wait_exit(timeout=8.0) == 0)
 e.close()
 check('Alt-X kills the daemon', wait_for(lambda: socks() == []))

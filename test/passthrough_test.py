@@ -74,7 +74,7 @@ check('restore redraws a window frame',
       ('┌' in '\n'.join(c.screen.display)) or
       ('╔' in '\n'.join(c.screen.display)))
 
-c.send(b'\x1bx', 1.5)   # Alt-X: last viewer closes the live session
+c.send(b'\x11x', 1.5)   # Alt-X: last viewer closes the live session
 c.wait_exit(timeout=6.0)
 c.close()
 deadline = time.time() + 6.0
