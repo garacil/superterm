@@ -15,19 +15,6 @@ uses
 
 const
   MAX_PANES = 16;
-  // Canonical desktop work area, in character cells. The menu and status
-  // rows are outside this height. Keep the ceiling aligned with TScreen's
-  // 8192 x 4096 limit: fullscreen additionally owns those two UI rows.
-  DESKTOP_MIN_W = 20;
-  DESKTOP_MIN_H = 25;
-  DESKTOP_MAX_W = 8192;
-  DESKTOP_MAX_H = 4094;
-  // First-run workspace.  These are canonical character dimensions, not a
-  // request to resize the terminal which happens to launch SuperTerm.
-  DEFAULT_DESKTOP_W = 120;
-  DEFAULT_DESKTOP_H = 50;
-  DEFAULT_INITIAL_PANE_COLS = 80;
-  DEFAULT_INITIAL_PANE_ROWS = 25;
   // FreeVision's MinWinSize (vendor/fv322/views.pas). A window smaller than
   // this cannot be dragged or resized by hand, so nothing should place one.
   MIN_WIN_W = 16;
@@ -38,6 +25,22 @@ const
   // pane off it, and the two are only consistent if they compute it from the
   // same numbers -- hence here, in the unit both of them already share.
   ICON_H = 2;
+  // Canonical desktop work area, in character cells. The menu and status
+  // rows are outside this height. The floor is the least the window manager
+  // works in -- one minimum window above one row of icons, with room for the
+  // title's controls -- so even a small terminal (80x24, or 20x25) can adjust
+  // the desktop to its own size. Keep the ceiling aligned with TScreen's
+  // 8192 x 4096 limit: fullscreen additionally owns those two UI rows.
+  DESKTOP_MIN_W = 20;
+  DESKTOP_MIN_H = MIN_WIN_H + ICON_H;
+  DESKTOP_MAX_W = 8192;
+  DESKTOP_MAX_H = 4094;
+  // First-run workspace.  These are canonical character dimensions, not a
+  // request to resize the terminal which happens to launch SuperTerm.
+  DEFAULT_DESKTOP_W = 120;
+  DEFAULT_DESKTOP_H = 50;
+  DEFAULT_INITIAL_PANE_COLS = 80;
+  DEFAULT_INITIAL_PANE_ROWS = 25;
   DEFAULT_ICON_W = 26;
   MIN_ICON_W = 10;
 

@@ -209,7 +209,7 @@ survive a host reboot; profiles and preferences do.
   Bounded flow control prevents a stalled viewer from blocking the rest.
 - The `Desktop` / `Escritorio` menu is the only interactive way to change the
   canonical desktop: adopt the current terminal's usable character area, enter
-  dimensions from `20x25` through `8192x4094`, or inspect the logical desktop,
+  dimensions from `20x8` through `8192x4094`, or inspect the logical desktop,
   complete IDE, terminal and viewport sizes. Shrinking never scales windows.
   Their sizes and PTYs stay unchanged; a window is translated only by the
   minimum needed to leave a draggable part of its title reachable.
@@ -795,7 +795,7 @@ not, and unchanged interiors are not retransmitted on a focus switch.
 The same actions are available from the `Panes`, `Windows`, `Classes`,
 `Profiles`, `Sessions`, `Desktop`, `Options`, `Clipboard`, and `Help` menus.
 `Desktop` contains `Adjust to this terminal size`, `Modify dimensions...`
-(`20x25` through `8192x4094`) and `Show current dimensions...`. The
+(`20x8` through `8192x4094`) and `Show current dimensions...`. The
 `Windows` menu contains `Minimize all windows`, `Restore all windows`,
 `Close all windows`, `Tile`, `Organize`, `Cascade`, `List`, and
 `Refresh display`. `Options` holds the

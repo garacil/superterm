@@ -21,7 +21,7 @@ from stlib import check, run_cli
 
 HOME = stlib.fresh_home('maximize-logical-desktop-' + str(os.getpid()))
 TITLE = 'LOGICALMAX'
-SMALL_HOST = (88, 27)  # 25-row usable desktop: exact supported minimum
+SMALL_HOST = (88, 27)  # 25-row usable desktop, smaller than the logical one
 LARGE_ATTACH = (128, 38)
 LARGE_HOST = (132, 40)
 LOGICAL_DESK = (LARGE_HOST[0], LARGE_HOST[1] - 2)

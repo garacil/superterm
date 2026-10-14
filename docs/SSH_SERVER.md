@@ -657,7 +657,7 @@ to create a second desktop. A larger terminal leaves margin.
 Attach and every later physical resize are metadata-only. They do not change
 the canonical desktop, window bounds or `TIOCSWINSZ` of a pane. The only
 interactive desktop-size operations are in `Desktop` / `Escritorio`: adopt the
-current viewer's usable terminal area, enter dimensions from `20x25` through
+current viewer's usable terminal area, enter dimensions from `20x8` through
 `8192x4094`, or show the logical desktop, complete IDE, terminal and viewport
 dimensions. The daemon validates the exact base revision and global lease and
 publishes one canonical result to every local and SSH viewer.

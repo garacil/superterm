@@ -24,7 +24,7 @@ from stlib import (FRAME_ATTACH, FRAME_CLIENT_SIZE, FRAME_DESKTOP_RESIZE,
                    FRAME_READY, FRAME_RESIZE_EV, FRAME_SCREEN, FRAME_SESSION,
                    check, raw_frame, read_frame, run_cli)
 
-DESKTOP_MIN = (20, 25)
+DESKTOP_MIN = (20, 8)
 DESKTOP_MAX = (8192, 4094)
 SCREEN_MAX = (8192, 4096)
 GEOM_FORMAT = '<iiiiiiBBB'

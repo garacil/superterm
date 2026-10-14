@@ -197,7 +197,7 @@ canonical `(0,0)`; a larger terminal has unused margin.
 
 Only an explicit IDE action changes the desktop. `Desktop -> Adjust to this
 terminal size` adopts that client's usable character area, `Desktop -> Modify
-dimensions...` accepts `20x25` through `8192x4094`, and `Desktop -> Show
+dimensions...` accepts `20x8` through `8192x4094`, and `Desktop -> Show
 current dimensions...` reports logical, complete-IDE, terminal and viewport
 sizes. Shrinking does not scale windows or resize normal/minimized PTYs. Bounds
 stay exact unless no safe draggable title cell would remain visible, in which
@@ -413,7 +413,7 @@ margen.
 
 El escritorio solo cambia por una acción explícita del IDE. `Escritorio ->
 Ajustar al tamaño de este terminal` adopta el área útil de ese cliente,
-`Escritorio -> Modificar dimensiones...` acepta desde `20x25` hasta
+`Escritorio -> Modificar dimensiones...` acepta desde `20x8` hasta
 `8192x4094`, y `Escritorio -> Mostrar dimensiones actuales...` muestra los
 tamaños lógico, IDE completo, terminal y área visible. Al reducir no se escalan
 las ventanas ni cambian los PTY normales/minimizados. Sus dimensiones y

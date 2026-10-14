@@ -239,7 +239,7 @@ their intentional half-block/quadrant foreground-background pairs.
 - The canonical desktop changes only through the `Desktop` menu
   (`Escritorio`): `Adjust to this terminal size` adopts that viewer's usable
   character area, `Modify dimensions...` accepts a logical width/height from
-  `20x25` through `8192x4094`, and `Show current dimensions...` reports the
+  `20x8` through `8192x4094`, and `Show current dimensions...` reports the
   logical desktop, complete IDE, physical terminal and current viewport. The
   operation is serialized as one shared revision, so every viewer receives
   the same result.
