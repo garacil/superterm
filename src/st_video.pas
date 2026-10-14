@@ -33,6 +33,10 @@ procedure PresentOrderedVideoFrame;
 // has its own process and therefore its own value; it is never shared with the
 // canonical desktop kept by the daemon.
 function HostUtf8Output: Boolean;
+// True when the desktop is drawn on the host terminal's alternate screen, so
+// that leaving superterm gives the shell back the screen it had. Whoever
+// re-enters that screen after a pane wrote to the terminal must ask first.
+function HostAlternateScreen: Boolean;
 procedure CaptureConsoleCursor;
 procedure RestoreConsoleCursor;
 // Ask the outer terminal to delimit paste operations. st_kbd consumes those
@@ -194,6 +198,10 @@ var
   UseSyncOutput: Boolean = False;  // DECSET 2026; opt-in via SUPERTERM_SYNC=1
   HostUtf8: Boolean = True;
   ProbeHostEncoding: Boolean = True;
+  // the desktop is on the alternate screen; Own: superterm entered it, not
+  // the RTL driver
+  AlternateScreen: Boolean = False;
+  OwnAlternateScreen: Boolean = False;
   // DECSCUSR mirroring: what was last sent to the host, and whether anything
   // was ever sent at all. Both matter -- see HostCursorStyle.
   HostCursorStyleLast: Integer = 0;
@@ -232,6 +240,11 @@ var
 function HostUtf8Output: Boolean;
 begin
   Result := HostUtf8;
+end;
+
+function HostAlternateScreen: Boolean;
+begin
+  Result := AlternateScreen;
 end;
 
 function PendingOutputByteCount: LongInt;
@@ -2042,12 +2055,17 @@ begin
   WriteRaw(#27'(B'#27'[?7h');
   if Drained and Assigned(SavedDriver.DoneDriver) then
     SavedDriver.DoneDriver;
+  // The original driver uses blocking writes to stdout. Calling it after a
+  // bounded drain timed out would recreate the exact shutdown deadlock this
+  // reactor prevents. Best-effort the portable alternate-screen exit on the
+  // independent nonblocking handle instead -- and leave the alternate screen
+  // the driver never entered in the first place.
+  if AlternateScreen and (OwnAlternateScreen or not Drained) then
+    WriteRaw(#27'[?1049l');
   if not Drained then
-    // The original driver uses blocking writes to stdout. Calling it after a
-    // bounded drain timed out would recreate the exact shutdown deadlock this
-    // reactor prevents. Best-effort the portable alternate-screen exit on the
-    // independent nonblocking handle instead.
-    WriteRaw(#27'[?1049l'#27'[0m'#27'[?25h');
+    WriteRaw(#27'[0m'#27'[?25h');
+  AlternateScreen := False;
+  OwnAlternateScreen := False;
   { FreeVision homes the cursor while tearing down the alternate screen.
     Restore the shell's cursor after that teardown, not before it. This is
     only the fallback: the RTL keyboard teardown still emits ESC[H after
@@ -2123,11 +2141,56 @@ begin
       DebugLog(Format('video: encoding probe width=%d mode=acs', [CellWidth]));
 end;
 
+function TermStartsWith(const ATerm: string;
+  const APrefixes: array of string): Boolean;
+var
+  I: Integer;
+begin
+  for I := Low(APrefixes) to High(APrefixes) do
+    if Copy(ATerm, 1, Length(APrefixes[I])) = APrefixes[I] then
+      Exit(True);
+  Result := False;
+end;
+
+// FPC's video driver (rtl-console/src/unix/video.pp, SysInitVideo) chooses
+// its escape strings by the prefix of TERM, and only its xterm profile enters
+// the alternate screen. A TERM it does not list -- tmux-256color inside tmux,
+// alacritty, foot, st-256color, wezterm -- gets its vt100 profile, which has
+// no alternate screen, so superterm painted straight over the shell's screen
+// and left its desktop there on exit. Those terminals all have one, and every
+// other sequence superterm sends already takes an xterm-compatible terminal
+// for granted. The names the driver lists without one are the terminals that
+// really have none, the GNU/Linux console first. (Its "cons" is the FreeBSD
+// console, which is not a target and whose prefix would also catch contour.)
+procedure DecideAlternateScreen;
+const
+  RTL_ALTERNATE: array[0..5] of string =
+    ('eterm', 'gnome', 'konsole', 'rxvt', 'screen', 'xterm');
+  NO_ALTERNATE: array[0..5] of string =
+    ('ansi', 'beterm', 'dumb', 'linux', 'vt100', 'vt220');
+var
+  Term: string;
+begin
+  Term := GetEnvironmentVariable('TERM');
+  // the driver does nothing at all unless its input is a terminal
+  AlternateScreen := (IsATTY(StdInputHandle) = 1) and (Term <> '') and
+    not TermStartsWith(Term, NO_ALTERNATE);
+  OwnAlternateScreen := AlternateScreen and
+    not TermStartsWith(Term, RTL_ALTERNATE);
+  if DebugActive then
+    DebugLog(Format('video: TERM=%s alternate=%d own=%d',
+      [Term, Ord(AlternateScreen), Ord(OwnAlternateScreen)]));
+end;
+
 procedure WideInitVideo;
 begin
   { Keep the cursor position from the shell even on terminals that do not
     restore it reliably for private alternate-screen mode 1049. }
   WriteRaw(#27'7'#27'[s');
+  DecideAlternateScreen;
+  // Before the driver homes the cursor, so ?1049h saves the shell's own.
+  if OwnAlternateScreen then
+    WriteRaw(#27'[?1049h');
   if Assigned(SavedDriver.InitDriver) then
     SavedDriver.InitDriver;
   DetectHostEncoding;

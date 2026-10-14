@@ -39,6 +39,7 @@ enforces the mapping and the required coverage areas.
 | drive_test.py | UI, rendering | The basic Free Vision workspace renders the expected terminal screen. |
 | empty_desktop_test.py | sessions, UI | Zero panes is a complete attachable state and concurrent recreation remains ordered. |
 | exit_clean_test.py | lifecycle, cleanup | Terminal exit leaves no reporting process or terminal-state residue. |
+| exit_restore_screen_test.py | UI, lifecycle | Quitting or detaching gives the shell back its screen and puts the cursor on the line after the command, on every terminal with an alternate screen, also after a fullscreen round trip. |
 | f5_output_layout_order_test.py | protocol, rendering | Fullscreen output and authoritative layout transitions preserve their ordering in every viewer. |
 | focus_color_test.py | colour, UI | Focus changes window chrome without changing pane cell colours. |
 | fresh_install_defaults_test.py | configuration, UI | A configuration-free installation starts with the advertised workspace and geometry. |

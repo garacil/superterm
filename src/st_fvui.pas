@@ -8111,8 +8111,12 @@ begin
   // RTL did not recognise the terminal, ButtonCount is 0, Mouse.InitMouse was
   // never called and the RTL's event queue is a pair of nil pointers: asking
   // for reports there is asking for a SIGSEGV on the first one.
+  // The alternate screen is a separate question: only one this session
+  // actually uses can be re-entered, or leaving superterm never leaves it.
+  if HostAlternateScreen then
+    WriteRaw(#27'[?1049h');
   if ButtonCount <> 0 then
-    WriteRaw(#27'[?1049h'#27'[0m'#27'[?7l'#27'[?25h' +
+    WriteRaw(#27'[0m'#27'[?7l'#27'[?25h' +
       #27']22;default'#27'\');
   // and re-assert exactly what the mouse driver wants. The pane that owned
   // the screen wrote straight to the host terminal while it did, and a pane
