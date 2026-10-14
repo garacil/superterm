@@ -4186,6 +4186,13 @@ begin
   if Want = HostAnyMotion then
     Exit;
   HostAnyMotion := Want;
+  // GPM reports every motion anyway; on a console only what reaches the
+  // panes changes, and there is no terminal mode to set
+  if ConsoleMouse then
+  begin
+    SetConsoleAnyMotion(Want);
+    Exit;
+  end;
   // the RTL queue holds 16 events and FreeVision drains one per loop, so
   // every-motion reporting is asked for only while an application wants it
   if Want then
@@ -5161,6 +5168,9 @@ begin
   // forked long-lived daemon must not retain its descriptor and postpone the
   // next creator indefinitely.
   ReleaseSshEntryCreationLock;
+  // The same holds for the client's GPM connection: a daemon keeping a copy
+  // would keep gpm writing events for a console nobody reads any more.
+  ReleaseInheritedConsoleMouse;
   // This hook runs only in the forked child, after setsid and stdio
   // redirection.  Mark the inherited application for the detach-only Done
   // path before touching a view, so even an exceptional cleanup cannot run
@@ -7964,12 +7974,18 @@ begin
   // modes it wants through its raw output; ExitPassthrough re-enables ours.
   WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
     #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
+  // A GPM console has no tracking modes to drop: give the pointer back to GPM
+  // instead, whose own selection then works there as it does without us.
+  if ConsoleMouse then
+    HostMouseOff;
   // that line turned any-motion reporting off at the terminal, so say so:
   // SyncHostMouse only writes when its idea of the mode changes, and leaving
   // it believing ?1003 was still on meant a pane that had asked for
   // every-motion tracking never got it back after a maximise and restore --
   // silently, because both sides thought it was already there.
   HostAnyMotion := False;
+  if ConsoleMouse then
+    SetConsoleAnyMotion(False);
   // In remote mode the daemon already applied the canonical fullscreen size
   // before broadcasting this state. Never substitute the host geometry.
   if not RemoteMode then

@@ -62,7 +62,7 @@ function AltKeyBase(KeyCode: word): word;
 implementation
 
 uses
-  SysUtils, Keyboard, Mouse, Drivers, BaseUnix, Termio;
+  SysUtils, Keyboard, Mouse, Drivers, BaseUnix, Termio, st_mouse;
 
 const
   ESC_TIMEOUT_MS = 50;   // lone ESC: margin to tell it apart from sequences
@@ -1088,8 +1088,12 @@ begin
   Inc(MQCount);
 end;
 
+// GPM events do not travel through stdin: on a virtual console they wait in
+// st_mouse's socket until a dry queue asks for them.
 function SuperPollMouseEvent(var AEvent: TMouseEvent): boolean;
 begin
+  if MQCount = 0 then
+    PumpConsoleMouse;
   Result := MQCount > 0;
   if Result then
     AEvent := MQ[MQHead]
@@ -1099,6 +1103,8 @@ end;
 
 procedure SuperGetMouseEvent(var AEvent: TMouseEvent);
 begin
+  if MQCount = 0 then
+    PumpConsoleMouse;
   if MQCount = 0 then
   begin
     AEvent := Default(TMouseEvent);

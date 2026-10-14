@@ -142,6 +142,14 @@ procedure TransientOutlineClear(ASlot: LongInt);
 procedure TransientOutlineClearAll;
 function TransientOutlineActive(ASlot: LongInt): Boolean;
 
+// Software mouse pointer for a host that draws none: a GNU/Linux virtual
+// console, where GPM delivers the events and the kernel wipes GPM's own
+// highlight on every write. Like the transient outlines it lives in the
+// effective-screen delta, never in VideoBuf, so no repaint can erase it and
+// a move costs the two cells it leaves and enters. The move is presented at
+// once; AVisible = False takes it off the screen.
+procedure SetSoftPointer(AX, AY: LongInt; AVisible: Boolean);
+
 // Declare that what the terminal currently shows is unknown, so the NEXT
 // update repaints every cell. This is the only legitimate way to ask for a
 // full repaint: the per-cell delta is otherwise always trustworthy, because
@@ -1002,6 +1010,9 @@ var
   RichH: LongInt = 0;
   TransientOutlines: array[0..15] of TTransientOutline;
   TransientOutlineMask: LongWord = 0;
+  SoftPointerShown: Boolean = False;
+  SoftPointerX: LongInt = -1;
+  SoftPointerY: LongInt = -1;
 
 procedure RichEnsureSize;
 var
@@ -1238,25 +1249,25 @@ begin
   OnScreen := (X >= 0) and (Y >= 0) and (X < ScreenWidth) and (Y < ScreenHeight);
 end;
 
+// Forget what the terminal shows at one cell, so the next update emits it.
+procedure PoisonEffCell(AX, AY: LongInt);
+var
+  idx: LongInt;
+begin
+  if not OnScreen(AX, AY) then
+    Exit;
+  idx := AY * RichW + AX;
+  if (idx < 0) or (idx > High(EffOld)) then
+    Exit;
+  EffOld[idx].Skip := False;
+  EffOld[idx].Rich := False;
+  EffOld[idx].Glyph := #1;      // no real cell can compare equal to this
+  EffOld[idx].Attr := $FF;
+end;
+
 procedure OutlineInvalidate(X1, Y1, X2, Y2: LongInt);
 var
   X, Y: LongInt;
-
-  procedure Poison(AX, AY: LongInt);
-  var
-    idx: LongInt;
-  begin
-    if not OnScreen(AX, AY) then
-      Exit;
-    idx := AY * RichW + AX;
-    if (idx < 0) or (idx > High(EffOld)) then
-      Exit;
-    EffOld[idx].Skip := False;
-    EffOld[idx].Rich := False;
-    EffOld[idx].Glyph := #1;      // no real cell can compare equal to this
-    EffOld[idx].Attr := $FF;
-  end;
-
 begin
   if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
     RichEnsureSize;
@@ -1264,14 +1275,56 @@ begin
     Exit;
   for X := X1 to X2 do
   begin
-    Poison(X, Y1);
-    if Y2 <> Y1 then Poison(X, Y2);
+    PoisonEffCell(X, Y1);
+    if Y2 <> Y1 then PoisonEffCell(X, Y2);
   end;
   for Y := Y1 + 1 to Y2 - 1 do
   begin
-    Poison(X1, Y);
-    if X2 <> X1 then Poison(X2, Y);
+    PoisonEffCell(X1, Y);
+    if X2 <> X1 then PoisonEffCell(X2, Y);
   end;
+end;
+
+// The pointer covers its own cell and, on the right half of a wide glyph,
+// the lead that paints both halves; both are re-emitted when it comes or goes.
+procedure PoisonPointerCells(AX, AY: LongInt);
+begin
+  PoisonEffCell(AX - 1, AY);
+  PoisonEffCell(AX, AY);
+end;
+
+procedure SetSoftPointer(AX, AY: LongInt; AVisible: Boolean);
+begin
+  if (AX < 0) or (AY < 0) then
+    AVisible := False;
+  if (AVisible = SoftPointerShown) and
+     ((not AVisible) or ((AX = SoftPointerX) and (AY = SoftPointerY))) then
+    Exit;
+  if (RichW <> ScreenWidth) or (RichH <> ScreenHeight) then
+    RichEnsureSize;
+  if SoftPointerShown then
+    PoisonPointerCells(SoftPointerX, SoftPointerY);
+  SoftPointerShown := AVisible;
+  SoftPointerX := AX;
+  SoftPointerY := AY;
+  if SoftPointerShown then
+    PoisonPointerCells(AX, AY);
+  // nothing else may be about to draw: present the move now (a frame of the
+  // two cells, or none while passthrough or boot owns the terminal)
+  UpdateScreen(False);
+end;
+
+// Inverse video for the cell under the pointer. A chrome cell flips every
+// colour bit but blink, as the RTL's own console pointer does. A rich cell
+// toggles reverse video (SGR 7) instead of swapping its colours: a pane's
+// blank cell is "terminal default" on one side, and only the terminal knows
+// what that resolves to, so a swap could leave the pointer invisible.
+procedure InvertForPointer(var AEff: TEffCell);
+begin
+  if AEff.Rich then
+    AEff.Flags := AEff.Flags xor 4
+  else
+    AEff.Attr := AEff.Attr xor $7F;
 end;
 
 
@@ -1855,6 +1908,10 @@ begin
         Eff.Bg := 0;
         Eff.Flags := 0;
       end;
+      // The software pointer goes on top of everything, outlines included.
+      if SoftPointerShown and (Y = SoftPointerY) and (not Eff.Skip) and
+         ((X = SoftPointerX) or (Eff.Wide and (X + 1 = SoftPointerX))) then
+        InvertForPointer(Eff);
       // Force is IGNORED on purpose: FreeVision asks for a forced update from
       // TGroup.Redraw, which TGroup.ChangeBounds triggers on every step of a
       // window drag -- that resent all ~10k cells per mouse move (measured:

@@ -287,23 +287,25 @@ begin
   // useful and costs nothing when nothing goes wrong
   DebugSetRole('client');
   InstallCrashHandler;
-  // st_mouse already decided whether there is a mouse (see that unit); what
-  // is left is to say so in the trace, which is the one line that explains a
-  // machine where the mouse is missing
-  if DebugActive then
-    DebugLog(Format('mouse: TERM=%s console=%s ButtonCount=%d waitfd=%d',
-      [SysUtils.GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
-       Drivers.ButtonCount, MouseInputWaitHandle]));
   // st_mouse must initialize before Drivers and therefore cannot depend on
-  // st_video. Connect its tiny mode-sequence producer only now, before
-  // TApplication.Init starts the selected mouse driver.
+  // st_video. Connect its tiny mode-sequence producer and, for a GPM console,
+  // the renderer's pointer only now, before TApplication.Init starts the
+  // selected mouse driver.
   InstallMouseOutputWriter(@st_video.WriteRaw);
+  InstallMousePointerPainter(@st_video.SetSoftPointer);
   // custom keyboard driver: lone ESC works (timeout, not an Alt prefix)
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
   CaptureConsoleCursor;
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
+  // st_mouse decided whether there is a mouse (see that unit) and Init started
+  // its driver; what is left is to say so in the trace, which is the one line
+  // that explains a machine where the mouse is missing
+  if DebugActive then
+    DebugLog(Format('mouse: TERM=%s console=%s gpmvt=%d ButtonCount=%d waitfd=%d',
+      [SysUtils.GetEnvironmentVariable('TERM'), BoolToStr(OnLinuxConsole, True),
+       ConsoleMouseVt, Drivers.ButtonCount, MouseInputWaitHandle]));
   // attach cancelled or failed during Init: do not start the event
   // loop (a cmQuit posted in Init would be lost when entering Run)
   if not STApp^.AbortRun then

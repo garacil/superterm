@@ -309,10 +309,14 @@ superterm listar prod                           # the same CLI, en español
   only in the interactive parent, so no child inherits a thread object without
   its POSIX thread. Intentional zoom-animation frames retain their exact order;
   ordinary intermediate frames still collapse to the latest visible state.
-- On a GNU/Linux virtual console, mouse availability is proved with the kernel
-  console ioctl and GPM wakes the UI through its connected descriptor. A PTY
-  never attempts GPM merely because `TERM` says `linux`; xterm/SGR mouse input
-  continues to arrive through the terminal descriptor.
+- On a GNU/Linux virtual console the mouse is GPM's. SuperTerm speaks GPM's
+  client protocol itself, without ever blocking, and paints its own pointer,
+  because the kernel console draws none that survives a repaint. That holds on
+  the console itself (proved with the kernel console ioctl) and behind a
+  transparent relay such as `sudo su`, whose PTY still says `TERM=linux` while
+  the relay sits on the console; tmux, screen, SSH and terminal emulators keep
+  xterm/SGR mouse input through the terminal descriptor. Hold Shift to use
+  GPM's own selection instead.
 - GNU/Linux and macOS share the UI, VT engine, layout, configuration, session
   protocol and control CLI. Platform-specific PTY/process and service-manager
   adapters are selected at compile time.

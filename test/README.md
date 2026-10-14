@@ -43,6 +43,7 @@ enforces the mapping and the required coverage areas.
 | fresh_install_defaults_test.py | configuration, UI | A configuration-free installation starts with the advertised workspace and geometry. |
 | fullscreen_test.py | UI, rendering | Maximization and terminal fullscreen remain distinct operations with reversible presentation. |
 | global_command_fifo_test.py | protocol, sessions | Concurrent client commands execute through one observable global FIFO. |
+| gpm_console_test.py | input, UI | On a GNU/Linux virtual console GPM's own events open menus and move, resize and maximize windows, a software pointer is painted and repainted without xterm modes, the GPM connection ends with the client and comes back by itself after GPM restarts, and a GPM refusal is final without costing the keyboard interface. |
 | global_lock_queue_test.py | protocol, rendering | Pre-grant layout snapshots cannot roll back a completed global action. |
 | host_resize_shared_test.py | sessions, UI | Host SIGWINCH changes only that viewer and never canonical desktop geometry. |
 | host_summary_lease_test.py | protocol, sessions | Host compatibility metadata cannot change canonical zoom geometry or evade a lease owner. |
@@ -56,7 +57,7 @@ enforces the mapping and the required coverage areas.
 | maximize_icon_row_test.py | UI, sessions | A maximize stops immediately above the minimized icons at every instant, and the icon row moving re-fits an already maximized pane in both directions. |
 | maximize_min_viewport_test.py | UI, sessions | Normal maximize follows the logical desktop rather than a smaller viewer. |
 | mouse_focus_test.py | input, UI | Mouse menu activation and exclusive pane focus work under the documented terminal chain. |
-| mouse_backend_test.py | input, lifecycle | The mouse driver is installed before FreeVision without a dependency cycle, real consoles use `KDGETMODE`, GPM is probed nonblockingly and wakes the event loop by descriptor, and PTY startup never waits for GPM. |
+| mouse_backend_test.py | input, lifecycle | The mouse driver is installed before FreeVision without a dependency cycle, real consoles use `KDGETMODE`, a console relayed through a PTY is trusted only under `TERM=linux`, GPM is reached by the driver's own nonblocking, close-on-exec client that wakes the event loop by descriptor and that no forked daemon keeps, and PTY startup never waits for GPM. |
 | mouse_test.py | input, UI | Xterm mouse events move and resize windows correctly. |
 | mouseforward_test.py | input, protocol | Mouse events reach a pane application only while it has requested them. |
 | mousemode_test.py | input, cleanup | Disabling any-motion tracking restores ordinary host mouse reporting. |

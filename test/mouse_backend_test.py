@@ -3,8 +3,9 @@
 
 The FPC GNU/Linux mouse backend attempts a blocking GPM connection for an
 unrecognised TERM.  SuperTerm must install its own driver before FreeVision's
-Drivers unit probes it, use the kernel console identity rather than TERM, and
-wake the UI from the real GPM descriptor on a virtual console.
+Drivers unit probes it, use the kernel console identity rather than TERM
+(TERM=linux only qualifies a console reached through a relay's PTY), reach GPM
+with its own nonblocking client, and wake the UI from that GPM socket.
 """
 import os
 import pty
@@ -44,13 +45,33 @@ check('real console is identified by kernel ioctl',
       'FpIOCtl(StdInputHandle, KDGETMODE' in mouse and
       "GetEnvironmentVariable('TERM')" not in
       mouse[mouse.find('function OnLinuxConsole: boolean;\n{$IFDEF LINUX}'):
-            mouse.find('function FindGpmWaitHandle')])
+            mouse.find('function VtOfDevice')])
+check('relayed console is trusted only under TERM=linux',
+      "GetEnvironmentVariable('TERM') <> 'linux'" in
+      mouse[mouse.find('function RelayedConsoleVt'):
+            mouse.find('function DetectConsoleVt')])
 check('GPM probe is nonblocking before connect',
       mouse.find('F_SETFL') < mouse.find("fpconnect(Fd"))
-check('RTL GPM driver runs only after accepted probe',
-      'if GpmAccepting and Assigned(SysDriver.DetectMouse)' in mouse)
-check('GPM descriptor is discovered after initialization',
-      'GpmWaitFd := FindGpmWaitHandle' in mouse)
+check("the RTL's blocking GPM client is never called",
+      'SysDriver.DetectMouse' not in mouse and
+      'SysDriver.InitDriver' not in mouse and
+      'Gpm_Open' not in mouse and 'gpm_open' not in mouse)
+check('GPM is connected only when the driver starts',
+      'GpmFd := GpmOpenSocket' in
+      mouse[mouse.find('function GpmConnect'):
+            mouse.find('function MapGpmButtons')] and
+      'GpmConnect' not in
+      mouse[mouse.find('function OurDetectMouse'):
+            mouse.find('procedure OurInitDriver')])
+check('GPM socket is close-on-exec',
+      'F_SETFD' in mouse[mouse.find('function GpmOpenSocket'):
+                         mouse.find('procedure PaintPointer')])
+check('event loop waits on the GPM socket itself',
+      'Result := GpmFd' in mouse)
+check('forked daemon drops the inherited GPM socket',
+      'ReleaseInheritedConsoleMouse' in
+      ui[ui.find('procedure TSuperApp.PrepareDetachedServerChild'):
+         ui.find('procedure TSuperApp.PrepareDetachedServerChild') + 2000])
 check('event loop watches GPM descriptor',
       'AddFd(MouseInputWaitHandle, POLLIN)' in ui)
 

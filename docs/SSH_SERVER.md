@@ -617,9 +617,10 @@ with zero panes remains available for reattach.
 
 The outer OpenSSH terminal is a PTY even when its forwarded `TERM` value is
 `linux` or unknown. SuperTerm identifies a GNU/Linux virtual console with the
-kernel `KDGETMODE` ioctl, not that environment string, so an SSH forced command
-never enters FPC's blocking GPM console path. Mouse reports from an SSH
-terminal continue through the PTY in xterm/SGR form.
+kernel `KDGETMODE` ioctl, not that environment string, and follows a PTY to a
+console only through a relay that sits on one, which an SSH session never
+does. Mouse reports from an SSH terminal continue through the PTY in xterm/SGR
+form.
 
 ### SSH clients and terminal encoding
 

@@ -219,11 +219,13 @@ python3 test/layout_transition_test.py
 python3 test/client_notifications_test.py
 ```
 
-The mouse-backend suite proves that PTYs do not enter the blocking FPC GPM
-path, checks the kernel-console and descriptor-wake wiring, and runs bounded
-startup probes with both `TERM=tmux-256color` and `TERM=linux`. A real GPM
-event still requires a GNU/Linux virtual console with a running GPM service;
-that hardware-specific observation cannot be inferred from a PTY run.
+The mouse-backend suite proves that FPC's blocking GPM client is never used,
+checks the kernel-console, relay and descriptor-wake wiring, and runs bounded
+startup probes with both `TERM=tmux-256color` and `TERM=linux`. The GPM console
+suite plays GPM itself, on a socket of its own, and drives menus, window moves,
+resizes, maximize and the software pointer with GPM's event records. A real
+GPM event still requires a GNU/Linux virtual console with a running GPM
+service; that hardware-specific observation cannot be inferred from a PTY run.
 
 Each suite has an independent 15-minute deadline. A timed-out suite and its
 process group are terminated, the remaining suites still run, and the final

@@ -94,7 +94,9 @@ grep -v "video: update\|draw pane=" /tmp/st-dbg.log | less
 
 | prefix | what it tells you |
 |---|---|
-| `mouse:` | `TERM`, kernel-console result, `ButtonCount`, and the GPM wait descriptor (`-1` for terminal-emulator input) — **zero buttons means no mouse at all** |
+| `mouse:` | `TERM`, kernel-console result, the console whose GPM mouse is followed (`gpmvt`, `0` for terminal-emulator input), `ButtonCount`, and the GPM socket (`waitfd`, `-1` when GPM is not connected) — **zero buttons means no mouse at all** |
+| `mouse: gpm refused console N …` | GPM closed the connection before sending a single event: it serves a console only to root and to the owner of `/dev/ttyN`, and the line names that owner. SuperTerm does not retry |
+| `mouse: gpm connection lost …` / `mouse: gpm reconnected …` | GPM went away after serving the client (a restart or an upgrade) and the client came back on its own; retries start after one second and double up to thirty |
 | `video: client output reactor started/stopped` | the independent nonblocking `/dev/tty` writer, its bounded queue, and whether shutdown drained or abandoned bytes |
 | `video: physical-submit` | bytes admitted by the UI, pending physical bytes, and admission time; this never includes time blocked in a terminal write |
 | `== BOOT:` | startup, followed by `init: sysini=... classes=N profiles=N` |
