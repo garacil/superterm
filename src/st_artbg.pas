@@ -143,13 +143,8 @@ begin
     IncludeTrailingPathDelimiter(ConfigDir) + 'backgrounds' + PathSep +
     Bin + '..' + PathDelim + 'share' + PathDelim + 'superterm' + PathDelim +
       'backgrounds' + PathSep +
-    {$IFNDEF WINDOWS}
     '/usr/local/share/superterm/backgrounds' + PathSep +
     '/usr/share/superterm/backgrounds' + PathSep +
-    {$ENDIF}
-    // Windows installers keep the artwork beside the executable.  Keep the
-    // parent-relative checkout path as a final fallback for Unix layouts.
-    Bin + 'backgrounds' + PathSep +
     Bin + '..' + PathDelim + 'backgrounds';
 end;
 

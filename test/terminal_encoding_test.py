@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-client UTF-8 probing and 7-bit Windows compatibility rendering.
+"""Per-client UTF-8 probing and 7-bit DEC ACS compatibility rendering.
 
 The ordinary stlib terminal deliberately returns one fixed CPR, which is the
 right oracle for cursor restoration but cannot describe where a just-rendered
@@ -117,12 +117,12 @@ class ProbeClient(stlib.Client):
             return b''
         return self._raw[self.probe_end_raw:]
 
-    def windows_text(self):
-        """Render Microsoft's documented ESC(0/ESC(B DEC-ACS behavior.
+    def acs_text(self):
+        """Render the 7-bit ESC(0/ESC(B DEC-ACS designators of the renderer.
 
-        pyte implements DEC graphics through G1/SO/SI but not the equivalent
-        Windows sequences.  Rewriting only those two designators lets pyte
-        model what Windows Console documents, without changing the captured
+        pyte ignores ESC ( designations while it decodes UTF-8.  Rewriting
+        only those two designators into a non-UTF-8 G1/SO span lets pyte
+        model a terminal that honours them, without changing the captured
         product bytes used by the stronger wire assertions below.
         """
         wire = self._raw.replace(
@@ -194,14 +194,14 @@ try:
           no_utf8_box(legacy_frame))
     check('every ACS selection is returned to ASCII',
           legacy_frame.count(b'\x1b(0') == legacy_frame.count(b'\x1b(B'))
-    legacy_text = legacy.windows_text()
+    legacy_text = legacy.acs_text()
     legacy_view_ok = ('Detach' in legacy_text and 'Panes' in legacy_text and
                       ('┌' in legacy_text or '╔' in legacy_text) and
                       ('│' in legacy_text or '║' in legacy_text))
     if not legacy_view_ok:
-        print('--- simulated Windows ACS view ---')
+        print('--- simulated 7-bit ACS view ---')
         print(legacy_text)
-    check('documented Windows ACS renderer shows the complete IDE',
+    check('the 7-bit ACS renderer shows the complete IDE',
           legacy_view_ok)
 
     clients = (utf8, legacy)

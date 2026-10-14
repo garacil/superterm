@@ -12,12 +12,6 @@ spelling shown by `superterm --help startup`. Messages follow the
 Root administration of the optional dedicated OpenSSH TCP entry on GNU/Linux
 and macOS is documented separately in [SSH_SERVER.md](SSH_SERVER.md).
 
-Native Windows builds run through ConPTY. Detached sessions, attach/list,
-and every control command documented below work there too: the server is a
-separate `superterm --session-daemon` process instead of a fork, over the same
-AF_UNIX socket and protocol (see WINDOWS.md). Only the dedicated OpenSSH TCP
-entry and its root administration are still Unix-host-only.
-
 La versión en español está en la segunda mitad de este documento.
 
 ## Live contextual reference / Referencia contextual integrada
@@ -274,13 +268,6 @@ The built-in summaries are available through `superterm --help ssh` and
 ---
 
 ## Español
-
-En Windows nativo se ejecuta mediante ConPTY. Las sesiones separadas,
-conectar/listar y todas las órdenes de control descritas aquí también
-funcionan: el servidor es un proceso aparte `superterm --session-daemon` en
-lugar de un fork, sobre el mismo socket AF_UNIX y el mismo protocolo (véase
-WINDOWS.md). Solo la entrada TCP OpenSSH dedicada y su administración como root
-siguen siendo exclusivas de Unix.
 
 ### Destinos
 

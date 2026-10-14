@@ -7,7 +7,7 @@
 #                           release use packaging/macos/release.sh instead)
 #
 #  Uses fpc directly with the project's strict contract, so it needs neither
-#  ./configure nor make — the macOS counterpart of build.bat.
+#  ./configure nor make.
 #
 #  Override the compiler location by setting SUPERTERM_FPC before running:
 #      SUPERTERM_FPC=/path/to/fpc ./build.command
@@ -37,7 +37,7 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-# The same strict contract as build.bat and the Makefile, plus the two
+# The same strict contract as the Makefile, plus the two
 # darwin-only noise flags the Makefile adds behind uname:
 #   -vm6058  mute the ~69 "inline is not inlined" notes the aarch64-darwin RTL
 #            emits for vendored FreeVision FillChar/Move (Linux never does)

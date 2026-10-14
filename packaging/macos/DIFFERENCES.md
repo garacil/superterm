@@ -60,7 +60,7 @@ This is the only change inside vendored FreeVision, and it is documented in
 pure black over the dialog's light grey. A DOS VGA cell read that as a soft shade; a modern
 terminal font renders a solid black bar. The darwin branch keeps the glyphs and lifts only
 the ink to dark grey (`(Bc and $F0) or $08`), matching the window shadows (`ShadowAttr
-$08`). Compile-time, automatic, and compiled out on GNU/Windows: their binaries stay
+$08`). Compile-time, automatic, and compiled out on GNU/Linux: its binary stays
 byte-identical. Chosen over a config option on purpose — nobody should have to know this.
 
 ## The mouse pointer shape: a host limitation, tested and settled

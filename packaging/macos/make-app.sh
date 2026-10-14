@@ -7,12 +7,10 @@
 #   ./make-app.sh              builds dist/SuperTerm.app
 #   ./make-app.sh --install    the same, then copies it to /Applications
 #
-# The icon is derived from packaging/windows/alien-hacker.ico so both
-# platforms share the same face.
+# The icon is derived from alien-hacker.ico beside this script.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
 APP="$HERE/dist/SuperTerm.app"
 
 rm -rf "$APP"
@@ -63,8 +61,8 @@ fi
 LAUNCH
 chmod +x "$APP/Contents/MacOS/SuperTerm"
 
-# --- icon: windows .ico -> .icns -------------------------------------------
-ICO="$ROOT/packaging/windows/alien-hacker.ico"
+# --- icon: .ico -> .icns ---------------------------------------------------
+ICO="$HERE/alien-hacker.ico"
 if [ -f "$ICO" ]; then
   TMP="$(mktemp -d)"
   # Largest frame of the .ico to PNG, then the sizes iconutil wants.

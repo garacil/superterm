@@ -11,13 +11,7 @@ unit st_config;
 interface
 
 uses
-  Classes, SysUtils, IniFiles,
-  // ctypes only for the Windows lock handles: on Unix every C type used here
-  // already comes from BaseUnix (as on main), and a unit nothing references
-  // is a fatal hint under the strict -Sewnh contract.
-  {$IFDEF WINDOWS}ctypes,{$ENDIF} st_os
-  {$IFDEF UNIX}, BaseUnix, Unix{$ENDIF}
-  {$IFDEF WINDOWS}, Windows{$ENDIF};
+  Classes, SysUtils, IniFiles, st_os, BaseUnix, Unix;
 
 type
   EConfigWriteError = class(EInOutError);
@@ -174,89 +168,10 @@ const
   CONFIG_LOCK_WAIT_MS = 30000;
   CONFIG_LOCK_POLL_MS = 20;
   CONFIG_LOCK_ATTEMPTS = CONFIG_LOCK_WAIT_MS div CONFIG_LOCK_POLL_MS;
-  {$IFDEF UNIX}
   ST_FD_CLOEXEC = 1;
-  {$ENDIF}
-  {$IFDEF WINDOWS}
-  // Present in the Windows 10 SDK used by FPC, but missing from FPC 3.2.2's
-  // translated constants.
-  ST_MOVEFILE_WRITE_THROUGH = $00000008;
-  ST_FILE_FLAG_OPEN_REPARSE_POINT = $00200000;
-  {$ENDIF}
 
 var
   ConfigTempSerial: QWord = 0;
-
-{$IFDEF WINDOWS}
-type
-  TWindowsConfigLockSlot = record
-    Handle: THandle;
-    InUse: boolean;
-  end;
-
-var
-  WindowsConfigLockGuard: TRTLCriticalSection;
-  WindowsConfigLocks: array of TWindowsConfigLockSlot;
-
-function RememberWindowsConfigLock(AHandle: THandle): cint;
-var
-  I: integer;
-begin
-  EnterCriticalsection(WindowsConfigLockGuard);
-  try
-    for I := 0 to High(WindowsConfigLocks) do
-      if not WindowsConfigLocks[I].InUse then
-      begin
-        WindowsConfigLocks[I].Handle := AHandle;
-        WindowsConfigLocks[I].InUse := True;
-        Exit(I);
-      end;
-    I := Length(WindowsConfigLocks);
-    SetLength(WindowsConfigLocks, I + 1);
-    WindowsConfigLocks[I].Handle := AHandle;
-    WindowsConfigLocks[I].InUse := True;
-    Result := I;
-  finally
-    LeaveCriticalsection(WindowsConfigLockGuard);
-  end;
-end;
-
-function ForgetWindowsConfigLock(var AToken: cint): THandle;
-begin
-  Result := INVALID_HANDLE_VALUE;
-  if AToken < 0 then
-    Exit;
-  EnterCriticalsection(WindowsConfigLockGuard);
-  try
-    if (AToken <= High(WindowsConfigLocks)) and
-       WindowsConfigLocks[AToken].InUse then
-    begin
-      Result := WindowsConfigLocks[AToken].Handle;
-      WindowsConfigLocks[AToken].Handle := INVALID_HANDLE_VALUE;
-      WindowsConfigLocks[AToken].InUse := False;
-    end;
-    AToken := -1;
-  finally
-    LeaveCriticalsection(WindowsConfigLockGuard);
-  end;
-end;
-
-procedure FinalizeWindowsConfigLocks;
-var
-  I: integer;
-  Ov: TOverlapped;
-begin
-  for I := 0 to High(WindowsConfigLocks) do
-    if WindowsConfigLocks[I].InUse then
-    begin
-      Ov := Default(TOverlapped);
-      UnlockFileEx(WindowsConfigLocks[I].Handle, 0, 1, 0, @Ov);
-      CloseHandle(WindowsConfigLocks[I].Handle);
-      WindowsConfigLocks[I].InUse := False;
-    end;
-  WindowsConfigLocks := nil;
-end;
-{$ENDIF}
 
 function ConfigDir: string;
 begin
@@ -430,21 +345,11 @@ procedure SetDefaults(out Cfg: TConfig);
 var
   Sh: string;
 begin
-  {$IFDEF WINDOWS}
-  Sh := SysUtils.GetEnvironmentVariable('COMSPEC');
-  if Sh = '' then Sh := 'cmd.exe';
-  {$ELSE}
   Sh := SysUtils.GetEnvironmentVariable('SHELL');
   if Sh = '' then Sh := '/bin/bash';
-  {$ENDIF}
   Cfg.Shell := Sh;
-  {$IFDEF WINDOWS}
-  Cfg.LoginShell := False;
-  Cfg.User := SysUtils.GetEnvironmentVariable('USERNAME');
-  {$ELSE}
   Cfg.LoginShell := True;
   Cfg.User := SysUtils.GetEnvironmentVariable('USER');
-  {$ENDIF}
   Cfg.PrefixKey := 17; // Ctrl-Q (does not collide with remote tmux/screen)
   Cfg.AutoSave := True;
   Cfg.AutoRestore := True;
@@ -463,9 +368,7 @@ begin
   Cfg.Language := ulEnglish;
   // Keep the upstream first-install presentation on every platform.
   Cfg.Palette := 'mono';
-  // Every platform starts sessions as a server. On Windows the server is a
-  // separate process that starts the panes itself, so a workspace can only
-  // be detached when it was born this way.
+  // Every session starts as a server, so any workspace can be detached.
   Cfg.ServerMode := 'always';
   Cfg.MultiThread := 1;
   Cfg.NewWinCols := 0;
@@ -558,74 +461,12 @@ end;
 
 function AcquireConfigFileLock(const FileName: string): cint;
 var
-  {$IFDEF WINDOWS}
-  H: THandle;
-  Ov: TOverlapped;
-  Info: TByHandleFileInformation;
-  LockName: UnicodeString;
-  E: DWORD;
-  {$ELSE}
   Flags, E: cint;
   St: Stat;
   LockName: RawByteString;
-  {$ENDIF}
   Attempt, Attempts, V: integer;
   S: string;
 begin
-  {$IFDEF WINDOWS}
-  Result := -1;
-  LockName := UTF8Decode(FileName + '.lock');
-  H := CreateFileW(PWideChar(LockName), GENERIC_READ or GENERIC_WRITE,
-    FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_ALWAYS,
-    FILE_ATTRIBUTE_NORMAL or ST_FILE_FLAG_OPEN_REPARSE_POINT, 0);
-  if H = INVALID_HANDLE_VALUE then
-  begin
-    E := GetLastOSError;
-    raise EConfigWriteError.CreateFmt(
-      'Cannot open configuration lock %s: %s',
-      [FileName + '.lock', SysErrorMessage(E)]);
-  end;
-  try
-    Info := Default(TByHandleFileInformation);
-    if not GetFileInformationByHandle(H, Info) or
-       ((Info.dwFileAttributes and
-        (FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT)) <> 0) then
-      raise EConfigWriteError.CreateFmt(
-        'Configuration lock is not a regular file: %s',
-        [FileName + '.lock']);
-    Attempts := CONFIG_LOCK_ATTEMPTS;
-    S := SysUtils.GetEnvironmentVariable('SUPERTERM_TEST_CONFIG_LOCK_POLLS');
-    if (SysUtils.GetEnvironmentVariable('SUPERTERM_TESTING') = '1') and
-       TryStrToInt(S, V) and (V >= 1) and (V <= Attempts) then
-      Attempts := V;
-    Ov := Default(TOverlapped);
-    E := ERROR_SUCCESS;
-    for Attempt := 1 to Attempts do
-    begin
-      if LockFileEx(H, LOCKFILE_EXCLUSIVE_LOCK or LOCKFILE_FAIL_IMMEDIATELY,
-        0, 1, 0, @Ov) then
-      begin
-        Result := RememberWindowsConfigLock(H);
-        H := INVALID_HANDLE_VALUE;
-        Exit;
-      end;
-      E := GetLastOSError;
-      if E <> ERROR_LOCK_VIOLATION then
-        Break;
-      if Attempt < Attempts then
-        Sleep(CONFIG_LOCK_POLL_MS);
-    end;
-    if E = ERROR_LOCK_VIOLATION then
-      raise EConfigWriteError.CreateFmt(
-        'Timed out waiting for configuration lock %s', [FileName])
-    else
-      raise EConfigWriteError.CreateFmt('Cannot lock configuration %s: %s',
-        [FileName, SysErrorMessage(E)]);
-  finally
-    if H <> INVALID_HANDLE_VALUE then
-      CloseHandle(H);
-  end;
-  {$ELSE}
   Result := -1;
   LockName := RawByteString(FileName + '.lock');
   Flags := O_RDWR or O_CREAT;
@@ -684,101 +525,24 @@ begin
   else
     raise EConfigWriteError.CreateFmt('Cannot lock configuration %s: %s',
       [FileName, SysErrorMessage(E)]);
-  {$ENDIF}
 end;
 
 procedure ReleaseConfigFileLock(var Fd: cint);
-{$IFDEF WINDOWS}
-var
-  H: THandle;
-  Ov: TOverlapped;
-{$ENDIF}
 begin
-  {$IFDEF WINDOWS}
-  H := ForgetWindowsConfigLock(Fd);
-  if H = INVALID_HANDLE_VALUE then
-    Exit;
-  Ov := Default(TOverlapped);
-  UnlockFileEx(H, 0, 1, 0, @Ov);
-  CloseHandle(H);
-  {$ELSE}
   if Fd < 0 then
     Exit;
   FpFlock(Fd, LOCK_UN);
   FpClose(Fd);
   Fd := -1;
-  {$ENDIF}
 end;
 
 function BeginConfigRewriteLocked(const FileName, Tag: string): string;
 var
-  {$IFDEF WINDOWS}
-  H: THandle;
-  E: DWORD;
-  Info: TByHandleFileInformation;
-  TempWide: UnicodeString;
-  {$ELSE}
   Flags, Fd, E: cint;
   St: Stat;
-  {$ENDIF}
   Source: TFileStream;
   Target: THandleStream;
 begin
-  {$IFDEF WINDOWS}
-  H := INVALID_HANDLE_VALUE;
-  repeat
-    Inc(ConfigTempSerial);
-    Result := FileName + '.tmp.' + IntToStr(OsGetPid) + '.' +
-      IntToStr(ConfigTempSerial) + '.' + Tag;
-    TempWide := UTF8Decode(Result);
-    H := CreateFileW(PWideChar(TempWide), GENERIC_READ or GENERIC_WRITE, 0,
-      nil, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
-    if H = INVALID_HANDLE_VALUE then
-      E := GetLastOSError
-    else
-      E := ERROR_SUCCESS;
-  until (H <> INVALID_HANDLE_VALUE) or
-    ((E <> ERROR_FILE_EXISTS) and (E <> ERROR_ALREADY_EXISTS));
-  if H = INVALID_HANDLE_VALUE then
-    raise EConfigWriteError.CreateFmt(
-      'Cannot create configuration temporary %s: %s',
-      [Result, SysErrorMessage(E)]);
-  try
-    Info := Default(TByHandleFileInformation);
-    if not GetFileInformationByHandle(H, Info) or
-       ((Info.dwFileAttributes and
-        (FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT)) <> 0) then
-      raise EConfigWriteError.CreateFmt(
-        'Configuration temporary is not a regular file: %s', [Result]);
-    Target := THandleStream.Create(H);
-    try
-      if FileExists(FileName) then
-      begin
-        Source := TFileStream.Create(FileName, fmOpenRead or fmShareDenyNone);
-        try
-          Target.CopyFrom(Source, 0);
-        finally
-          Source.Free;
-        end;
-      end;
-    finally
-      Target.Free;
-    end;
-  except
-    CloseHandle(H);
-    DeleteFileW(PWideChar(TempWide));
-    raise;
-  end;
-  if not CloseHandle(H) then
-  begin
-    E := GetLastOSError;
-    DeleteFileW(PWideChar(TempWide));
-    raise EConfigWriteError.CreateFmt(
-      'Cannot close configuration temporary %s: %s',
-      [Result, SysErrorMessage(E)]);
-  end;
-  OsRestrictFile(Result);
-  {$ELSE}
   repeat
     Inc(ConfigTempSerial);
     Result := FileName + '.tmp.' + IntToStr(FpGetPid) + '.' +
@@ -838,10 +602,8 @@ begin
       'Cannot close configuration temporary %s: %s',
       [Result, SysErrorMessage(E)]);
   end;
-  {$ENDIF}
 end;
 
-{$IFDEF UNIX}
 procedure SyncParentDirectoryBestEffort(const FileName: string);
 var
   DirName: string;
@@ -857,61 +619,13 @@ begin
   FpFsync(Fd);
   FpClose(Fd);
 end;
-{$ENDIF}
 
 procedure CommitConfigRewriteLocked(var TempName: string;
   const FileName: string);
 var
-  {$IFDEF WINDOWS}
-  H: THandle;
-  E: DWORD;
-  Info: TByHandleFileInformation;
-  TempWide, FileWide: UnicodeString;
-  {$ELSE}
   Flags, Fd, E: cint;
   St: Stat;
-  {$ENDIF}
 begin
-  {$IFDEF WINDOWS}
-  TempWide := UTF8Decode(TempName);
-  FileWide := UTF8Decode(FileName);
-  H := CreateFileW(PWideChar(TempWide), GENERIC_READ or GENERIC_WRITE,
-    FILE_SHARE_READ, nil, OPEN_EXISTING,
-    FILE_ATTRIBUTE_NORMAL or ST_FILE_FLAG_OPEN_REPARSE_POINT, 0);
-  if H = INVALID_HANDLE_VALUE then
-  begin
-    E := GetLastOSError;
-    raise EConfigWriteError.CreateFmt(
-      'Cannot reopen configuration temporary %s: %s',
-      [TempName, SysErrorMessage(E)]);
-  end;
-  try
-    Info := Default(TByHandleFileInformation);
-    if not GetFileInformationByHandle(H, Info) or
-       ((Info.dwFileAttributes and
-        (FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT)) <> 0) then
-      raise EConfigWriteError.CreateFmt(
-        'Configuration temporary is not a regular file: %s', [TempName]);
-    if not FlushFileBuffers(H) then
-    begin
-      E := GetLastOSError;
-      raise EConfigWriteError.CreateFmt(
-        'Cannot sync configuration temporary %s: %s',
-        [TempName, SysErrorMessage(E)]);
-    end;
-  finally
-    CloseHandle(H);
-  end;
-  if not MoveFileExW(PWideChar(TempWide), PWideChar(FileWide),
-    MOVEFILE_REPLACE_EXISTING or ST_MOVEFILE_WRITE_THROUGH) then
-  begin
-    E := GetLastOSError;
-    raise EConfigWriteError.CreateFmt(
-      'Cannot atomically replace configuration file %s: %s',
-      [FileName, SysErrorMessage(E)]);
-  end;
-  TempName := '';
-  {$ELSE}
   Flags := O_RDONLY;
   {$IF DEFINED(LINUX) OR DEFINED(BSD) OR DEFINED(DARWIN)}
   Flags := Flags or Open_NoFollow;
@@ -951,7 +665,6 @@ begin
   end;
   TempName := '';
   SyncParentDirectoryBestEffort(FileName);
-  {$ENDIF}
 end;
 
 procedure SaveConfigFields(const Cfg: TConfig; const Fields: TConfigFields);
@@ -1079,25 +792,10 @@ begin
 end;
 
 function SystemConfigFile: string;
-{$IFDEF WINDOWS}
-var
-  Base: string;
-{$ENDIF}
 begin
   Result := SysUtils.GetEnvironmentVariable('SUPERTERM_INI');
   if Result = '' then
-    {$IFDEF WINDOWS}
-    begin
-      Base := SysUtils.GetEnvironmentVariable('PROGRAMDATA');
-      if Base = '' then
-        Result := IncludeTrailingPathDelimiter(ConfigDir) + 'superterm.ini'
-      else
-        Result := IncludeTrailingPathDelimiter(Base) + 'superterm' +
-          PathDelim + 'superterm.ini';
-    end
-    {$ELSE}
     Result := '/etc/superterm/superterm.ini';
-    {$ENDIF}
 end;
 
 function ShellQuote(const S: string): string;
@@ -1114,18 +812,5 @@ begin
       Result := Result + S[I];
   Result := Result + '''';
 end;
-
-{$IFDEF WINDOWS}
-initialization
-  // Preset before the RTL initializer takes it by reference: FPC's flow
-  // analysis does not recognise InitCriticalSection as the first write, and
-  // the project builds with every hint fatal.
-  WindowsConfigLockGuard := Default(TRTLCriticalSection);
-  InitCriticalSection(WindowsConfigLockGuard);
-
-finalization
-  FinalizeWindowsConfigLocks;
-  DoneCriticalSection(WindowsConfigLockGuard);
-{$ENDIF}
 
 end.

@@ -84,8 +84,8 @@ After uploading, add the macOS section to the release notes if it is not there �
 ## The Dock app
 
 `make-app.sh` builds **SuperTerm.app** — a thin launcher that opens the real binary in
-iTerm2 (or Terminal.app when iTerm2 is absent), with an icon derived from the Windows
-`alien-hacker.ico` so both platforms share the same face. `--install` copies it to
+iTerm2 (or Terminal.app when iTerm2 is absent), with an icon derived from
+`alien-hacker.ico` beside the script. `--install` copies it to
 `/Applications`; open it once and right-click its Dock icon → Options → Keep in Dock.
 The launcher prefers `/usr/local/bin/superterm` and falls back to the repo build, so
 remember `make install` (or an `install -m0755`) after upgrading, or the Dock will keep

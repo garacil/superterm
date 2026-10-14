@@ -6,29 +6,23 @@
 
 program superterm;
 
-{$IFDEF WINDOWS}
-{$R superterm.res}
-{$ENDIF}
-
 {$mode objfpc}{$H+}
 
 uses
   // The pthread thread manager must be installed before Classes or any unit
   // which can create a TThread. It starts no threads by itself, so the daemon
   // still forks while the parent is single-threaded.
-  {$ifdef unix}cthreads,{$endif}
+  cthreads,
   // st_mouse BEFORE Drivers: it must register its mouse driver before the
   // Drivers unit initialises and asks the RTL whether a mouse exists
   SysUtils, Objects, st_mouse, Drivers, App, st_fvui, st_server,
-  st_video, st_kbd, st_config, st_cli, st_debug
-  {$IFDEF UNIX}, BaseUnix, st_ssh_server, st_ssh_entry{$ENDIF}
-  {$IFDEF WINDOWS}, Windows{$ENDIF};
+  st_video, st_kbd, st_config, st_cli, st_debug, BaseUnix, st_ssh_server,
+  st_ssh_entry;
 
 // The daemon child must run Pascal unit finalizers (notably HeapTrc) after
 // its inherited TApplication has unwound, but must not enter the platform's
 // normal post-fork exit/atexit path.  This is the RTL routine System itself
 // calls from Halt; FpExit below is the raw Unix syscall on Linux and macOS.
-{$IFDEF UNIX}
 procedure FinalizePascalUnits; external name 'FPC_FINALIZEUNITS';
 
 function NormalizeChildReaping: boolean;
@@ -77,52 +71,6 @@ begin
 end;
 {$ENDIF}
 
-{$ENDIF}
-
-{$IFDEF WINDOWS}
-// Start the notification-area helper if it is installed next to us and not
-// already running, so a detached session stays reachable after this window
-// closes. The tray holds a named mutex while it runs; opening it means one is
-// already there. Absent (a bare zip, a dev build without it) means skip.
-procedure MaybeStartTray;
-const
-  DETACHED_PROCESS_ = $00000008;
-var
-  ExePath: array[0..MAX_PATH] of WideChar;
-  Dir, TrayPath, Cmd: UnicodeString;
-  Mutex: HANDLE;
-  Si: STARTUPINFOW;
-  Pi: PROCESS_INFORMATION;
-  I: integer;
-begin
-  for I := 0 to High(ExePath) do
-    ExePath[I] := #0;
-  if GetModuleFileNameW(0, @ExePath[0], MAX_PATH) = 0 then
-    Exit;
-  Dir := ExtractFilePath(UnicodeString(PWideChar(@ExePath[0])));
-  TrayPath := Dir + 'superterm-tray.exe';
-  if not FileExists(TrayPath) then
-    Exit;
-  Mutex := OpenMutex(SYNCHRONIZE, False, 'Local\SuperTermTraySingleton');
-  if Mutex <> 0 then
-  begin
-    CloseHandle(Mutex);
-    Exit;
-  end;
-  Cmd := '"' + TrayPath + '"';
-  UniqueString(Cmd);
-  Si := Default(STARTUPINFOW);
-  Si.cb := SizeOf(Si);
-  Pi := Default(PROCESS_INFORMATION);
-  if CreateProcessW(nil, PWideChar(Cmd), nil, nil, False,
-       DETACHED_PROCESS_, nil, PWideChar(Dir), Si, Pi) then
-  begin
-    CloseHandle(Pi.hThread);
-    CloseHandle(Pi.hProcess);
-  end;
-end;
-{$ENDIF}
-
 procedure Main;
 var
   STApp: PSuperApp;
@@ -131,15 +79,12 @@ var
   ListOnly: boolean;
   Infos: TSessionInfoArray;
   BootLanguage: TUiLanguage;
-  {$IFDEF UNIX}
   SshEntryError: string;
   {$IFDEF SUPERTERM_TEST_BUILD}
   ChildDefault, ChildBlocked, ChildNoWait: boolean;
   {$ENDIF}
-  {$ENDIF}
 
 begin
-  {$IFDEF UNIX}
   if not NormalizeChildReaping then
   begin
     WriteLn(StdErr, 'superterm: could not establish child-reaping policy');
@@ -169,23 +114,11 @@ begin
     Exit;
   end;
   {$ENDIF}
-  {$ENDIF}
-  {$IFDEF WINDOWS}
-  // The Windows session server is this same executable started again with no
-  // console; it reads its workspace from standard input and reports readiness
-  // on standard output. Nothing else about the process is decided here.
-  if (ParamCount = 1) and (ParamStr(1) = '--session-daemon') then
-  begin
-    System.ExitCode := RunSessionDaemonChild;
-    Exit;
-  end;
-  {$ENDIF}
   // In a HeapTrc build this also gives even short-lived CLI commands their
   // own PID-tagged memory report. The daemon calls it again after fork.
   DebugSetRole('client');
   AttachRequested := False;
   AttachSocket := '';
-  {$IFDEF UNIX}
   // The privileged SSH service wrapper and administration namespace are
   // self-contained. Dispatch them before reading the invoking account's TUI
   // configuration so a malformed/untrusted HOME file cannot affect service
@@ -205,22 +138,6 @@ begin
     System.ExitCode := 2;
     Exit;
   end;
-  {$ELSE}
-  // The SSH service administrator and ForceCommand adapter use POSIX
-  // ownership, permissions, fork and Unix-domain session transport. Keep
-  // those units out of a native Windows binary and fail their reserved
-  // command spellings explicitly instead of accidentally starting the TUI.
-  if (ParamCount >= 1) and
-     ((ParamStr(1) = '--ssh-entry') or
-      SameText(ParamStr(1), 'ssh-server') or
-      SameText(ParamStr(1), 'servidor-ssh')) then
-  begin
-    WriteLn(StdErr,
-      'superterm: the managed SSH server is available only on Unix hosts');
-    System.ExitCode := 2;
-    Exit;
-  end;
-  {$ENDIF}
   // language resolved BEFORE printing anything: the CLI speaks the IDE
   // language (or the LANG one if there is no configuration yet)
   if TryReadUserUiLanguage(BootLanguage) then
@@ -230,7 +147,6 @@ begin
   // OpenSSH's ForceCommand reaches the exact same client/session path as a
   // local terminal.  Its small adapter validates the forced environment and
   // serialises only the first creation of the configured default session.
-  {$IFDEF UNIX}
   if IsSshEntryRequest then
   begin
     if not PrepareSshEntry(SshEntryError) then
@@ -243,7 +159,6 @@ begin
   // CLI commands (list/send/capture/... in English or Spanish): they run
   // and exit; the TUI startup and --attach continue through here
   else
-  {$ENDIF}
   if RunCli(CliExitCode) then
   begin
     System.ExitCode := CliExitCode;
@@ -387,11 +302,6 @@ begin
   InstallSuperKeyboard;
   // save the console cursor position before touching the video
   CaptureConsoleCursor;
-  {$IFDEF WINDOWS}
-  // Interactive Windows client: make sure the session tray is up. (Not the
-  // CLI or the session daemon -- those returned long before here.)
-  MaybeStartTray;
-  {$ENDIF}
   STApp := New(PSuperApp, Init);
   Application := Pointer(STApp);
   // attach cancelled or failed during Init: do not start the event
@@ -403,9 +313,7 @@ begin
     STApp^.PromoteToServer;
     // The daemon has published its Unix socket (or promotion failed).  Either
     // way the next simultaneous SSH login may now recheck and proceed.
-    {$IFDEF UNIX}
     ReleaseSshEntryCreationLock;
-    {$ENDIF}
     if not STApp^.AbortRun then
     begin
       if DebugActive then DebugLog('== BOOT: startup complete, entering event loop ==');
@@ -415,9 +323,7 @@ begin
     end;
   end;
   // Covers constructor cancellation and existing-session attach; idempotent.
-  {$IFDEF UNIX}
   ReleaseSshEntryCreationLock;
-  {$ENDIF}
   Dispose(STApp, Done);
   // stop the terminal reporting to whatever runs next, and drop anything it
   // already reported, before putting the cursor back
@@ -430,7 +336,6 @@ begin
   try
     Main;
   finally
-    {$IFDEF UNIX}
     if DetachedServerChildFinished then
     begin
       // FinalizeUnits decrements the RTL init count before every callback, so
@@ -439,6 +344,5 @@ begin
       FinalizePascalUnits;
       FpExit(System.ExitCode);
     end;
-    {$ENDIF}
   end;
 end.

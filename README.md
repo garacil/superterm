@@ -15,7 +15,7 @@
 ![SuperTerm connects from an ordinary interactive SSH client](screenshots/ssh-anywhere.png)
 
 `superterm` is a persistent, shared, multi-client terminal workspace for
-GNU/Linux, macOS and Windows. It puts up to 16 real PTY-backed terminals inside a
+GNU/Linux and macOS. It puts up to 16 real PTY-backed terminals inside a
 Turbo Vision-style desktop, then keeps that desktop alive in a session daemon
 so you can detach, reconnect, move to another screen, or work in it together.
 
@@ -52,7 +52,7 @@ size and scrollback; every attached viewer sees the same focused desktop.
 | Repeatable and scriptable workspaces | Profiles and window classes describe layouts; the bilingual CLI can create, focus, resize, feed and capture panes from another shell. |
 | Native, direct implementation | Free Pascal produces the optimized native binary; SuperTerm uses POSIX PTYs, `poll` and Unix sockets directly, without an external event-loop library. |
 
-The SuperTerm host runs natively on GNU/Linux, macOS or Windows. Viewers can be local
+The SuperTerm host runs natively on GNU/Linux or macOS. Viewers can be local
 terminal windows, another machine on the LAN, a remote laptop or mobile
 terminal, or a browser-hosted shell that provides a standard `ssh` command and
 forwards terminal input. The host is where SuperTerm and the live processes
@@ -442,16 +442,15 @@ More captures are on the [Screenshots wiki page](https://github.com/garacil/supe
 
 ## Platform Support
 
-`superterm` is a native cross-platform project for **GNU/Linux**, **macOS**
-(Apple Silicon and Intel), and **Windows 10 version 1809 or newer**. Each target
-has a native terminal/process backend; the VT engine, FreeVision desktop,
-profiles, configuration format, command-line help and terminal model are shared.
+`superterm` is a native cross-platform project for **GNU/Linux** and **macOS**
+(Apple Silicon and Intel). Each target has a native terminal/process backend;
+the VT engine, FreeVision desktop, profiles, configuration format, command-line
+help and terminal model are shared.
 
 | Target | Maintained branch | Native backend | Session service |
 | --- | --- | --- | --- |
 | GNU/Linux | `main` | POSIX PTY + `fpPoll` | Full shared detached daemon and optional OpenSSH TCP entry |
 | macOS | `macos-support` | BSD PTY + `libproc` | Full shared detached daemon and optional OpenSSH TCP entry |
-| Windows | `windows-support` | Windows ConPTY | Native local workspace; the Unix detached daemon and dedicated SSH service remain POSIX-only |
 
 The GNU/Linux and macOS server implementation is shared. The PTY/process backend
 is selected at compile time with `{$IFDEF DARWIN}`:
@@ -466,18 +465,16 @@ The optional dedicated SSH administrator also selects the native service
 manager in `src/st_ssh_server.pas`: systemd on GNU/Linux and launchd on macOS.
 Session, UI and SSH-entry protocol code remains shared.
 
-See [`docs/MACOS.md`](docs/MACOS.md) and [`docs/WINDOWS.md`](docs/WINDOWS.md)
-for native build, terminal and platform details. Windows Terminal and the
-Microsoft OpenSSH client also work as standard SSH viewers of a GNU/Linux or
-macOS SuperTerm server.
+See [`docs/MACOS.md`](docs/MACOS.md) for native macOS build, terminal and
+platform details.
 
 ### Branch direction
 
 `newfeatures` is the development branch and is promoted into `main` only after
-review and validation. `macos-support` and `windows-support` are downstream
-platform branches: they receive the tested changes from `main`, then add only
-their platform-specific build or backend work. They are **never** pull-request
-sources for `main` and are never merged back into it. GitHub may offer a
+review and validation. `macos-support` is the downstream platform branch: it
+receives the tested changes from `main`, then adds only its platform-specific
+build or backend work. It is **never** a pull-request source for `main` and is
+never merged back into it. GitHub may offer a
 generic “Compare & pull request” button after a platform-branch push; that is
 an automatic GitHub prompt, not the project integration direction.
 
@@ -1005,8 +1002,7 @@ Prebuilt x86_64 GNU/Linux packages for every release are on the
 [releases page](https://github.com/garacil/superterm/releases/latest): a
 portable tarball for x86_64 GNU/Linux with glibc 2.34 or newer, plus `.deb`,
 `.rpm` and Arch `.pkg.tar.zst`. Each file ships with its `.sha256`; macOS arm64
-and universal builds, plus the native Windows x64 installer, are published
-from their corresponding platform branches.
+and universal builds are published from the `macos-support` branch.
 
 To build from source instead, for a system install:
 
@@ -1036,9 +1032,6 @@ Ensure `$HOME/.local/bin` is in `PATH`.
 
 Current limitations:
 
-- The native Windows ConPTY workspace is available from `windows-support`, but
-  detached sessions, multi-client sharing and the dedicated OpenSSH service
-  remain POSIX server features for now.
 - The dedicated SSH entry is an interactive SuperTerm UI, not a general SSH
   shell: it deliberately rejects remote commands, SCP/SFTP and forwarding.
   Run the ordinary host `sshd` alongside it for those facilities.
@@ -1052,8 +1045,8 @@ Current limitations:
 - SSH post-connect commands are passed through SSH as remote commands; the
   wizard feeds its optional command through the connection input stream.
 
-Planned platform and runtime work includes the Windows detached-server path,
-better connection readiness/retry state, and continued macOS parity polish.
+Planned platform and runtime work includes better connection readiness/retry
+state and continued macOS parity polish.
 
 ## License and Author
 

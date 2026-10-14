@@ -102,14 +102,6 @@ implementation
 uses
   base64;
 
-{$IFDEF WINDOWS}
-// Marks a parameter of a fixed cross-platform signature as intentionally
-// unused, the same diagnostic-free helper the vendored Free Vision units use.
-// Declared locally on purpose: it hides the WinAPI DDE record accessors of the
-// same name that the Windows unit brings into scope.
-procedure Unused(const A); begin if @A = nil then; end;
-{$ENDIF}
-
 function ValidWindowClassName(const AName: string): boolean;
 var
   I: integer;
@@ -489,10 +481,8 @@ procedure BuildWindowClassExec(const C: TWindowClass; out ProgramName: string;
   Args: TStringList; out Secret: string; const CommandOverride: string);
 var
   Target: string;
-  {$IFDEF UNIX}
   Path, Item: string;
   Start, Sep: integer;
-  {$ENDIF}
   HaveSshPass: boolean;
 begin
   ProgramName := '';
@@ -506,7 +496,6 @@ begin
   if C.Password <> '' then
   begin
     Secret := C.Password;
-    {$IFDEF UNIX}
     Path := GetEnvironmentVariable('PATH');
     Start := 1;
     while Start <= Length(Path) + 1 do
@@ -524,7 +513,6 @@ begin
       end;
       Start := Sep + 1;
     end;
-    {$ENDIF}
   end;
   if HaveSshPass then
   begin
@@ -572,16 +560,9 @@ begin
   Result := Trim(AConnect);
   if Result = '' then
     Exit;
-  {$IFDEF UNIX}
   if Trim(APostConnect) <> '' then
     Result := 'printf ''%s\n'' ' + ShellQuote(Trim(APostConnect)) +
       ' | (' + Result + ')';
-  {$ELSE}
-  // The POSIX form pipes the post-connect command into the connection's
-  // standard input with printf and a subshell, none of which cmd or
-  // PowerShell provide. Windows Phase 1 runs the connection alone.
-  Unused(APostConnect);
-  {$ENDIF}
 end;
 
 function CommandWithInteractiveShell(const Command, AShell: string;
@@ -592,12 +573,6 @@ begin
   Result := Trim(Command);
   if Result = '' then
     Exit;
-  {$IFDEF WINDOWS}
-  // TPty selects cmd /K or PowerShell -NoExit, which run this command and
-  // keep the same ConPTY interactive. POSIX `exec`, `-l` and `-i` syntax is
-  // invalid in those shells.
-  Exit;
-  {$ENDIF}
   if LoginShell then
     ModeArg := ' -l'
   else
