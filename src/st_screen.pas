@@ -204,6 +204,10 @@ type
     procedure RenderTextRange(AFrom, ACount: integer; AOut: TStream);
     function RenderSelection(AStartRow, AStartCol, AEndRow,
       AEndCol: integer): RawByteString;
+    // the bytes that draw the live grid on a cleared terminal of this size
+    // and leave its cursor, pen, scrolling region and autowrap as the
+    // program left them, so the program's next bytes can follow on directly
+    function RedrawBytes: RawByteString;
     function TakeOsc52(out ASelection, APayload: RawByteString): boolean;
     property Grid: TGridArray read FGrid;
   end;
@@ -655,6 +659,172 @@ begin
     if Row < AEndRow then
       Result := Result + #10;
   end;
+end;
+
+function TScreen.RedrawBytes: RawByteString;
+var
+  Buf, Pen, Want: RawByteString;
+  BufLen, Rows, Cols, x, y, Last, Col: integer;
+  R: TRow;
+
+  procedure Put(const S: RawByteString);
+  var
+    NewCap: integer;
+  begin
+    if S = '' then
+      Exit;
+    if BufLen + Length(S) > Length(Buf) then
+    begin
+      NewCap := Length(Buf) * 2;
+      if NewCap < 4096 then NewCap := 4096;
+      while NewCap < BufLen + Length(S) do
+        NewCap := NewCap * 2;
+      SetLength(Buf, NewCap);
+    end;
+    Move(S[1], Buf[BufLen + 1], Length(S));
+    Inc(BufLen, Length(S));
+  end;
+
+  function Color(AValue: LongWord; AExtended: integer): RawByteString;
+  begin
+    if (AValue shr 24) = 1 then
+      Result := ';' + IntToStr(AExtended) + ';2;' +
+        IntToStr((AValue shr 16) and $FF) + ';' +
+        IntToStr((AValue shr 8) and $FF) + ';' + IntToStr(AValue and $FF)
+    else
+      Result := ';' + IntToStr(AExtended) + ';5;' + IntToStr(AValue and $FF);
+  end;
+
+  // a reset, then exactly the rendition the parser recorded: the colours
+  // are the program's, so nothing here folds bold into bright or paints a
+  // default background
+  function Rendition(AAttr: word; AFg, ABg: LongWord): RawByteString;
+  var
+    n: integer;
+  begin
+    Result := #27'[0';
+    if (AAttr and A_BOLD) <> 0 then Result := Result + ';1';
+    if (AAttr and A_FAINT) <> 0 then Result := Result + ';2';
+    if (AAttr and A_UNDER) <> 0 then Result := Result + ';4';
+    if (AAttr and A_REVERSE) <> 0 then Result := Result + ';7';
+    if (AAttr and A_CONCEAL) <> 0 then Result := Result + ';8';
+    if ((AFg shr 24) = 1) or ((AFg shr 24) = 3) then
+      Result := Result + Color(AFg, 38)
+    else if (AAttr and A_FGDEF) = 0 then
+    begin
+      n := AAttr and $07;
+      if (AAttr and A_FGBRIGHT) <> 0 then
+        Result := Result + ';' + IntToStr(90 + n)
+      else
+        Result := Result + ';' + IntToStr(30 + n);
+    end;
+    if ((ABg shr 24) = 1) or ((ABg shr 24) = 3) then
+      Result := Result + Color(ABg, 48)
+    else if (AAttr and A_BGDEF) = 0 then
+    begin
+      n := (AAttr shr 4) and $0F;
+      if n < 8 then
+        Result := Result + ';' + IntToStr(40 + n)
+      else
+        Result := Result + ';' + IntToStr(92 + n);
+    end;
+    Result := Result + 'm';
+  end;
+
+  function Glyph(const C: TCell): RawByteString;
+  var
+    k: integer;
+  begin
+    if C.Len = 0 then
+      Exit(' ');
+    SetLength(Result, C.Len);
+    Move(C.Txt[0], Result[1], C.Len);
+    // a control byte would act instead of being drawn
+    for k := 1 to Length(Result) do
+      if (byte(Result[k]) < $20) or (byte(Result[k]) = $7F) then
+        Exit(' ');
+  end;
+
+  // what a cleared terminal already shows there
+  function Blank(const C: TCell): boolean;
+  begin
+    Result := (not C.Cont) and
+      ((C.Len = 0) or ((C.Len = 1) and (C.Txt[0] = ' '))) and
+      ((C.Attr and A_BGDEF) <> 0) and (C.BgRGB = 0) and
+      ((C.Attr and (A_UNDER or A_REVERSE)) = 0);
+  end;
+
+  procedure PutCell(const C: TCell);
+  begin
+    Want := Rendition(C.Attr, C.FgRGB, C.BgRGB);
+    if Want <> Pen then
+    begin
+      Put(Want);
+      Pen := Want;
+    end;
+    Put(Glyph(C));
+  end;
+
+begin
+  Buf := '';
+  BufLen := 0;
+  Rows := Min(Height, Length(FGrid));
+  // nothing may wrap or scroll while the rows are laid down
+  Pen := #27'[0m';
+  Put(#27'[?7l' + Pen);
+  for y := 0 to Rows - 1 do
+  begin
+    R := FGrid[y];
+    Cols := Min(Width, Length(R));
+    Last := Cols - 1;
+    while (Last >= 0) and Blank(R[Last]) do
+      Dec(Last);
+    if Last < 0 then
+      Continue;
+    Put(#27'[' + IntToStr(y + 1) + 'H');
+    Col := 0;
+    for x := 0 to Last do
+    begin
+      if R[x].Cont then
+        Continue;
+      // the terminal's idea of a glyph's width may not be ours: say where
+      // every cell goes rather than trust the one before it
+      if Col <> x then
+        Put(#27'[' + IntToStr(x + 1) + 'G');
+      PutCell(R[x]);
+      if (x + 1 < Cols) and R[x + 1].Cont then
+        Col := x + 2
+      else
+        Col := x + 1;
+    end;
+  end;
+  // DECSTBM homes the cursor, so the region goes before the cursor does
+  if (ScrollTop >= 0) and (ScrollTop < ScrollBot) and (ScrollBot < Height) then
+    Put(#27'[' + IntToStr(ScrollTop + 1) + ';' + IntToStr(ScrollBot + 1) + 'r')
+  else
+    Put(#27'[r');
+  if FAutoWrap then
+    Put(#27'[?7h');
+  if FPendingWrap and FAutoWrap and (CursorY >= 0) and (CursorY < Rows) and
+     (Width > 0) and (Length(FGrid[CursorY]) >= Width) then
+  begin
+    // the program filled the last column and its next character wraps:
+    // write that cell once more so the terminal is waiting to wrap too
+    x := Width - 1;
+    if (x > 0) and FGrid[CursorY][x].Cont then
+      Dec(x);
+    Put(#27'[' + IntToStr(CursorY + 1) + ';' + IntToStr(x + 1) + 'H');
+    PutCell(FGrid[CursorY][x]);
+  end
+  else
+    Put(#27'[' + IntToStr(CursorY + 1) + ';' + IntToStr(CursorX + 1) + 'H');
+  Put(Rendition(Attr, AttrFgRGB, AttrBgRGB));
+  if CursorVisible then
+    Put(#27'[?25h')
+  else
+    Put(#27'[?25l');
+  SetLength(Buf, BufLen);
+  Result := Buf;
 end;
 
 procedure TScreen.QueueOsc52(const ASelection, APayload: RawByteString);

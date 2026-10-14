@@ -42,6 +42,7 @@ enforces the mapping and the required coverage areas.
 | f5_output_layout_order_test.py | protocol, rendering | Fullscreen output and authoritative layout transitions preserve their ordering in every viewer. |
 | focus_color_test.py | colour, UI | Focus changes window chrome without changing pane cell colours. |
 | fresh_install_defaults_test.py | configuration, UI | A configuration-free installation starts with the advertised workspace and geometry. |
+| fullscreen_reenter_test.py | UI, rendering | A fullscreen pane that gets the terminal back at the same size shows its cells, colours, cursor and pen as the program left them, and its output carries on from there. |
 | fullscreen_test.py | UI, rendering | Maximization and terminal fullscreen remain distinct operations with reversible presentation. |
 | global_command_fifo_test.py | protocol, sessions | Concurrent client commands execute through one observable global FIFO. |
 | gpm_console_test.py | input, UI | On a GNU/Linux virtual console GPM's own events open menus and move, resize and maximize windows, a software pointer is painted and repainted without xterm modes, the GPM connection ends with the client and comes back by itself after GPM restarts, and a GPM refusal is final without costing the keyboard interface. |
@@ -97,6 +98,7 @@ enforces the mapping and the required coverage areas.
 | root_output_ui_stress_test.py | performance, lifecycle | Per-pane recursive output and positive history counters remain interactive during drag, maximize/restore, pane resize, and host resize; session shutdown supersedes obsolete output backlog and every failure preserves exact crash, stack, and heap evidence. |
 | scrollback_test.py | input, UI | History remains reachable by wheel, keys, and scrollbar. |
 | screen_ascii_fastpath_test.py | performance, rendering | Printable ASCII parsing preserves wrap, rendition, UTF-8 adjacency, and screen state without per-character managed allocation. |
+| screen_redraw_test.py | rendering | A screen's redraw leaves a cleared terminal with the same cells, cursor, pen, scrolling region, cursor visibility, and wrap state, before and after further output. |
 | session_startup_atomic_test.py | lifecycle, cleanup | Fault-injected detached startup is bounded and ownership-safe. |
 | shared_geometry_test.py | sessions, UI | One fixed shared desktop is presented through independent physical viewports. |
 | shared_state_stress_test.py | sessions, lifecycle | Shared focus, layout, and fullscreen survive detach/attach stress. |

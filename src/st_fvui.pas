@@ -7966,14 +7966,33 @@ begin
   PassFilterBuf := '';
   PassFilterLen := 0;
   PassthroughActive := True;   // silences all FreeVision screen writes
-  // hand a clean surface to the app: show cursor, reset attrs, clear.
-  // Also RELEASE the mouse: turn superterm's own tracking off so, in
-  // fullscreen, a drag selects text normally and clicks are NOT reported to
-  // FreeVision (a click on the hidden-but-logical menu row would otherwise pop
-  // the menu and drop out of zoom). The app re-asserts whatever mouse
-  // modes it wants through its raw output; ExitPassthrough re-enables ours.
-  WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
-    #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
+  // In remote mode the daemon already applied the canonical fullscreen size
+  // before broadcasting this state. Never substitute the host geometry.
+  if not RemoteMode then
+  begin
+    if Scr[i] <> nil then
+      Scr[i].Resize(ScreenWidth, ScreenHeight);
+    if Panes[i] <> nil then
+      Panes[i].Resize(ScreenWidth, ScreenHeight);
+  end;
+  // hand the app a clean surface: reset attrs, clear, and RELEASE the mouse:
+  // turn superterm's own tracking off so, in fullscreen, a drag selects text
+  // normally and clicks are NOT reported to FreeVision (a click on the
+  // hidden-but-logical menu row would otherwise pop the menu and drop out of
+  // zoom). The app re-asserts whatever mouse modes it wants through its raw
+  // output; ExitPassthrough re-enables ours.
+  // The cleared screen then gets the pane exactly as its mirror holds it.
+  // Leaving it blank relied on the program redrawing itself after a resize,
+  // and coming back to the same size -- a terminal put in a window and back
+  // into full screen -- resizes nothing: the pane stayed black (issue #5).
+  // Its next raw bytes start from the cursor and pen this leaves behind.
+  if Scr[i] <> nil then
+    WriteRaw(#27'[0m'#27'[2J'#27'[H' +
+      #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l' +
+      Scr[i].RedrawBytes)
+  else
+    WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
+      #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');
   // A GPM console has no tracking modes to drop: give the pointer back to GPM
   // instead, whose own selection then works there as it does without us.
   if ConsoleMouse then
@@ -7986,15 +8005,6 @@ begin
   HostAnyMotion := False;
   if ConsoleMouse then
     SetConsoleAnyMotion(False);
-  // In remote mode the daemon already applied the canonical fullscreen size
-  // before broadcasting this state. Never substitute the host geometry.
-  if not RemoteMode then
-  begin
-    if Scr[i] <> nil then
-      Scr[i].Resize(ScreenWidth, ScreenHeight);
-    if Panes[i] <> nil then
-      Panes[i].Resize(ScreenWidth, ScreenHeight);
-  end;
 end;
 
 // reclaim the terminal for the window manager: reset the modes the app may
