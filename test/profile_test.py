@@ -8,7 +8,7 @@ from stlib import feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/sthome-profile'
+HOME = '/tmp/stest/sthome-profile'
 USERINI = HOME + '/.superterm/superterm.ini'
 SYSINI = HOME + '/system.ini'
 W, H = 110, 35
@@ -171,7 +171,7 @@ check("workspace switched", "PROF_PANE_A" not in scr)
 # ---- 4: save the workspace as profile 'captured' ----
 # capturable markers: the pane's cwd and a single-word foreground
 # command (python3), which survives the INI write/re-read cycle
-s.send(b'cd /tmp/opencode/sthome-profile\r', 0.5)
+s.send(b'cd /tmp/stest/sthome-profile\r', 0.5)
 # Profile persistence needs one portable, unambiguous foreground oracle.
 # Linux's optional procfs wait-state fallback is exercised independently;
 # this cross-platform suite keeps Python in its own terminal process group.
@@ -235,7 +235,7 @@ check("ini has layout key", "layout=" in txt)
 # argv and validate its executable instead of grepping one framework spelling.
 check("ini captured marker cmd",
       len(captured_cmds) == 1 and captured_python(captured_cmds[0]))
-check("ini captured marker cwd", "cwd=/tmp/opencode/sthome-profile" in txt)
+check("ini captured marker cwd", "cwd=/tmp/stest/sthome-profile" in txt)
 check("ini captured visible basename title",
       len(captured_titles) == 1 and
       captured_titles[0] in {'python3', 'python'})

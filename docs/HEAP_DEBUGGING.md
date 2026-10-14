@@ -143,7 +143,7 @@ python3 test/multiclient_intensive_test.py
 ```
 
 Private mode creates and later removes its own session under
-`/tmp/opencode/st-multiclient-intensive`; it deliberately selects full flow
+`/tmp/stest/st-multiclient-intensive`; it deliberately selects full flow
 logging, a per-process heap prefix and `HEAPTRC=nohalt`. The exact `flow` and
 `actions` paths are printed at startup.
 

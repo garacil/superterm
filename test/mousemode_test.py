@@ -2,8 +2,8 @@
 """superterm test: turning any-motion tracking off must not leave the host
 terminal reporting nothing.
 
-A full-screen program that wants hover -- Claude Code, Codex -- asks for
-`?1003h`. superterm passes that on to the host terminal while such a pane has
+A full-screen program that wants hover asks for `?1003h`. superterm passes
+that on to the host terminal while such a pane has
 the focus, and takes it back when the focus moves. xterm keeps the three
 tracking modes as independent flags, so `?1003l` leaves `?1000`/`?1002`
 standing; Konsole, and it is not alone, holds ONE mouse mode, and the same

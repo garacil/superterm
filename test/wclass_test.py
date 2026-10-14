@@ -7,7 +7,7 @@ from stlib import feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/sthome-wclass'
+HOME = '/tmp/stest/sthome-wclass'
 USERINI = HOME + '/.superterm/superterm.ini'
 SYSINI = HOME + '/system.ini'
 SESS = HOME + '/.superterm/session.ini'

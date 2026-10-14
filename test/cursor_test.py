@@ -19,7 +19,7 @@ from stlib import wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/sthome-cursor'
+HOME = '/tmp/stest/sthome-cursor'
 SOCK = HOME + '/.superterm/sessions/session.sock'
 
 # self-healing: a previously failed run can leave a live daemon and its

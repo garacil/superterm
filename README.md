@@ -6,7 +6,7 @@
 >
 > A complete, non-mock recording: the console, `masterp` and `s-masterp` exchange
 > messages through Tiza and Pizarra inside a SuperTerm desktop. It is the text
-> workspace turned into an operations centre for agent teams.
+> workspace turned into an operations centre.
 >
 > [![SuperTerm doing real work with Pizarra and Tiza — open the video player](https://raw.githubusercontent.com/garacil/pizarra/main/screenshots/pizarra-superterm-complete-video-cover.png)](https://garacil.github.io/pizarra/video.html)
 >
@@ -31,7 +31,7 @@ ssh -p 8022 user@server
 **[Download 5.2.9](https://github.com/garacil/superterm/releases/latest)** ·
 **[Run it locally](#run-locally)** ·
 **[Publish it over SSH](#publish-it-over-ssh)** ·
-**[AI-ready SSH deployment](docs/SSH_QUICKSTART.md)** ·
+**[SSH deployment quickstart](docs/SSH_QUICKSTART.md)** ·
 **[Read the SSH guide](docs/SSH_SERVER.md)** ·
 **[Visit superterm.org](https://www.superterm.org)**
 
@@ -129,9 +129,9 @@ one.
 The service is intentionally explicit about addresses, authentication and
 privileged installation. Follow the complete, auditable procedure in
 [`docs/SSH_SERVER.md`](docs/SSH_SERVER.md) when publishing it on a network,
-especially an Internet-facing one. For a concise, AI-operable LAN setup with
-explicit validation and stop conditions, use the
-[AI deployment quickstart](docs/SSH_QUICKSTART.md).
+especially an Internet-facing one. For a concise LAN setup with explicit
+validation and stop conditions, use the
+[SSH deployment quickstart](docs/SSH_QUICKSTART.md).
 
 ## Standard SSH outside, one SuperTerm session inside
 
@@ -647,7 +647,7 @@ python3 test/cli_help_test.py
 ## Command-line help
 
 The executable contains a structured, navigable reference. Its deterministic
-plain-text output is suitable for terminals, scripts and AI agents, needs no
+plain-text output is suitable for terminals and scripts, needs no
 live session or privileges, and does not open the IDE or modify user/service
 state:
 

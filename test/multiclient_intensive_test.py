@@ -46,9 +46,9 @@ if EXTERNAL_MODE:
         LOG_HOME = requested_log_home
         os.makedirs(LOG_HOME, exist_ok=True)
     else:
-        os.makedirs('/tmp/opencode', exist_ok=True)
+        os.makedirs('/tmp/stest', exist_ok=True)
         LOG_HOME = tempfile.mkdtemp(
-            prefix=f'st-live-{safe_session}-', dir='/tmp/opencode')
+            prefix=f'st-live-{safe_session}-', dir='/tmp/stest')
 else:
     HOME = stlib.fresh_home('multiclient-intensive')
     LOG_HOME = HOME
@@ -193,9 +193,9 @@ KNOWN_CLIENT_PIDS = set()
 TRACKED_CLIENTS = {}
 ACTIVE_TEST_FOREGROUNDS = {}
 FOREGROUND_QUERY_FAILED = object()
-os.makedirs('/tmp/opencode', exist_ok=True)
+os.makedirs('/tmp/stest', exist_ok=True)
 FOREGROUND_CONTROL_DIR = tempfile.mkdtemp(
-    prefix='superterm-stress-foreground-', dir='/tmp/opencode')
+    prefix='superterm-stress-foreground-', dir='/tmp/stest')
 FOREGROUND_HELPER_FD, FOREGROUND_HELPER = tempfile.mkstemp(
     prefix='wait-', suffix='.py', dir=FOREGROUND_CONTROL_DIR)
 try:

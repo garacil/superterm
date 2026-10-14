@@ -1,18 +1,10 @@
 # Artwork sources
 
-`alien-hacker.png` is original artwork generated specifically for SuperTerm.
+`alien-hacker.png` is original artwork made specifically for SuperTerm.
 It does not derive from the former Goody loading screen or from another named
 character, game, film, logo or brand. To the extent that copyright or related
-rights apply to the generated artwork, it is distributed under the same GNU
+rights apply to the artwork, it is distributed under the same GNU
 General Public License version 3 as this repository; see [`../LICENSE`](../LICENSE).
-
-It was created with OpenAI's built-in image generator from this final brief:
-
-> Create an original hooded alien hacker at a terminal, centred in a wide
-> landscape composition, in neon cyan, green and violet; keep it high-contrast
-> and readable after reduction to a coarse terminal grid; include no text,
-> logo, brand, named or copyrighted character; use a transparent background
-> and fade the artwork smoothly to full transparency on all four outer edges.
 
 The source has a real alpha channel and fades to transparency on all four
 edges. `tools/mkbackgrounds.py` converts that fade to deterministic ordered
@@ -36,7 +28,7 @@ experiments, but release regeneration uses `assets/alien-hacker.png`.
 
 ## SSH hero illustration
 
-`../screenshots/ssh-anywhere.png` is likewise original AI-generated artwork
+`../screenshots/ssh-anywhere.png` is likewise original artwork
 created specifically for SuperTerm and distributed under this repository's
 GNU General Public License version 3. It is a promotional illustration of one
 encrypted workspace reaching several kinds of SSH-capable screen, not a claim

@@ -346,7 +346,7 @@ desktop, exactly like normal maximize; attaching or resizing a physical host
 cannot change that shared grid. Raw geometry is safe only when every attached
 terminal has the same physical size and that size exactly matches canonical
 fullscreen (with the remaining transport/fidelity checks also satisfied), so
-a truecolor/emoji TUI such as Claude Code can render at full fidelity.
+a truecolor/emoji TUI can render at full fidelity.
 Otherwise viewers remain in the synchronized IDE renderer and use their local
 scrollable viewports. Press the
 same prefix chord again to restore the canonical desktop and the window's

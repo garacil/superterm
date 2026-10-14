@@ -1,4 +1,4 @@
-# SuperTerm over SSH: AI deployment quickstart
+# SuperTerm over SSH: deployment quickstart
 
 This short guide publishes SuperTerm on a separate TCP port by using the
 system's OpenSSH server. SuperTerm's dedicated setup leaves an already
@@ -6,7 +6,7 @@ installed ordinary SSH service and `/etc/ssh/sshd_config` unchanged. The
 complete security and operational reference is
 [SSH_SERVER.md](SSH_SERVER.md).
 
-The procedure is deliberately deterministic so that either a human or an AI
+The procedure is deliberately deterministic so that a human or an automated
 operator can install the service, prove that it works from another machine,
 and produce an auditable handoff. The example below uses:
 
@@ -36,7 +36,7 @@ If any value is unknown, stop and ask. Do not guess an interface, open a
 wildcard listener, create a system account, change a firewall, or enable root
 access without explicit authorization.
 
-## Safety contract for an AI or automated operator
+## Safety contract for the operator
 
 The operator must follow these rules:
 
@@ -423,7 +423,7 @@ rollback behavior, and the full troubleshooting table, read
 
 ## Required completion report
 
-An AI operator must return a short report containing all of the following:
+The operator must return a short report containing all of the following:
 
 - installed SuperTerm version and executable path;
 - configured server address and TCP port;

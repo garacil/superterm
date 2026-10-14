@@ -1097,8 +1097,8 @@ var
     begin
       // Bold + DEFAULT fg: keep the default color and carry bold as a weight
       // (";1"), like a real terminal. Do NOT force bright white -- that turned
-      // the shell text a different color after Claude (which exits leaving bold
-      // set) even though the foreground is the terminal default.
+      // the shell text a different color after an app that exits leaving bold
+      // set, even though the foreground is the terminal default.
       ffg := 0;
       if (c.Attr and A_BOLD) <> 0 then fl := fl or 1;
     end
@@ -1207,7 +1207,7 @@ begin
   NonBlank := 0;
   // global origin of the view and a blank cell carrying the pane's current
   // color, so padding/empty cells register richly too (a truecolor background
-  // Claude painted with spaces still shows)
+  // an app painted with spaces still shows)
   GOrig.X := 0;
   GOrig.Y := 0;
   MakeGlobal(GOrig, GOrig);
@@ -1839,7 +1839,7 @@ begin
   // fresh shell look like a build where the feature is missing. With no
   // history the thumb simply fills the trough, which is what every terminal
   // does. It goes away on an icon, on a window too short to hold it, and
-  // while the app owns the alternate screen (vim, less, Claude Code): there
+  // while the app owns the alternate screen (vim, less, any TUI): there
   // is no history there and the column is theirs.
   Want := (not Minimized) and (Size.Y > 3) and
           (not App^.Scr[PaneIdx].UsingAlt);
@@ -4204,7 +4204,7 @@ begin
     // leaves the lower ones standing; Konsole -- and it is not alone -- holds
     // ONE mouse mode, so the same sequence leaves it reporting nothing at all.
     // What that looks like: run any full-screen program that asks for
-    // every-motion tracking (Claude Code, Codex) in a pane, click on another
+    // every-motion tracking in a pane, click on another
     // window and the pointer turns from an arrow back into an I-beam and not
     // one click reaches the window manager again until superterm is
     // restarted. So the base modes are re-asserted immediately after, which
@@ -7035,8 +7035,8 @@ begin
     // A saved profile is a snapshot of the workspace, not merely a recipe
     // for approximating it. Keep the title that is visible now even when it
     // was derived from the foreground command/cwd rather than renamed by
-    // hand. On restore it is deliberately fixed, so a pane called "Codex"
-    // or "Claude" does not fall back to "shell" a moment later.
+    // hand. On restore it is deliberately fixed, so a pane called "vim"
+    // or "htop" does not fall back to "shell" a moment later.
     if (Win[i] <> nil) and (Win[i]^.Title <> nil) then
       Result.Panes[i].Title := Trim(Win[i]^.Title^);
     // Preserve the actual per-pane history capacity as well. Leaving this at
@@ -7970,7 +7970,7 @@ begin
   // Also RELEASE the mouse: turn superterm's own tracking off so, in
   // fullscreen, a drag selects text normally and clicks are NOT reported to
   // FreeVision (a click on the hidden-but-logical menu row would otherwise pop
-  // the menu and drop out of zoom). The app (Claude) re-asserts whatever mouse
+  // the menu and drop out of zoom). The app re-asserts whatever mouse
   // modes it wants through its raw output; ExitPassthrough re-enables ours.
   WriteRaw(#27'[?25h'#27'[0m'#27'[2J'#27'[H' +
     #27'[?1000l'#27'[?1002l'#27'[?1003l'#27'[?1006l');

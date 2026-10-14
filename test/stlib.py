@@ -422,7 +422,7 @@ def fresh_home(testname, base=None):
         # checkout/test parent without relaxing permissions on that shared
         # directory.  The caller still supplies only a parent; mkdtemp owns
         # the exact per-suite child as before.
-        base = os.environ.get('SUPERTERM_TEST_HOME_BASE', '/tmp/opencode')
+        base = os.environ.get('SUPERTERM_TEST_HOME_BASE', '/tmp/stest')
         os.makedirs(base, mode=0o700, exist_ok=True)
     # Darwin exposes /tmp as the system symlink /tmp -> /private/tmp. Resolve
     # the caller's parent once, then validate and use that exact directory;

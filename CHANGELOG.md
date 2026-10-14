@@ -485,7 +485,7 @@ for startup, targets, sessions, pane I/O, every window operation, standard SSH
 clients, dedicated SSH administration and automation details. Every page gives
 the exact syntax, accepted aliases and options, behavior, limits and copyable
 examples; `--help all` emits the full deterministic plain-text reference for
-people, scripts and AI agents.
+people and scripts.
 
 `--help TOPIC`, `help TOPIC` and `COMMAND --help` use the same implementation,
 including all English and Spanish aliases. Help never attaches, enters the TUI,
@@ -710,12 +710,12 @@ rather than from the tree you just edited.
 
 What an afternoon of real use asked for, and the crash it found.
 
-### The mouse died after moving the focus away from Claude Code or Codex
+### The mouse died after moving the focus away from a full-screen program
 
-Open a full-screen program that wants hover -- Claude Code, Codex -- in a
-pane, click on another window, come back, and after a round or two the
-pointer turned from an arrow into an I-beam and not one click reached the
-window manager again. Only restarting superterm brought it back, and only
+Open a full-screen program that wants hover in a pane, click on another
+window, come back, and after a round or two the pointer turned from an arrow
+into an I-beam and not one click reached the window manager again. Only
+restarting superterm brought it back, and only
 until the next time. `top` and `htop` never showed it.
 
 That is the shape of the bug. Those two ask the terminal for **any-motion**
@@ -1327,7 +1327,7 @@ menu like autosave and autorestore.
 ### Full-fidelity passthrough for maximized panes
 - Maximizing a pane (F5) now hands it the **whole host terminal** and writes
   its raw PTY bytes straight through, bypassing the CP437/16-color grid. A
-  rich TUI (Claude Code and the like) renders untouched: truecolor, emoji,
+  rich TUI renders untouched: truecolor, emoji,
   wide glyphs and box drawing exactly as the app intended, instead of
   collapsed to `?` and 16 colors. F5 again un-maximizes and the window
   manager reclaims the screen. Every window operation (restore, minimize,

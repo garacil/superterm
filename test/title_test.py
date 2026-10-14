@@ -9,7 +9,7 @@ import os, pty, time, select, fcntl, termios, struct, shutil, sys
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/sttitle-test'
+HOME = '/tmp/stest/sttitle-test'
 W, H = 100, 28
 
 sys.path.insert(0, os.path.dirname(__file__))

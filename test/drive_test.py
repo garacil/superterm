@@ -8,7 +8,7 @@ from stlib import close_all_daemons, feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/st-drive'
+HOME = '/tmp/stest/st-drive'
 os.makedirs(HOME, exist_ok=True)
 SESS = HOME + '/.superterm/session.ini'
 close_all_daemons(HOME)

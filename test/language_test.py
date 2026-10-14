@@ -16,7 +16,7 @@ from stlib import feed_pyte, wait_pid
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-ROOT = '/tmp/opencode/stlanguage'
+ROOT = '/tmp/stest/stlanguage'
 HOME = ROOT + '/home'
 CONFIG = HOME + '/.superterm/superterm.ini'
 W, H = 110, 35

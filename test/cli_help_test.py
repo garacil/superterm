@@ -244,8 +244,8 @@ if manifest_failures:
 check('every main page contains its complete public contract',
       not manifest_failures)
 
-# The short SSH guide is an executable handoff contract for human and AI
-# operators. Keep it discoverable, keep every local reference resolvable, and
+# The short SSH guide is an executable handoff contract for human and
+# automated operators. Keep it discoverable, keep every local reference resolvable, and
 # reject examples which drift away from the real administrative command set.
 quickstart_path = os.path.join(ROOT, 'docs', 'SSH_QUICKSTART.md')
 readme_path = os.path.join(ROOT, 'README.md')
@@ -265,7 +265,7 @@ except OSError as exc:
 
 quickstart_contract = (
     'Required inputs',
-    'Safety contract for an AI or automated operator',
+    'Safety contract for the operator',
     'Read-only preflight',
     'sha256sum -c superterm_5.2.2_amd64.deb.sha256',
     'sudo apt-get install -y openssh-server',
@@ -299,9 +299,9 @@ missing_quickstart = [token for token in quickstart_contract
                       if token not in ssh_quickstart]
 if missing_quickstart:
     print('  SSH quick-start missing contract:', missing_quickstart)
-check('AI SSH quick-start preserves its complete safe workflow',
+check('SSH quick-start preserves its complete safe workflow',
       not missing_quickstart)
-check('AI SSH quick-start is linked from both documentation entrances',
+check('SSH quick-start is linked from both documentation entrances',
       'docs/SSH_QUICKSTART.md' in project_readme and
       'SSH_QUICKSTART.md' in ssh_reference)
 
@@ -314,7 +314,7 @@ broken_quickstart_links = [
 ]
 if broken_quickstart_links:
     print('  SSH quick-start broken links:', broken_quickstart_links)
-check('every AI SSH quick-start Markdown reference resolves',
+check('every SSH quick-start Markdown reference resolves',
       bool(quickstart_links) and not broken_quickstart_links)
 
 quickstart_admin_commands = set(re.findall(
@@ -323,7 +323,7 @@ public_admin_commands = {
     'setup', 'check', 'restart', 'status', 'enable', 'disable',
     'uninstall-service', 'authorize', 'list-keys', 'revoke',
 }
-check('AI SSH quick-start uses only public SSH administration commands',
+check('SSH quick-start uses only public SSH administration commands',
       quickstart_admin_commands and
       quickstart_admin_commands <= public_admin_commands and
       all(command in english_pages['ssh-server'].stdout
@@ -574,7 +574,7 @@ check('--help all is the exact ordered English page composition',
       test_all.stdout == expected_english_all)
 
 # Output is intentionally plain, bounded and deterministic for terminals,
-# parsers and AI agents. No TTY width or live-session state may affect it.
+# parsers and scripts. No TTY width or live-session state may affect it.
 all_again = run_binary(TEST_BIN, ['--help', 'all'])
 narrow_all = run_binary(
     TEST_BIN, ['--help', 'all'],

@@ -36,7 +36,7 @@ superterm --help all
 pages. Spanish aliases work too, for example `superterm --ayuda sesiones` and
 `superterm enviar --ayuda`; `-h` and the quoted form `'-?'` are short aliases
 for `--help`. `--help all` emits the entire deterministic
-reference for humans, scripts and AI agents. Help needs no live session or
+reference for people and scripts. Help needs no live session or
 root privileges, has no ANSI control sequences or side effects, and an unknown
 topic is a usage error (exit code 2) instead of a guessed page.
 

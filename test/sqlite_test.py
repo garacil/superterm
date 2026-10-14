@@ -12,7 +12,7 @@ import fcntl
 
 import pyte
 
-ROOT = '/tmp/opencode/stsqlite'
+ROOT = '/tmp/stest/stsqlite'
 HOME = ROOT + '/home'
 DBDIR = ROOT + '/templates'
 SYSINI = ROOT + '/superterm.ini'

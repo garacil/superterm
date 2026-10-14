@@ -7,8 +7,8 @@
   parser resolves aliases and passes a normalized topic here; every page then
   follows the same SYNOPSIS / ARGUMENTS / OPTIONS / BEHAVIOR / EXAMPLES shape.
   Keeping examples beside the exact accepted spellings makes the output useful
-  to people, scripts which audit a release, and agents which must construct a
-  command without guessing.
+  to people and to scripts which audit a release or must construct a command
+  without guessing.
 *)
 
 unit st_cli_help;
@@ -1596,8 +1596,8 @@ begin
     'Stable exit values, diagnostics, language selection and version output',
     'Valores de salida, diagnosticos, idioma y version estables para scripts');
   H(ALanguage,
-    'for scripts and agents. Complete reference pages follow.',
-    'y agentes. A continuacion aparecen sus paginas completas.');
+    'for scripts and tools. Complete reference pages follow.',
+    'y herramientas. A continuacion aparecen sus paginas completas.');
   Blank;
   HelpExitCodes(ALanguage);
   HelpLanguage(ALanguage);

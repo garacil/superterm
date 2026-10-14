@@ -32,11 +32,11 @@ const
   // (SGR 1 / 22) while this is the high bit of the 16-color foreground (SGR
   // 90-97 and the bright half of an approximated 256-color). Overloading
   // A_BOLD meant SGR 22 ("normal intensity") also demoted the COLOR, which
-  // turned Claude Code's grey text pure black. Bit 3 of the fg nibble is free
+  // turned a TUI's grey text pure black. Bit 3 of the fg nibble is free
   // (it only ever holds 0..7), so every "Attr and $FFF0" that changes the
   // foreground clears the bright bit automatically.
   A_FGBRIGHT = $0008;
-  // SGR 2: faint / dim. Claude Code marks all its secondary text with it
+  // SGR 2: faint / dim. Rich TUIs mark all their secondary text with it
   // (hints, shortcuts, placeholders); ignoring it painted that text at exactly
   // the same weight as the primary text and flattened the UI's hierarchy.
   // Mutually exclusive with A_BOLD, and SGR 22 clears both.
@@ -117,8 +117,8 @@ type
     FSaveFgRGB, FSaveBgRGB: LongWord;
     // The alternate screen (?1049) has its OWN save slot in xterm, independent
     // of DECSC, and it too saves the graphic rendition. Without this an app
-    // that exits the alt screen without an explicit SGR reset (Claude Code
-    // does exactly that) left its last attributes -- typically bold -- applied
+    // that exits the alt screen without an explicit SGR reset (some do
+    // exactly that) left its last attributes -- typically bold -- applied
     // to every byte the shell printed afterwards.
     FAltSaveX, FAltSaveY: integer;
     FAltSaveAttr: word;
@@ -1035,7 +1035,7 @@ begin
   begin
     Dec(n);
     // The ALTERNATE screen has no scrollback: xterm never pushes its lines to
-    // the history. A full-screen app that scrolls (Claude Code repainting, an
+    // the history. A full-screen app that scrolls (a TUI repainting, an
     // editor, less) would otherwise flood the pane's history with its own
     // transient frames and bury the real shell output.
     if (ScrollTop = 0) and (not FUsingAlt) then
@@ -1577,7 +1577,7 @@ begin
                   idx := GetParam(i + 2, -1);
                   p1 := Ansi16From256(idx);
                   // Keep the EXACT palette index for the rich renderer
-                  // ($030000NN). Claude Code paints nearly everything with
+                  // ($030000NN). Rich TUIs paint nearly everything with
                   // 38;5;N, and flattening that to 16 colors collapsed four
                   // distinct shades into the same grey. Indexes 0..15 stay
                   // untagged so they keep honouring the user's terminal theme.
@@ -2000,7 +2000,7 @@ begin
             FPPriv := True
           else if (b >= $3C) and (b <= $3E) then
             // '<' '=' '>' introduce OTHER private CSIs -- modifyOtherKeys
-            // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" Claude emits.
+            // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" TUIs emit.
             // Consume them so the params/final byte do NOT leak as "4m"/"u",
             // but do NOT act on them (applying "m" would wrongly set underline).
             FPrivOther := True

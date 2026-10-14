@@ -9,7 +9,7 @@ import os, pty, time, select, fcntl, termios, struct, shutil, glob, sys
 
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', 'bin', 'superterm')))
-HOME = '/tmp/opencode/sthome-prefix'
+HOME = '/tmp/stest/sthome-prefix'
 W, H = 100, 30
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -169,7 +169,7 @@ c.drain(2.5)
 c.close()
 time.sleep(0.5)
 socks = [os.path.basename(p) for p in glob.glob(HOME + '/.superterm/sessions/*.sock')]
-inside = glob.glob(HOME + '/.superterm/*.sock') + glob.glob('/tmp/opencode/*.sock')
+inside = glob.glob(HOME + '/.superterm/*.sock') + glob.glob('/tmp/stest/*.sock')
 ok_name = len(socks) == 1 and all(ch.isalnum() or ch in '._-' for ch in socks[0][:-5])
 check("nombre saneado dentro del dir", ok_name and '..' not in socks[0])
 check("sin sockets fuera del dir", not inside)

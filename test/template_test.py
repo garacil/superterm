@@ -11,7 +11,7 @@ import time
 
 import pyte
 
-ROOT = '/tmp/opencode/sttemplate'
+ROOT = '/tmp/stest/sttemplate'
 HOME = ROOT + '/home'
 SYSINI = ROOT + '/superterm.ini'
 BIN = os.environ.get('SUPERTERM_TEST_BIN', os.path.abspath(os.path.join(
