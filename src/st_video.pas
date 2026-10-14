@@ -66,6 +66,11 @@ procedure HostMetaEscapeOn;
 // asked, its later request for 0 is passed on as well, exactly as it would
 // reach a bare terminal.
 procedure HostCursorStyle(AStyle: integer);
+// Ask the host terminal for xterm's modifyOtherKeys mode 2 (CSI > 4 ; 2 m)
+// or give it up (CSI > 4 m), writing only on a change. Nothing is ever sent
+// to a terminal until something asks, and ReleaseConsoleInput gives it up on
+// the way out only if it was asked for.
+procedure HostExtendedKeys(AOn: Boolean);
 // Hand the terminal back exactly as it was found: every mouse mode off,
 // bracketed paste off, and anything the terminal already reported dropped.
 // Call at the very end, after the application is done.
@@ -206,6 +211,8 @@ var
   // was ever sent at all. Both matter -- see HostCursorStyle.
   HostCursorStyleLast: Integer = 0;
   HostCursorStyleSet: Boolean = False;
+  HostExtendedKeysOn: Boolean = False;
+  HostExtendedKeysSet: Boolean = False;
 
 const
   // A renderer frame is normally at most a few hundred KiB, while direct
@@ -542,6 +549,20 @@ end;
 procedure HostPasteOn;
 begin
   WriteRaw(#27'[?2004h');
+end;
+
+procedure HostExtendedKeys(AOn: Boolean);
+begin
+  if AOn = HostExtendedKeysOn then
+    Exit;
+  HostExtendedKeysOn := AOn;
+  if AOn then
+  begin
+    HostExtendedKeysSet := True;
+    WriteRaw(#27'[>4;2m');
+  end
+  else if HostExtendedKeysSet then
+    WriteRaw(#27'[>4m');
 end;
 
 procedure HostMetaEscapeOn;
@@ -2497,6 +2518,10 @@ begin
   // thing this release stopped doing.
   if HostCursorStyleSet then
     WriteRaw(#27'[0 q');
+  // the same rule for modifyOtherKeys: back to the terminal's own setting,
+  // and not a byte to a terminal that was never asked
+  if HostExtendedKeysSet then
+    WriteRaw(#27'[>4m');
   if IsATTY(StdInputHandle) = 1 then
     TCFlush(StdInputHandle, TCIFLUSH);
 end;

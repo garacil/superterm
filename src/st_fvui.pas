@@ -16,7 +16,7 @@ uses
   BaseUnix, Unix, Termio,
   st_config, st_wclass, st_profiles, st_dialogs, st_pty, st_screen,
   st_layout, st_session, st_debug, st_server, st_video, st_cli, st_artbg,
-  st_mouse, st_clipboard, st_os, st_deskedge;
+  st_mouse, st_clipboard, st_os, st_deskedge, st_keys;
 
 const
   // Command range INVARIANT: each dynamic base (cmOpenClass,
@@ -403,6 +403,11 @@ type
     MouseGrabPane: integer;
     MouseGrabButton: integer;
     HostAnyMotion: boolean;
+    // the key the event being handled stands for, as the terminal sent it
+    // (st_kbd.TakeKeyInfo); valid only for the event whose code it records
+    KeyInfo: TKeyInfo;
+    KeyInfoValid: boolean;
+    KeyInfoCode: word;
     PassReqW, PassReqH: integer;  // full size requested on enter
     PassFilterState: TPassFilterState;
     PassFilterBuf: RawByteString;
@@ -420,6 +425,7 @@ type
     constructor Init;
     destructor Done; virtual;
     procedure Idle; virtual;
+    procedure GetEvent(var Event: TEvent); virtual;
     procedure HandleEvent(var Event: TEvent); virtual;
     procedure InitMenuBar; virtual;
     procedure InitDeskTop; virtual;
@@ -537,6 +543,12 @@ type
     procedure RepaintPane(i: integer);
     // DECCKM state of a pane, nil-safe
     function PaneWantsAppCursor(i: integer): boolean;
+    // the bytes the key in Event means to the program in pane i: built from
+    // the key exactly as the terminal sent it, every modifier included, in
+    // the modes that program asked for (cursor keys, modifyOtherKeys)
+    function PaneKeyBytes(i: integer; const Event: TEvent): RawByteString;
+    // keep the host terminal's modifyOtherKeys in step with the focused pane
+    procedure SyncHostKeys;
     // mouse forwarding to the application inside pane i. Returns True when
     // the event was the application's and has been sent; False when the
     // window manager keeps it (the pane asked for no mouse, or the kind of
@@ -605,7 +617,7 @@ type
 implementation
 
 uses
-  st_keys, st_kbd, st_ssh_entry;
+  st_kbd, st_ssh_entry;
 
 { There was a KEY_ALT label constant here, used to print "Alt-X" and friends
   beside the menu items that bound those keys. Superterm no longer binds any
@@ -1489,8 +1501,7 @@ begin
     mouse reporting ever loses it. }
   if (Event.What = evKeyDown) then
   begin
-    seq := TranslateKey(Event.KeyCode,
-      (App^.Scr[PaneIdx] <> nil) and App^.Scr[PaneIdx].AppCursorKeys);
+    seq := App^.PaneKeyBytes(PaneIdx, Event);
     if seq <> '' then
     begin
       // a key for the application means "I am done reading": back to live
@@ -4057,6 +4068,44 @@ function TSuperApp.PaneWantsAppCursor(i: integer): boolean;
 begin
   Result := (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) and
     Scr[i].AppCursorKeys;
+end;
+
+// Every event comes through here, the modal loops' included. FreeVision has
+// just fetched it, so the key the keyboard driver last decoded is this one.
+procedure TSuperApp.GetEvent(var Event: TEvent);
+begin
+  inherited GetEvent(Event);
+  if Event.What = evKeyDown then
+  begin
+    KeyInfoValid := TakeKeyInfo(KeyInfo);
+    KeyInfoCode := Event.KeyCode;
+  end;
+end;
+
+function TSuperApp.PaneKeyBytes(i: integer; const Event: TEvent): RawByteString;
+var
+  ModifyOtherKeys: integer;
+begin
+  // A key that did not come from the terminal -- put back by FreeVision or
+  // made up by superterm -- has no report behind it: its code is all there is.
+  if (not KeyInfoValid) or (Event.What <> evKeyDown) or
+     (Event.KeyCode <> KeyInfoCode) then
+    Exit(TranslateKey(Event.KeyCode, PaneWantsAppCursor(i)));
+  ModifyOtherKeys := 0;
+  if (i >= 0) and (i < MAX_PANES) and (Scr[i] <> nil) then
+    ModifyOtherKeys := Scr[i].ModifyOtherKeys;
+  Result := EncodeKey(KeyInfo, PaneWantsAppCursor(i), ModifyOtherKeys);
+end;
+
+// tmux asks its terminal for modifyOtherKeys mode 2 (tty.c, the Eneks
+// capability) and decides per pane what each program is sent. superterm asks
+// only while the focused pane wants them, so a terminal is never put in a
+// mode nobody inside it asked for; st_kbd reads both forms either way.
+procedure TSuperApp.SyncHostKeys;
+begin
+  HostExtendedKeys((Lay <> nil) and (Lay.Focused >= 0) and
+    (Lay.Focused < MAX_PANES) and (Scr[Lay.Focused] <> nil) and
+    (Scr[Lay.Focused].ModifyOtherKeys > 0));
 end;
 
 procedure TSuperApp.ResetSizeRequests;
@@ -10211,7 +10260,7 @@ begin
       // Preserve the normal terminal meaning when the prefix is followed by
       // an unbound key.
       PrefixSeq := AnsiChar(Chr(Cfg.PrefixKey)) +
-        TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
+        PaneKeyBytes(Lay.Focused, Event);
       WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);
       Exit;
@@ -10240,20 +10289,29 @@ begin
     // vendor's GetAltChar was not enough here -- its table only knows letters
     // and the number row, so Alt-. (readline's "last argument") and every
     // Alt+function key came out as #0 and were silently eaten.
+    //
+    // The key the terminal reported says all of that and more -- Alt-> is
+    // not Alt-., Alt+Shift+Up is not Alt+Up -- so it decides whenever there
+    // is one; the scancode is only what a key made up inside FreeVision has.
     if (Current = PView(Desktop)) and
        ((Event.KeyShift and kbAltShift) <> 0) then
     begin
-      AltChar := AltKeyChar(Event.KeyCode);
-      if AltChar <> #0 then
-        PrefixSeq := #27 + AltChar
+      if KeyInfoValid and (Event.KeyCode = KeyInfoCode) then
+        PrefixSeq := PaneKeyBytes(Lay.Focused, Event)
       else
       begin
-        AltBase := AltKeyBase(Event.KeyCode);
-        if AltBase = kbNoKey then
-          PrefixSeq := ''
+        AltChar := AltKeyChar(Event.KeyCode);
+        if AltChar <> #0 then
+          PrefixSeq := #27 + AltChar
         else
-          PrefixSeq := #27 +
-            TranslateKey(AltBase, PaneWantsAppCursor(Lay.Focused));
+        begin
+          AltBase := AltKeyBase(Event.KeyCode);
+          if AltBase = kbNoKey then
+            PrefixSeq := ''
+          else
+            PrefixSeq := #27 +
+              TranslateKey(AltBase, PaneWantsAppCursor(Lay.Focused));
+        end;
       end;
       if PrefixSeq <> '' then
         WritePaneInput(Lay.Focused, PrefixSeq);
@@ -10265,7 +10323,7 @@ begin
     // above; prefix+f is the only chord retained for leaving fullscreen.
     if PassthroughActive then
     begin
-      PrefixSeq := TranslateKey(Event.KeyCode, PaneWantsAppCursor(Lay.Focused));
+      PrefixSeq := PaneKeyBytes(Lay.Focused, Event);
       if PrefixSeq <> '' then
         WritePaneInput(Lay.Focused, PrefixSeq);
       ClearEvent(Event);
@@ -10742,6 +10800,7 @@ begin
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
   SyncHostMouse;
+  SyncHostKeys;
   // a local pane's master is non-blocking, so a program that was not reading
   // when input arrived left some of it queued; push it now
   for i := 0 to MAX_PANES - 1 do

@@ -105,6 +105,7 @@ type
     FPColon: array[0..15] of boolean;
     FPPriv: boolean;
     FPrivOther: boolean;    // CSI private intro < = > (consumed but NOT acted on)
+    FPrivIntro: AnsiChar;   // which of < = > it was
     FUtfBuf: array[0..7] of byte;
     FUtfLen: byte;
     FUtfNeed: byte;
@@ -136,6 +137,10 @@ type
     FBracketedPaste: boolean;
     FMouseBits: word;          // bit0 ?9, bit1 ?1000, bit2 ?1002, bit3 ?1003
     FMouseProto: TMouseProto;
+    // xterm's modifyOtherKeys as the application set it with CSI > 4 ; n m:
+    // 0 = keys as a VT100 sends them, 1 = modified keys that have no such
+    // form are reported, 2 = every modified key is reported
+    FModifyOtherKeys: byte;
     FOscOverflow: boolean;
     FOsc52Queue: TOsc52EventArray;
     function GetMouseTrack: TMouseTrack;
@@ -152,6 +157,7 @@ type
     procedure LineFeed;
     procedure PutCharByte(b: byte);
     procedure DoCSI(final: AnsiChar);
+    procedure DoPrivateCSI(final: AnsiChar);
     procedure DispatchEsc(c: AnsiChar);
     procedure FinishOsc;
     procedure QueueOsc52(const ASelection, APayload: RawByteString);
@@ -184,6 +190,7 @@ type
     property AppCursorKeys: boolean read FAppCursor;
     property AppKeypad: boolean read FAppKeypad;
     property BracketedPaste: boolean read FBracketedPaste;
+    property ModifyOtherKeys: byte read FModifyOtherKeys;
     // mouse reporting the application asked for (mtOff = it wants none)
     property MouseTrack: TMouseTrack read GetMouseTrack;
     property MouseProto: TMouseProto read FMouseProto;
@@ -941,6 +948,7 @@ begin
   if FAppKeypad then N := N or 2;
   if FBracketedPaste then N := N or 4;
   N := N or (Longint(FMouseBits and $F) shl 4) or (Longint(Ord(FMouseProto)) shl 8);
+  N := N or (Longint(FModifyOtherKeys and 3) shl 12);
   Stream.WriteBuffer(N, SizeOf(N));
 end;
 
@@ -1039,6 +1047,7 @@ begin
     FBracketedPaste := False;
     FMouseBits := 0;
     FMouseProto := mpX10;
+    FModifyOtherKeys := 0;
     if Stream.Position + SizeOf(Cols) <= Stream.Size then
     begin
       Stream.ReadBuffer(Cols, SizeOf(Cols));
@@ -1048,6 +1057,8 @@ begin
       FMouseBits := (Cols shr 4) and $F;
       if ((Cols shr 8) and 7) <= Ord(High(TMouseProto)) then
         FMouseProto := TMouseProto((Cols shr 8) and 7);
+      if ((Cols shr 12) and 3) <= 2 then
+        FModifyOtherKeys := (Cols shr 12) and 3;
     end;
     Result := True;
   except
@@ -1522,6 +1533,25 @@ begin
     Result := FPParams[i]
   else
     Result := def;
+end;
+
+// CSI > 4 ; n m sets xterm's modifyOtherKeys, CSI > 4 n (and n = 0) turns it
+// off -- the same two sequences tmux follows (input.c, INPUT_CSI_MODSET and
+// INPUT_CSI_MODOFF). Every other private sequence is consumed and ignored.
+procedure TScreen.DoPrivateCSI(final: AnsiChar);
+begin
+  if (FPrivIntro <> '>') or (GetParam(0, 0) <> 4) then
+    Exit;
+  case final of
+    'm':
+      case GetParam(1, 0) of
+        1: FModifyOtherKeys := 1;
+        2: FModifyOtherKeys := 2;
+      else
+        FModifyOtherKeys := 0;
+      end;
+    'n': FModifyOtherKeys := 0;
+  end;
 end;
 
 procedure TScreen.DoCSI(final: AnsiChar);
@@ -2054,6 +2084,7 @@ begin
   FBracketedPaste := False;
   FMouseBits := 0;
   FMouseProto := mpX10;
+  FModifyOtherKeys := 0;
   FPendingWrap := False;
 end;
 
@@ -2173,7 +2204,11 @@ begin
             // "ESC[>4;2m", the kitty keyboard "ESC[>1u"/"ESC[<u" TUIs emit.
             // Consume them so the params/final byte do NOT leak as "4m"/"u",
             // but do NOT act on them (applying "m" would wrongly set underline).
-            FPrivOther := True
+            // DoPrivateCSI takes the few that are about the keyboard.
+          begin
+            FPrivOther := True;
+            FPrivIntro := AnsiChar(b);
+          end
           else if (b >= $20) and (b <= $2F) then
           begin
             FInterm := AnsiChar(b);   // intermediate: ' ' of DECSCUSR etc.
@@ -2181,7 +2216,9 @@ begin
           else if (b >= $40) and (b <= $7E) then
           begin
             if not FPrivOther then
-              DoCSI(AnsiChar(b));   // private < = > sequences are ignored
+              DoCSI(AnsiChar(b))
+            else
+              DoPrivateCSI(AnsiChar(b));
             FPState := psGround;
             FPPriv := False;
             FPrivOther := False;

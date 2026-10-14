@@ -22,8 +22,18 @@ unit st_kbd;
 
 interface
 
+uses
+  st_keys;
+
 // install before creating the application (before Keyboard.InitKeyboard)
 procedure InstallSuperKeyboard;
+// The key the last decoded event stands for, exactly as the terminal reported
+// it: every modifier, and the character as typed (see st_keys.TKeyInfo). The
+// RTL's keyboard layer holds a single pending event and FreeVision's
+// GetKeyEvent polls and takes it in one call, so the application takes this
+// right after FreeVision fetched an event and it belongs to that event. True
+// once per decoded key; False for an event this driver did not just make.
+function TakeKeyInfo(out AKey: TKeyInfo): boolean;
 // CaptureConsoleCursor issues CSI 6 n before the keyboard driver starts. A
 // slow host may answer only after startup; arm one pending CPR so CSI r;c R
 // is consumed as a terminal reply rather than decoded as CSI-F3.
@@ -104,6 +114,11 @@ var
   MQHead: integer = 0;
   MQTail: integer = 0;
   MQCount: integer = 0;
+  // TKeyInfo of the decode in progress, and of the last key event made
+  Decoded: TKeyInfo;
+  DecodedSet: boolean = False;
+  LastKey: TKeyInfo;
+  LastKeyFresh: boolean = False;
 
 procedure ArmCursorPositionReply;
 begin
@@ -549,6 +564,52 @@ begin
     (TKeyEvent(state) shl 16);
 end;
 
+function TakeKeyInfo(out AKey: TKeyInfo): boolean;
+begin
+  Result := LastKeyFresh;
+  if Result then
+    AKey := LastKey
+  else
+    AKey := Default(TKeyInfo);
+  LastKeyFresh := False;
+end;
+
+// xterm's modifier parameter minus one: 1 Shift, 2 Alt, 4 Ctrl, 8 Meta. Meta
+// is the Alt of a terminal that tells them apart, and programs read it as Alt.
+function KeyMods(AXterm: integer): byte;
+begin
+  Result := AXterm and (KM_SHIFT or KM_ALT or KM_CTRL);
+  if (AXterm and 8) <> 0 then
+    Result := Result or KM_ALT;
+end;
+
+procedure Named(AKey: word; AXterm: integer);
+begin
+  Decoded.Key := AKey;
+  Decoded.Text := '';
+  Decoded.Mods := KeyMods(AXterm);
+  DecodedSet := True;
+end;
+
+procedure Typed(const AText: RawByteString; AMods: byte);
+begin
+  Decoded.Key := 0;
+  Decoded.Text := AText;
+  Decoded.Mods := AMods;
+  DecodedSet := True;
+end;
+
+// a C0 byte as the Ctrl+key that types it
+procedure TypedControl(b: byte; AMods: byte);
+begin
+  if b = 0 then
+    Typed(' ', AMods or KM_CTRL)
+  else if b <= 26 then
+    Typed(AnsiChar(b + $60), AMods or KM_CTRL)
+  else
+    Typed(AnsiChar(b + $40), AMods or KM_CTRL);
+end;
+
 // navigation key scancode according to modifiers (RTL tables)
 function NavEvent(PlainScan, CtrlScan, AltScan: byte; Mods: integer): TKeyEvent;
 var
@@ -603,6 +664,156 @@ begin
       scan := scan + $02;  // kbShiftF11 - kbF11
   end;
   Result := KEv(#0, scan, state);
+end;
+
+function NavKey(AKey: word; PlainScan, CtrlScan, AltScan: byte;
+  Mods: integer): TKeyEvent;
+begin
+  Named(AKey, Mods);
+  Result := NavEvent(PlainScan, CtrlScan, AltScan, Mods);
+end;
+
+function FKey(NumKey, Mods: integer): TKeyEvent;
+const
+  CODES: array[1..12] of word = (kbF1, kbF2, kbF3, kbF4, kbF5, kbF6, kbF7,
+    kbF8, kbF9, kbF10, kbF11, kbF12);
+begin
+  Result := FKeyEvent(NumKey, Mods);
+  if Result <> 0 then
+    Named(CODES[NumKey], Mods);
+end;
+
+// The FreeVision event a byte makes on its own, and after an ESC (Alt). Both
+// the plain stream and the extended reports below build their events here,
+// so a key reaches FreeVision the same way whichever form the terminal used.
+function PlainByteEvent(b: byte): TKeyEvent;
+begin
+  case b of
+    13, 10: Result := KEv(#13, $1C, 0);  // raw NL: treat as Enter
+    9: Result := KEv(#9, $0F, 0);
+    8, 127: Result := KEv(#8, $0E, 0);
+  else
+    if b < 128 then
+      Result := KEv(AnsiChar(b), EvalScan(b), 0)
+    else
+      Result := KEv(AnsiChar(b), 0, 0); // UTF-8 bytes: pass through as-is
+  end;
+end;
+
+function AltByteEvent(b: byte): TKeyEvent;
+var
+  scan: byte;
+begin
+  case b of
+    8, 127: Result := KEv(#0, $08, kbAlt);   // kbAltBack
+    9: Result := KEv(#0, $A5, kbAlt);        // kbAltTab
+    32..126:
+      begin
+        scan := EvalScan(b or $20);          // Alt-A and Alt-a: same scancode
+        if scan in [$02..$0D] then
+          Inc(scan, $76);                    // digit row -> kbAlt1..
+        Result := KEv(#0, scan, kbAlt);
+      end;
+  else
+    if b < 32 then
+      Result := KEv(#0, EvalScan(b), kbAlt)
+    else
+      // no PC scancode: one picked from the byte would name some other key
+      // (Alt+n with n's scancode) and set off its hotkey in a dialog
+      Result := KEv(#0, 0, kbAlt);
+  end;
+end;
+
+function Utf8Of(ACode: cardinal): RawByteString;
+begin
+  if ACode < $80 then
+    Result := AnsiChar(ACode)
+  else if ACode < $800 then
+    Result := AnsiChar($C0 or (ACode shr 6)) + AnsiChar($80 or (ACode and $3F))
+  else if ACode < $10000 then
+    Result := AnsiChar($E0 or (ACode shr 12)) +
+      AnsiChar($80 or ((ACode shr 6) and $3F)) + AnsiChar($80 or (ACode and $3F))
+  else
+    Result := AnsiChar($F0 or (ACode shr 18)) +
+      AnsiChar($80 or ((ACode shr 12) and $3F)) +
+      AnsiChar($80 or ((ACode shr 6) and $3F)) + AnsiChar($80 or (ACode and $3F));
+end;
+
+// A key in xterm's modifyOtherKeys report, CSI 27 ; m ; code ~, or the
+// CSI code ; m u form of formatOtherKeys -- what a terminal sends once
+// superterm asked it for those keys. FreeVision gets the event the same key
+// makes in the plain stream (Ctrl+Q is still the prefix byte), and the pane
+// gets the key with every modifier the report carried.
+function OtherKey(ACode, AXterm: integer): TKeyEvent;
+var
+  Mods: byte;
+  C0: integer;
+  Ch: AnsiChar;
+begin
+  Result := 0;
+  Mods := KeyMods(AXterm);
+  case ACode of
+    9:
+      begin
+        Named(kbTab, AXterm);
+        if (Mods and KM_SHIFT) <> 0 then
+          Result := KEv(#0, $0F, kbShift)    // kbShiftTab
+        else if (Mods and KM_ALT) <> 0 then
+          Result := AltByteEvent(9)
+        else
+          Result := PlainByteEvent(9);
+      end;
+    13:
+      begin
+        Named(kbEnter, AXterm);
+        if (Mods and KM_ALT) <> 0 then
+          Result := AltByteEvent(13)
+        else
+          Result := PlainByteEvent(13);
+      end;
+    27:
+      begin
+        Named(kbEsc, AXterm);
+        Result := KEv(#27, $01, 0);
+      end;
+    8, 127:
+      begin
+        Named(kbBack, AXterm);
+        if (Mods and KM_ALT) <> 0 then
+          Result := AltByteEvent(127)
+        else
+          Result := PlainByteEvent(127);
+      end;
+    32..126:
+      begin
+        Typed(AnsiChar(ACode), Mods);
+        Ch := AnsiChar(ACode);
+        C0 := -1;
+        if (Mods and KM_CTRL) <> 0 then
+          // the control byte a VT100 sends for it (tmux's vt10x map)
+          case Ch of
+            ' ', '2': C0 := 0;
+            '3'..'7': C0 := ACode - $18;
+            '8', '?': C0 := 127;
+            '/', '-': C0 := $1F;
+            '@'..'~': C0 := ACode and $1F;
+          end;
+        if C0 < 0 then
+          C0 := ACode;
+        if (Mods and KM_ALT) <> 0 then
+          Result := AltByteEvent(C0)
+        else
+          Result := PlainByteEvent(C0);
+      end;
+    128..$D7FF, $E000..$10FFFF:
+      begin
+        Typed(Utf8Of(ACode), Mods);
+        if (Mods and KM_ALT) <> 0 then
+          Result := KEv(#0, 0, kbAlt)
+        else
+          Result := KEv(#0, 0, 0);
+      end;
+  end;
 end;
 
 // X10 mouse: ESC [ M b x y (byte-32-1 coordinates); same logic as the RTL
@@ -878,28 +1089,40 @@ begin
     Exit;
   end;
   case AnsiChar(c) of
-    'A': Result := NavEvent($48, $8D, $98, p2);
-    'B': Result := NavEvent($50, $91, $A0, p2);
-    'C': Result := NavEvent($4D, $74, $9D, p2);
-    'D': Result := NavEvent($4B, $73, $9B, p2);
-    'H': Result := NavEvent($47, $77, $97, p2);
-    'F': Result := NavEvent($4F, $75, $9F, p2);
-    'Z': Result := KEv(#0, $0F, kbShift);
-    'P'..'S': Result := FKeyEvent(Ord(AnsiChar(c)) - Ord('P') + 1, p2);
+    'A': Result := NavKey(kbUp, $48, $8D, $98, p2);
+    'B': Result := NavKey(kbDown, $50, $91, $A0, p2);
+    'C': Result := NavKey(kbRight, $4D, $74, $9D, p2);
+    'D': Result := NavKey(kbLeft, $4B, $73, $9B, p2);
+    'H': Result := NavKey(kbHome, $47, $77, $97, p2);
+    'F': Result := NavKey(kbEnd, $4F, $75, $9F, p2);
+    'Z':
+      begin
+        Named(kbTab, p2 or KM_SHIFT);
+        Result := KEv(#0, $0F, kbShift);
+      end;
+    'P'..'S': Result := FKey(Ord(AnsiChar(c)) - Ord('P') + 1, p2);
+    // formatOtherKeys=1 and the kitty protocol's base form: CSI code ; m u
+    'u':
+      if seen[0] and (idx <= 1) then
+        Result := OtherKey(p1, p2);
     '~':
       if p1 = 200 then
         CaptureBracketedPaste
       else
         case p1 of
-          1, 7: Result := NavEvent($47, $77, $97, p2);
-          2: Result := NavEvent($52, $04, $A2, p2);
-          3: Result := NavEvent($53, $06, $A3, p2);
-          4, 8: Result := NavEvent($4F, $75, $9F, p2);
-          5: Result := NavEvent($49, $84, $99, p2);
-          6: Result := NavEvent($51, $76, $A1, p2);
-          11..15: Result := FKeyEvent(p1 - 10, p2);
-          17..21: Result := FKeyEvent(p1 - 11, p2);
-          23, 24: Result := FKeyEvent(p1 - 12, p2);
+          1, 7: Result := NavKey(kbHome, $47, $77, $97, p2);
+          2: Result := NavKey(kbIns, $52, $04, $A2, p2);
+          3: Result := NavKey(kbDel, $53, $06, $A3, p2);
+          4, 8: Result := NavKey(kbEnd, $4F, $75, $9F, p2);
+          5: Result := NavKey(kbPgUp, $49, $84, $99, p2);
+          6: Result := NavKey(kbPgDn, $51, $76, $A1, p2);
+          11..15: Result := FKey(p1 - 10, p2);
+          17..21: Result := FKey(p1 - 11, p2);
+          23, 24: Result := FKey(p1 - 12, p2);
+          // modifyOtherKeys: CSI 27 ; m ; code ~
+          27:
+            if (idx = 2) and seen[2] then
+              Result := OtherKey(nums[2], p2);
         end;
   end;
   // unrecognized sequences are swallowed whole (final byte consumed)
@@ -915,25 +1138,28 @@ begin
   if c < 0 then
     Exit;
   case AnsiChar(c) of
-    'A': Result := NavEvent($48, $8D, $98, ExtraMods);
-    'B': Result := NavEvent($50, $91, $A0, ExtraMods);
-    'C': Result := NavEvent($4D, $74, $9D, ExtraMods);
-    'D': Result := NavEvent($4B, $73, $9B, ExtraMods);
-    'H': Result := NavEvent($47, $77, $97, ExtraMods);
-    'F': Result := NavEvent($4F, $75, $9F, ExtraMods);
-    'P'..'S': Result := FKeyEvent(Ord(AnsiChar(c)) - Ord('P') + 1, ExtraMods);
+    'A': Result := NavKey(kbUp, $48, $8D, $98, ExtraMods);
+    'B': Result := NavKey(kbDown, $50, $91, $A0, ExtraMods);
+    'C': Result := NavKey(kbRight, $4D, $74, $9D, ExtraMods);
+    'D': Result := NavKey(kbLeft, $4B, $73, $9B, ExtraMods);
+    'H': Result := NavKey(kbHome, $47, $77, $97, ExtraMods);
+    'F': Result := NavKey(kbEnd, $4F, $75, $9F, ExtraMods);
+    'P'..'S': Result := FKey(Ord(AnsiChar(c)) - Ord('P') + 1, ExtraMods);
   end;
 end;
 
 // after an already read ESC: lone kbEsc, sequence, or Alt+key
 function DecodeEscape: TKeyEvent;
 var
-  n: integer;
-  scan: byte;
+  n, c, need: integer;
+  Glyph: RawByteString;
 begin
   n := NextByte(ESC_TIMEOUT_MS);
   if n < 0 then
+  begin
+    Named(kbEsc, 0);
     Exit(KEv(#27, $01, 0)); // real ESC: nothing came after it
+  end;
   case n of
     27:
       begin
@@ -952,29 +1178,45 @@ begin
             end;
         else
           PendingEscape := True;
+          Named(kbEsc, 0);
           Result := KEv(#27, $01, 0);
         end;
       end;
     Ord('['): Result := DecodeCSI(0);
     Ord('O'): Result := DecodeSS3(0);
-    8, 127: Result := KEv(#0, $08, kbAlt);   // kbAltBack
-    9: Result := KEv(#0, $A5, kbAlt);        // kbAltTab
   else
-    if (n >= 32) and (n < 127) then
-    begin
-      scan := EvalScan(byte(n) or $20); // Alt-A and Alt-a: same scancode
-      if scan in [$02..$0D] then
-        Inc(scan, $76);                 // digit row -> kbAlt1..
-      Result := KEv(#0, scan, kbAlt);
-    end
+    case n of
+      8, 127: Named(kbBack, KM_ALT);
+      9: Named(kbTab, KM_ALT);
+      10, 13: Named(kbEnter, KM_ALT);
+      0..7, 11, 12, 14..26, 28..31: TypedControl(byte(n), KM_ALT);
+      32..126: Typed(AnsiChar(n), KM_ALT);
     else
-      Result := KEv(#0, EvalScan(byte(n)), kbAlt);
+      // Alt and a character beyond ASCII: the rest of its UTF-8 sequence
+      // belongs to this key, not to the next one
+      Glyph := AnsiChar(n);
+      if (n >= $C2) and (n <= $DF) then need := 1
+      else if (n >= $E0) and (n <= $EF) then need := 2
+      else if (n >= $F0) and (n <= $F4) then need := 3
+      else need := 0;
+      while need > 0 do
+      begin
+        c := PeekByte(SEQ_TIMEOUT_MS);
+        if (c < $80) or (c > $BF) then
+          Break;
+        NextByte(0);
+        Glyph := Glyph + AnsiChar(c);
+        Dec(need);
+      end;
+      Typed(Glyph, KM_ALT);
+    end;
+    Result := AltByteEvent(byte(n));
   end;
 end;
 
 // core: decodes the next key event; 0 = nothing available
 // (mouse events are queued separately and return 0 here)
-function DecodeEvent(Blocking: boolean): TKeyEvent;
+function DecodeStream(Blocking: boolean): TKeyEvent;
 var
   b: integer;
 begin
@@ -994,21 +1236,34 @@ begin
       b := NextByte(0);
     if b < 0 then
       Exit(0);
-    case b of
-      27: Result := DecodeEscape;
-      13: Result := KEv(#13, $1C, 0);
-      10: Result := KEv(#13, $1C, 0);  // raw NL: treat as Enter
-      9: Result := KEv(#9, $0F, 0);
-      8, 127: Result := KEv(#8, $0E, 0);
+    DecodedSet := False;
+    if b = 27 then
+      Result := DecodeEscape
     else
-      if b < 32 then
-        Result := KEv(AnsiChar(b), EvalScan(byte(b)), 0)
-      else if b < 128 then
-        Result := KEv(AnsiChar(b), EvalScan(byte(b)), 0)
+    begin
+      case b of
+        10, 13: Named(kbEnter, 0);
+        9: Named(kbTab, 0);
+        8, 127: Named(kbBack, 0);
+        0..7, 11, 12, 14..26, 28..31: TypedControl(byte(b), 0);
       else
-        Result := KEv(AnsiChar(b), 0, 0); // UTF-8 bytes: pass through as-is
+        Typed(AnsiChar(b), 0);
+      end;
+      Result := PlainByteEvent(byte(b));
     end;
   until (Result <> 0) or not Blocking;
+end;
+
+// every decoded key leaves its TKeyInfo for TakeKeyInfo
+function DecodeEvent(Blocking: boolean): TKeyEvent;
+begin
+  DecodedSet := False;
+  Result := DecodeStream(Blocking);
+  if Result <> 0 then
+  begin
+    LastKey := Decoded;
+    LastKeyFresh := DecodedSet;
+  end;
 end;
 
 procedure KInit;

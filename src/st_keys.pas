@@ -34,6 +34,37 @@ function EncodeMouseReport(AProto: TMouseProto; AButton, ACol, ARow: integer;
 // and the CSI form (ESC [ A) is ignored by the application.
 function TranslateKey(KeyCode: word; AAppCursor: boolean = False): RawByteString;
 
+const
+  // modifiers as xterm numbers them: the parameter it sends is 1 + these
+  KM_SHIFT = 1;
+  KM_ALT = 2;
+  KM_CTRL = 4;
+
+type
+  // One key exactly as the terminal reported it. A FreeVision key event
+  // cannot say Shift+Up, Ctrl+Alt+Left or Alt+> -- it has one scancode per
+  // physical key and keeps a modifier only where the PC keyboard had a code
+  // for it -- so the keyboard driver keeps this beside every event it makes,
+  // and the key the pane receives is built from this, not from the event.
+  TKeyInfo = record
+    // a named key as its plain FreeVision code: kbUp, kbF5, kbIns, kbEnter,
+    // kbTab, kbBack, kbEsc ...; 0 for a character
+    Key: word;
+    Text: RawByteString;   // that character as typed, UTF-8
+    Mods: byte;            // KM_*
+  end;
+
+// The bytes a terminal sends for AKey to a program in the given modes, the way
+// tmux builds them (input-keys.c, input_key): a named key with modifiers as
+// xterm's CSI 1;m / CSI n;m ~ forms; a character as itself, with Ctrl turning
+// it into its C0 control and Alt adding an ESC in front; and, once the program
+// has asked for modifyOtherKeys (AModifyOtherKeys 1 or 2), the modified keys
+// a VT100 had no code for as CSI 27;m;code ~. Alt alone on a named key keeps
+// the Meta convention -- ESC and then the key's own sequence -- which is what
+// the programs reading it have always been given.
+function EncodeKey(const AKey: TKeyInfo; AAppCursor: boolean;
+  AModifyOtherKeys: integer): RawByteString;
+
 implementation
 
 uses
@@ -127,6 +158,183 @@ begin
   else
     if KeyCode and $00FF <> 0 then
       Result := AnsiChar(Chr(KeyCode and $00FF));
+  end;
+end;
+
+function Utf8Codepoint(const S: RawByteString): cardinal;
+var
+  B0, Need, I: integer;
+begin
+  Result := 0;
+  if S = '' then
+    Exit;
+  B0 := byte(S[1]);
+  if B0 < $80 then
+    Exit(B0)
+  else if (B0 and $E0) = $C0 then
+  begin
+    Result := B0 and $1F;
+    Need := 2;
+  end
+  else if (B0 and $F0) = $E0 then
+  begin
+    Result := B0 and $0F;
+    Need := 3;
+  end
+  else if (B0 and $F8) = $F0 then
+  begin
+    Result := B0 and $07;
+    Need := 4;
+  end
+  else
+    Exit(0);
+  if Length(S) <> Need then
+    Exit(0);
+  for I := 2 to Need do
+  begin
+    if (byte(S[I]) and $C0) <> $80 then
+      Exit(0);
+    Result := (Result shl 6) or (byte(S[I]) and $3F);
+  end;
+end;
+
+function EncodeKey(const AKey: TKeyInfo; AAppCursor: boolean;
+  AModifyOtherKeys: integer): RawByteString;
+const
+  // tmux's standard_map: Ctrl on these keys gives this byte, not a C0 code
+  CTRL_FROM: RawByteString = '1!9(0)=+;:''",<.>/-8? 2';
+  CTRL_TO: RawByteString = '119900=+;;'''',,..'#$1F#$1F#$7F#$7F#0#0;
+var
+  Mods: byte;
+  M, Code: integer;
+  Final: AnsiChar;
+  Ch: AnsiChar;
+  Cp: cardinal;
+  P: integer;
+
+  function Extended(ACode: cardinal): RawByteString;
+  begin
+    Result := #27'[27;' + IntToStr(1 + Mods) + ';' + IntToStr(ACode) + '~';
+  end;
+
+  // the VT100 form: Alt is an ESC in front, Ctrl a C0 code where there is
+  // one; a modifier with no such form is simply lost, as it is on a VT100
+  function Vt10x: RawByteString;
+  begin
+    Result := '';
+    if (Mods and KM_ALT) <> 0 then
+      Result := #27;
+    if Cp > $7F then
+      Exit(Result + AKey.Text);
+    Ch := AnsiChar(Cp);
+    // Ctrl never turns Tab or Enter into another key; on Backspace it gives
+    // the other erase character, BS, as terminals send it
+    if ((Mods and KM_CTRL) <> 0) and (Ch = #$7F) then
+      Ch := #8
+    else if ((Mods and KM_CTRL) <> 0) and (Ch <> #9) and (Ch <> #13) then
+    begin
+      P := Pos(Ch, CTRL_FROM);
+      if P > 0 then
+        Ch := CTRL_TO[P]
+      else if (Ch >= '3') and (Ch <= '7') then
+        Ch := AnsiChar(Ord(Ch) - $18)
+      else if (Ch >= '@') and (Ch <= '~') then
+        Ch := AnsiChar(Ord(Ch) and $1F)
+      else
+        Exit('');
+    end;
+    Result := Result + Ch;
+  end;
+
+  // modifyOtherKeys=1 leaves the keys a VT100 could already express alone:
+  // Ctrl on its own over a key with a C0 code, and Alt on its own
+  function Mode1Keeps: boolean;
+  begin
+    Ch := AnsiChar(Cp and $7F);
+    if (Mods and (KM_ALT or KM_CTRL)) = KM_ALT then
+      Exit(True);
+    Result := ((Mods and (KM_ALT or KM_CTRL)) = KM_CTRL) and (Cp < $80) and
+      ((Ch = ' ') or (Ch = '/') or ((Ch >= '2') and (Ch <= '8')) or
+       ((Ch >= '@') and (Ch <= '~')));
+  end;
+
+begin
+  Result := '';
+  Mods := AKey.Mods and (KM_SHIFT or KM_ALT or KM_CTRL);
+  M := 1 + Mods;
+  Final := #0;
+  Code := 0;
+  case AKey.Key of
+    kbUp: Final := 'A';
+    kbDown: Final := 'B';
+    kbRight: Final := 'C';
+    kbLeft: Final := 'D';
+    kbHome: Final := 'H';
+    kbEnd: Final := 'F';
+    kbF1: Final := 'P';
+    kbF2: Final := 'Q';
+    kbF3: Final := 'R';
+    kbF4: Final := 'S';
+    kbIns: Code := 2;
+    kbDel: Code := 3;
+    kbPgUp: Code := 5;
+    kbPgDn: Code := 6;
+    kbF5: Code := 15;
+    kbF6: Code := 17;
+    kbF7: Code := 18;
+    kbF8: Code := 19;
+    kbF9: Code := 20;
+    kbF10: Code := 21;
+    kbF11: Code := 23;
+    kbF12: Code := 24;
+  end;
+  if (Final <> #0) or (Code <> 0) then
+  begin
+    if Mods = 0 then
+      Result := TranslateKey(AKey.Key, AAppCursor)
+    else if Mods = KM_ALT then
+      Result := #27 + TranslateKey(AKey.Key, AAppCursor)
+    else if Final <> #0 then
+      Result := #27'[1;' + IntToStr(M) + Final
+    else
+      Result := #27'[' + IntToStr(Code) + ';' + IntToStr(M) + '~';
+    Exit;
+  end;
+  // everything else is a character; these four keys are their C0 codes
+  case AKey.Key of
+    kbEnter: Cp := 13;
+    kbTab: Cp := 9;
+    kbBack: Cp := $7F;
+    kbEsc: Cp := 27;
+    0: Cp := Utf8Codepoint(AKey.Text);
+  else
+    Exit(TranslateKey(AKey.Key, AAppCursor));
+  end;
+  if (AKey.Key = 0) and (Cp = 0) and (AKey.Text <> '') then
+  begin
+    // not one whole character (a lone byte of a sequence the terminal sent
+    // a byte at a time): it travels as it came
+    if (Mods and KM_ALT) <> 0 then
+      Result := #27;
+    Exit(Result + AKey.Text);
+  end;
+  if (Cp = 9) and ((Mods and KM_SHIFT) <> 0) and (AModifyOtherKeys = 0) then
+    Exit(#27'[Z');        // back-tab: the only Shift+Tab a VT100 has
+  if Mods = 0 then
+  begin
+    if AKey.Key = 0 then
+      Exit(AKey.Text);
+    Exit(AnsiChar(Cp));
+  end;
+  case AModifyOtherKeys of
+    2: Result := Extended(Cp);
+    1:
+      if Mode1Keeps then
+        Result := Vt10x
+      else
+        Result := Extended(Cp);
+  else
+    Result := Vt10x;
   end;
 end;
 

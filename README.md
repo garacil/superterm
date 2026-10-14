@@ -788,6 +788,16 @@ Everything else goes straight to the focused pane, and to nowhere at all when
 no pane is focused. That includes Alt: `Alt-b`, `Alt-f`, `Alt-.` and the rest
 reach readline, emacs and vim as `ESC` plus the key, on every terminal.
 
+Every modifier the terminal reports reaches the pane too, encoded the way
+xterm and tmux encode it: `Shift-Up` as `ESC [ 1 ; 2 A`, `Ctrl-Alt-Left`,
+`Shift-F5`, `Ctrl-Shift-Del`, `Shift-Ins`, `Alt-Enter`, `Alt->` and `Alt` with
+any character, accented letters included. A program that asks for xterm's
+`modifyOtherKeys` (`ESC [ > 4 ; 1 m` or `; 2 m`) gets the keys a VT100 had no
+code for -- `Ctrl-Enter`, `Ctrl-Shift-A`, `Ctrl-.` -- as `ESC [ 27 ; m ; code ~`
+reports; while such a program has the focus superterm asks its own terminal
+for them, and gives that up again afterwards and on exit. The prefix works the
+same in either form.
+
 Changing pane focus changes only the window border/title and cursor. Terminal
 content keeps exactly the same colors and attributes in every pane, focused or
 not, and unchanged interiors are not retransmitted on a focus switch.

@@ -50,6 +50,7 @@ enforces the mapping and the required coverage areas.
 | global_lock_queue_test.py | protocol, rendering | Pre-grant layout snapshots cannot roll back a completed global action. |
 | host_resize_shared_test.py | sessions, UI | Host SIGWINCH changes only that viewer and never canonical desktop geometry. |
 | host_summary_lease_test.py | protocol, sessions | Host compatibility metadata cannot change canonical zoom geometry or evade a lease owner. |
+| key_modifiers_test.py | input | Every key reaches the pane with all its modifiers as xterm encodes them, and a program that asks for modifyOtherKeys gets its reports while the prefix keeps working. |
 | keypolicy_test.py | input, UI | The prefix owns every superterm action: no bare key is taken from the pane, and every chord is advertised in the UI. |
 | language_test.py | UI, configuration | English defaults and runtime English/Spanish switching remain complete. |
 | large_screen_test.py | UI, rendering | Extreme-width hosts remain local viewports over one fixed desktop. |
