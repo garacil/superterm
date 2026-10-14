@@ -1,4 +1,4 @@
-# superterm 5.2.9
+# superterm 5.2.15
 
 > **One live terminal workspace. Every SSH-capable screen.**
 
@@ -28,7 +28,7 @@ changes or custom network clients to install on that device:
 ssh -p 8022 user@server
 ```
 
-**[Download 5.2.9](https://github.com/garacil/superterm/releases/latest)** ·
+**[Download 5.2.15](https://github.com/garacil/superterm/releases/latest)** ·
 **[Run it locally](#run-locally)** ·
 **[Publish it over SSH](#publish-it-over-ssh)** ·
 **[SSH deployment quickstart](docs/SSH_QUICKSTART.md)** ·

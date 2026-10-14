@@ -1,5 +1,88 @@
 # Changelog
 
+## 5.2.15 - 2026-10
+
+Six changes, one patch level each: issues #5, #6 and #7, the last of them in
+two parts; the shell's screen given back on every terminal; and the GNU/Linux
+console's mouse.
+
+### Every key reaches the pane with all its modifiers
+
+A FreeVision key event has one scancode per physical key and keeps a
+modifier only where the PC keyboard had a code for it, and the key a pane
+received was built from that event. Whatever it could not hold was lost:
+`Shift-Up` arrived as `Up`, `Shift-Home`, `Shift-PgUp` and `Ctrl-Alt-Left` as
+their plain or `Ctrl` forms, `Shift-F5`, `Shift-Ins`, `Ctrl-F2` and
+`Alt-Enter` not at all, `Alt->` as `Alt-.` and `Alt-Shift-B` as `Alt-b`.
+Reported by [@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue
+#6.
+
+The keyboard driver now keeps, beside every event, the key exactly as the
+terminal reported it, and the pane's bytes are built from that the way tmux
+builds them: xterm's `CSI 1;m` and `CSI n;m ~` forms for named keys, the
+character itself with `Ctrl` as its control code and `Alt` as an `ESC` in
+front, accented letters included. `Alt` alone on a named key keeps the Meta
+convention 5.2.9 introduced.
+
+A program can ask for xterm's `modifyOtherKeys` (`CSI > 4 ; 1 m` or `; 2 m`)
+and then receives the keys a VT100 had no code for -- `Ctrl-Enter`,
+`Ctrl-Shift-A`, `Ctrl-.` -- as `CSI 27 ; m ; code ~` reports, under tmux's
+rules for both modes. While such a program has the focus, superterm asks its
+own terminal for those reports, reads them (and the `CSI code ; m u` form),
+still recognises the prefix in them, and gives the mode up afterwards and on
+exit.
+
+### A fullscreen pane is not left black when the terminal returns to its size
+
+A fullscreen pane owns the terminal only while the terminal is exactly the
+desktop size. Put the terminal in a window and the window manager takes the
+screen back; return it to full screen and the pane gets it again -- and that
+second hand-off cleared the screen and left it black, because the pane's PTY
+never changed size and nothing inside had a reason to redraw. Issue #5.
+
+The pane is now drawn from its screen model when it takes the terminal, with
+its program's own colours, attributes and wide glyphs, and with the cursor,
+pen, scrolling region, autowrap and a pending wrap where the program left
+them, so its next bytes land where they always would have.
+
+### A small terminal can adjust the desktop to itself
+
+`Desktop -> Adjust to this terminal size` refused a 20x25 terminal, and the
+ordinary 80x24 one, because the desktop's floor was a 25-row work area. The
+floor is now 20x8, the least the window manager works in: a window's smallest
+frame and the icon row. Issue #7.
+
+### The desktop can follow a terminal's size
+
+Issue #7 also asked for the desktop to adjust itself. In a shared session a
+terminal's size is one viewer's business, so this is that viewer's choice:
+`Desktop -> Follow this terminal size`, saved as `[ui]
+desktop_follow_terminal` and off by default. On, the viewer asks for its
+terminal's work area when it starts and whenever the terminal settles at a new
+size -- a window drag sends one request, for the size it ends at. A terminal
+below the floor keeps the desktop it has, with no dialog in the way.
+
+### Leaving gives the shell its screen back on every terminal
+
+superterm works on the alternate screen, so leaving it puts back what the
+shell had, with the cursor on the line after the command. That relied on
+FPC's video driver, which enters the alternate screen only for the `TERM`
+names in its own table; under `tmux-256color`, `alacritty`, `foot`,
+`st-256color` or `wezterm` superterm painted over the shell's screen and left
+its desktop there, and after a fullscreen round trip it even left the shell on
+the alternate screen. superterm now enters and leaves it itself wherever the
+driver does not, on every terminal except those that have none, the GNU/Linux
+console first.
+
+### The GNU/Linux console has a mouse
+
+On a virtual console the mouse never answered: behind `sudo` superterm asked
+the kernel for xterm reports gpm never produces, and directly on the console
+its own event queue stopped reading gpm. superterm now speaks gpm's client
+protocol itself, finds the console also behind a `sudo` relay, never blocks on
+the connection, reconnects after a gpm restart and paints its own pointer,
+because the kernel's does not survive a repaint.
+
 ## 5.2.9 - 2026-09
 
 One patch level per change, seven of them: the four issues #1..#4, the XTSAVE
