@@ -76,7 +76,7 @@ def run(term, leave, fullscreen):
     os.close(gate_read)
     c.screen = AltScreen(W, H)
     c.stream = pyte.ByteStream(c.screen)
-    c.stream.feed(b'\r\n'.join(SHELL) + b'\r\n')
+    stlib.feed_pyte(c.stream, b'\r\n'.join(SHELL) + b'\r\n', 'shell text')
     os.write(gate_write, b'1')
     os.close(gate_write)
     try:
