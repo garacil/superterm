@@ -474,13 +474,12 @@ platform details.
 
 ### Branch direction
 
-`newfeatures` is the development branch and is promoted into `main` only after
-review and validation. `macos-support` is the downstream platform branch: it
-receives the tested changes from `main`, then adds only its platform-specific
-build or backend work. It is **never** a pull-request source for `main` and is
-never merged back into it. GitHub may offer a
-generic “Compare & pull request” button after a platform-branch push; that is
-an automatic GitHub prompt, not the project integration direction.
+`main` is the development branch. `macos-support` is the downstream platform
+branch: it receives the tested changes from `main`, then adds only its
+platform-specific build or backend work. It is **never** a pull-request source
+for `main` and is never merged back into it. GitHub may offer a generic
+“Compare & pull request” button after a platform-branch push; that is an
+automatic GitHub prompt, not the project integration direction.
 
 ## Why Free Pascal
 
