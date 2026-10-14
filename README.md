@@ -804,7 +804,9 @@ not, and unchanged interiors are not retransmitted on a focus switch.
 
 The same actions are available from the `Panes`, `Windows`, `Classes`,
 `Profiles`, `Sessions`, `Desktop`, `Options`, `Clipboard`, and `Help` menus.
-`Desktop` contains `Adjust to this terminal size`, `Modify dimensions...`
+`Desktop` contains `Adjust to this terminal size`, `Follow this terminal
+size` (an opt-in switch: the shared desktop then adopts this terminal's work
+area whenever the terminal settles at a new size), `Modify dimensions...`
 (`20x8` through `8192x4094`) and `Show current dimensions...`. The
 `Windows` menu contains `Minimize all windows`, `Restore all windows`,
 `Close all windows`, `Tile`, `Organize`, `Cascade`, `List`, and

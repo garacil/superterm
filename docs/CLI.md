@@ -412,7 +412,10 @@ vertical para un área visible inicialmente anclada en `(0,0)`; uno grande deja
 margen.
 
 El escritorio solo cambia por una acción explícita del IDE. `Escritorio ->
-Ajustar al tamaño de este terminal` adopta el área útil de ese cliente,
+Ajustar al tamaño de este terminal` adopta el área útil de ese cliente;
+`Escritorio -> Seguir el tamaño de este terminal` (opcional, apagado por
+defecto, `desktop_follow_terminal`) lo vuelve a pedir cada vez que ese
+terminal se queda en un tamaño nuevo, y no hace nada por debajo del mínimo;
 `Escritorio -> Modificar dimensiones...` acepta desde `20x8` hasta
 `8192x4094`, y `Escritorio -> Mostrar dimensiones actuales...` muestra los
 tamaños lógico, IDE completo, terminal y área visible. Al reducir no se escalan

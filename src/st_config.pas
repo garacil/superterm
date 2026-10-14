@@ -82,6 +82,10 @@ type
     // terminal is larger than the canonical desktop, instead of leaving it
     // as flat colour indistinguishable from empty workspace.
     DesktopLimitMarks: boolean;
+    // Local opt-in: this client asks for the shared desktop to be its own
+    // terminal's work area whenever that terminal changes size. Off, a
+    // terminal's size changes only what this viewer sees.
+    DesktopFollow: boolean;
   end;
 
   // Field-scoped persistence prevents two attached clients changing
@@ -93,7 +97,7 @@ type
     cfDesktopNotifications, cfDesktopLimitMarks,
     cfBackground, cfBackgroundMode, cfDefaultProfile, cfDefaultTemplate,
     cfDefaultSession, cfSshSessionMode, cfSshLastSession, cfDefaultWindow,
-    cfLanguage, cfPalette);
+    cfLanguage, cfPalette, cfDesktopFollow);
   TConfigFields = set of TConfigField;
 
 function ConfigDir: string;
@@ -377,6 +381,7 @@ begin
   Cfg.SolidBg := True;
   Cfg.DesktopNotifications := True;
   Cfg.DesktopLimitMarks := True;
+  Cfg.DesktopFollow := False;
 end;
 
 procedure LoadConfig(out Cfg: TConfig);
@@ -415,6 +420,8 @@ begin
       Cfg.DesktopNotifications);
     Cfg.DesktopLimitMarks := Ini.ReadBool('ui', 'desktop_limit_marks',
       Cfg.DesktopLimitMarks);
+    Cfg.DesktopFollow := Ini.ReadBool('ui', 'desktop_follow_terminal',
+      Cfg.DesktopFollow);
     if (Cfg.DesktopColor < 0) or (Cfg.DesktopColor > 15) then
       Cfg.DesktopColor := 0;
     Cfg.NewWinCols := Ini.ReadInteger('ui', 'newwincols', Cfg.NewWinCols);
@@ -711,6 +718,8 @@ begin
             Cfg.DesktopNotifications);
         if cfDesktopLimitMarks in Fields then
           Ini.WriteBool('ui', 'desktop_limit_marks', Cfg.DesktopLimitMarks);
+        if cfDesktopFollow in Fields then
+          Ini.WriteBool('ui', 'desktop_follow_terminal', Cfg.DesktopFollow);
         if cfNewWinCols in Fields then
           Ini.WriteInteger('ui', 'newwincols', Cfg.NewWinCols);
         if cfNewWinRows in Fields then

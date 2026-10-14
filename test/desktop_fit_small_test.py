@@ -8,16 +8,13 @@ least the window manager works in. The daemon's own session snapshot is the
 oracle, so nothing depends on what a dialog can show on a narrow screen.
 """
 import os
-import socket
-import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stlib
-from stlib import FRAME_ATTACH, FRAME_SESSION, check, raw_frame, read_frame
+from stlib import canonical_desktop, check, desktop_becomes
 
 
-PROTO_VER = stlib.attach_proto_ver()
 HOME = stlib.fresh_home('desktop-fit-small')
 with open(HOME + '/.superterm/superterm.ini', 'w') as config:
     config.write('[ui]\n'
@@ -29,51 +26,9 @@ with open(HOME + '/.superterm/superterm.ini', 'w') as config:
                  'autorestore=0\n')
 
 
-def canonical_desktop(path):
-    """(width, height) of the shared desktop, from a fresh attach snapshot."""
-    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    peer.settimeout(5.0)
-    try:
-        peer.connect(path)
-        peer.sendall(raw_frame(FRAME_ATTACH, -1,
-                               struct.pack('<iiiii', PROTO_VER, 63, 19, 1, 0)))
-        frame = read_frame(peer, timeout=5.0)
-    finally:
-        peer.close()
-    if frame is None or frame[0] != FRAME_SESSION:
-        return None
-    payload = frame[2]
-
-    def pas(offset):
-        (length,) = struct.unpack_from('<i', payload, offset)
-        return offset + 4 + length
-
-    offset = pas(0)                                  # layout nodes
-    _focused, count = struct.unpack_from('<ii', payload, offset)
-    offset += 8
-    for _pane in range(count):
-        offset = pas(pas(offset))                    # title, terminal
-    offset = pas(pas(offset))                        # name, profile
-    _geoms, width, height = struct.unpack_from('<iii', payload, offset)
-    return width, height
-
-
 def adjust(client):
     client.send(b'\x11md', 0.6)        # prefix, menu bar, Desktop
     client.send(b'a', 1.0)             # Adjust to this terminal size
-
-
-def desktop_becomes(path, expected, client, timeout=5.0):
-    import time
-    deadline = time.time() + timeout
-    seen = None
-    while time.time() < deadline:
-        seen = canonical_desktop(path)
-        if seen == expected:
-            return True
-        client.drain(0.2)
-    print('  canonical desktop:', seen)
-    return False
 
 
 small = None

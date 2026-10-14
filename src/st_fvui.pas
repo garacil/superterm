@@ -101,6 +101,7 @@ const
   cmDesktopModify      = 2769;
   cmDesktopShowSize    = 2770;
   cmToggleDesktopLimitMarks = 2772;
+  cmToggleDesktopFollow = 2773;  // the desktop follows this terminal's size
   // Client activity notifications: desktop toast and status-line tail.
   cmToggleDesktopNotifications = 2771;
 
@@ -408,6 +409,9 @@ type
     KeyInfo: TKeyInfo;
     KeyInfoValid: boolean;
     KeyInfoCode: word;
+    DesktopFollowPending: boolean;
+    DesktopFollowAt: QWord;
+    DesktopFollowStarted: boolean;
     PassReqW, PassReqH: integer;  // full size requested on enter
     PassFilterState: TPassFilterState;
     PassFilterBuf: RawByteString;
@@ -473,6 +477,10 @@ type
       AResetViewport, AKeepWindowsReachable: boolean);
     procedure RequestDesktopSize(AWidth, AHeight: integer);
     procedure AdjustDesktopToTerminal;
+    // Desktop > Follow this terminal size: ask again once the terminal has
+    // kept one size for a moment, and say nothing when it cannot be done
+    procedure ScheduleDesktopFollow(ADelayMs: integer);
+    procedure FollowTerminalSize;
     procedure ModifyDesktopDimensions;
     procedure ShowDesktopDimensions;
     procedure QueueMemberNotice(AKind: TMemberNoticeKind; AClientCount: integer);
@@ -3289,6 +3297,43 @@ begin
   RequestDesktopSize(W, H);
 end;
 
+procedure TSuperApp.ScheduleDesktopFollow(ADelayMs: integer);
+begin
+  DesktopFollowPending := True;
+  DesktopFollowAt := GetTickCount64 + QWord(ADelayMs);
+end;
+
+procedure TSuperApp.FollowTerminalSize;
+var
+  W, H, CurrentW, CurrentH: integer;
+begin
+  DesktopFollowPending := False;
+  if not Cfg.DesktopFollow then
+    Exit;
+  W := Size.X;
+  H := Size.Y;
+  if MenuBar <> nil then Dec(H);
+  if StatusLine <> nil then Dec(H);
+  // A terminal below the floor keeps the desktop it has: it scrolls, as it
+  // would without this option, and nothing interrupts the user to say so.
+  if not IsDesktopSizeValid(W, H) then
+    Exit;
+  CanonicalDesktopSize(CurrentW, CurrentH);
+  if (CurrentW = W) and (CurrentH = H) then
+    Exit;
+  if RemoteMode then
+  begin
+    // Another viewer's gesture holds the desktop: ask again shortly.
+    if (Remote = nil) or (not Remote.Connected) or
+       (not Remote.SendDesktopResize(W, H)) then
+      ScheduleDesktopFollow(500);
+    Exit;
+  end;
+  SetCanonicalDesktop(W, H, True, True);
+  RepaintChanges;
+  RebuildMenu;
+end;
+
 procedure TSuperApp.ModifyDesktopDimensions;
 var
   W, H: integer;
@@ -3754,6 +3799,10 @@ begin
   NeedBounds := (Size.X <> ACols) or (Size.Y <> ARows);
   if (not NeedVideo) and (not NeedBounds) then
     Exit;
+  // ... unless this viewer asked for the desktop to follow it, which it does
+  // once the terminal has stopped changing size, not on every step of a drag.
+  if NeedVideo and Cfg.DesktopFollow then
+    ScheduleDesktopFollow(300);
   // A physical TIOCGWINSZ is client metadata only.  It changes this viewer's
   // surface/viewport and can never propose a canonical desktop mutation.
   if NeedVideo and RemoteMode and RemoteHostSizeArmed and
@@ -10434,6 +10483,14 @@ begin
           ResetVideoSurface;   // every cell's colour changes
           ReDraw;
         end;
+      cmToggleDesktopFollow:
+        begin
+          Cfg.DesktopFollow := not Cfg.DesktopFollow;
+          SaveConfigFields(Cfg, [cfDesktopFollow]);
+          RebuildMenu;
+          if Cfg.DesktopFollow then
+            ScheduleDesktopFollow(0);
+        end;
       cmToggleDesktopLimitMarks:
         begin
           Cfg.DesktopLimitMarks := not Cfg.DesktopLimitMarks;
@@ -10797,6 +10854,16 @@ begin
     LastSizeCheck := Tick;
     SyncTerminalSize;
   end;
+  // a viewer that follows its terminal adopts it when it starts, too
+  if Cfg.DesktopFollow and (not DesktopFollowStarted) then
+  begin
+    DesktopFollowStarted := True;
+    ScheduleDesktopFollow(300);
+  end;
+  // never from inside a dialog: the request would be decided under it
+  if DesktopFollowPending and (Current = PView(Desktop)) and
+     (GetTickCount64 >= DesktopFollowAt) then
+    FollowTerminalSize;
   // enter/leave passthrough purely from the focused pane's maximized state
   UpdatePassthrough;
   SyncHostMouse;
@@ -11719,6 +11786,10 @@ begin
   DesktopItems := NewItem(UiText('~M~odify dimensions...',
     'Modificar ~d~imensiones...'), '', kbNoKey,
     cmDesktopModify, hcNoContext, DesktopItems);
+  DesktopItems := NewItem(ActiveMark(Cfg.DesktopFollow) +
+    UiText('~F~ollow this terminal size',
+           'Seguir el tamano de es~t~e terminal'), '', kbNoKey,
+    cmToggleDesktopFollow, hcNoContext, DesktopItems);
   DesktopItems := NewItem(UiText('~A~djust to this terminal size',
     '~A~justar al tamano de este terminal'), '', kbNoKey,
     cmDesktopFitTerminal, hcNoContext, DesktopItems);

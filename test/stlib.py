@@ -617,6 +617,55 @@ def read_frame(sock, timeout=5.0):
     return kind, pane, data
 
 
+def canonical_desktop(path, timeout=5.0):
+    """(width, height) of a session's shared desktop, or None.
+
+    Read from the FRAME_SESSION snapshot a fresh protocol attach receives, so
+    it is the daemon's own answer and nothing depends on what a viewer draws.
+    The peer is a viewer of its own size; its attach never changes the desktop.
+    """
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.settimeout(timeout)
+    try:
+        peer.connect(path)
+        peer.sendall(raw_frame(FRAME_ATTACH, -1, struct.pack(
+            '<iiiii', attach_proto_ver(), 63, 19, 1, 0)))
+        frame = read_frame(peer, timeout=timeout)
+    except OSError:
+        return None
+    finally:
+        peer.close()
+    if frame is None or frame[0] != FRAME_SESSION:
+        return None
+    payload = frame[2]
+
+    def skip(offset):
+        (length,) = struct.unpack_from('<i', payload, offset)
+        return offset + 4 + length
+
+    offset = skip(0)                                 # layout nodes
+    _focused, count = struct.unpack_from('<ii', payload, offset)
+    offset += 8
+    for _pane in range(count):
+        offset = skip(skip(offset))                  # title, terminal
+    offset = skip(skip(offset))                      # name, profile
+    _geoms, width, height = struct.unpack_from('<iii', payload, offset)
+    return width, height
+
+
+def desktop_becomes(path, expected, client, timeout=5.0):
+    """True once the shared desktop is expected; keeps draining client."""
+    deadline = time.time() + timeout
+    seen = None
+    while time.time() < deadline:
+        seen = canonical_desktop(path)
+        if seen == expected:
+            return True
+        client.drain(0.2)
+    print('  canonical desktop:', seen)
+    return False
+
+
 def pas_string(s):
     """Serialize a Pascal WriteString: int32 length + bytes."""
     b = s.encode('utf-8') if isinstance(s, str) else s

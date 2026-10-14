@@ -47,6 +47,7 @@ background=goody
 background_mode=center
 desktop_notifications=1
 desktop_limit_marks=1
+desktop_follow_terminal=0
 
 [session]
 server=always
@@ -134,6 +135,16 @@ so two viewers of different sizes mark different extents, nothing is sent to
 the daemon and no shared geometry changes. Toggle it at runtime with
 `Desktop -> Mark the desktop limit`
 (`Escritorio -> Marcar el limite del escritorio`).
+
+`desktop_follow_terminal=0` (the default) leaves the shared desktop alone when
+this viewer's terminal changes size. Set it to `1`, or turn on
+`Desktop -> Follow this terminal size` (`Escritorio -> Seguir el tamano de
+este terminal`), and the viewer asks for the desktop to be its terminal's
+work area when it starts and every time the terminal settles at a new size,
+exactly as `Adjust to this terminal size` would. A drag that resizes the
+window produces one request, for the size it ends at. A terminal below the
+`20x8` floor keeps the desktop it has, without a dialog. In a shared session
+every viewer sees the result, so turn it on in the viewer that should decide.
 
 ### [ui] new window size
 
@@ -235,7 +246,9 @@ their intentional half-block/quadrant foreground-background pairs.
   canonical upper-left corner, and starts at `(0,0)` on attach or host resize.
   A physical terminal resize (`SIGWINCH`) changes only that viewport and its
   horizontal/vertical scrollbars; it never changes the desktop, a window or a
-  PTY.
+  PTY -- unless that viewer turned on `Desktop -> Follow this terminal size`
+  (`desktop_follow_terminal=1`), which is an explicit desktop request of its
+  own.
 - The canonical desktop changes only through the `Desktop` menu
   (`Escritorio`): `Adjust to this terminal size` adopts that viewer's usable
   character area, `Modify dimensions...` accepts a logical width/height from

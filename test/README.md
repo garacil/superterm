@@ -31,6 +31,7 @@ enforces the mapping and the required coverage areas.
 | cursor_test.py | UI, cleanup | Every client exit path restores the launch cursor position. |
 | daemon_identity_safety_test.py | lifecycle, cleanup | Stale or malformed sidecars cannot authorize signals to a reused PID. |
 | desktop_fit_small_test.py | UI, sessions | A terminal as small as 20x25 or 80x24 adjusts the shared desktop to its own work area, down to a 20x8 floor, and a smaller one is refused with the limit and no change. |
+| desktop_follow_test.py | UI, sessions | Desktop > Follow this terminal size is off by default and saved when changed; on, the shared desktop adopts the viewer's work area at start and after each settled resize, leaves it below the floor without a dialog, and other viewers never cause a change. |
 | desktop_limit_marks_test.py | UI, rendering | The dead area a viewer sees outside the canonical desktop is screened with 178/177/176 and a reverse-video word, locally, without touching shared geometry. |
 | desktop_persistence_test.py | sessions, configuration | Session save/load preserves fixed logical desktop dimensions. |
 | desktop_resize_protocol_test.py | protocol, sessions | Only the daemon-authoritative transaction changes canonical desktop geometry. |
