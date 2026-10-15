@@ -38,7 +38,8 @@ A fullscreen pane owns the terminal only while the terminal is exactly the
 desktop size. Put the terminal in a window and the window manager takes the
 screen back; return it to full screen and the pane gets it again -- and that
 second hand-off cleared the screen and left it black, because the pane's PTY
-never changed size and nothing inside had a reason to redraw. Issue #5.
+never changed size and nothing inside had a reason to redraw. Reported by
+[@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue #5.
 
 The pane is now drawn from its screen model when it takes the terminal, with
 its program's own colours, attributes and wide glyphs, and with the cursor,
@@ -50,12 +51,14 @@ them, so its next bytes land where they always would have.
 `Desktop -> Adjust to this terminal size` refused a 20x25 terminal, and the
 ordinary 80x24 one, because the desktop's floor was a 25-row work area. The
 floor is now 20x8, the least the window manager works in: a window's smallest
-frame and the icon row. Issue #7.
+frame and the icon row. Reported by
+[@fp-textmode-ide](https://github.com/fp-textmode-ide) as issue #7.
 
 ### The desktop can follow a terminal's size
 
-Issue #7 also asked for the desktop to adjust itself. In a shared session a
-terminal's size is one viewer's business, so this is that viewer's choice:
+Issue #7, from [@fp-textmode-ide](https://github.com/fp-textmode-ide), also
+asked for the desktop to adjust itself. In a shared session a terminal's size
+is one viewer's business, so this is that viewer's choice:
 `Desktop -> Follow this terminal size`, saved as `[ui]
 desktop_follow_terminal` and off by default. On, the viewer asks for its
 terminal's work area when it starts and whenever the terminal settles at a new
