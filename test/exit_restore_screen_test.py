@@ -10,6 +10,11 @@ st -- superterm painted over the shell's screen and left its desktop there
 on exit. A fullscreen round trip made it worse: reclaiming the screen enters
 the alternate screen by hand, and nothing ever left it.
 
+The GNU/Linux console has one too since Linux 6.18, with the same ?1049
+semantics, but the driver's linux profile never enters it: superterm left its
+last frame -- menu bar, desktop art -- under the shell, and the cursor on
+cells whose colours hid it. TERM=linux is checked here with every way out.
+
 pyte has no alternate screen, so the terminal here adds one with xterm's
 ?1049 semantics: save the cursor and switch to a cleared buffer; switch back
 and restore the cursor.
@@ -108,10 +113,12 @@ def run(term, leave, fullscreen):
         c.close()
 
 
-for term in ('xterm-256color', 'tmux-256color', 'alacritty'):
+for term in ('xterm-256color', 'tmux-256color', 'alacritty', 'linux'):
     run(term, 'quit', False)
 run('tmux-256color', 'detach', False)
+run('linux', 'detach', False)
 run('tmux-256color', 'quit', True)
 run('xterm-256color', 'quit', True)
+run('linux', 'quit', True)
 
 stlib.report()

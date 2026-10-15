@@ -74,8 +74,8 @@ names in its own table; under `tmux-256color`, `alacritty`, `foot`,
 `st-256color` or `wezterm` superterm painted over the shell's screen and left
 its desktop there, and after a fullscreen round trip it even left the shell on
 the alternate screen. superterm now enters and leaves it itself wherever the
-driver does not, on every terminal except those that have none, the GNU/Linux
-console first.
+driver does not, on every terminal that has one -- the GNU/Linux console
+included, which has had one since Linux 6.18.
 
 ### The GNU/Linux console has a mouse
 

@@ -2181,14 +2181,23 @@ end;
 // and left its desktop there on exit. Those terminals all have one, and every
 // other sequence superterm sends already takes an xterm-compatible terminal
 // for granted. The names the driver lists without one are the terminals that
-// really have none, the GNU/Linux console first. (Its "cons" is the FreeBSD
-// console, which is not a target and whose prefix would also catch contour.)
+// really have none. (Its "cons" is the FreeBSD console, which is not a target
+// and whose prefix would also catch contour.)
+//
+// The GNU/Linux console is no longer one of them: since Linux 6.18 (commit
+// 23743ba64709, "vt: add support for smput/rmput escape codes") its ?1049h
+// saves the screen and the cursor and ?1049l puts both back, as xterm's do.
+// The driver's linux profile has no alternate screen, so superterm enters it
+// itself. Without it the console kept the last frame -- menu bar, desktop art
+// -- under the shell, and the cursor sat on cells whose colours, reduced to
+// the console's sixteen, hid it. An older kernel ignores the private mode and
+// the console behaves exactly as it did before.
 procedure DecideAlternateScreen;
 const
   RTL_ALTERNATE: array[0..5] of string =
     ('eterm', 'gnome', 'konsole', 'rxvt', 'screen', 'xterm');
-  NO_ALTERNATE: array[0..5] of string =
-    ('ansi', 'beterm', 'dumb', 'linux', 'vt100', 'vt220');
+  NO_ALTERNATE: array[0..4] of string =
+    ('ansi', 'beterm', 'dumb', 'vt100', 'vt220');
 var
   Term: string;
 begin
